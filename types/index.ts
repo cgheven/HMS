@@ -145,6 +145,7 @@ export interface KitchenExpense {
   quantity: string | null;
   amount: number;
   date: string;
+  type: "daily" | "monthly_grocery";
   notes: string | null;
   created_at: string;
 }
