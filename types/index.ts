@@ -153,6 +153,7 @@ export interface FoodItem {
   quantity: string | null;
   unit_cost: number | null;
   notes: string | null;
+  sort_order: number;
   created_at: string;
 }
 
