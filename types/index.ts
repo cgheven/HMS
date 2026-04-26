@@ -184,11 +184,19 @@ export interface DashboardStats {
   monthly_kitchen: number;
   monthly_salaries: number;
   monthly_collected: number;
+  monthly_uncollected: number;
   net_profit: number;
   unpaid_bills: number;
   unpaid_bills_amount: number;
   occupancy_rate: number;
   monthly_revenue: number;
+}
+
+export interface Defaulter {
+  id: string;
+  name: string;
+  amount: number;
+  status: string;
 }
 
 export interface RevenueMonth {

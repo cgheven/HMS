@@ -35,12 +35,27 @@ export async function getDashboardData() {
 
   const { start, end } = getMonthRange();
   const now = new Date();
-  const fullStart = formatDateInput(new Date(now.getFullYear(), now.getMonth() - 5, 1));
-  const fullEnd = formatDateInput(new Date(now.getFullYear(), now.getMonth() + 1, 0));
-
   const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-  const [rooms, tenants, expenses, kitchen, bills, allExp, allKit, collectedPayments, paidSalaries] = await Promise.all([
+  // Compute ranges first so monthKeys are available for queries
+  const ranges = Array.from({ length: 6 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+    return {
+      month: d.toLocaleDateString("en-US", { month: "short" }),
+      monthKey: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+      start: formatDateInput(new Date(d.getFullYear(), d.getMonth(), 1)),
+      end: formatDateInput(new Date(d.getFullYear(), d.getMonth() + 1, 0)),
+    };
+  });
+
+  const fullStart = ranges[0].start;
+  const fullEnd = ranges[5].end;
+
+  const [
+    rooms, tenants, expenses, kitchen, bills,
+    allExp, allKit, collectedPayments, paidSalaries,
+    pendingPaymentsRes, allPayments6moRes,
+  ] = await Promise.all([
     supabase.from("hms_rooms").select("status,monthly_rent").eq("hostel_id", hostelId),
     supabase.from("hms_tenants").select("monthly_rent").eq("hostel_id", hostelId).eq("is_active", true),
     supabase.from("hms_expenses").select("amount").eq("hostel_id", hostelId).gte("date", start).lte("date", end),
@@ -50,6 +65,8 @@ export async function getDashboardData() {
     supabase.from("hms_kitchen_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", fullStart).lte("date", fullEnd),
     supabase.from("hms_payments").select("amount").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).eq("status", "paid"),
     supabase.from("hms_salary_payments").select("amount").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).eq("status", "paid"),
+    supabase.from("hms_payments").select("id,amount,status,tenant:hms_tenants(full_name)").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).neq("status", "paid"),
+    supabase.from("hms_payments").select("for_month,amount,status").eq("hostel_id", hostelId).gte("for_month", ranges[0].monthKey).lte("for_month", ranges[5].monthKey),
   ]);
 
   const roomData = rooms.data ?? [];
@@ -59,22 +76,26 @@ export async function getDashboardData() {
   const monthlyKitchen = (kitchen.data ?? []).reduce((s, e) => s + Number(e.amount), 0);
   const monthlySalaries = (paidSalaries.data ?? []).reduce((s, e) => s + Number(e.amount), 0);
   const monthlyCollected = (collectedPayments.data ?? []).reduce((s, e) => s + Number(e.amount), 0);
+  type PendingRow = { id: string; amount: unknown; status: string; tenant: { full_name: string } | null };
+  const pendingRows = ((pendingPaymentsRes.data ?? []) as unknown) as PendingRow[];
+  const monthlyUncollected = pendingRows.reduce((s, p) => s + Number(p.amount), 0);
   const unpaidBills = bills.data ?? [];
   const monthlyRevenue = (tenants.data ?? []).reduce((s, t) => s + Number(t.monthly_rent), 0);
 
-  const ranges = Array.from({ length: 6 }, (_, i) => {
-    const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
-    return {
-      month: d.toLocaleDateString("en-US", { month: "short" }),
-      start: formatDateInput(new Date(d.getFullYear(), d.getMonth(), 1)),
-      end: formatDateInput(new Date(d.getFullYear(), d.getMonth() + 1, 0)),
-    };
-  });
+  const defaulters = pendingRows.map((p) => ({
+    id: p.id,
+    name: p.tenant?.full_name ?? "Unknown",
+    amount: Number(p.amount),
+    status: p.status,
+  }));
 
-  const monthlyData = ranges.map(({ month, start: s, end: e }) => ({
+  const allPayments6mo = allPayments6moRes.data ?? [];
+
+  const monthlyData = ranges.map(({ month, monthKey, start: s, end: e }) => ({
     month,
     expenses: (allExp.data ?? []).filter((x) => x.date >= s && x.date <= e).reduce((sum, x) => sum + Number(x.amount), 0),
     kitchen: (allKit.data ?? []).filter((x) => x.date >= s && x.date <= e).reduce((sum, x) => sum + Number(x.amount), 0),
+    collected: allPayments6mo.filter((p) => p.for_month === monthKey && p.status === "paid").reduce((sum, p) => sum + Number(p.amount), 0),
   }));
 
   const stats: DashboardStats = {
@@ -86,6 +107,7 @@ export async function getDashboardData() {
     monthly_kitchen: monthlyKitchen,
     monthly_salaries: monthlySalaries,
     monthly_collected: monthlyCollected,
+    monthly_uncollected: monthlyUncollected,
     net_profit: monthlyCollected - monthlyExpenses - monthlyKitchen - monthlySalaries,
     unpaid_bills: unpaidBills.length,
     unpaid_bills_amount: unpaidBills.reduce((s, b) => s + Number(b.amount), 0),
@@ -93,7 +115,7 @@ export async function getDashboardData() {
     monthly_revenue: monthlyRevenue,
   };
 
-  return { hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData };
+  return { hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters };
 }
 
 export async function getRooms() {

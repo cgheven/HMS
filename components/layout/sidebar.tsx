@@ -4,7 +4,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, BedDouble, Users, CreditCard, Receipt,
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
-  MessageSquareWarning, Megaphone, BarChart3,
+  MessageSquareWarning, Megaphone, BarChart3, UserCog,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
@@ -26,6 +26,7 @@ const navGroups = [
       { href: "/kitchen",       label: "Kitchen",        icon: ChefHat },
       { href: "/food",          label: "Food List",      icon: UtensilsCrossed },
       { href: "/bills",         label: "Bills",          icon: FileText },
+      { href: "/staff",         label: "Staff",          icon: UserCog },
       { href: "/complaints",    label: "Complaints",     icon: MessageSquareWarning },
       { href: "/announcements", label: "Announcements",  icon: Megaphone },
     ],
