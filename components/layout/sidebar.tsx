@@ -2,20 +2,46 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard, BedDouble, Receipt,
+  LayoutDashboard, BedDouble, Users, CreditCard, Receipt,
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
+  MessageSquareWarning, Megaphone, BarChart3,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
 
-const navItems = [
-  { href: "/dashboard", label: "Dashboard",  icon: LayoutDashboard },
-  { href: "/spaces",    label: "Spaces",      icon: BedDouble },
-  { href: "/expenses",  label: "Expenses",    icon: Receipt },
-  { href: "/kitchen",   label: "Kitchen",     icon: ChefHat },
-  { href: "/food",      label: "Food List",   icon: UtensilsCrossed },
-  { href: "/bills",     label: "Bills",       icon: FileText },
-  { href: "/settings",  label: "Settings",    icon: Settings },
+const navGroups = [
+  {
+    label: "Residents",
+    items: [
+      { href: "/dashboard",     label: "Dashboard",     icon: LayoutDashboard },
+      { href: "/spaces",        label: "Spaces",         icon: BedDouble },
+      { href: "/tenants",       label: "Tenants",        icon: Users },
+      { href: "/payments",      label: "Payments",       icon: CreditCard },
+    ],
+  },
+  {
+    label: "Operations",
+    items: [
+      { href: "/expenses",      label: "Expenses",       icon: Receipt },
+      { href: "/kitchen",       label: "Kitchen",        icon: ChefHat },
+      { href: "/food",          label: "Food List",      icon: UtensilsCrossed },
+      { href: "/bills",         label: "Bills",          icon: FileText },
+      { href: "/complaints",    label: "Complaints",     icon: MessageSquareWarning },
+      { href: "/announcements", label: "Announcements",  icon: Megaphone },
+    ],
+  },
+  {
+    label: "Analytics",
+    items: [
+      { href: "/reports",       label: "Reports",        icon: BarChart3 },
+    ],
+  },
+  {
+    label: "System",
+    items: [
+      { href: "/settings",      label: "Settings",       icon: Settings },
+    ],
+  },
 ];
 
 interface SidebarProps { open: boolean; onClose: () => void; }
@@ -37,7 +63,6 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
         )}
       >
-        {/* Amber left accent bar */}
         {active && (
           <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-amber" />
         )}
@@ -79,15 +104,21 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-0.5 scrollbar-hide">
-          <p className="text-xs font-semibold text-muted-foreground/50 uppercase tracking-widest px-3 mb-2">Navigation</p>
-          {navItems.map((item) => (
-            <NavLink key={item.href} {...item} />
+        <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-4 scrollbar-hide">
+          {navGroups.map((group) => (
+            <div key={group.label}>
+              <p className="text-xs font-semibold text-muted-foreground/50 uppercase tracking-widest px-3 mb-1.5">{group.label}</p>
+              <div className="space-y-0.5">
+                {group.items.map((item) => (
+                  <NavLink key={item.href} {...item} />
+                ))}
+              </div>
+            </div>
           ))}
 
           {isAdmin && (
-            <div className="pt-4">
-              <p className="text-xs font-semibold text-muted-foreground/50 uppercase tracking-widest px-3 mb-2">Admin</p>
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground/50 uppercase tracking-widest px-3 mb-1.5">Admin</p>
               <NavLink href="/admin/users" label="User Management" icon={Shield} />
             </div>
           )}

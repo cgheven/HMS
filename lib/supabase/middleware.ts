@@ -25,9 +25,13 @@ export async function updateSession(request: NextRequest) {
     }
   );
 
+  // getSession() reads the JWT from the cookie — no network call.
+  // Routing decisions (redirect to /login or /dashboard) don't need server validation.
+  // Server components use getUser() (which validates + refreshes) for actual data access.
   const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    data: { session },
+  } = await supabase.auth.getSession();
+  const user = session?.user ?? null;
 
   const { pathname } = request.nextUrl;
   const isAuthRoute = pathname.startsWith("/login");

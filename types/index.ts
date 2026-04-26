@@ -1,21 +1,14 @@
 export type SpaceType = "student" | "professional" | "general";
 export type RoomStatus = "available" | "occupied" | "maintenance";
 export type BillStatus = "paid" | "unpaid" | "overdue";
-export type BillCategory =
-  | "electricity"
-  | "water"
-  | "internet"
-  | "gas"
-  | "maintenance"
-  | "other";
-export type ExpenseCategory =
-  | "furniture"
-  | "repairs"
-  | "cleaning"
-  | "security"
-  | "utilities"
-  | "other";
+export type BillCategory = "electricity" | "water" | "internet" | "gas" | "maintenance" | "other";
+export type ExpenseCategory = "furniture" | "repairs" | "cleaning" | "security" | "utilities" | "other";
 export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
+export type PaymentStatus = "paid" | "pending" | "overdue" | "waived";
+export type PaymentMethod = "cash" | "bank_transfer" | "jazzcash" | "easypaisa" | "sadapay" | "other";
+export type ComplaintCategory = "plumbing" | "electricity" | "cleanliness" | "security" | "furniture" | "other";
+export type ComplaintPriority = "low" | "medium" | "high";
+export type ComplaintStatus = "open" | "in_progress" | "resolved";
 
 export interface Profile {
   id: string;
@@ -33,11 +26,7 @@ export interface AdminUser {
   is_admin: boolean;
   created_at: string;
   last_sign_in_at: string | null;
-  hostel: {
-    id: string;
-    name: string;
-    total_capacity: number;
-  } | null;
+  hostel: { id: string; name: string; total_capacity: number } | null;
 }
 
 export interface Hostel {
@@ -69,7 +58,7 @@ export interface Room {
 export interface Tenant {
   id: string;
   hostel_id: string;
-  room_id: string;
+  room_id: string | null;
   full_name: string;
   phone: string | null;
   email: string | null;
@@ -78,8 +67,59 @@ export interface Tenant {
   check_in: string;
   check_out: string | null;
   monthly_rent: number;
+  security_deposit: number;
   is_active: boolean;
+  is_waiting: boolean;
+  bed_number: string | null;
+  emergency_contact: string | null;
+  emergency_phone: string | null;
+  notes: string | null;
   created_at: string;
+}
+
+export interface Payment {
+  id: string;
+  hostel_id: string;
+  tenant_id: string;
+  for_month: string;
+  amount: number;
+  late_fee: number;
+  payment_method: PaymentMethod | null;
+  payment_date: string | null;
+  status: PaymentStatus;
+  receipt_number: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  tenant?: { full_name: string; room_id: string | null } | null;
+}
+
+export interface Complaint {
+  id: string;
+  hostel_id: string;
+  tenant_id: string | null;
+  room_id: string | null;
+  title: string;
+  description: string | null;
+  category: ComplaintCategory;
+  priority: ComplaintPriority;
+  status: ComplaintStatus;
+  resolution_notes: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+  tenant?: { full_name: string } | null;
+  room?: { room_number: string } | null;
+}
+
+export interface Announcement {
+  id: string;
+  hostel_id: string;
+  title: string;
+  content: string;
+  is_pinned: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Expense {
@@ -139,4 +179,21 @@ export interface DashboardStats {
   unpaid_bills_amount: number;
   occupancy_rate: number;
   monthly_revenue: number;
+}
+
+export interface RevenueMonth {
+  month: string;
+  monthKey: string;
+  collected: number;
+  due: number;
+  expenses: number;
+  collectionRate: number;
+  occupancyRate: number;
+  moveIns: number;
+  moveOuts: number;
+}
+
+export interface AgingBucket {
+  count: number;
+  amount: number;
 }

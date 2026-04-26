@@ -4,7 +4,7 @@ import { useEffect, useState, useTransition } from "react";
 import {
   Users, Plus, Mail, Shield, ShieldOff, Trash2,
   Edit2, KeyRound, Search, Building2, Clock,
-  CheckCircle2, RefreshCw, Send, Eye, EyeOff,
+  CheckCircle2, RefreshCw, Send, Eye, EyeOff, LogOut,
 } from "lucide-react";
 import {
   listAdminUsers,
@@ -23,6 +23,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
 import { formatDate } from "@/lib/utils";
+import { createClient } from "@/lib/supabase/client";
 import type { AdminUser } from "@/types";
 
 type DialogMode = "create" | "invite" | "edit" | "reset" | "delete" | null;
@@ -169,6 +170,12 @@ export default function AdminUsersPage() {
     });
   }
 
+  async function handleLogout() {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    window.location.href = "/login";
+  }
+
   const stats = {
     total: users.length,
     admins: users.filter((u) => u.is_admin).length,
@@ -217,6 +224,15 @@ export default function AdminUsersPage() {
               >
                 <Plus className="w-4 h-4" />
                 <span className="hidden sm:inline">Create User</span>
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-white/80 hover:text-white hover:bg-red-500/20 gap-2"
+                onClick={handleLogout}
+              >
+                <LogOut className="w-4 h-4" />
+                <span className="hidden sm:inline">Logout</span>
               </Button>
             </div>
           </div>

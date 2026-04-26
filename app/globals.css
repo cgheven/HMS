@@ -4,50 +4,106 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 224 71.4% 4.1%;
-    --card: 0 0% 100%;
-    --card-foreground: 224 71.4% 4.1%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 224 71.4% 4.1%;
-    --primary: 220.9 39.3% 11%;
-    --primary-foreground: 210 20% 98%;
-    --secondary: 220 14.3% 95.9%;
-    --secondary-foreground: 220.9 39.3% 11%;
-    --muted: 220 14.3% 95.9%;
-    --muted-foreground: 220 8.9% 46.1%;
-    --accent: 220 14.3% 95.9%;
-    --accent-foreground: 220.9 39.3% 11%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 20% 98%;
-    --border: 220 13% 91%;
-    --input: 220 13% 91%;
-    --ring: 224 71.4% 4.1%;
-    --radius: 0.5rem;
-    --sidebar: 220.9 39.3% 11%;
-    --sidebar-foreground: 210 20% 98%;
-    --sidebar-border: 220 13% 20%;
-    --sidebar-accent: 220 14.3% 20%;
-    --sidebar-accent-foreground: 210 20% 98%;
+    /* ── Dark Luxury Palette ─────────────────────────────────────────── */
+    --background:    215 28% 7%;    /* #0D1117 deep navy */
+    --foreground:    225 50% 95%;   /* #EEF2FF near-white */
+
+    --card:          220 25% 11%;   /* #151B28 card surface */
+    --card-foreground: 225 50% 95%;
+
+    --popover:       220 28% 14%;
+    --popover-foreground: 225 50% 95%;
+
+    --primary:       38 92% 55%;    /* #F5A623 amber gold */
+    --primary-foreground: 220 28% 8%;
+
+    --secondary:     213 32% 17%;
+    --secondary-foreground: 225 50% 95%;
+
+    --muted:         213 32% 17%;
+    --muted-foreground: 220 18% 50%; /* #6B7A99 */
+
+    --accent:        213 32% 20%;
+    --accent-foreground: 225 50% 95%;
+
+    --destructive:   0 72% 55%;
+    --destructive-foreground: 225 50% 95%;
+
+    --border:        213 30% 16%;   /* #1E2D40 */
+    --input:         213 30% 16%;
+    --ring:          38 92% 55%;
+
+    --radius: 0.75rem;
+
+    /* Sidebar — slightly deeper than background */
+    --sidebar:       220 30% 8%;
+    --sidebar-foreground: 225 50% 95%;
+    --sidebar-border: 213 30% 13%;
+    --sidebar-accent: 38 92% 55%;
+    --sidebar-accent-foreground: 220 30% 8%;
+
+    /* Brand colors exposed as vars */
+    --amber:  38 92% 55%;
+    --teal:   180 60% 53%;
   }
 }
 
 @layer base {
-  * {
-    @apply border-border;
-  }
+  * { @apply border-border; }
+
+  html { color-scheme: dark; }
+
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-sans), system-ui, sans-serif;
     font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2 {
+    font-family: var(--font-serif), Georgia, serif;
   }
 }
 
 @layer utilities {
+  /* Scrollbar */
   .scrollbar-hide {
     -ms-overflow-style: none;
     scrollbar-width: none;
   }
-  .scrollbar-hide::-webkit-scrollbar {
-    display: none;
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+
+  /* Amber glow used on KPI cards and primary buttons */
+  .glow-amber {
+    box-shadow: 0 0 0 1px hsl(var(--amber) / 0.15),
+                0 8px 32px hsl(var(--amber) / 0.12);
+  }
+  .glow-amber:hover {
+    box-shadow: 0 0 0 1px hsl(var(--amber) / 0.25),
+                0 12px 40px hsl(var(--amber) / 0.18);
+  }
+
+  /* Glassmorphism surface */
+  .glass {
+    background: hsl(var(--card) / 0.8);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  /* Staggered animation helpers */
+  .animate-delay-75  { animation-delay: 75ms; }
+  .animate-delay-150 { animation-delay: 150ms; }
+  .animate-delay-200 { animation-delay: 200ms; }
+  .animate-delay-300 { animation-delay: 300ms; }
+  .animate-delay-400 { animation-delay: 400ms; }
+  .animate-delay-500 { animation-delay: 500ms; }
+  .animate-delay-600 { animation-delay: 600ms; }
+  .animate-delay-700 { animation-delay: 700ms; }
+
+  .animate-fade-up {
+    animation: fade-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  .animate-fade-in {
+    animation: fade-in 0.3s ease-out both;
   }
 }

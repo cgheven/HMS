@@ -1,5 +1,5 @@
 "use client";
-import React, { createContext, useContext } from "react";
+import React, { createContext, useContext, useMemo } from "react";
 import type { Profile, Hostel } from "@/types";
 
 interface HostelContextValue {
@@ -23,8 +23,12 @@ export function HostelProvider({
   profile: Profile | null;
   hostel: Hostel | null;
 }) {
+  const value = useMemo(
+    () => ({ profile, hostel, hostelId: hostel?.id ?? null }),
+    [profile, hostel]
+  );
   return (
-    <HostelContext.Provider value={{ profile, hostel, hostelId: hostel?.id ?? null }}>
+    <HostelContext.Provider value={value}>
       {children}
     </HostelContext.Provider>
   );
