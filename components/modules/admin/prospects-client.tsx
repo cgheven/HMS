@@ -1,35 +1,31 @@
 "use client";
 
-import { useEffect, useState, useTransition, useMemo } from "react";
+import { useEffect, useState, useTransition, useMemo, useRef } from "react";
 import {
-  Building2, Plus, Phone, MapPin, User, RefreshCw,
+  Building2, Plus, MapPin, RefreshCw,
   Edit2, Trash2, Search, LogOut,
-  CheckCircle2, Clock, Eye, Link as LinkIcon,
+  CheckCircle2, Clock, Eye, Map, ChevronDown, X,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { createClient } from "@/lib/supabase/client";
 import type { Prospect, ProspectStatus } from "@/types";
+import PriorityClient from "./priority-client";
 
 type DialogMode = "add" | "edit" | "delete" | null;
 
-const STATUS_CONFIG: Record<ProspectStatus, { label: string; color: string; bg: string; icon: typeof Clock }> = {
-  pending:   { label: "Pending",   color: "text-amber-600",   bg: "bg-amber-50 border-amber-200 text-amber-700",   icon: Clock },
-  visited:   { label: "Visited",   color: "text-blue-600",    bg: "bg-blue-50 border-blue-200 text-blue-700",      icon: Eye },
-  onboarded: { label: "Onboarded", color: "text-emerald-600", bg: "bg-emerald-50 border-emerald-200 text-emerald-700", icon: CheckCircle2 },
+const STATUS_CONFIG: Record<ProspectStatus, { label: string; color: string; bg: string; border: string; icon: typeof Clock }> = {
+  pending:   { label: "Pending",   color: "text-amber-400",   bg: "bg-amber-500/15",   border: "border-amber-500/40",   icon: Clock },
+  visited:   { label: "Visited",   color: "text-blue-400",    bg: "bg-blue-500/15",    border: "border-blue-500/40",    icon: Eye },
+  onboarded: { label: "Onboarded", color: "text-emerald-400", bg: "bg-emerald-500/15", border: "border-emerald-500/40", icon: CheckCircle2 },
 };
 
-const FILTER_TABS: { key: "all" | ProspectStatus; label: string }[] = [
-  { key: "all",       label: "All" },
-  { key: "pending",   label: "Pending" },
-  { key: "visited",   label: "Visited" },
-  { key: "onboarded", label: "Onboarded" },
-];
+
+const LOCATIONS = ["Clifton", "DHA", "Defence View", "Saddar", "Tariq Road", "Gulistan-e-Johar", "Gulshan-e-Iqbal"];
 
 const emptyForm = {
   name: "",
@@ -38,19 +34,35 @@ const emptyForm = {
   area: "",
   address: "",
   maps_url: "",
+  location: "",
   status: "pending" as ProspectStatus,
   notes: "",
 };
 
 export default function ProspectsClient() {
-  const [prospects, setProspects] = useState<Prospect[]>([]);
-  const [loading, setLoading]     = useState(true);
-  const [search, setSearch]       = useState("");
-  const [filter, setFilter]       = useState<"all" | ProspectStatus>("all");
+  const [prospects, setProspects]   = useState<Prospect[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [search, setSearch]         = useState("");
+  const [statusFilter, setStatusFilter]     = useState<"all" | ProspectStatus>("all");
+  const [areaFilter, setAreaFilter]         = useState<string>("all");
+  const [locationFilter, setLocationFilter] = useState<string>("all");
+  const [openDropdown, setOpenDropdown]     = useState<"area" | "status" | "location" | null>(null);
   const [dialogMode, setDialogMode] = useState<DialogMode>(null);
-  const [selected, setSelected]   = useState<Prospect | null>(null);
-  const [form, setForm]           = useState(emptyForm);
+  const [selected, setSelected]     = useState<Prospect | null>(null);
+  const [form, setForm]             = useState(emptyForm);
   const [isPending, startTransition] = useTransition();
+  const [activeTab, setActiveTab]   = useState<"pipeline" | "priority">("pipeline");
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setOpenDropdown(null);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   useEffect(() => { load(); }, []);
 
@@ -83,6 +95,7 @@ export default function ProspectsClient() {
       area:       p.area ?? "",
       address:    p.address ?? "",
       maps_url:   p.maps_url ?? "",
+      location:   p.location ?? "",
       status:     p.status,
       notes:      p.notes ?? "",
     });
@@ -108,6 +121,7 @@ export default function ProspectsClient() {
         area:       form.area.trim() || null,
         address:    form.address.trim() || null,
         maps_url:   form.maps_url.trim() || null,
+        location:   form.location.trim() || null,
         status:     form.status,
         notes:      form.notes.trim() || null,
         updated_at: new Date().toISOString(),
@@ -155,6 +169,10 @@ export default function ProspectsClient() {
     window.location.href = "/login";
   }
 
+  const uniqueAreas = useMemo(() =>
+    Array.from(new Set(prospects.map((p) => p.area?.trim()).filter(Boolean) as string[])).sort(),
+  [prospects]);
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     return prospects.filter((p) => {
@@ -163,21 +181,14 @@ export default function ProspectsClient() {
         p.name.toLowerCase().includes(q) ||
         (p.owner_name ?? "").toLowerCase().includes(q) ||
         (p.area ?? "").toLowerCase().includes(q) ||
+        (p.location ?? "").toLowerCase().includes(q) ||
         (p.phone ?? "").includes(q);
-      const matchFilter = filter === "all" || p.status === filter;
-      return matchSearch && matchFilter;
+      const matchStatus   = statusFilter   === "all" || p.status === statusFilter;
+      const matchArea     = areaFilter     === "all" || (p.area?.trim() ?? "") === areaFilter;
+      const matchLocation = locationFilter === "all" || (p.location?.trim() ?? "") === locationFilter;
+      return matchSearch && matchStatus && matchArea && matchLocation;
     });
-  }, [prospects, search, filter]);
-
-  const byArea = useMemo(() => {
-    const map = new Map<string, Prospect[]>();
-    for (const p of filtered) {
-      const area = p.area?.trim() || "No Area";
-      if (!map.has(area)) map.set(area, []);
-      map.get(area)!.push(p);
-    }
-    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [filtered]);
+  }, [prospects, search, statusFilter, areaFilter, locationFilter]);
 
   const stats = useMemo(() => ({
     total:     prospects.length,
@@ -186,11 +197,31 @@ export default function ProspectsClient() {
     onboarded: prospects.filter((p) => p.status === "onboarded").length,
   }), [prospects]);
 
+  function cycleStatus(p: Prospect) {
+    const next: Record<ProspectStatus, ProspectStatus> = {
+      pending: "visited",
+      visited: "onboarded",
+      onboarded: "pending",
+    };
+    startTransition(async () => {
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("hms_prospects")
+        .update({ status: next[p.status], updated_at: new Date().toISOString() })
+        .eq("id", p.id);
+      if (error) {
+        toast({ title: "Failed to update status", description: error.message, variant: "destructive" });
+      } else {
+        load();
+      }
+    });
+  }
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
       <div className="border-b bg-sidebar text-white">
-        <div className="container mx-auto px-4 sm:px-6 py-4 max-w-7xl">
+        <div className="container mx-auto px-4 sm:px-6 py-4">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div className="p-2 rounded-lg bg-white/10">
@@ -234,62 +265,84 @@ export default function ProspectsClient() {
         </div>
       </div>
 
-      <div className="container mx-auto px-4 sm:px-6 py-6 max-w-7xl space-y-6">
+      {/* Tab Bar */}
+      <div className="border-b bg-background">
+        <div className="container mx-auto px-4 sm:px-6 flex gap-1 pt-1">
+          {([
+            { key: "pipeline" as const, label: "Pipeline" },
+            { key: "priority" as const, label: "Outreach Priority" },
+          ]).map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setActiveTab(key)}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === key
+                  ? "border-foreground text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeTab === "priority" && (
+        <PriorityClient prospects={prospects} loading={loading} onRefresh={load} />
+      )}
+
+      {activeTab === "pipeline" && <div className="container mx-auto px-4 sm:px-6 py-6 space-y-6">
         {/* Stat Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {[
-            { label: "Total Hostels",  value: stats.total,     icon: Building2,    color: "text-blue-600",    bg: "bg-blue-50" },
-            { label: "Pending",        value: stats.pending,   icon: Clock,        color: "text-amber-600",   bg: "bg-amber-50" },
-            { label: "Visited",        value: stats.visited,   icon: Eye,          color: "text-blue-600",    bg: "bg-blue-50" },
-            { label: "Onboarded",      value: stats.onboarded, icon: CheckCircle2, color: "text-emerald-600", bg: "bg-emerald-50" },
-          ].map(({ label, value, icon: Icon, color, bg }) => (
-            <Card key={label}>
-              <CardContent className="p-4 flex items-center gap-3">
-                <div className={`p-2 rounded-lg ${bg} shrink-0`}>
-                  <Icon className={`w-4 h-4 ${color}`} />
+            { label: "Total Hostels", value: stats.total,     icon: Building2,    iconBg: "bg-blue-500/20",    iconColor: "text-blue-400",    border: "border-l-blue-500" },
+            { label: "Pending",       value: stats.pending,   icon: Clock,        iconBg: "bg-amber-500/20",   iconColor: "text-amber-400",   border: "border-l-amber-500" },
+            { label: "Visited",       value: stats.visited,   icon: Eye,          iconBg: "bg-indigo-500/20",  iconColor: "text-indigo-400",  border: "border-l-indigo-500" },
+            { label: "Onboarded",     value: stats.onboarded, icon: CheckCircle2, iconBg: "bg-emerald-500/20", iconColor: "text-emerald-400", border: "border-l-emerald-500" },
+          ].map(({ label, value, icon: Icon, iconBg, iconColor, border }) => (
+            <Card key={label} className={`border-l-4 ${border}`}>
+              <CardContent className="p-4 flex items-center gap-4">
+                <div className={`p-2.5 rounded-xl ${iconBg} shrink-0`}>
+                  <Icon className={`w-5 h-5 ${iconColor}`} />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs text-muted-foreground truncate">{label}</p>
-                  <p className="text-2xl font-bold">{value}</p>
+                  <p className="text-xs text-muted-foreground font-medium">{label}</p>
+                  <p className="text-3xl font-bold tracking-tight">{value}</p>
                 </div>
               </CardContent>
             </Card>
           ))}
         </div>
 
-        {/* Filters */}
-        <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
-          <div className="relative flex-1 max-w-sm">
+        {/* Search */}
+        <div className="flex items-center gap-3">
+          <div className="relative flex-1 max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
-              placeholder="Search by name, owner, area..."
+              placeholder="Search name, owner, area, phone..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9"
+              className="pl-9 h-9"
             />
           </div>
-          <div className="flex gap-1 p-1 bg-muted rounded-lg">
-            {FILTER_TABS.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => setFilter(tab.key)}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                  filter === tab.key
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
+          {(statusFilter !== "all" || areaFilter !== "all" || locationFilter !== "all") && (
+            <button
+              onClick={() => { setStatusFilter("all"); setAreaFilter("all"); setLocationFilter("all"); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground bg-muted hover:bg-muted/80 transition-colors"
+            >
+              <X className="w-3 h-3" /> Clear filters
+            </button>
+          )}
+          <p className="text-xs text-muted-foreground shrink-0 tabular-nums ml-auto">
+            {filtered.length} / {prospects.length}
+          </p>
         </div>
 
-        {/* Content */}
+        {/* Table */}
         {loading ? (
-          <div className="space-y-3">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-24 bg-muted rounded-xl animate-pulse" />
+          <div className="space-y-2">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="h-14 bg-muted rounded-lg animate-pulse" />
             ))}
           </div>
         ) : filtered.length === 0 ? (
@@ -298,9 +351,9 @@ export default function ProspectsClient() {
               <Building2 className="w-10 h-10 mb-3 opacity-30" />
               <p className="font-medium">No hostels found</p>
               <p className="text-sm mt-1">
-                {search || filter !== "all" ? "Try adjusting your filters" : "Add a hostel to start tracking your pipeline"}
+                {search || statusFilter !== "all" || areaFilter !== "all" || locationFilter !== "all" ? "Try adjusting your filters" : "Add a hostel to start tracking"}
               </p>
-              {!search && filter === "all" && (
+              {!search && statusFilter === "all" && areaFilter === "all" && locationFilter === "all" && (
                 <Button size="sm" className="mt-4 gap-2" onClick={openAdd}>
                   <Plus className="w-4 h-4" /> Add First Hostel
                 </Button>
@@ -308,82 +361,210 @@ export default function ProspectsClient() {
             </CardContent>
           </Card>
         ) : (
-          <div className="space-y-6">
-            {byArea.map(([area, areaProspects]) => (
-              <div key={area}>
-                <div className="flex items-center gap-2 mb-3">
-                  <MapPin className="w-4 h-4 text-muted-foreground" />
-                  <h2 className="text-sm font-semibold text-foreground">{area}</h2>
-                  <span className="text-xs text-muted-foreground">({areaProspects.length})</span>
-                  <div className="flex-1 h-px bg-border" />
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {areaProspects.map((p) => {
+          <Card className="overflow-hidden p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" ref={dropdownRef as React.RefObject<HTMLTableElement>}>
+                <thead>
+                  <tr className="border-b bg-muted/40">
+                    <th className="text-left px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-10">#</th>
+                    <th className="text-left px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Hostel</th>
+                    <th className="text-left px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Owner</th>
+                    <th className="text-left px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Phone</th>
+                    {/* Area filter column */}
+                    <th className="text-left px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      <div className="relative">
+                        <button
+                          onClick={() => setOpenDropdown(openDropdown === "area" ? null : "area")}
+                          className={`flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-muted ${areaFilter !== "all" ? "text-violet-400" : ""}`}
+                        >
+                          Area
+                          <ChevronDown className={`w-3 h-3 transition-transform ${openDropdown === "area" ? "rotate-180" : ""}`} />
+                          {areaFilter !== "all" && <span className="w-1.5 h-1.5 rounded-full bg-violet-400 ml-0.5" />}
+                        </button>
+                        {openDropdown === "area" && (
+                          <div className="absolute top-full left-0 mt-1 z-50 min-w-[180px] rounded-lg border border-border bg-card shadow-xl overflow-hidden">
+                            <button
+                              onClick={() => { setAreaFilter("all"); setOpenDropdown(null); }}
+                              className={`w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors ${areaFilter === "all" ? "text-foreground font-semibold" : "text-muted-foreground"}`}
+                            >
+                              All Areas
+                            </button>
+                            <div className="border-t border-border/50" />
+                            {uniqueAreas.map((area) => (
+                              <button
+                                key={area}
+                                onClick={() => { setAreaFilter(area); setOpenDropdown(null); }}
+                                className={`w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors flex items-center justify-between gap-2 ${areaFilter === area ? "text-violet-400 font-semibold" : "text-muted-foreground"}`}
+                              >
+                                {area}
+                                {areaFilter === area && <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </th>
+                    {/* Location filter column */}
+                    <th className="text-left px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      <div className="relative">
+                        <button
+                          onClick={() => setOpenDropdown(openDropdown === "location" ? null : "location")}
+                          className={`flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-muted ${locationFilter !== "all" ? "text-emerald-400" : ""}`}
+                        >
+                          Location
+                          <ChevronDown className={`w-3 h-3 transition-transform ${openDropdown === "location" ? "rotate-180" : ""}`} />
+                          {locationFilter !== "all" && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 ml-0.5" />}
+                        </button>
+                        {openDropdown === "location" && (
+                          <div className="absolute top-full left-0 mt-1 z-50 min-w-[170px] rounded-lg border border-border bg-card shadow-xl overflow-hidden">
+                            <button
+                              onClick={() => { setLocationFilter("all"); setOpenDropdown(null); }}
+                              className={`w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors ${locationFilter === "all" ? "text-foreground font-semibold" : "text-muted-foreground"}`}
+                            >
+                              All Locations
+                            </button>
+                            <div className="border-t border-border/50" />
+                            {LOCATIONS.map((loc) => (
+                              <button
+                                key={loc}
+                                onClick={() => { setLocationFilter(loc); setOpenDropdown(null); }}
+                                className={`w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors flex items-center justify-between gap-2 ${locationFilter === loc ? "text-emerald-400 font-semibold" : "text-muted-foreground"}`}
+                              >
+                                {loc}
+                                {locationFilter === loc && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </th>
+                    <th className="text-left px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Address</th>
+                    <th className="text-center px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-14">Map</th>
+                    {/* Status filter column */}
+                    <th className="text-left px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      <div className="relative">
+                        <button
+                          onClick={() => setOpenDropdown(openDropdown === "status" ? null : "status")}
+                          className={`flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors hover:bg-muted ${statusFilter !== "all" ? STATUS_CONFIG[statusFilter].color : ""}`}
+                        >
+                          Status
+                          <ChevronDown className={`w-3 h-3 transition-transform ${openDropdown === "status" ? "rotate-180" : ""}`} />
+                          {statusFilter !== "all" && <span className={`w-1.5 h-1.5 rounded-full ml-0.5 ${statusFilter === "pending" ? "bg-amber-400" : statusFilter === "visited" ? "bg-blue-400" : "bg-emerald-400"}`} />}
+                        </button>
+                        {openDropdown === "status" && (
+                          <div className="absolute top-full left-0 mt-1 z-50 min-w-[150px] rounded-lg border border-border bg-card shadow-xl overflow-hidden">
+                            <button
+                              onClick={() => { setStatusFilter("all"); setOpenDropdown(null); }}
+                              className={`w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors ${statusFilter === "all" ? "text-foreground font-semibold" : "text-muted-foreground"}`}
+                            >
+                              All Statuses
+                            </button>
+                            <div className="border-t border-border/50" />
+                            {(["pending", "visited", "onboarded"] as ProspectStatus[]).map((s) => {
+                              const cfg = STATUS_CONFIG[s];
+                              const Icon = cfg.icon;
+                              return (
+                                <button
+                                  key={s}
+                                  onClick={() => { setStatusFilter(s); setOpenDropdown(null); }}
+                                  className={`w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors flex items-center gap-2 ${statusFilter === s ? `${cfg.color} font-semibold` : "text-muted-foreground"}`}
+                                >
+                                  <Icon className="w-3 h-3" />
+                                  {cfg.label}
+                                  {statusFilter === s && <span className={`w-1.5 h-1.5 rounded-full ml-auto shrink-0 ${s === "pending" ? "bg-amber-400" : s === "visited" ? "bg-blue-400" : "bg-emerald-400"}`} />}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </th>
+                    <th className="w-1 px-1"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {filtered.map((p, idx) => {
                     const cfg = STATUS_CONFIG[p.status];
                     const Icon = cfg.icon;
+                    const initial = p.name.charAt(0).toUpperCase();
+                    const avatarColors = [
+                      "bg-violet-500/20 text-violet-400",
+                      "bg-cyan-500/20 text-cyan-400",
+                      "bg-rose-500/20 text-rose-400",
+                      "bg-orange-500/20 text-orange-400",
+                      "bg-teal-500/20 text-teal-400",
+                    ];
+                    const avatarColor = avatarColors[idx % avatarColors.length];
                     return (
-                      <Card key={p.id} className="group hover:shadow-md transition-shadow">
-                        <CardContent className="p-4">
-                          <div className="flex items-start justify-between gap-2 mb-3">
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="w-9 h-9 rounded-xl bg-sidebar/10 flex items-center justify-center text-sm font-bold text-sidebar shrink-0">
-                                {p.name.charAt(0).toUpperCase()}
-                              </div>
-                              <div className="min-w-0">
-                                <p className="font-semibold text-sm truncate">{p.name}</p>
-                                {p.owner_name && (
-                                  <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
-                                    <User className="w-3 h-3 shrink-0" />
-                                    {p.owner_name}
-                                  </p>
-                                )}
-                              </div>
+                      <tr key={p.id} className="hover:bg-muted/25 transition-colors group">
+                        <td className="px-3 py-2.5 text-muted-foreground/50 text-xs tabular-nums">{idx + 1}</td>
+                        <td className="px-3 py-2.5">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${avatarColor}`}>
+                              {initial}
                             </div>
-                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border shrink-0 ${cfg.bg}`}>
-                              <Icon className="w-3 h-3" />
-                              {cfg.label}
+                            <div className="min-w-0">
+                              <p className="font-semibold text-foreground leading-tight truncate max-w-[220px]">{p.name}</p>
+                              {p.notes && (
+                                <p className="text-[11px] text-muted-foreground truncate max-w-[220px] mt-0.5">{p.notes}</p>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5 text-sm text-muted-foreground">
+                          {p.owner_name || <span className="text-muted-foreground/30">—</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-sm text-muted-foreground whitespace-nowrap">
+                          {p.phone || <span className="text-muted-foreground/30">—</span>}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {p.area ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-violet-500/10 text-violet-400 border border-violet-500/20 whitespace-nowrap">
+                              <MapPin className="w-3 h-3 shrink-0" />
+                              {p.area}
                             </span>
-                          </div>
-
-                          <div className="space-y-1 text-xs text-muted-foreground">
-                            {p.phone && (
-                              <div className="flex items-center gap-1.5">
-                                <Phone className="w-3 h-3 shrink-0" />
-                                <span>{p.phone}</span>
-                              </div>
-                            )}
-                            {p.address && (
-                              <div className="flex items-start gap-1.5">
-                                <MapPin className="w-3 h-3 shrink-0 mt-0.5" />
-                                <span className="line-clamp-2">{p.address}</span>
-                              </div>
-                            )}
-                            {p.maps_url && (
-                              <div className="flex items-center gap-1.5">
-                                <LinkIcon className="w-3 h-3 shrink-0" />
-                                <a
-                                  href={p.maps_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-blue-500 hover:text-blue-400 hover:underline truncate"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  View on Google Maps
-                                </a>
-                              </div>
-                            )}
-                            {p.notes && (
-                              <p className="text-muted-foreground/70 line-clamp-2 pt-1 border-t border-border mt-1">
-                                {p.notes}
-                              </p>
-                            )}
-                          </div>
-
-                          <div className="flex items-center justify-end gap-1 mt-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                          ) : <span className="text-muted-foreground/30">—</span>}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {p.location ? (
+                            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 whitespace-nowrap">
+                              {p.location}
+                            </span>
+                          ) : <span className="text-muted-foreground/30">—</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-xs text-muted-foreground max-w-[260px] truncate">
+                          {p.address || <span className="text-muted-foreground/30">—</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-center">
+                          {p.maps_url ? (
+                            <a
+                              href={p.maps_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 transition-colors"
+                              title="View on Google Maps"
+                            >
+                              <Map className="w-3.5 h-3.5" />
+                            </a>
+                          ) : <span className="text-muted-foreground/30">—</span>}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <button
+                            onClick={() => cycleStatus(p)}
+                            disabled={isPending}
+                            title="Click to advance status"
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all hover:scale-105 active:scale-95 ${cfg.bg} ${cfg.color} ${cfg.border}`}
+                          >
+                            <Icon className="w-3 h-3" />
+                            {cfg.label}
+                          </button>
+                        </td>
+                        <td className="px-1 py-2.5 w-1">
+                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-7 w-7"
+                              className="h-7 w-7 text-muted-foreground hover:text-foreground hover:bg-muted"
                               onClick={() => openEdit(p)}
                               title="Edit"
                             >
@@ -392,23 +573,23 @@ export default function ProspectsClient() {
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="h-7 w-7 text-destructive hover:text-destructive"
+                              className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                               onClick={() => openDelete(p)}
                               title="Delete"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </Button>
                           </div>
-                        </CardContent>
-                      </Card>
+                        </td>
+                      </tr>
                     );
                   })}
-                </div>
-              </div>
-            ))}
-          </div>
+                </tbody>
+              </table>
+            </div>
+          </Card>
         )}
-      </div>
+      </div>}
 
       {/* ── Add / Edit Dialog ──────────────────────────────────────────────── */}
       <Dialog open={dialogMode === "add" || dialogMode === "edit"} onOpenChange={(o) => !o && setDialogMode(null)}>
@@ -452,13 +633,27 @@ export default function ProspectsClient() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>Area</Label>
-                <Input
-                  placeholder="Gulberg, Johar Town..."
-                  value={form.area}
-                  onChange={(e) => setForm({ ...form, area: e.target.value })}
-                />
+                <Label>Location</Label>
+                <select
+                  value={form.location}
+                  onChange={(e) => setForm({ ...form, location: e.target.value })}
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="">Select location...</option>
+                  {LOCATIONS.map((loc) => (
+                    <option key={loc} value={loc}>{loc}</option>
+                  ))}
+                </select>
               </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Area</Label>
+              <Input
+                placeholder="Clifton Block 5, DHA Phase 2..."
+                value={form.area}
+                onChange={(e) => setForm({ ...form, area: e.target.value })}
+              />
             </div>
 
             <div className="space-y-1.5">

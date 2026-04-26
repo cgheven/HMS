@@ -258,8 +258,14 @@ export interface Prospect {
   area: string | null;
   address: string | null;
   maps_url: string | null;
+  location: string | null;
   status: ProspectStatus;
   notes: string | null;
+  wave: number | null;
+  priority_score: number;
+  priority_reason: string | null;
+  is_avoid: boolean;
+  avoid_reason: string | null;
   created_at: string;
   updated_at: string;
 }
