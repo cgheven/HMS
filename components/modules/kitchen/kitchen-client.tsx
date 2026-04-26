@@ -16,6 +16,63 @@ import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
 import type { KitchenExpense } from "@/types";
 
+// ── Quick-add chips (page-level) ─────────────────────────
+const QUICK_DAILY: { label: string; cat: string }[] = [
+  { label: "Chicken",           cat: "protein" },
+  { label: "Beef (Gosht)",      cat: "protein" },
+  { label: "Mutton",            cat: "protein" },
+  { label: "Fish (Machli)",     cat: "protein" },
+  { label: "Eggs (Anda)",       cat: "protein" },
+  { label: "Rice (Chawal)",     cat: "grain"   },
+  { label: "Dal (Lentils)",     cat: "grain"   },
+  { label: "Masoor Dal",        cat: "grain"   },
+  { label: "Bread / Naan",      cat: "grain"   },
+  { label: "Vegetables (Sabzi)",cat: "veggie"  },
+  { label: "Potatoes (Aloo)",   cat: "veggie"  },
+  { label: "Tomatoes",          cat: "veggie"  },
+  { label: "Onions (Pyaz)",     cat: "veggie"  },
+  { label: "Milk (Doodh)",      cat: "dairy"   },
+  { label: "Yogurt (Dahi)",     cat: "dairy"   },
+  { label: "Cooking Oil",       cat: "other"   },
+  { label: "Tea (Chai)",        cat: "other"   },
+  { label: "Spices / Masala",   cat: "other"   },
+];
+const DAILY_CHIP: Record<string, string> = {
+  protein: "bg-rose-500/10    border-rose-500/25    text-rose-400    hover:bg-rose-500/20",
+  grain:   "bg-amber-500/10   border-amber-500/25   text-amber-400   hover:bg-amber-500/20",
+  veggie:  "bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20",
+  dairy:   "bg-sky-500/10     border-sky-500/25     text-sky-400     hover:bg-sky-500/20",
+  other:   "bg-white/5        border-white/10       text-muted-foreground hover:bg-white/10",
+};
+
+const QUICK_GROCERY: { label: string; cat: string }[] = [
+  { label: "Rice (Chawal)",          cat: "staple" },
+  { label: "Basmati Rice",           cat: "staple" },
+  { label: "Flour (Atta)",           cat: "staple" },
+  { label: "Cooking Oil",            cat: "staple" },
+  { label: "Ghee",                   cat: "staple" },
+  { label: "Sugar (Cheeni)",         cat: "staple" },
+  { label: "Salt (Namak)",           cat: "staple" },
+  { label: "Tea Leaves (Chai Patti)",cat: "staple" },
+  { label: "Dal Masoor",             cat: "dal"    },
+  { label: "Dal Chana",              cat: "dal"    },
+  { label: "Dal Mash",               cat: "dal"    },
+  { label: "Chickpeas (Chana)",      cat: "dal"    },
+  { label: "Red Chilli Powder",      cat: "spice"  },
+  { label: "Turmeric (Haldi)",       cat: "spice"  },
+  { label: "Spices / Masala",        cat: "spice"  },
+  { label: "Dish Soap",              cat: "supply" },
+  { label: "Washing Powder",         cat: "supply" },
+  { label: "Toilet Paper",           cat: "supply" },
+  { label: "Plastic Bags",           cat: "supply" },
+];
+const GROCERY_CHIP: Record<string, string> = {
+  staple: "bg-amber-500/10  border-amber-500/25  text-amber-400  hover:bg-amber-500/20",
+  dal:    "bg-orange-500/10 border-orange-500/25 text-orange-400 hover:bg-orange-500/20",
+  spice:  "bg-red-500/10    border-red-500/25    text-red-400    hover:bg-red-500/20",
+  supply: "bg-blue-500/10   border-blue-500/25   text-blue-400   hover:bg-blue-500/20",
+};
+
 // ── Presets ───────────────────────────────────────────────
 const DAILY_PRESETS = [
   "Rice (Chawal)", "Flour (Atta)", "Bread / Naan",
@@ -114,6 +171,24 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
     if (!hostelId) return;
     kitchenCache.delete(`${hostelId}:${monthFilter}`);
     await loadMonth(monthFilter);
+  }
+
+  // ── Quick-add helpers ─────────────────────────────────
+  function quickDailyItem(title: string) {
+    const id = `${Date.now()}-${Math.random()}`;
+    setSelectedItems([{ id, title, quantity: "", amount: "" }]);
+    setAddDate(formatDateInput(new Date()));
+    setItemSearch(""); setCustomInput("");
+    setEditingBreakfast(false); setNewBreakfastInput("");
+    setAddOpen(true);
+    setTimeout(() => amountRefs.current.get(id)?.focus(), 80);
+  }
+
+  function quickGroceryItem(title: string) {
+    setGroceryEditing(null);
+    setGroceryForm({ ...emptyGroceryForm, title });
+    setGrocerySearch("");
+    setGroceryOpen(true);
   }
 
   // ── Daily multi-add actions ───────────────────────────
@@ -344,7 +419,27 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
         </TabsList>
 
         {/* ── Daily tab ────────────────────────────────── */}
-        <TabsContent value="daily">
+        <TabsContent value="daily" className="space-y-4">
+          {/* Quick Add */}
+          <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Plus className="w-3.5 h-3.5 text-muted-foreground" />
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
+              <span className="text-xs text-muted-foreground/50">— tap to open form pre-filled</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {QUICK_DAILY.map((item) => (
+                <button
+                  key={item.label}
+                  onClick={() => quickDailyItem(item.label)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${DAILY_CHIP[item.cat]}`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {loadingMonth ? (
             <div className="space-y-4">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-28 bg-white/5 rounded-xl animate-pulse" />)}</div>
           ) : filteredDaily.length === 0 ? (
@@ -386,7 +481,27 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
         </TabsContent>
 
         {/* ── Monthly Grocery tab ───────────────────────── */}
-        <TabsContent value="grocery">
+        <TabsContent value="grocery" className="space-y-4">
+          {/* Quick Add */}
+          <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Plus className="w-3.5 h-3.5 text-muted-foreground" />
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
+              <span className="text-xs text-muted-foreground/50">— tap to open form pre-filled</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {QUICK_GROCERY.map((item) => (
+                <button
+                  key={item.label}
+                  onClick={() => quickGroceryItem(item.label)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${GROCERY_CHIP[item.cat]}`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {loadingMonth ? (
             <div className="h-40 bg-white/5 rounded-xl animate-pulse" />
           ) : filteredGrocery.length === 0 ? (

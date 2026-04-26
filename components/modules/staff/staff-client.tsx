@@ -27,6 +27,33 @@ const ROLES: { value: EmployeeRole; label: string; icon: string }[] = [
   { value: "other",   label: "Other",   icon: "👤" },
 ];
 
+const QUICK_STAFF: { label: string; role: EmployeeRole }[] = [
+  { label: "Cook",         role: "cook"    },
+  { label: "Head Cook",    role: "cook"    },
+  { label: "Helper Cook",  role: "cook"    },
+  { label: "Night Guard",  role: "guard"   },
+  { label: "Day Guard",    role: "guard"   },
+  { label: "Security",     role: "guard"   },
+  { label: "Cleaner",      role: "cleaner" },
+  { label: "Sweeper",      role: "cleaner" },
+  { label: "Warden",       role: "manager" },
+  { label: "Manager",      role: "manager" },
+  { label: "Receptionist", role: "manager" },
+  { label: "Driver",       role: "driver"  },
+  { label: "Electrician",  role: "other"   },
+  { label: "Plumber",      role: "other"   },
+  { label: "Laundry",      role: "other"   },
+];
+
+const ROLE_CHIP: Record<EmployeeRole, string> = {
+  cook:    "bg-amber-500/10  border-amber-500/25  text-amber-400  hover:bg-amber-500/20",
+  guard:   "bg-blue-500/10   border-blue-500/25   text-blue-400   hover:bg-blue-500/20",
+  cleaner: "bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20",
+  manager: "bg-purple-500/10 border-purple-500/25 text-purple-400 hover:bg-purple-500/20",
+  driver:  "bg-orange-500/10 border-orange-500/25 text-orange-400 hover:bg-orange-500/20",
+  other:   "bg-white/5       border-white/10      text-muted-foreground hover:bg-white/10",
+};
+
 const roleConfig: Record<EmployeeRole, { label: string; icon: string; color: string }> = {
   cook:    { label: "Cook",    icon: "👨‍🍳", color: "text-amber" },
   guard:   { label: "Guard",   icon: "🛡️",  color: "text-blue-400" },
@@ -103,6 +130,11 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
 
   // ── Employee CRUD ─────────────────────────────────────────
   function openAdd() { setEditing(null); setForm(emptyForm); setDialogOpen(true); }
+  function quickStaff(item: { label: string; role: EmployeeRole }) {
+    setEditing(null);
+    setForm({ ...emptyForm, full_name: item.label, role: item.role });
+    setDialogOpen(true);
+  }
   function openEdit(e: Employee) {
     setEditing(e);
     setForm({ full_name: e.full_name, role: e.role, phone: e.phone ?? "", cnic: e.cnic ?? "", join_date: e.join_date, monthly_salary: e.monthly_salary.toString(), status: e.status, notes: e.notes ?? "" });
@@ -224,6 +256,26 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
 
         {/* ── Employees tab ──────────────────────────────── */}
         <TabsContent value="employees" className="space-y-4">
+          {/* Quick Add */}
+          <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Plus className="w-3.5 h-3.5 text-muted-foreground" />
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
+              <span className="text-xs text-muted-foreground/50">— tap to pre-fill the form</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {QUICK_STAFF.map((item) => (
+                <button
+                  key={item.label}
+                  onClick={() => quickStaff(item)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${ROLE_CHIP[item.role]}`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="relative max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input placeholder="Search employees..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />

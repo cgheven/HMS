@@ -1,8 +1,8 @@
 "use client";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   CreditCard, CheckCircle2, Clock, AlertTriangle, Wallet,
-  TrendingUp, Plus, Edit2, Banknote,
+  TrendingUp, Edit2, Banknote, RefreshCw,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -78,19 +78,41 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
   const [markDialog, setMarkDialog] = useState<Payment | null>(null);
   const [markForm, setMarkForm] = useState({ method: "cash" as PaymentMethod, date: formatDateInput(new Date()), late_fee: "0", notes: "", receipt_number: "" });
   const [saving, setSaving] = useState(false);
-  const [generating, setGenerating] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
 
-  async function loadMonth(month: string) {
+  const syncMonth = useCallback(async (month: string) => {
     if (!hostelId) return;
+    setSyncing(true);
     const supabase = createClient();
-    const { data } = await supabase.from("hms_payments")
+    const activeTenants = tenants.filter((t) => t.is_active);
+
+    if (activeTenants.length > 0) {
+      await supabase.from("hms_payments").upsert(
+        activeTenants.map((t) => ({
+          hostel_id: hostelId,
+          tenant_id: t.id,
+          for_month: month,
+          amount: calcTenantAmount(t, month),
+          status: "pending" as PaymentStatus,
+        })),
+        { onConflict: "tenant_id,for_month", ignoreDuplicates: true }
+      );
+    }
+
+    const { data } = await supabase
+      .from("hms_payments")
       .select("*, tenant:hms_tenants(full_name, room_id)")
-      .eq("hostel_id", hostelId).eq("for_month", month)
+      .eq("hostel_id", hostelId)
+      .eq("for_month", month)
       .order("created_at", { ascending: false });
     setPayments((data ?? []) as Payment[]);
-  }
+    setSyncing(false);
+  }, [hostelId, tenants]);
+
+  // Auto-sync on mount
+  useEffect(() => { syncMonth(initialMonth); }, []);
 
   async function loadHistory() {
     if (!hostelId || historyLoaded) return;
@@ -107,26 +129,7 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
 
   async function handleMonthChange(month: string) {
     setSelectedMonth(month);
-    await loadMonth(month);
-  }
-
-  async function generatePayments() {
-    if (!hostelId) return;
-    const activeTenants = tenants.filter((t) => t.is_active);
-    if (activeTenants.length === 0) { toast({ title: "No active tenants" }); return; }
-    setGenerating(true);
-    const supabase = createClient();
-    const rows = activeTenants.map((t) => ({
-      hostel_id: hostelId,
-      tenant_id: t.id,
-      for_month: selectedMonth,
-      amount: calcTenantAmount(t, selectedMonth),
-      status: "pending" as PaymentStatus,
-    }));
-    const { error } = await supabase.from("hms_payments").upsert(rows, { onConflict: "tenant_id,for_month", ignoreDuplicates: true });
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); }
-    else { toast({ title: `Generated ${rows.length} payment records` }); await loadMonth(selectedMonth); }
-    setGenerating(false);
+    await syncMonth(month);
   }
 
   function openMarkPaid(p: Payment) {
@@ -154,7 +157,7 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
       receipt_number: markForm.receipt_number,
     }).eq("id", markDialog.id);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); }
-    else { toast({ title: "Payment recorded" }); setMarkDialog(null); await loadMonth(selectedMonth); }
+    else { toast({ title: "Payment recorded" }); setMarkDialog(null); await syncMonth(selectedMonth); }
     setSaving(false);
   }
 
@@ -163,7 +166,7 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
     const { error } = await supabase.from("hms_payments").update({ status: "waived" }).eq("id", p.id);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     toast({ title: "Payment waived" });
-    await loadMonth(selectedMonth);
+    await syncMonth(selectedMonth);
   }
 
   async function markOverdue(p: Payment) {
@@ -171,7 +174,7 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
     const { error } = await supabase.from("hms_payments").update({ status: "overdue" }).eq("id", p.id);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     toast({ title: "Marked as overdue" });
-    await loadMonth(selectedMonth);
+    await syncMonth(selectedMonth);
   }
 
   const stats = useMemo(() => {
@@ -182,9 +185,7 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
   }, [payments]);
 
   // Tenants without a payment record for selected month (for display in the "missing" hint)
-  const tenantPaymentMap = useMemo(() => Object.fromEntries(payments.map((p) => [p.tenant_id, p])), [payments]);
   const activeTenants = tenants.filter((t) => t.is_active);
-  const missingCount = activeTenants.filter((t) => !tenantPaymentMap[t.id]).length;
 
   function PaymentRow({ p }: { p: Payment }) {
     const room = p.tenant?.room_id ? roomMap[p.tenant.room_id] : null;
@@ -240,8 +241,8 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
         </div>
         <div className="flex items-center gap-2">
           <Input type="month" value={selectedMonth} onChange={(e) => handleMonthChange(e.target.value)} className="w-auto" />
-          <Button onClick={generatePayments} disabled={generating} variant="outline" className="gap-2 border-amber/30 text-amber hover:bg-amber/10">
-            <Plus className="w-4 h-4" /> {generating ? "Generating…" : "Generate"}
+          <Button onClick={() => syncMonth(selectedMonth)} disabled={syncing} variant="ghost" size="icon" title="Sync payments">
+            <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} />
           </Button>
         </div>
       </div>
@@ -268,13 +269,6 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
         ))}
       </div>
 
-      {missingCount > 0 && (
-        <div className="flex items-center gap-3 rounded-xl border border-amber/20 bg-amber/5 px-4 py-3">
-          <AlertTriangle className="w-4 h-4 text-amber shrink-0" />
-          <p className="text-sm text-amber">{missingCount} active tenant{missingCount > 1 ? "s" : ""} have no payment record for this month. Click <strong>Generate</strong> to create them.</p>
-        </div>
-      )}
-
       {/* Tabs */}
       <Tabs value={tab} onValueChange={(v) => { setTab(v); if (v === "history") loadHistory(); }}>
         <TabsList>
@@ -288,7 +282,7 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
               <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground">
                 <CreditCard className="w-10 h-10 opacity-20" />
                 <p className="text-sm">No payment records for this month</p>
-                <p className="text-xs">Click Generate to create records for all active tenants</p>
+                <p className="text-xs">Add active tenants to start tracking payments</p>
               </div>
             ) : (
               <div className="p-2 space-y-1">

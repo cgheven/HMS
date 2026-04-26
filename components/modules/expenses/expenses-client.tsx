@@ -18,6 +18,48 @@ const categories: ExpenseCategory[] = ["furniture", "repairs", "cleaning", "secu
 const categoryColors: Record<ExpenseCategory, "info" | "warning" | "success" | "secondary" | "default" | "outline"> = { furniture: "info", repairs: "warning", cleaning: "success", security: "secondary", utilities: "default", other: "outline" };
 const emptyForm = { title: "", amount: "", category: "other" as ExpenseCategory, date: formatDateInput(new Date()), notes: "" };
 
+const QUICK_ITEMS: { label: string; category: ExpenseCategory }[] = [
+  // Furniture
+  { label: "Chair",         category: "furniture" },
+  { label: "Table",         category: "furniture" },
+  { label: "Bed / Mattress", category: "furniture" },
+  { label: "Almirah",       category: "furniture" },
+  { label: "Curtains",      category: "furniture" },
+  { label: "Shelf / Rack",  category: "furniture" },
+  // Repairs
+  { label: "Plumbing",      category: "repairs"   },
+  { label: "Electrical",    category: "repairs"   },
+  { label: "Paint / Whitewash", category: "repairs" },
+  { label: "AC Repair",     category: "repairs"   },
+  { label: "Fan Repair",    category: "repairs"   },
+  { label: "Door / Lock",   category: "repairs"   },
+  { label: "Tile / Floor",  category: "repairs"   },
+  // Cleaning
+  { label: "Cleaning Supplies", category: "cleaning" },
+  { label: "Phenyl",        category: "cleaning"  },
+  { label: "Detergent",     category: "cleaning"  },
+  { label: "Dustbin",       category: "cleaning"  },
+  // Security
+  { label: "Lock / Keys",   category: "security"  },
+  { label: "CCTV",          category: "security"  },
+  // Utilities
+  { label: "Generator Fuel", category: "utilities" },
+  { label: "Gas Cylinder",  category: "utilities" },
+  { label: "UPS Battery",   category: "utilities" },
+  { label: "Water Filter",  category: "utilities" },
+  // Other
+  { label: "Miscellaneous", category: "other"     },
+];
+
+const CHIP_STYLES: Record<ExpenseCategory, string> = {
+  furniture: "bg-blue-500/10  border-blue-500/25  text-blue-400  hover:bg-blue-500/20",
+  repairs:   "bg-amber-500/10 border-amber-500/25 text-amber-400 hover:bg-amber-500/20",
+  cleaning:  "bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20",
+  security:  "bg-slate-500/10  border-slate-500/25  text-slate-400  hover:bg-slate-500/20",
+  utilities: "bg-purple-500/10 border-purple-500/25 text-purple-400 hover:bg-purple-500/20",
+  other:     "bg-white/5       border-white/10      text-muted-foreground hover:bg-white/10",
+};
+
 interface Props { hostelId: string | null; initialExpenses: Expense[]; defaultMonth: string; }
 
 // Module-level cache — persists across month switches within the session
@@ -81,6 +123,12 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
     setSaving(false);
   }
 
+  function quickAdd(item: { label: string; category: ExpenseCategory }) {
+    setEditing(null);
+    setForm({ ...emptyForm, title: item.label, category: item.category });
+    setDialogOpen(true);
+  }
+
   async function handleDelete(id: string) {
     if (!confirm("Delete?")) return;
     const supabase = createClient();
@@ -106,6 +154,26 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
         ].map(({ label, value, icon: Icon, color, bg }) => (
           <Card key={label}><CardContent className="p-4 flex items-center gap-3"><div className={`p-2 rounded-lg ${bg}`}><Icon className={`w-4 h-4 ${color}`} /></div><div><p className="text-xs text-muted-foreground">{label}</p><p className="text-xl font-bold">{value}</p></div></CardContent></Card>
         ))}
+      </div>
+
+      {/* Quick Add */}
+      <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Plus className="w-3.5 h-3.5 text-muted-foreground" />
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
+          <span className="text-xs text-muted-foreground/50">— tap to pre-fill the form</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {QUICK_ITEMS.map((item) => (
+            <button
+              key={item.label}
+              onClick={() => quickAdd(item)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${CHIP_STYLES[item.category]}`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="flex flex-col sm:flex-row gap-3">
