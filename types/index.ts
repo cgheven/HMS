@@ -137,6 +137,7 @@ export interface KitchenExpense {
   id: string;
   hostel_id: string;
   title: string;
+  quantity: string | null;
   amount: number;
   date: string;
   notes: string | null;

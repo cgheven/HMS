@@ -31,6 +31,7 @@ const CUSTOM = "Other (Custom)";
 const emptyForm = {
   preset: "",
   customTitle: "",
+  quantity: "",
   amount: "",
   date: formatDateInput(new Date()),
   notes: "",
@@ -92,6 +93,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
     setForm({
       preset: isPreset ? item.title : CUSTOM,
       customTitle: isPreset ? "" : item.title,
+      quantity: item.quantity ?? "",
       amount: item.amount.toString(),
       date: item.date,
       notes: item.notes ?? "",
@@ -103,7 +105,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
     if (!hostelId || !canSave) return;
     setSaving(true);
     const supabase = createClient();
-    const payload = { hostel_id: hostelId, title: resolvedTitle, amount: parseFloat(form.amount), date: form.date, notes: form.notes || null };
+    const payload = { hostel_id: hostelId, title: resolvedTitle, quantity: form.quantity || null, amount: parseFloat(form.amount), date: form.date, notes: form.notes || null };
     const { error } = editing
       ? await supabase.from("hms_kitchen_expenses").update(payload).eq("id", editing.id)
       : await supabase.from("hms_kitchen_expenses").insert(payload);
@@ -190,7 +192,10 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
                     <div key={item.id} className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02]">
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium">{item.title}</p>
-                        {item.notes && <p className="text-xs text-muted-foreground">{item.notes}</p>}
+                        <div className="flex flex-wrap gap-x-2 mt-0.5">
+                          {item.quantity && <span className="text-xs text-muted-foreground">{item.quantity}</span>}
+                          {item.notes && <span className="text-xs text-muted-foreground italic">{item.notes}</span>}
+                        </div>
                       </div>
                       <span className="font-semibold text-sm shrink-0">{formatCurrency(item.amount)}</span>
                       <div className="flex gap-1 shrink-0">
@@ -242,7 +247,11 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-1.5">
+                <Label>Quantity</Label>
+                <Input placeholder="e.g. 2 kg" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} />
+              </div>
               <div className="space-y-1.5">
                 <Label>Amount (PKR) *</Label>
                 <Input type="number" placeholder="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
