@@ -10,6 +10,7 @@ export type ComplaintCategory = "plumbing" | "electricity" | "cleanliness" | "se
 export type ComplaintPriority = "low" | "medium" | "high";
 export type ComplaintStatus = "open" | "in_progress" | "resolved";
 export type EmployeeRole = "cook" | "guard" | "cleaner" | "manager" | "driver" | "other";
+export type HostelType = "boys" | "girls" | "mixed" | "family";
 export type EmployeeStatus = "active" | "inactive";
 export type SalaryStatus = "pending" | "paid";
 export type ProspectStatus = "pending" | "visited" | "onboarded";
@@ -41,8 +42,31 @@ export interface Hostel {
   phone: string | null;
   email: string | null;
   total_capacity: number;
+  city: string | null;
+  area: string | null;
+  maps_url: string | null;
+  description: string | null;
+  hostel_type: HostelType | null;
+  amenities: string[];
+  listing_enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface PublicHostel {
+  id: string;
+  name: string;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  total_capacity: number;
+  city: string | null;
+  area: string | null;
+  maps_url: string | null;
+  description: string | null;
+  hostel_type: HostelType | null;
+  amenities: string[];
+  available_beds: number;
 }
 
 export interface Room {

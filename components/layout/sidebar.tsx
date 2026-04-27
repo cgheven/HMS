@@ -4,7 +4,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, BedDouble, Users, CreditCard, Receipt,
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
-  MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2,
+  MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2, Globe,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
@@ -41,6 +41,7 @@ const navGroups = [
     label: "System",
     items: [
       { href: "/settings",      label: "Settings",       icon: Settings },
+      { href: "/find",          label: "Hostel Directory", icon: Globe },
     ],
   },
 ];
