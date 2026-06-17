@@ -15,7 +15,7 @@ alter table hms_tenants
 -- hms_payments  (one record per tenant per month)
 -- ============================================================
 create table if not exists hms_payments (
-  id              uuid default uuid_generate_v4() primary key,
+  id              uuid default gen_random_uuid() primary key,
   hostel_id       uuid references hms_hostels(id) on delete cascade not null,
   tenant_id       uuid references hms_tenants(id) on delete cascade not null,
   for_month       text not null,  -- 'YYYY-MM'
@@ -57,7 +57,7 @@ create trigger hms_payments_updated_at before update on hms_payments
 -- hms_complaints  (maintenance & complaints)
 -- ============================================================
 create table if not exists hms_complaints (
-  id               uuid default uuid_generate_v4() primary key,
+  id               uuid default gen_random_uuid() primary key,
   hostel_id        uuid references hms_hostels(id) on delete cascade not null,
   tenant_id        uuid references hms_tenants(id) on delete set null,
   room_id          uuid references hms_rooms(id)   on delete set null,
@@ -98,7 +98,7 @@ create trigger hms_complaints_updated_at before update on hms_complaints
 -- hms_announcements
 -- ============================================================
 create table if not exists hms_announcements (
-  id          uuid default uuid_generate_v4() primary key,
+  id          uuid default gen_random_uuid() primary key,
   hostel_id   uuid references hms_hostels(id) on delete cascade not null,
   title       text not null,
   content     text not null,

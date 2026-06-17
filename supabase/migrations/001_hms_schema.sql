@@ -48,7 +48,7 @@ create trigger hms_on_auth_user_created
 -- HOSTELS
 -- ============================================================
 create table if not exists hms_hostels (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   owner_id uuid references auth.users(id) on delete cascade not null,
   name text not null,
   address text,
@@ -85,7 +85,7 @@ create trigger hms_on_profile_created
 -- ROOMS
 -- ============================================================
 create table if not exists hms_rooms (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   hostel_id uuid references hms_hostels(id) on delete cascade not null,
   room_number text not null,
   floor integer,
@@ -121,7 +121,7 @@ create policy "Owner manages own rooms"
 -- TENANTS
 -- ============================================================
 create table if not exists hms_tenants (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   hostel_id uuid references hms_hostels(id) on delete cascade not null,
   room_id uuid references hms_rooms(id) on delete set null,
   full_name text not null,
@@ -159,7 +159,7 @@ create policy "Owner manages own tenants"
 -- EXPENSES
 -- ============================================================
 create table if not exists hms_expenses (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   hostel_id uuid references hms_hostels(id) on delete cascade not null,
   title text not null,
   amount numeric(10,2) not null,
@@ -194,7 +194,7 @@ create policy "Owner manages own expenses"
 -- KITCHEN EXPENSES
 -- ============================================================
 create table if not exists hms_kitchen_expenses (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   hostel_id uuid references hms_hostels(id) on delete cascade not null,
   title text not null,
   amount numeric(10,2) not null,
@@ -226,7 +226,7 @@ create policy "Owner manages own kitchen expenses"
 -- FOOD ITEMS (Daily Food List)
 -- ============================================================
 create table if not exists hms_food_items (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   hostel_id uuid references hms_hostels(id) on delete cascade not null,
   date date not null default current_date,
   meal_type text check (meal_type in ('breakfast','lunch','dinner','snack')) not null,
@@ -260,7 +260,7 @@ create policy "Owner manages own food items"
 -- BILLS
 -- ============================================================
 create table if not exists hms_bills (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   hostel_id uuid references hms_hostels(id) on delete cascade not null,
   title text not null,
   category text check (
