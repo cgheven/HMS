@@ -15,8 +15,24 @@ export type EmployeeStatus = "active" | "inactive";
 export type SalaryStatus = "pending" | "paid";
 export type ProspectStatus = "pending" | "visited" | "onboarded";
 export type PackageTier = "space_only" | "space_food" | "space_food_ac";
+export type Role = "super_admin" | "owner" | "partner";
+export type LeadStatus = "new" | "contacted" | "converted" | "rejected";
+export type ApplicationStatus = "pending" | "approved" | "rejected";
 
 export interface Profile {
+  id: string;
+  role: Role;
+  full_name: string | null;
+  phone: string | null;
+  avatar_url: string | null;
+  primary_hostel_id: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Legacy shape retained for admin pages that still read email / is_admin */
+export interface LegacyProfile {
   id: string;
   email: string;
   full_name: string | null;
@@ -50,6 +66,7 @@ export interface Hostel {
   hostel_type: HostelType | null;
   amenities: string[];
   listing_enabled: boolean;
+  slug: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -70,6 +87,7 @@ export interface PublicHostel {
   hostel_type: HostelType | null;
   amenities: string[];
   available_beds: number;
+  slug: string | null;
 }
 
 export interface Room {
@@ -108,6 +126,7 @@ export interface Tenant {
   emergency_contact: string | null;
   emergency_phone: string | null;
   notes: string | null;
+  photo_url: string | null;
   created_at: string;
 }
 
@@ -329,4 +348,63 @@ export interface LoginLog {
   email: string;
   logged_in_at: string;
   created_at: string;
+}
+
+export interface OwnerHostel {
+  id: string;
+  owner_id: string;
+  hostel_id: string;
+  is_primary: boolean;
+  created_at: string;
+}
+
+export interface Partnership {
+  id: string;
+  hostel_id: string;
+  partner_id: string;
+  created_by: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface PlatformLead {
+  id: string;
+  business_name: string;
+  owner_name: string;
+  phone: string;
+  email: string | null;
+  city: string | null;
+  branch_count: number;
+  notes: string | null;
+  status: LeadStatus;
+  converted_hostel_id: string | null;
+  ip_address: string | null;
+  created_at: string;
+}
+
+export interface InvoiceLink {
+  id: string;
+  token: string;
+  payment_id: string | null;
+  hostel_id: string | null;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface TenantApplication {
+  id: string;
+  hostel_id: string;
+  full_name: string;
+  phone: string;
+  email: string | null;
+  cnic: string | null;
+  room_preference: string | null;
+  package_tier: PackageTier;
+  move_in_date: string | null;
+  notes: string | null;
+  photo_url: string | null;
+  status: ApplicationStatus;
+  applied_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
 }

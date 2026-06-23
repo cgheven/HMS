@@ -2,7 +2,7 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   CreditCard, CheckCircle2, Clock, AlertTriangle, Wallet,
-  TrendingUp, Edit2, Banknote, RefreshCw,
+  TrendingUp, Edit2, Banknote, RefreshCw, MessageCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,7 @@ import {
   markPaymentOverdueAction,
   loadHistoryAction,
 } from "@/app/actions/payments";
+import { createInvoiceLink } from "@/app/actions/tenants";
 
 interface TenantRow {
   id: string;
@@ -38,6 +39,8 @@ interface RoomRow { id: string; room_number: string; floor: number | null; }
 
 interface Props {
   hostelId: string | null;
+  hostelName?: string;
+  hostelPhone?: string;
   payments: Payment[];
   tenants: TenantRow[];
   rooms: RoomRow[];
@@ -67,7 +70,7 @@ function genReceipt(tenantName: string, month: string) {
 // Maximum AC units allowed in the UI (matches DB constraint in migration 022)
 const MAX_AC_UNITS = 10_000;
 
-export function PaymentsClient({ hostelId, payments: initialPayments, tenants, rooms, initialMonth, packageConfig }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig }: Props) {
   const [selectedMonth, setSelectedMonth] = useState(initialMonth);
   const [payments, setPayments] = useState<Payment[]>(initialPayments);
   const [allHistory, setAllHistory] = useState<Payment[]>([]);
@@ -84,6 +87,7 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
   });
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [sendingWa, setSendingWa] = useState<string | null>(null); // paymentId
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
 
@@ -206,6 +210,44 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
     await syncMonth(selectedMonth);
   }
 
+  async function sendWhatsAppReceipt(p: Payment) {
+    setSendingWa(p.id);
+    try {
+      const result = await createInvoiceLink(p.id);
+      if (result.error) {
+        toast({ title: "Failed to create receipt link", description: result.error, variant: "destructive" });
+        return;
+      }
+      const token = result.token!;
+      const origin = window.location.origin;
+      const receiptUrl = `${origin}/r/${token}`;
+
+      // Normalise Pakistan phone: 03XX... -> 923XX...
+      const rawPhone = (p.tenant as unknown as { phone?: string })?.phone ?? "";
+      const normPhone = rawPhone.replace(/\D/g, "").replace(/^0/, "92");
+
+      const firstName = p.tenant?.full_name?.split(" ")[0] ?? "there";
+      const total = Number(p.amount) + Number(p.late_fee ?? 0);
+      const totalFormatted = `Rs. ${total.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+
+      const message =
+        `Assalam o Alaikum ${firstName},\n\n` +
+        `Your payment of *${totalFormatted}* for ${p.for_month} has been received.\n\n` +
+        `Download your receipt: ${receiptUrl}\n\n` +
+        `Link expires in 7 days.\n\n` +
+        `Thank you - ${hostelName}`;
+
+      const waUrl = normPhone
+        ? `https://wa.me/${normPhone}?text=${encodeURIComponent(message)}`
+        : `https://wa.me/?text=${encodeURIComponent(message)}`;
+
+      window.open(waUrl, "_blank", "noopener,noreferrer");
+      toast({ title: "WhatsApp opened", description: "Receipt link copied into the chat." });
+    } finally {
+      setSendingWa(null);
+    }
+  }
+
   const stats = useMemo(() => {
     const due = payments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
     const collected = payments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
@@ -266,6 +308,18 @@ export function PaymentsClient({ hostelId, payments: initialPayments, tenants, r
           {p.status === "pending" && (
             <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground" onClick={() => markWaived(p)}>
               <Edit2 className="w-3 h-3" />
+            </Button>
+          )}
+          {p.status === "paid" && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-[#25D366] hover:bg-[#25D366]/10"
+              title="Send WhatsApp receipt"
+              disabled={sendingWa === p.id}
+              onClick={() => sendWhatsAppReceipt(p)}
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
             </Button>
           )}
         </div>

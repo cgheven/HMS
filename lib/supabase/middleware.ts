@@ -35,7 +35,13 @@ export async function updateSession(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
   const isAuthRoute = pathname.startsWith("/login");
-  const isPublic = isAuthRoute || pathname.startsWith("/find");
+  const isPublic =
+    isAuthRoute ||
+    pathname.startsWith("/find") ||
+    pathname.startsWith("/onboarding") ||
+    pathname.startsWith("/join/") ||
+    pathname.startsWith("/r/") ||
+    pathname.startsWith("/partner/login");
 
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();
@@ -44,8 +50,9 @@ export async function updateSession(request: NextRequest) {
   }
 
   if (user && isAuthRoute) {
+    // Redirect to root — app/page.tsx resolves the correct home by role
     const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
+    url.pathname = "/";
     return NextResponse.redirect(url);
   }
 

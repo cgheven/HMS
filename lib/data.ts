@@ -16,18 +16,62 @@ export const getAuthContext = cache(async () => {
   if (!user) return null;
 
   const cookieStore = await cookies();
-  const activeHostelId = cookieStore.get("hms_active_hostel")?.value;
+  // Support both cookie names: new "hms_active_hostel" (httpOnly, set server-side)
+  // and legacy "hms_active_hostel" set client-side via document.cookie
+  const activeHostelId =
+    cookieStore.get("hms_active_hostel")?.value ?? null;
 
-  const [{ data: profile }, { data: hostelData }] = await Promise.all([
+  const [{ data: profile }, { data: hostelData }, { data: junctionData }] = await Promise.all([
     supabase.from("hms_profiles").select("*").eq("id", user.id).single(),
     supabase.from("hms_hostels").select("*").eq("owner_id", user.id).order("created_at"),
+    // Also fetch hostels via the junction table for multi-owner / partner scenarios
+    supabase
+      .from("hms_owner_hostels")
+      .select("hostel_id, is_primary")
+      .eq("owner_id", user.id),
   ]);
 
-  const hostels = (hostelData ?? []) as Hostel[];
-  const hostel =
-    (activeHostelId ? hostels.find((h) => h.id === activeHostelId) : null) ??
-    hostels[0] ??
-    null;
+  // Build the merged hostel list: direct owner_id rows + junction rows (de-duped)
+  const directHostels = (hostelData ?? []) as Hostel[];
+
+  let hostels = directHostels;
+
+  if (junctionData && junctionData.length > 0) {
+    const directIds = new Set(directHostels.map((h) => h.id));
+    const extraIds = junctionData
+      .map((r) => r.hostel_id)
+      .filter((id) => !directIds.has(id));
+
+    if (extraIds.length > 0) {
+      const { data: extraHostels } = await supabase
+        .from("hms_hostels")
+        .select("*")
+        .in("id", extraIds)
+        .order("created_at");
+      hostels = [...directHostels, ...((extraHostels ?? []) as Hostel[])];
+    }
+  }
+
+  // Resolve active hostel:
+  // 1. Cookie value (validated against owned list)
+  // 2. Primary hostel from junction table
+  // 3. First hostel in list
+  let hostel: Hostel | null = null;
+
+  if (activeHostelId) {
+    hostel = hostels.find((h) => h.id === activeHostelId) ?? null;
+  }
+
+  if (!hostel && junctionData && junctionData.length > 0) {
+    const primaryEntry = junctionData.find((r) => r.is_primary);
+    if (primaryEntry) {
+      hostel = hostels.find((h) => h.id === primaryEntry.hostel_id) ?? null;
+    }
+  }
+
+  if (!hostel) {
+    hostel = hostels[0] ?? null;
+  }
 
   return {
     supabase,

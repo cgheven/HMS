@@ -2,9 +2,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Menu, LogOut, ChevronDown, Home, Building2, Check, Shield, Users, ClipboardList } from "lucide-react";
+import { Menu, LogOut, ChevronDown, Shield, Users, Home, Building2, ClipboardList } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
+import { HostelSwitcher } from "@/components/layout/hostel-switcher";
 import type { Profile, Hostel } from "@/types";
 
 const ADMIN_LINKS = [
@@ -22,21 +23,21 @@ interface NavbarProps {
   setActiveHostel: (id: string) => void;
 }
 
-export function Navbar({ onMenuClick, profile, hostel, hostels, setActiveHostel }: NavbarProps) {
+export function Navbar({ onMenuClick, profile, hostel }: NavbarProps) {
   const router = useRouter();
   const [signingOut, setSigningOut] = useState(false);
   const [dropOpen, setDropOpen] = useState(false);
-  const [hostelDrop, setHostelDrop] = useState(false);
   const [adminDrop, setAdminDrop] = useState(false);
 
-  const initials = (profile?.full_name ?? profile?.email ?? "U")
+  // Compute display name / initials from profile; fall back gracefully
+  const displayName = profile?.full_name ?? (profile as unknown as { email?: string })?.email ?? "Owner";
+  const displayEmail = (profile as unknown as { email?: string })?.email ?? "";
+  const initials = displayName
     .split(" ")
-    .map((w) => w[0])
+    .map((w: string) => w[0])
     .join("")
     .toUpperCase()
     .slice(0, 2);
-
-  const multiHostel = hostels.length > 1;
 
   async function handleSignOut() {
     setSigningOut(true);
@@ -45,6 +46,11 @@ export function Navbar({ onMenuClick, profile, hostel, hostels, setActiveHostel 
     router.push("/login");
     router.refresh();
   }
+
+  // Detect is_admin on the profile — support both legacy (is_admin bool) and new (role) shapes
+  const isAdmin =
+    (profile as unknown as { is_admin?: boolean })?.is_admin === true ||
+    profile?.role === "super_admin";
 
   return (
     <header className="sticky top-0 z-30 flex items-center gap-3 px-4 sm:px-6 h-14 bg-sidebar/90 backdrop-blur-md border-b border-sidebar-border">
@@ -56,78 +62,11 @@ export function Navbar({ onMenuClick, profile, hostel, hostels, setActiveHostel 
         <Menu className="w-5 h-5" />
       </button>
 
-      {/* Hostel name / switcher */}
-      <div className="flex items-center gap-2 min-w-0 relative">
-        <div className="flex items-center justify-center w-6 h-6 rounded-md bg-amber/10 border border-amber/20 shrink-0">
-          {multiHostel ? (
-            <Building2 className="w-3.5 h-3.5 text-amber" />
-          ) : (
-            <Home className="w-3.5 h-3.5 text-amber" />
-          )}
-        </div>
+      {/* Hostel switcher */}
+      <HostelSwitcher activeHostel={hostel} />
 
-        {multiHostel ? (
-          <>
-            <button
-              onClick={() => setHostelDrop((p) => !p)}
-              className="flex items-center gap-1.5 font-semibold text-sm text-foreground hover:text-amber transition-colors"
-            >
-              <span className="truncate max-w-[140px]">{hostel?.name ?? "My Hostel"}</span>
-              <ChevronDown
-                className={cn(
-                  "w-3.5 h-3.5 text-muted-foreground transition-transform duration-200 shrink-0",
-                  hostelDrop && "rotate-180"
-                )}
-              />
-            </button>
-
-            {hostelDrop && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setHostelDrop(false)} />
-                <div className="absolute left-0 top-full mt-2 w-56 z-20 rounded-xl border border-sidebar-border bg-sidebar shadow-2xl overflow-hidden animate-fade-up">
-                  <div className="px-3 py-2.5 border-b border-sidebar-border">
-                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                      Switch Property
-                    </p>
-                  </div>
-                  <div className="p-1">
-                    {hostels.map((h) => (
-                      <button
-                        key={h.id}
-                        onClick={() => {
-                          setActiveHostel(h.id);
-                          setHostelDrop(false);
-                        }}
-                        className={cn(
-                          "w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm transition-colors text-left",
-                          h.id === hostel?.id
-                            ? "bg-amber/10 text-amber"
-                            : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-                        )}
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate font-medium">{h.name}</p>
-                          {h.total_capacity > 0 && (
-                            <p className="text-xs opacity-60">{h.total_capacity} capacity</p>
-                          )}
-                        </div>
-                        {h.id === hostel?.id && <Check className="w-3.5 h-3.5 shrink-0" />}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </>
-            )}
-          </>
-        ) : (
-          <span className="font-semibold text-sm truncate text-foreground">
-            {hostel?.name ?? "My Hostel"}
-          </span>
-        )}
-      </div>
-
-      {/* Admin quick-access — only visible to admins */}
-      {profile?.is_admin && (
+      {/* Admin quick-access */}
+      {isAdmin && (
         <div className="relative ml-auto">
           <button
             onClick={() => setAdminDrop((p) => !p)}
@@ -171,8 +110,8 @@ export function Navbar({ onMenuClick, profile, hostel, hostels, setActiveHostel 
         </div>
       )}
 
-      <div className={cn("flex items-center gap-2 relative", !profile?.is_admin && "ml-auto")}>
-        {/* Avatar + dropdown */}
+      {/* Avatar + dropdown */}
+      <div className={cn("flex items-center gap-2 relative", !isAdmin && "ml-auto")}>
         <button
           onClick={() => setDropOpen((p) => !p)}
           className="flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/5 transition-colors group"
@@ -181,7 +120,7 @@ export function Navbar({ onMenuClick, profile, hostel, hostels, setActiveHostel 
             {initials}
           </div>
           <span className="hidden sm:block text-sm text-muted-foreground group-hover:text-foreground transition-colors truncate max-w-[120px]">
-            {profile?.full_name ?? profile?.email ?? "Owner"}
+            {displayName}
           </span>
           <ChevronDown
             className={cn(
@@ -196,12 +135,10 @@ export function Navbar({ onMenuClick, profile, hostel, hostels, setActiveHostel 
             <div className="fixed inset-0 z-10" onClick={() => setDropOpen(false)} />
             <div className="absolute right-0 top-full mt-2 w-52 z-20 rounded-xl border border-sidebar-border bg-sidebar shadow-2xl overflow-hidden animate-fade-up">
               <div className="px-4 py-3 border-b border-sidebar-border">
-                <p className="text-xs font-medium text-foreground truncate">
-                  {profile?.full_name ?? "Owner"}
-                </p>
-                <p className="text-xs text-muted-foreground truncate mt-0.5">
-                  {profile?.email ?? ""}
-                </p>
+                <p className="text-xs font-medium text-foreground truncate">{displayName}</p>
+                {displayEmail && (
+                  <p className="text-xs text-muted-foreground truncate mt-0.5">{displayEmail}</p>
+                )}
               </div>
               <div className="p-1">
                 <button

@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useState } from "react";
-import { Building2, User, Save, Loader2, Globe, ExternalLink, Clock, Phone, RefreshCw, Utensils } from "lucide-react";
+import { useEffect, useState, useTransition } from "react";
+import { Building2, User, Save, Loader2, Globe, ExternalLink, Clock, Phone, RefreshCw, Utensils, GitBranch, Plus, Check, ArrowRightLeft, Handshake, Eye, EyeOff, Trash2, X, Pencil } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useHostelContext } from "@/contexts/hostel-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -9,7 +10,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
-import type { HostelType } from "@/types";
+import { getOwnedHostels, switchActiveHostel, createBranch, renameBranch } from "@/app/actions/branches";
+import { listPartners, createPartner, removePartner } from "@/app/actions/partners";
+import type { PartnerRow } from "@/app/actions/partners";
+import type { HostelType, Hostel } from "@/types";
 
 const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
   { value: "boys",   label: "Boys Only" },
@@ -25,7 +29,36 @@ const ALL_AMENITIES = [
 
 export function SettingsClient() {
   const { profile, hostel } = useHostelContext();
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
   const hostelId = hostel?.id ?? null;
+
+  // Branches state
+  type OwnedHostel = Hostel & { is_primary: boolean };
+  const [branches, setBranches] = useState<OwnedHostel[]>([]);
+  const [loadingBranches, setLoadingBranches] = useState(false);
+  const [switchingBranch, setSwitchingBranch] = useState<string | null>(null);
+  const [showAddBranch, setShowAddBranch] = useState(false);
+  const [newBranchName, setNewBranchName] = useState("");
+  const [newBranchCity, setNewBranchCity] = useState("");
+  const [newBranchAddress, setNewBranchAddress] = useState("");
+  const [creatingBranch, setCreatingBranch] = useState(false);
+  const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editCity, setEditCity] = useState("");
+  const [editAddress, setEditAddress] = useState("");
+  const [savingRename, setSavingRename] = useState(false);
+
+  // Partners state
+  const [partners, setPartners] = useState<PartnerRow[]>([]);
+  const [loadingPartners, setLoadingPartners] = useState(false);
+  const [showAddPartner, setShowAddPartner] = useState(false);
+  const [partnerForm, setPartnerForm] = useState({ name: "", email: "", phone: "", password: "" });
+  const [showPartnerPassword, setShowPartnerPassword] = useState(false);
+  const [creatingPartner, setCreatingPartner] = useState(false);
+  const [removingPartner, setRemovingPartner] = useState<string | null>(null);
+  // lastCreatedPartner holds credentials for WhatsApp share — cleared on dialog close
+  const [lastCreatedPartner, setLastCreatedPartner] = useState<{ name: string; email: string; password: string } | null>(null);
 
   const [hostelForm, setHostelForm] = useState({
     name: "", address: "", city: "", area: "", phone: "", email: "", total_capacity: "",
@@ -78,6 +111,129 @@ export function SettingsClient() {
     setPackageLoaded(true);
   }
 
+  async function fetchBranches() {
+    setLoadingBranches(true);
+    const { hostels: list } = await getOwnedHostels();
+    setBranches(list);
+    setLoadingBranches(false);
+  }
+
+  async function fetchPartners(id: string) {
+    setLoadingPartners(true);
+    const result = await listPartners(id);
+    if (result.error) {
+      toast({ title: "Failed to load partners", description: result.error, variant: "destructive" });
+    } else {
+      setPartners(result.partners ?? []);
+    }
+    setLoadingPartners(false);
+  }
+
+  async function handleCreatePartner(e: React.FormEvent) {
+    e.preventDefault();
+    if (!hostelId) return;
+    if (partnerForm.password.length < 8) {
+      toast({ title: "Password too short", description: "Password must be at least 8 characters.", variant: "destructive" });
+      return;
+    }
+    setCreatingPartner(true);
+    const result = await createPartner(hostelId, partnerForm);
+    setCreatingPartner(false);
+    if (result.error) {
+      toast({ title: "Failed to add partner", description: result.error, variant: "destructive" });
+      return;
+    }
+    toast({ title: "Partner added", description: `${partnerForm.name} now has access.` });
+    // Store credentials for WhatsApp share before clearing the form
+    setLastCreatedPartner({ name: partnerForm.name, email: partnerForm.email, password: partnerForm.password });
+    setPartnerForm({ name: "", email: "", phone: "", password: "" });
+    setShowAddPartner(false);
+    await fetchPartners(hostelId);
+  }
+
+  async function handleRemovePartner(partnershipId: string, partnerName: string) {
+    if (!confirm(`Remove ${partnerName} as a partner? They will lose access immediately.`)) return;
+    setRemovingPartner(partnershipId);
+    const result = await removePartner(partnershipId);
+    setRemovingPartner(null);
+    if (result.error) {
+      toast({ title: "Failed to remove partner", description: result.error, variant: "destructive" });
+      return;
+    }
+    toast({ title: "Partner removed" });
+    if (hostelId) await fetchPartners(hostelId);
+  }
+
+  function buildWhatsAppLink(partner: { name: string; email: string; password: string }) {
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const msg = `Assalam o Alaikum ${partner.name},\n\nYour partner access for *${hostel?.name ?? "the hostel"}* has been set up.\n\nLogin URL: ${origin}/partner/login\nEmail: ${partner.email}\nPassword: ${partner.password}\n\nYou can view tenants and payments for your hostel.\n\nWelcome aboard!`;
+    return `https://wa.me/?text=${encodeURIComponent(msg)}`;
+  }
+
+  async function handleSwitchBranch(branchId: string) {
+    if (branchId === hostelId) return;
+    setSwitchingBranch(branchId);
+    const result = await switchActiveHostel(branchId);
+    setSwitchingBranch(null);
+    if (result.error) {
+      toast({ title: "Could not switch branch", description: result.error, variant: "destructive" });
+      return;
+    }
+    startTransition(() => { router.refresh(); });
+  }
+
+  async function handleCreateBranch(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newBranchName.trim()) return;
+    setCreatingBranch(true);
+    const result = await createBranch({
+      name: newBranchName,
+      city: newBranchCity,
+      address: newBranchAddress,
+    });
+    setCreatingBranch(false);
+    if (result.error) {
+      toast({ title: "Failed to create branch", description: result.error, variant: "destructive" });
+      return;
+    }
+    toast({ title: "Branch created", description: `"${newBranchName}" is ready.` });
+    setNewBranchName("");
+    setNewBranchCity("");
+    setNewBranchAddress("");
+    setShowAddBranch(false);
+    await fetchBranches();
+    if (result.hostel) {
+      await handleSwitchBranch(result.hostel.id);
+    }
+  }
+
+  function startEditBranch(b: OwnedHostel) {
+    setEditingBranchId(b.id);
+    setEditName(b.name);
+    setEditCity(b.city ?? "");
+    setEditAddress(b.address ?? "");
+  }
+
+  async function handleRenameBranch(hostelId: string) {
+    if (!editName.trim()) return;
+    setSavingRename(true);
+    const result = await renameBranch({ hostelId, name: editName, city: editCity, address: editAddress });
+    setSavingRename(false);
+    if (result.error) {
+      toast({ title: "Failed to rename", description: result.error, variant: "destructive" });
+      return;
+    }
+    toast({ title: "Branch renamed", description: `"${editName}" saved.` });
+    setEditingBranchId(null);
+    await fetchBranches();
+  }
+
+
+  useEffect(() => {
+    fetchBranches();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (hostel) {
       setHostelForm({
@@ -98,6 +254,7 @@ export function SettingsClient() {
       });
       fetchWaitlist(hostel.id);
       fetchPackageConfig(hostel.id);
+      fetchPartners(hostel.id);
     }
   }, [hostel]);
 
@@ -486,6 +643,461 @@ export function SettingsClient() {
 
       <Separator />
 
+      {/* Branches */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <GitBranch className="w-4 h-4 text-muted-foreground" />
+              <CardTitle className="text-base">Branches</CardTitle>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={fetchBranches}
+                disabled={loadingBranches || isPending}
+                className="gap-1.5 h-8 text-xs"
+              >
+                <RefreshCw className={`w-3 h-3 ${loadingBranches ? "animate-spin" : ""}`} />
+                Refresh
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => setShowAddBranch((p) => !p)}
+                className="gap-1.5 h-8 text-xs bg-amber text-background hover:bg-amber/90 font-semibold"
+              >
+                <Plus className="w-3 h-3" />
+                Add Branch
+              </Button>
+            </div>
+          </div>
+          <CardDescription>
+            Manage all your hostel branches — {branches.length} {branches.length === 1 ? "branch" : "branches"} registered
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Add branch inline form */}
+          {showAddBranch && (
+            <div className="rounded-xl border border-amber/20 bg-amber/[0.04] p-4">
+              <p className="text-sm font-medium text-foreground mb-3">New Branch</p>
+              <form onSubmit={handleCreateBranch} className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label>Branch Name *</Label>
+                  <Input
+                    placeholder="Main Branch"
+                    value={newBranchName}
+                    onChange={(e) => setNewBranchName(e.target.value)}
+                    required
+                    autoFocus
+                  />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>City</Label>
+                    <Input
+                      placeholder="Karachi"
+                      value={newBranchCity}
+                      onChange={(e) => setNewBranchCity(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Address</Label>
+                    <Input
+                      placeholder="Street address"
+                      value={newBranchAddress}
+                      onChange={(e) => setNewBranchAddress(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => { setShowAddBranch(false); setNewBranchName(""); setNewBranchCity(""); setNewBranchAddress(""); }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    size="sm"
+                    disabled={creatingBranch || !newBranchName.trim()}
+                    className="gap-1.5 bg-amber text-background hover:bg-amber/90 font-semibold"
+                  >
+                    {creatingBranch ? (
+                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Creating…</>
+                    ) : (
+                      <><Plus className="w-3.5 h-3.5" /> Create</>
+                    )}
+                  </Button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* Branch list */}
+          {loadingBranches ? (
+            <div className="flex items-center justify-center py-8 text-muted-foreground gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span className="text-sm">Loading branches…</span>
+            </div>
+          ) : branches.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground">
+              <GitBranch className="w-8 h-8 opacity-20" />
+              <p className="text-sm">No branches yet</p>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-sidebar-border overflow-hidden">
+              {branches.map((b, idx) => {
+                const isActive = b.id === hostelId;
+                const isSwitching = switchingBranch === b.id;
+                const isEditing = editingBranchId === b.id;
+                return (
+                  <div
+                    key={b.id}
+                    className={`transition-colors ${idx > 0 ? "border-t border-sidebar-border" : ""} ${isActive ? "bg-amber/[0.04]" : "hover:bg-white/[0.02]"}`}
+                  >
+                    {isEditing ? (
+                      <div className="px-4 py-3 space-y-3">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Branch Name *</Label>
+                          <Input
+                            autoFocus
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") handleRenameBranch(b.id); if (e.key === "Escape") setEditingBranchId(null); }}
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">City</Label>
+                            <Input placeholder="Lahore" value={editCity} onChange={(e) => setEditCity(e.target.value)} />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">Address</Label>
+                            <Input placeholder="Street, area" value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" onClick={() => setEditingBranchId(null)}>Cancel</Button>
+                          <Button
+                            size="sm"
+                            onClick={() => handleRenameBranch(b.id)}
+                            disabled={savingRename || !editName.trim()}
+                            className="gap-1.5 bg-amber text-background hover:bg-amber/90 font-semibold"
+                          >
+                            {savingRename ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                            Save
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-3 px-4 py-3">
+                        <div className={`flex items-center justify-center w-8 h-8 rounded-lg shrink-0 ${
+                          isActive ? "bg-amber/15 border border-amber/25" : "bg-white/5 border border-white/10"
+                        }`}>
+                          <Building2 className={`w-4 h-4 ${isActive ? "text-amber" : "text-muted-foreground"}`} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className={`text-sm font-medium truncate ${isActive ? "text-amber" : "text-foreground"}`}>
+                              {b.name}
+                            </p>
+                            {b.is_primary && (
+                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber/15 text-amber border border-amber/25">
+                                Primary
+                              </span>
+                            )}
+                            {isActive && (
+                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                                <Check className="w-2.5 h-2.5" /> Active
+                              </span>
+                            )}
+                          </div>
+                          {(b.city || b.address) && (
+                            <p className="text-xs text-muted-foreground truncate mt-0.5">
+                              {[b.city, b.address].filter(Boolean).join(" · ")}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => startEditBranch(b)}
+                            className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+                            title="Rename branch"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </Button>
+                          {!isActive && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleSwitchBranch(b.id)}
+                              disabled={isSwitching || isPending}
+                              className="h-7 text-xs gap-1.5"
+                            >
+                              {isSwitching ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRightLeft className="w-3 h-3" />}
+                              Switch
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Separator />
+
+      {/* Partners */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Handshake className="w-4 h-4 text-muted-foreground" />
+              <CardTitle className="text-base">Partners</CardTitle>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => hostelId && fetchPartners(hostelId)}
+                disabled={loadingPartners}
+                className="gap-1.5 h-8 text-xs"
+              >
+                <RefreshCw className={`w-3 h-3 ${loadingPartners ? "animate-spin" : ""}`} />
+                Refresh
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => setShowAddPartner((p) => !p)}
+                className="gap-1.5 h-8 text-xs bg-amber text-background hover:bg-amber/90 font-semibold"
+              >
+                <Plus className="w-3 h-3" />
+                Add Partner
+              </Button>
+            </div>
+          </div>
+          <CardDescription>
+            Grant partners read-only access to view tenants and payments — {partners.length} {partners.length === 1 ? "partner" : "partners"} active
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+
+          {/* Last-created credential share banner */}
+          {lastCreatedPartner && (
+            <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.06] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1 min-w-0">
+                  <p className="text-sm font-semibold text-emerald-400">Partner created!</p>
+                  <p className="text-xs text-muted-foreground">
+                    Share credentials with <strong className="text-foreground">{lastCreatedPartner.name}</strong> via WhatsApp.
+                    The password is only shown once — save it now.
+                  </p>
+                  <div className="mt-2 text-xs text-muted-foreground space-y-0.5">
+                    <p>Email: <span className="text-foreground font-medium">{lastCreatedPartner.email}</span></p>
+                    <p>Password: <span className="text-foreground font-medium font-mono">{lastCreatedPartner.password}</span></p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setLastCreatedPartner(null)}
+                  className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <a
+                href={buildWhatsAppLink(lastCreatedPartner)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#25D366]/10 border border-[#25D366]/25 text-[#25D366] text-xs font-medium hover:bg-[#25D366]/15 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+                </svg>
+                Share via WhatsApp
+              </a>
+            </div>
+          )}
+
+          {/* Add partner inline form */}
+          {showAddPartner && (
+            <div className="rounded-xl border border-amber/20 bg-amber/[0.04] p-4">
+              <p className="text-sm font-medium text-foreground mb-3">New Partner</p>
+              <form onSubmit={handleCreatePartner} className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Full Name *</Label>
+                    <Input
+                      placeholder="Ahmed Khan"
+                      value={partnerForm.name}
+                      onChange={(e) => setPartnerForm({ ...partnerForm, name: e.target.value })}
+                      required
+                      autoFocus
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Phone *</Label>
+                    <Input
+                      placeholder="+92 300 0000000"
+                      value={partnerForm.phone}
+                      onChange={(e) => setPartnerForm({ ...partnerForm, phone: e.target.value })}
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Email *</Label>
+                    <Input
+                      type="email"
+                      placeholder="partner@example.com"
+                      value={partnerForm.email}
+                      onChange={(e) => setPartnerForm({ ...partnerForm, email: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Password * (min 8 chars)</Label>
+                    <div className="relative">
+                      <Input
+                        type={showPartnerPassword ? "text" : "password"}
+                        placeholder="Min 8 characters"
+                        value={partnerForm.password}
+                        onChange={(e) => setPartnerForm({ ...partnerForm, password: e.target.value })}
+                        required
+                        minLength={8}
+                        className="pr-9"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPartnerPassword((p) => !p)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                        tabIndex={-1}
+                      >
+                        {showPartnerPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground/70">
+                  The partner will get read-only access to tenants and payments.
+                  Share their credentials via WhatsApp after creation — the password will not be shown again.
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => { setShowAddPartner(false); setPartnerForm({ name: "", email: "", phone: "", password: "" }); }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    size="sm"
+                    disabled={creatingPartner || !partnerForm.name.trim() || !partnerForm.email.trim() || !partnerForm.phone.trim() || partnerForm.password.length < 8}
+                    className="gap-1.5 bg-amber text-background hover:bg-amber/90 font-semibold"
+                  >
+                    {creatingPartner ? (
+                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Creating…</>
+                    ) : (
+                      <><Plus className="w-3.5 h-3.5" /> Add Partner</>
+                    )}
+                  </Button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* Partner list */}
+          {loadingPartners ? (
+            <div className="flex items-center justify-center py-8 text-muted-foreground gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span className="text-sm">Loading partners…</span>
+            </div>
+          ) : partners.length === 0 && !showAddPartner ? (
+            <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground">
+              <Handshake className="w-8 h-8 opacity-20" />
+              <p className="text-sm">No partners yet</p>
+              <p className="text-xs">Add a partner to give them read-only access</p>
+            </div>
+          ) : partners.length > 0 ? (
+            <div className="rounded-xl border border-sidebar-border overflow-hidden">
+              {partners.map((p, idx) => (
+                <div
+                  key={p.partnership_id}
+                  className={`flex items-center gap-3 px-4 py-3 transition-colors hover:bg-white/[0.02] ${idx > 0 ? "border-t border-sidebar-border" : ""}`}
+                >
+                  {/* Avatar */}
+                  <div className="flex items-center justify-center w-9 h-9 rounded-full bg-amber/10 border border-amber/20 text-amber text-sm font-semibold shrink-0">
+                    {(p.full_name ?? p.email)[0]?.toUpperCase() ?? "P"}
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-medium text-foreground truncate">
+                        {p.full_name ?? "Unknown"}
+                      </p>
+                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                        Partner
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
+                      <p className="text-xs text-muted-foreground truncate">{p.email}</p>
+                      {p.phone && (
+                        <p className="text-xs text-muted-foreground">{p.phone}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <a
+                      href={buildWhatsAppLink({ name: p.full_name ?? "Partner", email: p.email, password: "••••••••" })}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#25D366]/10 border border-[#25D366]/25 text-[#25D366] text-xs font-medium hover:bg-[#25D366]/15 transition-colors"
+                      title="Share via WhatsApp"
+                    >
+                      <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+                      </svg>
+                      <span className="hidden sm:inline">Share</span>
+                    </a>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                      title="Remove partner"
+                      disabled={removingPartner === p.partnership_id}
+                      onClick={() => handleRemovePartner(p.partnership_id, p.full_name ?? p.email)}
+                    >
+                      {removingPartner === p.partnership_id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <Separator />
+
       {/* Profile */}
       <Card>
         <CardHeader>
@@ -496,7 +1108,7 @@ export function SettingsClient() {
           <form onSubmit={saveProfile} className="space-y-4">
             <div className="space-y-1.5">
               <Label>Email</Label>
-              <Input value={profile?.email ?? ""} disabled className="bg-muted" />
+              <Input value={(profile as unknown as { email?: string })?.email ?? ""} disabled className="bg-muted" />
               <p className="text-xs text-muted-foreground">Email cannot be changed here</p>
             </div>
             <div className="space-y-1.5">

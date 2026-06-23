@@ -1,0 +1,230 @@
+"use client";
+
+import { useState, useCallback } from "react";
+import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { formatCurrency, formatDate } from "@/lib/utils";
+import { getTenantTimeline, type TimelineEvent } from "@/app/actions/tenants";
+import { toast } from "@/hooks/use-toast";
+import type { Tenant, Room, PackageTier } from "@/types";
+
+const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
+  space_only: "Space Only",
+  space_food: "Space + Food",
+  space_food_ac: "Space + Food + AC",
+};
+
+const DEFAULT_SHOW = 12;
+
+interface Props {
+  tenant: Tenant;
+  room: Room | null;
+  open: boolean;
+  onClose: () => void;
+}
+
+function EventIcon({ type }: { type: TimelineEvent["type"] }) {
+  switch (type) {
+    case "joined":
+      return <Home className="w-4 h-4 text-emerald-400" />;
+    case "payment":
+      return <Banknote className="w-4 h-4 text-emerald-400" />;
+    case "check_out":
+      return <LogOut className="w-4 h-4 text-rose-400" />;
+    case "package_changed":
+      return <AlertCircle className="w-4 h-4 text-blue-400" />;
+    case "status_change":
+    default:
+      return <Clock className="w-4 h-4 text-amber" />;
+  }
+}
+
+function eventDotColor(type: TimelineEvent["type"]): string {
+  switch (type) {
+    case "joined":       return "bg-emerald-500 border-emerald-400";
+    case "payment":      return "bg-emerald-600 border-emerald-400";
+    case "check_out":    return "bg-rose-500 border-rose-400";
+    case "package_changed": return "bg-blue-500 border-blue-400";
+    case "status_change":
+    default:             return "bg-amber border-amber/60";
+  }
+}
+
+export function TenantTimeline({ tenant, room, open, onClose }: Props) {
+  const [events, setEvents] = useState<TimelineEvent[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  const load = useCallback(async () => {
+    if (loaded) return;
+    setLoading(true);
+    const result = await getTenantTimeline(tenant.id);
+    if (result.error) {
+      toast({ title: "Failed to load history", description: result.error, variant: "destructive" });
+    } else {
+      setEvents(result.events ?? []);
+    }
+    setLoaded(true);
+    setLoading(false);
+  }, [tenant.id, loaded]);
+
+  function handleOpenChange(o: boolean) {
+    if (o && !loaded) load();
+    if (!o) onClose();
+  }
+
+  const totalPaid = (events ?? [])
+    .filter((e) => e.type === "payment")
+    .reduce((s, e) => s + (e.amount ?? 0), 0);
+
+  const displayed = events
+    ? showAll
+      ? events
+      : events.slice(0, DEFAULT_SHOW)
+    : [];
+
+  const initials = tenant.full_name
+    .split(" ")
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Tenant History</DialogTitle>
+        </DialogHeader>
+
+        {/* Header: photo + identity */}
+        <div className="flex items-center gap-4 py-2">
+          <div className="w-16 h-16 rounded-full shrink-0 overflow-hidden border-2 border-amber/30 bg-amber/10 flex items-center justify-center">
+            {tenant.photo_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={tenant.photo_url} alt={tenant.full_name} className="w-full h-full object-cover" />
+            ) : (
+              <span className="text-xl font-bold text-amber">{initials}</span>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-base font-semibold text-foreground">{tenant.full_name}</p>
+              <Badge variant="secondary" className="text-xs capitalize">
+                {PACKAGE_TIER_LABELS[tenant.package_tier ?? "space_only"]}
+              </Badge>
+            </div>
+            {tenant.phone && <p className="text-xs text-muted-foreground mt-0.5">{tenant.phone}</p>}
+            {room && (
+              <p className="text-xs text-muted-foreground">
+                Room {room.room_number}{tenant.bed_number ? ` · Bed ${tenant.bed_number}` : ""}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Stats row */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 rounded-xl border border-sidebar-border bg-card/50 p-3">
+          {[
+            { label: "Check-in", value: tenant.check_in ? formatDate(tenant.check_in) : "—" },
+            { label: "Total Paid", value: formatCurrency(totalPaid) },
+            {
+              label: "Package",
+              value: PACKAGE_TIER_LABELS[tenant.package_tier ?? "space_only"].split(" ").slice(0, 1).join(""),
+            },
+            {
+              label: "Room",
+              value: room ? `Room ${room.room_number}` : "—",
+            },
+          ].map(({ label, value }) => (
+            <div key={label} className="text-center">
+              <p className="text-xs text-muted-foreground">{label}</p>
+              <p className="text-xs font-semibold text-foreground mt-0.5">{value}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Timeline */}
+        <div className="mt-2">
+          <p className="text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wider">Timeline</p>
+
+          {loading && (
+            <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
+              Loading history…
+            </div>
+          )}
+
+          {!loading && events !== null && events.length === 0 && (
+            <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
+              No history events yet.
+            </div>
+          )}
+
+          {!loading && displayed.length > 0 && (
+            <div className="relative">
+              {/* Vertical line */}
+              <div className="absolute left-[15px] top-0 bottom-0 w-px bg-white/10" />
+
+              <div className="space-y-4 pl-8">
+                {displayed.map((event) => (
+                  <div key={event.id} className="relative">
+                    {/* Dot */}
+                    <div
+                      className={`absolute -left-[21px] top-0.5 w-3 h-3 rounded-full border-2 flex items-center justify-center ${eventDotColor(event.type)}`}
+                    >
+                      <span className="sr-only">{event.type}</span>
+                    </div>
+
+                    <div className="flex items-start justify-between gap-2 min-w-0">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <EventIcon type={event.type} />
+                          <p className="text-sm font-medium text-foreground leading-snug">
+                            {event.label}
+                          </p>
+                        </div>
+                        {event.sub && (
+                          <p className="text-xs text-muted-foreground mt-0.5">{event.sub}</p>
+                        )}
+                        {/* Food / AC breakdown for payment events */}
+                        {event.type === "payment" && (event.foodCharge ?? 0) > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-muted-foreground">
+                            {(event.foodCharge ?? 0) > 0 && (
+                              <span>Food: {formatCurrency(event.foodCharge!)}</span>
+                            )}
+                            {(event.acCharge ?? 0) > 0 && (
+                              <span>AC: {formatCurrency(event.acCharge!)}</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
+                        {formatDate(event.date)}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Show more button */}
+          {events && events.length > DEFAULT_SHOW && !showAll && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mt-4 w-full gap-1.5 text-xs text-muted-foreground"
+              onClick={() => setShowAll(true)}
+            >
+              <ChevronDown className="w-3.5 h-3.5" />
+              Show {events.length - DEFAULT_SHOW} older event{events.length - DEFAULT_SHOW !== 1 ? "s" : ""}
+            </Button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

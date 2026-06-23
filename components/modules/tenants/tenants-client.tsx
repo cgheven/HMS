@@ -2,7 +2,8 @@
 import { useState, useMemo } from "react";
 import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
-  LogOut, Clock, UserCheck, Phone, Mail, CreditCard,
+  LogOut, Clock, UserCheck, Phone, Mail, CreditCard, History,
+  ClipboardList, CheckCircle2, XCircle, Link2, Loader2,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -15,7 +16,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize } from "@/lib/utils";
-import type { Tenant, Room, SpaceType, PackageTier } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus } from "@/types";
+import { PhotoPicker } from "./photo-picker";
+import { TenantTimeline } from "./tenant-timeline";
+import { updateApplicationStatus, convertToTenant } from "@/app/actions/applications";
 
 interface Props {
   hostelId: string | null;
@@ -23,6 +27,8 @@ interface Props {
   waiting: Tenant[];
   checkedOut: Tenant[];
   rooms: Room[];
+  applications?: TenantApplication[];
+  hostelSlug?: string | null;
 }
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
@@ -41,13 +47,15 @@ const emptyForm = {
   monthly_rent: "", daily_rate: "", check_out: "", security_deposit: "0",
   emergency_contact: "", emergency_phone: "", notes: "",
   is_waiting: false,
+  photo_url: "" as string,
 };
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug }: Props) {
   const [active, setActive] = useState(initialActive);
   const [waiting, setWaiting] = useState(initialWaiting);
   const [checkedOut, setCheckedOut] = useState(initialCheckedOut);
   const [rooms, setRooms] = useState(initialRooms);
+  const [applications, setApplications] = useState<TenantApplication[]>(initialApplications);
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("active");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -58,6 +66,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null);
+  const [timelineTenant, setTimelineTenant] = useState<Tenant | null>(null);
+  const [convertAppId, setConvertAppId] = useState<string | null>(null);
+  const [appActionLoading, setAppActionLoading] = useState<string | null>(null);
 
   // Rooms with remaining capacity
   const availableRooms = useMemo(
@@ -77,6 +88,53 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setWaiting(all.filter((t) => t.is_waiting));
     setCheckedOut(all.filter((t) => !t.is_active && !t.is_waiting));
     setRooms((rms ?? []) as Room[]);
+  }
+
+  async function reloadApplications() {
+    if (!hostelId) return;
+    const supabase = createClient();
+    const { data } = await supabase
+      .from("hms_tenant_applications")
+      .select("*")
+      .eq("hostel_id", hostelId)
+      .order("applied_at", { ascending: false });
+    setApplications((data ?? []) as TenantApplication[]);
+  }
+
+  async function handleRejectApp(appId: string) {
+    setAppActionLoading(appId);
+    const result = await updateApplicationStatus(appId, "rejected");
+    if (result.success) {
+      toast({ title: "Application rejected" });
+      await reloadApplications();
+    } else {
+      toast({ title: "Error", description: result.error, variant: "destructive" });
+    }
+    setAppActionLoading(null);
+  }
+
+  async function handleConvertApp(appId: string) {
+    setAppActionLoading(appId);
+    const result = await convertToTenant(appId);
+    if (result.success) {
+      toast({ title: "Added to waiting list", description: "Tenant created from application." });
+      await Promise.all([reload(), reloadApplications()]);
+    } else {
+      toast({ title: "Error", description: result.error, variant: "destructive" });
+    }
+    setAppActionLoading(null);
+    setConvertAppId(null);
+  }
+
+  function copyJoinLink() {
+    if (!hostelSlug) {
+      toast({ title: "No slug set", description: "Enable listing in Settings to get a shareable link.", variant: "destructive" });
+      return;
+    }
+    const url = `${window.location.origin}/join/${hostelSlug}`;
+    navigator.clipboard.writeText(url).then(() => {
+      toast({ title: "Link copied!", description: url });
+    });
   }
 
   function openAdd() {
@@ -106,6 +164,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       emergency_phone: t.emergency_phone ?? "",
       notes: t.notes ?? "",
       is_waiting: t.is_waiting,
+      photo_url: t.photo_url ?? "",
     });
     setDialogOpen(true);
   }
@@ -137,6 +196,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       notes: form.notes || null,
       is_waiting: form.is_waiting,
       is_active: !form.is_waiting,
+      photo_url: form.photo_url || null,
     };
 
     const prevRoomId = editing?.room_id;
@@ -248,10 +308,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
   function TenantRow({ t, showCheckout = false }: { t: Tenant; showCheckout?: boolean }) {
     const room = t.room_id ? roomMap[t.room_id] : null;
+    const initials = t.full_name[0].toUpperCase();
     return (
       <div className="flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5">
-        <div className="flex items-center justify-center w-9 h-9 rounded-full bg-amber/10 border border-amber/20 text-amber text-sm font-semibold shrink-0">
-          {t.full_name[0].toUpperCase()}
+        {/* Photo avatar */}
+        <div className="w-9 h-9 rounded-full shrink-0 overflow-hidden border border-amber/20 bg-amber/10 flex items-center justify-center">
+          {t.photo_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={t.photo_url} alt={t.full_name} className="w-full h-full object-cover" />
+          ) : (
+            <span className="text-sm font-semibold text-amber">{initials}</span>
+          )}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -280,6 +347,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               <LogOut className="w-3 h-3" /> Check Out
             </Button>
           )}
+          <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" title="History" onClick={() => setTimelineTenant(t)}>
+            <History className="w-3.5 h-3.5" />
+          </Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(t)}><Edit2 className="w-3.5 h-3.5" /></Button>
           <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteTenant(t)}><Trash2 className="w-3.5 h-3.5" /></Button>
         </div>
@@ -295,9 +365,19 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           <h1 className="text-3xl font-serif font-normal tracking-tight">Tenants</h1>
           <p className="text-muted-foreground text-sm mt-1">Manage hostel residents</p>
         </div>
-        <Button onClick={openAdd} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold w-full sm:w-auto">
-          <Plus className="w-4 h-4" /> Add Tenant
-        </Button>
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+          <Button
+            variant="outline"
+            onClick={copyJoinLink}
+            className="gap-2 h-9 text-sm flex-1 sm:flex-none"
+            title={hostelSlug ? `Copy /join/${hostelSlug}` : "Enable listing to get a join link"}
+          >
+            <Link2 className="w-4 h-4" /> Share Form Link
+          </Button>
+          <Button onClick={openAdd} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold flex-1 sm:flex-none">
+            <Plus className="w-4 h-4" /> Add Tenant
+          </Button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -333,6 +413,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           <TabsTrigger value="active"><UserCheck className="w-3.5 h-3.5" /> Active ({active.length})</TabsTrigger>
           <TabsTrigger value="waiting"><Clock className="w-3.5 h-3.5" /> Waiting ({waiting.length})</TabsTrigger>
           <TabsTrigger value="checkedout"><Users className="w-3.5 h-3.5" /> Checked Out ({checkedOut.length})</TabsTrigger>
+          <TabsTrigger value="applications" className="relative">
+            <ClipboardList className="w-3.5 h-3.5" /> Applications
+            {applications.filter((a) => a.status === "pending").length > 0 && (
+              <span className="ml-1.5 inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber text-background text-[10px] font-bold leading-none">
+                {applications.filter((a) => a.status === "pending").length}
+              </span>
+            )}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="active">
@@ -379,13 +467,130 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             )}
           </div>
         </TabsContent>
+
+        <TabsContent value="applications">
+          <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
+            {applications.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground">
+                <ClipboardList className="w-10 h-10 opacity-20" />
+                <p className="text-sm">No applications yet</p>
+                {hostelSlug && (
+                  <p className="text-xs">Share your join form: <span className="text-amber font-mono">/join/{hostelSlug}</span></p>
+                )}
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-sidebar-border bg-white/[0.02]">
+                      <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Applicant</th>
+                      <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden sm:table-cell">Package</th>
+                      <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">Room Pref</th>
+                      <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden lg:table-cell">Applied</th>
+                      <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Status</th>
+                      <th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-sidebar-border/50">
+                    {applications.map((app) => {
+                      const isLoading = appActionLoading === app.id;
+                      const statusColors: Record<ApplicationStatus, string> = {
+                        pending: "text-amber bg-amber/10 border-amber/20",
+                        approved: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20",
+                        rejected: "text-rose-400 bg-rose-500/10 border-rose-500/20",
+                      };
+                      const pkgLabels: Record<string, string> = {
+                        space_only: "Space Only",
+                        space_food: "Space + Food",
+                        space_food_ac: "Space + Food + AC",
+                      };
+                      return (
+                        <tr key={app.id} className="hover:bg-white/[0.02] transition-colors">
+                          <td className="px-4 py-3">
+                            <div>
+                              <p className="font-medium text-foreground">{app.full_name}</p>
+                              <div className="flex flex-wrap gap-x-2 gap-y-0.5 mt-0.5">
+                                {app.phone && (
+                                  <a
+                                    href={`https://wa.me/${app.phone.replace(/\D/g, "").replace(/^0/, "92")}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs text-[#25D366] hover:underline flex items-center gap-1"
+                                  >
+                                    <Phone className="w-2.5 h-2.5" /> {app.phone}
+                                  </a>
+                                )}
+                                {app.email && <span className="text-xs text-muted-foreground">{app.email}</span>}
+                              </div>
+                              {app.notes && <p className="text-xs text-muted-foreground mt-0.5 italic line-clamp-1">{app.notes}</p>}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 hidden sm:table-cell">
+                            <span className="text-xs text-muted-foreground">{pkgLabels[app.package_tier] ?? app.package_tier}</span>
+                          </td>
+                          <td className="px-4 py-3 hidden md:table-cell">
+                            <span className="text-xs text-muted-foreground capitalize">{app.room_preference ?? "—"}</span>
+                          </td>
+                          <td className="px-4 py-3 hidden lg:table-cell">
+                            <span className="text-xs text-muted-foreground">
+                              {new Date(app.applied_at).toLocaleDateString()}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border capitalize ${statusColors[app.status]}`}>
+                              {app.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            {app.status === "pending" && (
+                              <div className="flex items-center justify-end gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={isLoading}
+                                  onClick={() => setConvertAppId(app.id)}
+                                  className="h-7 text-xs gap-1 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20"
+                                >
+                                  {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                                  Approve
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  disabled={isLoading}
+                                  onClick={() => handleRejectApp(app.id)}
+                                  className="h-7 w-7 text-rose-400 hover:bg-rose-500/10"
+                                  title="Reject application"
+                                >
+                                  {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <XCircle className="w-3 h-3" />}
+                                </Button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </TabsContent>
       </Tabs>
+
+      <ConfirmDialog
+        open={!!convertAppId}
+        title="Approve Application?"
+        description="This will add the applicant to your waiting list as a new tenant. You can then assign them a room."
+        onConfirm={() => convertAppId && handleConvertApp(convertAppId)}
+        onCancel={() => setConvertAppId(null)}
+      />
 
       <ConfirmDialog
         open={!!deleteTenant}
         title={`Delete ${deleteTenant?.full_name ?? "tenant"}?`}
         description="This tenant and all associated payment records will be permanently deleted."
-        onConfirm={() => { handleDelete(deleteTenant!); setDeleteTenant(null); }}
+        onConfirm={() => { if (deleteTenant) { handleDelete(deleteTenant); setDeleteTenant(null); } }}
         onCancel={() => setDeleteTenant(null)}
       />
 
@@ -409,6 +614,19 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.is_waiting ? "bg-amber/10 border-amber/30 text-amber" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}>
                   Waiting List
                 </button>
+              </div>
+            )}
+
+            {/* Photo picker */}
+            {hostelId && (
+              <div className="space-y-1.5">
+                <Label>Photo</Label>
+                <PhotoPicker
+                  value={form.photo_url || null}
+                  onChange={(url) => setForm({ ...form, photo_url: url })}
+                  hostelId={hostelId}
+                  initials={form.full_name ? form.full_name.trim().charAt(0) : "?"}
+                />
               </div>
             )}
 
@@ -546,6 +764,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Tenant Timeline / History Dialog */}
+      {timelineTenant && (
+        <TenantTimeline
+          tenant={timelineTenant}
+          room={timelineTenant.room_id ? (roomMap[timelineTenant.room_id] ?? null) : null}
+          open={!!timelineTenant}
+          onClose={() => setTimelineTenant(null)}
+        />
+      )}
     </div>
   );
 }
