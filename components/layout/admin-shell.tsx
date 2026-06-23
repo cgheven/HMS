@@ -49,14 +49,14 @@ function AdminSidebar({
         )}
       >
         {/* Brand */}
-        <div className="flex items-center justify-between px-4 py-5 border-b border-sidebar-border">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-amber/10 border border-amber/20 flex items-center justify-center">
-              <Shield className="w-4.5 h-4.5 text-amber" />
+        <div className="flex items-center justify-between px-4 h-14 border-b border-sidebar-border">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-amber/10 border border-amber/20 flex items-center justify-center">
+              <Shield className="w-4 h-4 text-amber" />
             </div>
             <div>
-              <p className="text-sm font-bold text-foreground leading-none">Admin Panel</p>
-              <p className="text-xs text-muted-foreground mt-0.5">HMS</p>
+              <p className="text-sm font-bold text-foreground leading-none">Pulse</p>
+              <p className="text-amber/70 text-[10px] mt-0.5 font-semibold tracking-[0.15em] uppercase">Pulse of Your Business</p>
             </div>
           </div>
           <button
@@ -68,8 +68,8 @@ function AdminSidebar({
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 py-4 px-3 overflow-y-auto">
-          <p className="text-xs font-semibold text-muted-foreground/50 uppercase tracking-widest px-3 mb-2">
+        <nav className="flex-1 py-3 px-2.5 overflow-y-auto">
+          <p className="text-[10px] font-bold text-muted-foreground/70 uppercase tracking-widest px-3 mb-1 mt-1">
             Management
           </p>
           <div className="space-y-0.5">
@@ -81,7 +81,7 @@ function AdminSidebar({
                   href={href}
                   onClick={onClose}
                   className={cn(
-                    "relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all group",
+                    "relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 group",
                     active
                       ? "bg-amber/10 text-amber"
                       : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
@@ -106,7 +106,7 @@ function AdminSidebar({
         </nav>
 
         {/* Footer */}
-        <div className="px-3 py-4 border-t border-sidebar-border space-y-0.5">
+        <div className="px-3 py-3 border-t border-sidebar-border space-y-0.5">
           <Link
             href="/dashboard"
             className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"

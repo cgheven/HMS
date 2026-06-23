@@ -47,7 +47,7 @@ export function Navbar({ onMenuClick, profile, hostel, hostels, setActiveHostel 
   }
 
   return (
-    <header className="sticky top-0 z-30 flex items-center gap-3 px-4 sm:px-6 h-16 bg-sidebar/80 backdrop-blur-md border-b border-sidebar-border">
+    <header className="sticky top-0 z-30 flex items-center gap-3 px-4 sm:px-6 h-14 bg-sidebar/90 backdrop-blur-md border-b border-sidebar-border">
       {/* Mobile hamburger */}
       <button
         onClick={onMenuClick}
@@ -171,7 +171,7 @@ export function Navbar({ onMenuClick, profile, hostel, hostels, setActiveHostel 
         </div>
       )}
 
-      <div className="flex items-center gap-2 relative">
+      <div className={cn("flex items-center gap-2 relative", !profile?.is_admin && "ml-auto")}>
         {/* Avatar + dropdown */}
         <button
           onClick={() => setDropOpen((p) => !p)}
