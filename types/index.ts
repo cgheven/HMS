@@ -14,6 +14,7 @@ export type HostelType = "boys" | "girls" | "mixed" | "family";
 export type EmployeeStatus = "active" | "inactive";
 export type SalaryStatus = "pending" | "paid";
 export type ProspectStatus = "pending" | "visited" | "onboarded";
+export type PackageTier = "space_only" | "space_food" | "space_food_ac";
 
 export interface Profile {
   id: string;
@@ -97,6 +98,7 @@ export interface Tenant {
   check_in: string;
   check_out: string | null;
   billing_type: "monthly" | "daily";
+  package_tier: PackageTier;
   monthly_rent: number;
   daily_rate: number;
   security_deposit: number;
@@ -121,6 +123,10 @@ export interface Payment {
   status: PaymentStatus;
   receipt_number: string | null;
   notes: string | null;
+  food_charge?: number;
+  ac_units_consumed?: number;
+  ac_charge?: number;
+  payment_package_tier?: PackageTier | null;
   created_at: string;
   updated_at: string;
   tenant?: { full_name: string; room_id: string | null } | null;
@@ -306,6 +312,15 @@ export interface AuditLog {
   entity_id: string | null;
   meta: Record<string, unknown> | null;
   created_at: string;
+}
+
+export interface PackageConfig {
+  id: string;
+  hostel_id: string;
+  food_monthly_rate: number;
+  ac_per_unit_rate: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface LoginLog {

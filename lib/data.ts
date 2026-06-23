@@ -5,7 +5,7 @@ import { getMonthRange, formatDateInput } from "@/lib/utils";
 import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
-  Employee, SalaryPayment,
+  Employee, SalaryPayment, PackageConfig, PackageTier,
 } from "@/types";
 
 // React cache() deduplicates within the same server request.
@@ -366,5 +366,209 @@ export async function getEmployeesData() {
     hostelId,
     employees: (employees ?? []) as Employee[],
     salaryPayments: (salaryPayments ?? []) as SalaryPayment[],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Package config (hms_package_configs)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the package config for a given hostel.
+ * Returns null gracefully when no config row exists yet.
+ */
+export async function getPackageConfig(hostelId: string): Promise<PackageConfig | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("hms_package_configs")
+    .select("*")
+    .eq("hostel_id", hostelId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[getPackageConfig]", error.message);
+    return null;
+  }
+  return (data as PackageConfig) ?? null;
+}
+
+/**
+ * Create or update the package config rates for a hostel.
+ * Uses ON CONFLICT (hostel_id) DO UPDATE so a single row is maintained per hostel.
+ */
+export async function upsertPackageConfig(
+  hostelId: string,
+  data: { food_monthly_rate: number; ac_per_unit_rate: number }
+): Promise<PackageConfig> {
+  const supabase = await createClient();
+  const { data: row, error } = await supabase
+    .from("hms_package_configs")
+    .upsert(
+      {
+        hostel_id: hostelId,
+        food_monthly_rate: data.food_monthly_rate,
+        ac_per_unit_rate: data.ac_per_unit_rate,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "hostel_id" }
+    )
+    .select("*")
+    .single();
+
+  if (error) throw new Error(error.message);
+  return row as PackageConfig;
+}
+
+// ---------------------------------------------------------------------------
+// Payment helpers
+// ---------------------------------------------------------------------------
+
+export interface CreatePaymentInput {
+  hostel_id: string;
+  tenant_id: string;
+  for_month: string;
+  /** Base rent (monthly or pro-rated daily amount) before add-ons */
+  base_rent: number;
+  late_fee?: number;
+  status?: "pending" | "paid" | "overdue" | "waived";
+  payment_method?: string | null;
+  payment_date?: string | null;
+  receipt_number?: string | null;
+  notes?: string | null;
+  // Package-tier add-ons (all optional; omit for space_only tenants)
+  food_charge?: number;
+  ac_units_consumed?: number;
+  ac_charge?: number;
+  payment_package_tier?: PackageTier;
+}
+
+/**
+ * Insert a new payment record with optional package-tier charges.
+ * The persisted `amount` = base_rent + food_charge + ac_charge so the DB
+ * always stores the full billable amount.
+ */
+export async function createPaymentWithCharges(input: CreatePaymentInput): Promise<Payment> {
+  const supabase = await createClient();
+
+  const foodCharge = input.food_charge ?? 0;
+  const acCharge = input.ac_charge ?? 0;
+  const totalAmount = input.base_rent + foodCharge + acCharge;
+
+  const payload: Record<string, unknown> = {
+    hostel_id: input.hostel_id,
+    tenant_id: input.tenant_id,
+    for_month: input.for_month,
+    amount: totalAmount,
+    late_fee: input.late_fee ?? 0,
+    status: input.status ?? "pending",
+    payment_method: input.payment_method ?? null,
+    payment_date: input.payment_date ?? null,
+    receipt_number: input.receipt_number ?? null,
+    notes: input.notes ?? null,
+  };
+
+  // Only write add-on columns when a package tier is supplied
+  if (input.payment_package_tier) {
+    payload.payment_package_tier = input.payment_package_tier;
+    payload.food_charge = foodCharge;
+    payload.ac_units_consumed = input.ac_units_consumed ?? null;
+    payload.ac_charge = acCharge;
+  }
+
+  const { data, error } = await supabase
+    .from("hms_payments")
+    .insert(payload)
+    .select("*, tenant:hms_tenants(full_name, room_id)")
+    .single();
+
+  if (error) throw new Error(error.message);
+  return data as Payment;
+}
+
+/**
+ * Update an existing payment's package-tier charge fields and recalculate
+ * the stored `amount` as base_rent + food_charge + ac_charge.
+ */
+export async function updatePaymentCharges(
+  paymentId: string,
+  update: {
+    base_rent: number;
+    food_charge?: number;
+    ac_units_consumed?: number;
+    ac_charge?: number;
+    payment_package_tier?: PackageTier;
+    late_fee?: number;
+    status?: "pending" | "paid" | "overdue" | "waived";
+    payment_method?: string | null;
+    payment_date?: string | null;
+    receipt_number?: string | null;
+    notes?: string | null;
+  }
+): Promise<Payment> {
+  const supabase = await createClient();
+
+  const foodCharge = update.food_charge ?? 0;
+  const acCharge = update.ac_charge ?? 0;
+  const totalAmount = update.base_rent + foodCharge + acCharge;
+
+  const payload: Record<string, unknown> = {
+    amount: totalAmount,
+    late_fee: update.late_fee ?? 0,
+  };
+
+  if (update.status !== undefined) payload.status = update.status;
+  if (update.payment_method !== undefined) payload.payment_method = update.payment_method;
+  if (update.payment_date !== undefined) payload.payment_date = update.payment_date;
+  if (update.receipt_number !== undefined) payload.receipt_number = update.receipt_number;
+  if (update.notes !== undefined) payload.notes = update.notes;
+  if (update.payment_package_tier) {
+    payload.payment_package_tier = update.payment_package_tier;
+    payload.food_charge = foodCharge;
+    payload.ac_units_consumed = update.ac_units_consumed ?? null;
+    payload.ac_charge = acCharge;
+  }
+
+  const { data, error } = await supabase
+    .from("hms_payments")
+    .update(payload)
+    .eq("id", paymentId)
+    .select("*, tenant:hms_tenants(full_name, room_id)")
+    .single();
+
+  if (error) throw new Error(error.message);
+  return data as Payment;
+}
+
+// ---------------------------------------------------------------------------
+// Payments page data (extended to include package config)
+// ---------------------------------------------------------------------------
+
+export async function getPaymentsPageData(forMonth: string) {
+  const ctx = await getAuthContext();
+  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null };
+  const { supabase, hostelId } = ctx;
+
+  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig] = await Promise.all([
+    supabase.from("hms_payments")
+      .select("*, tenant:hms_tenants(full_name, room_id)")
+      .eq("hostel_id", hostelId)
+      .eq("for_month", forMonth)
+      .order("created_at", { ascending: false }),
+    supabase.from("hms_tenants")
+      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier")
+      .eq("hostel_id", hostelId)
+      .eq("is_active", true),
+    supabase.from("hms_rooms")
+      .select("id, room_number, floor")
+      .eq("hostel_id", hostelId),
+    getPackageConfig(hostelId),
+  ]);
+
+  return {
+    hostelId,
+    payments: (payments ?? []) as Payment[],
+    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active"> & { package_tier: PackageTier })[],
+    rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor">[],
+    packageConfig,
   };
 }

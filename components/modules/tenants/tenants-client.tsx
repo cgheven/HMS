@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize } from "@/lib/utils";
-import type { Tenant, Room, SpaceType } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier } from "@/types";
 
 interface Props {
   hostelId: string | null;
@@ -25,9 +25,16 @@ interface Props {
   rooms: Room[];
 }
 
+const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
+  space_only: "Space Only",
+  space_food: "Space + Food",
+  space_food_ac: "Space + Food + AC",
+};
+
 const emptyForm = {
   full_name: "", phone: "", email: "", cnic: "",
   type: "general" as SpaceType,
+  package_tier: "space_only" as PackageTier,
   room_id: "", bed_number: "",
   check_in: formatDateInput(new Date()),
   billing_type: "monthly" as "monthly" | "daily",
@@ -86,6 +93,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       email: t.email ?? "",
       cnic: t.cnic ?? "",
       type: t.type,
+      package_tier: t.package_tier ?? "space_only",
       room_id: t.room_id ?? "",
       bed_number: t.bed_number ?? "",
       check_in: t.check_in,
@@ -115,6 +123,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       email: form.email || null,
       cnic: form.cnic || null,
       type: form.type,
+      package_tier: form.package_tier,
       room_id: form.is_waiting || !form.room_id ? null : form.room_id,
       bed_number: form.bed_number || null,
       check_in: form.is_waiting ? formatDateInput(new Date()) : form.check_in,
@@ -415,6 +424,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     <SelectItem value="student">Student</SelectItem>
                     <SelectItem value="professional">Professional</SelectItem>
                     <SelectItem value="general">General</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5 sm:col-span-2"><Label>Package Tier</Label>
+                <Select value={form.package_tier} onValueChange={(v) => setForm({ ...form, package_tier: v as PackageTier })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {(Object.entries(PACKAGE_TIER_LABELS) as [PackageTier, string][]).map(([k, label]) => (
+                      <SelectItem key={k} value={k}>{label}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

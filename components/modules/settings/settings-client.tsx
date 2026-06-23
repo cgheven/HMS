@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Building2, User, Save, Loader2, Globe, ExternalLink, Clock, Phone, RefreshCw } from "lucide-react";
+import { Building2, User, Save, Loader2, Globe, ExternalLink, Clock, Phone, RefreshCw, Utensils } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useHostelContext } from "@/contexts/hostel-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -42,6 +42,10 @@ export function SettingsClient() {
   const [savingListing, setSavingListing] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
 
+  const [packageForm, setPackageForm] = useState({ food_monthly_rate: "", ac_per_unit_rate: "" });
+  const [savingPackage, setSavingPackage] = useState(false);
+  const [packageLoaded, setPackageLoaded] = useState(false);
+
   type WaitlistEntry = { id: string; name: string; phone: string; created_at: string };
   const [waitlist, setWaitlist]           = useState<WaitlistEntry[]>([]);
   const [loadingWaitlist, setLoadingWaitlist] = useState(false);
@@ -56,6 +60,22 @@ export function SettingsClient() {
       .order("created_at", { ascending: false });
     setWaitlist((data ?? []) as WaitlistEntry[]);
     setLoadingWaitlist(false);
+  }
+
+  async function fetchPackageConfig(id: string) {
+    const supabase = createClient();
+    const { data } = await supabase
+      .from("hms_package_configs")
+      .select("food_monthly_rate, ac_per_unit_rate")
+      .eq("hostel_id", id)
+      .maybeSingle();
+    if (data) {
+      setPackageForm({
+        food_monthly_rate: data.food_monthly_rate?.toString() ?? "0",
+        ac_per_unit_rate: data.ac_per_unit_rate?.toString() ?? "0",
+      });
+    }
+    setPackageLoaded(true);
   }
 
   useEffect(() => {
@@ -77,6 +97,7 @@ export function SettingsClient() {
         amenities: hostel.amenities ?? [],
       });
       fetchWaitlist(hostel.id);
+      fetchPackageConfig(hostel.id);
     }
   }, [hostel]);
 
@@ -134,6 +155,27 @@ export function SettingsClient() {
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
     else toast({ title: "Profile updated" });
     setSavingProfile(false);
+  }
+
+  async function savePackageConfig(e: React.FormEvent) {
+    e.preventDefault();
+    if (!hostelId) return;
+    setSavingPackage(true);
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("hms_package_configs")
+      .upsert(
+        {
+          hostel_id: hostelId,
+          food_monthly_rate: parseFloat(packageForm.food_monthly_rate) || 0,
+          ac_per_unit_rate: parseFloat(packageForm.ac_per_unit_rate) || 0,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "hostel_id" }
+      );
+    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
+    else toast({ title: "Package pricing saved" });
+    setSavingPackage(false);
   }
 
   function toggleAmenity(a: string) {
@@ -388,6 +430,57 @@ export function SettingsClient() {
               </table>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Separator />
+
+      {/* Package Pricing */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Utensils className="w-4 h-4 text-muted-foreground" />
+            <CardTitle className="text-base">Package Pricing</CardTitle>
+          </div>
+          <CardDescription>
+            Set monthly rates used when calculating tenant charges for Space + Food and Space + Food + AC packages.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={savePackageConfig} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Food Monthly Rate (Rs.)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="0"
+                  value={packageForm.food_monthly_rate}
+                  onChange={(e) => setPackageForm({ ...packageForm, food_monthly_rate: e.target.value })}
+                  disabled={!packageLoaded}
+                />
+                <p className="text-xs text-muted-foreground">Charged per tenant per month on food-inclusive packages</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label>AC Per-Unit Rate (Rs./unit)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0"
+                  value={packageForm.ac_per_unit_rate}
+                  onChange={(e) => setPackageForm({ ...packageForm, ac_per_unit_rate: e.target.value })}
+                  disabled={!packageLoaded}
+                />
+                <p className="text-xs text-muted-foreground">Multiplied by kWh consumed when marking AC-tier payments</p>
+              </div>
+            </div>
+            <Button type="submit" disabled={savingPackage || !packageLoaded} className="gap-2">
+              {savingPackage ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              Save Package Pricing
+            </Button>
+          </form>
         </CardContent>
       </Card>
 
