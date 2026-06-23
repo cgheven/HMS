@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
-import { getOwnedHostels, switchActiveHostel, createBranch, renameBranch } from "@/app/actions/branches";
+import { getOwnedHostels, switchActiveHostel, renameBranch } from "@/app/actions/branches";
 import { listPartners, createPartner, removePartner } from "@/app/actions/partners";
 import type { PartnerRow } from "@/app/actions/partners";
 import type { HostelType, Hostel } from "@/types";
@@ -38,11 +38,6 @@ export function SettingsClient() {
   const [branches, setBranches] = useState<OwnedHostel[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [switchingBranch, setSwitchingBranch] = useState<string | null>(null);
-  const [showAddBranch, setShowAddBranch] = useState(false);
-  const [newBranchName, setNewBranchName] = useState("");
-  const [newBranchCity, setNewBranchCity] = useState("");
-  const [newBranchAddress, setNewBranchAddress] = useState("");
-  const [creatingBranch, setCreatingBranch] = useState(false);
   const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editCity, setEditCity] = useState("");
@@ -180,31 +175,6 @@ export function SettingsClient() {
       return;
     }
     startTransition(() => { router.refresh(); });
-  }
-
-  async function handleCreateBranch(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newBranchName.trim()) return;
-    setCreatingBranch(true);
-    const result = await createBranch({
-      name: newBranchName,
-      city: newBranchCity,
-      address: newBranchAddress,
-    });
-    setCreatingBranch(false);
-    if (result.error) {
-      toast({ title: "Failed to create branch", description: result.error, variant: "destructive" });
-      return;
-    }
-    toast({ title: "Branch created", description: `"${newBranchName}" is ready.` });
-    setNewBranchName("");
-    setNewBranchCity("");
-    setNewBranchAddress("");
-    setShowAddBranch(false);
-    await fetchBranches();
-    if (result.hostel) {
-      await handleSwitchBranch(result.hostel.id);
-    }
   }
 
   function startEditBranch(b: OwnedHostel) {
@@ -651,91 +621,22 @@ export function SettingsClient() {
               <GitBranch className="w-4 h-4 text-muted-foreground" />
               <CardTitle className="text-base">Branches</CardTitle>
             </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={fetchBranches}
-                disabled={loadingBranches || isPending}
-                className="gap-1.5 h-8 text-xs"
-              >
-                <RefreshCw className={`w-3 h-3 ${loadingBranches ? "animate-spin" : ""}`} />
-                Refresh
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => setShowAddBranch((p) => !p)}
-                className="gap-1.5 h-8 text-xs bg-amber text-background hover:bg-amber/90 font-semibold"
-              >
-                <Plus className="w-3 h-3" />
-                Add Branch
-              </Button>
-            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={fetchBranches}
+              disabled={loadingBranches || isPending}
+              className="gap-1.5 h-8 text-xs"
+            >
+              <RefreshCw className={`w-3 h-3 ${loadingBranches ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
           </div>
           <CardDescription>
             Manage all your hostel branches — {branches.length} {branches.length === 1 ? "branch" : "branches"} registered
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Add branch inline form */}
-          {showAddBranch && (
-            <div className="rounded-xl border border-amber/20 bg-amber/[0.04] p-4">
-              <p className="text-sm font-medium text-foreground mb-3">New Branch</p>
-              <form onSubmit={handleCreateBranch} className="space-y-3">
-                <div className="space-y-1.5">
-                  <Label>Branch Name *</Label>
-                  <Input
-                    placeholder="Main Branch"
-                    value={newBranchName}
-                    onChange={(e) => setNewBranchName(e.target.value)}
-                    required
-                    autoFocus
-                  />
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label>City</Label>
-                    <Input
-                      placeholder="Karachi"
-                      value={newBranchCity}
-                      onChange={(e) => setNewBranchCity(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Address</Label>
-                    <Input
-                      placeholder="Street address"
-                      value={newBranchAddress}
-                      onChange={(e) => setNewBranchAddress(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => { setShowAddBranch(false); setNewBranchName(""); setNewBranchCity(""); setNewBranchAddress(""); }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    type="submit"
-                    size="sm"
-                    disabled={creatingBranch || !newBranchName.trim()}
-                    className="gap-1.5 bg-amber text-background hover:bg-amber/90 font-semibold"
-                  >
-                    {creatingBranch ? (
-                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Creating…</>
-                    ) : (
-                      <><Plus className="w-3.5 h-3.5" /> Create</>
-                    )}
-                  </Button>
-                </div>
-              </form>
-            </div>
-          )}
-
           {/* Branch list */}
           {loadingBranches ? (
             <div className="flex items-center justify-center py-8 text-muted-foreground gap-2">
