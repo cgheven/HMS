@@ -125,6 +125,32 @@ export function DashboardClient({ data }: Props) {
         </div>
       </div>
 
+      {/* ── Quick Stats ─── moved to row 2 for visibility ──── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {[
+          { label: "Active Tenants", value: String(stats.total_tenants),          icon: Users,        color: "text-blue-400",   iconBg: "bg-blue-500/10 border-blue-500/20",   hover: "hover:border-blue-500/30",   delay: 150 },
+          { label: "Kitchen Costs",  value: formatCurrency(stats.monthly_kitchen), icon: ChefHat,      color: "text-amber",       iconBg: "bg-amber/10 border-amber/20",          hover: "hover:border-amber/30",       delay: 225 },
+          { label: "Staff Salaries", value: formatCurrency(stats.monthly_salaries),icon: UserCog,      color: "text-purple-400", iconBg: "bg-purple-500/10 border-purple-500/20",hover: "hover:border-purple-500/30",  delay: 300 },
+          { label: "Total Expenses", value: formatCurrency(stats.monthly_expenses),icon: TrendingDown, color: "text-rose-400",   iconBg: "bg-rose-500/10 border-rose-500/20",    hover: "hover:border-rose-500/30",    delay: 375 },
+        ].map(({ label, value, icon: Icon, color, iconBg, hover, delay }) => (
+          <div
+            key={label}
+            className={`relative rounded-2xl border border-sidebar-border bg-card p-5 ${hover} transition-all animate-fade-up`}
+            style={{ animationDelay: `${delay}ms` }}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">{label}</p>
+                <p className={`mt-2 text-2xl font-bold leading-none truncate ${color}`}>{value}</p>
+              </div>
+              <div className={`flex items-center justify-center w-9 h-9 rounded-xl border shrink-0 ${iconBg}`}>
+                <Icon className={`w-4 h-4 ${color}`} />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
       {/* ── Defaulters + Chart ────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
 
@@ -184,28 +210,6 @@ export function DashboardClient({ data }: Props) {
           </div>
           <ExpenseChart data={monthlyData} />
         </div>
-      </div>
-
-      {/* ── Quick Stats ───────────────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {[
-          { label: "Active Tenants",  value: String(stats.total_tenants),             icon: Users,       color: "text-blue-400" },
-          { label: "Kitchen Costs",   value: formatCurrency(stats.monthly_kitchen),    icon: ChefHat,     color: "text-amber" },
-          { label: "Staff Salaries",  value: formatCurrency(stats.monthly_salaries),   icon: UserCog,     color: "text-purple-400" },
-          { label: "Total Expenses",  value: formatCurrency(stats.monthly_expenses),   icon: TrendingDown, color: "text-rose-400" },
-        ].map(({ label, value, icon: Icon, color }, i) => (
-          <div
-            key={label}
-            className="flex items-center gap-3 rounded-xl border border-sidebar-border bg-card/50 px-4 py-3 animate-fade-up"
-            style={{ animationDelay: `${500 + i * 50}ms` }}
-          >
-            <Icon className={`w-4 h-4 shrink-0 ${color}`} />
-            <div className="min-w-0">
-              <p className="text-xs text-muted-foreground truncate">{label}</p>
-              <p className="text-sm font-semibold text-foreground truncate">{value}</p>
-            </div>
-          </div>
-        ))}
       </div>
 
       {/* ── Pending Bills (only if any) ───────────────────── */}

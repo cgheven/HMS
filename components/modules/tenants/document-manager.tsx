@@ -48,6 +48,12 @@ export function DocumentManager({ tenantId, tenantName, documents, onChange }: P
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = "";
+
+    if (file.size > 10 * 1024 * 1024) {
+      toast({ title: "File too large", description: "Maximum size is 10 MB. Please compress the file and try again.", variant: "destructive" });
+      return;
+    }
+
     setUploading(true);
 
     const fd = new FormData();

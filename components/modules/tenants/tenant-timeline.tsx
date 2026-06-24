@@ -1,14 +1,15 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown } from "lucide-react";
+import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, ShieldCheck, FileText, FileImage, Download, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatCurrency, formatDate } from "@/lib/utils";
-import { getTenantTimeline, type TimelineEvent } from "@/app/actions/tenants";
+import { getTenantTimeline, getDocumentSignedUrl, type TimelineEvent } from "@/app/actions/tenants";
 import { toast } from "@/hooks/use-toast";
-import type { Tenant, Room, PackageTier } from "@/types";
+import type { Tenant, Room, PackageTier, TenantDocument, DocumentType } from "@/types";
+import { DOCUMENT_TYPE_LABELS } from "@/types";
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
   space_only: "Space Only",
@@ -19,6 +20,79 @@ const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
 };
 
 const DEFAULT_SHOW = 12;
+
+function docTypeIcon(type: DocumentType) {
+  if (type === "cnic" || type === "passport") return <FileImage className="w-3.5 h-3.5 text-blue-400 shrink-0" />;
+  if (type === "police_verification") return <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
+  return <FileText className="w-3.5 h-3.5 text-amber/80 shrink-0" />;
+}
+
+function DocumentsSection({ tenantId, documents }: { tenantId: string; documents: TenantDocument[] }) {
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  async function handleDownload(doc: TenantDocument) {
+    setDownloadingId(doc.id);
+    const result = await getDocumentSignedUrl(tenantId, doc.id);
+    setDownloadingId(null);
+    if (result.error) {
+      toast({ title: "Cannot open document", description: result.error, variant: "destructive" });
+    } else if (result.url) {
+      const a = document.createElement("a");
+      a.href = result.url;
+      a.rel = "noopener noreferrer";
+      a.click();
+    }
+  }
+
+  return (
+    <div className="mt-4">
+      <div className="flex items-center gap-2 mb-3">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Verification Documents</p>
+        {documents.length > 0 && (
+          <span className="inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold">
+            {documents.length}
+          </span>
+        )}
+      </div>
+
+      {documents.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-sidebar-border py-5 flex flex-col items-center gap-1.5 text-center">
+          <ShieldCheck className="w-6 h-6 text-muted-foreground/25" />
+          <p className="text-xs text-muted-foreground/60">No verification documents uploaded</p>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          {documents.map((doc) => (
+            <div
+              key={doc.id}
+              className="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-sidebar-border bg-white/[0.02]"
+            >
+              {docTypeIcon(doc.type)}
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-foreground truncate">{doc.name}</p>
+                <p className="text-xs text-muted-foreground">
+                  {DOCUMENT_TYPE_LABELS[doc.type]} · {formatDate(doc.uploaded_at)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleDownload(doc)}
+                disabled={downloadingId === doc.id}
+                className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors shrink-0"
+                title="Download"
+              >
+                {downloadingId === doc.id
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : <Download className="w-3.5 h-3.5" />
+                }
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface Props {
   tenant: Tenant;
@@ -149,8 +223,11 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
           ))}
         </div>
 
+        {/* Verification Documents */}
+        <DocumentsSection tenantId={tenant.id} documents={tenant.documents ?? []} />
+
         {/* Timeline */}
-        <div className="mt-2">
+        <div className="mt-4 border-t border-sidebar-border pt-4">
           <p className="text-xs font-medium text-muted-foreground mb-3 uppercase tracking-wider">Timeline</p>
 
           {loading && (
