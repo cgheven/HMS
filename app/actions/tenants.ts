@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import { createClient } from "@/lib/supabase/server";
 import { requireOwnerOrAbove } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
-import type { Payment, PackageTier, PaymentMethod } from "@/types";
+import type { Payment, PackageTier, PaymentMethod, TenantDocument, DocumentType } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -97,6 +97,183 @@ export async function uploadTenantPhoto(
 
     const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
     return { url: data.publicUrl };
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tenant Documents
+// ---------------------------------------------------------------------------
+
+const DOC_BUCKET = "tenant-documents";
+const DOC_MAX_DOCS = 20; // F6: cap per tenant to prevent storage exhaustion
+const DOC_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+const DOC_ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
+// Runtime docType allowlist — TypeScript types are erased at runtime; a direct server-action
+// caller can supply arbitrary strings, so we validate here as well.
+const VALID_DOC_TYPES = new Set<string>(["cnic", "police_verification", "lease_agreement", "passport", "other"]);
+
+// F4: derive extension from MIME — never trust filename extension
+const DOC_EXT: Record<string, string> = {
+  "image/jpeg":      "jpg",
+  "image/png":       "png",
+  "image/webp":      "webp",
+  "application/pdf": "pdf",
+};
+
+function validateDocMagicBytes(buf: Buffer): boolean {
+  if (buf.length < 12) return false;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true; // JPEG
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true; // PNG
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return true; // WebP
+  if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) return true; // PDF
+  return false;
+}
+
+// F1: verify tenantId belongs to the calling owner's active hostel
+async function assertTenantOwnership(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  tenantId: string,
+  hostelId: string
+): Promise<void> {
+  const { data } = await supabase
+    .from("hms_tenants")
+    .select("hostel_id")
+    .eq("id", tenantId)
+    .single();
+  if (!data || data.hostel_id !== hostelId) throw new Error("Forbidden");
+}
+
+export async function uploadTenantDocument(
+  tenantId: string,
+  docType: DocumentType,
+  formData: FormData
+): Promise<{ document?: TenantDocument; error?: string }> {
+  try {
+    await requireOwnerOrAbove();
+    const hostelId = await resolveHostelId(); // F1: caller must have an active hostel
+    const supabase = await createClient();
+    await assertTenantOwnership(supabase, tenantId, hostelId); // F1: IDOR fix
+
+    // Runtime docType validation (TypeScript types erased at runtime)
+    if (!VALID_DOC_TYPES.has(docType)) throw new Error("Invalid document type.");
+
+    const file = formData.get("file") as File | null;
+    if (!file) throw new Error("No file provided");
+    if (!DOC_ALLOWED_MIME.has(file.type)) throw new Error("Only PDF, JPEG, PNG, or WebP files are allowed.");
+
+    // Read buffer first, then size-check against actual bytes — not client-supplied file.size
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    if (buffer.length > DOC_MAX_BYTES) throw new Error("File too large. Maximum size is 10 MB.");
+    if (!validateDocMagicBytes(buffer)) throw new Error("Invalid file content. Only real PDF or image files are accepted.");
+
+    // F4: extension from allowlist, never from filename
+    const ext = DOC_EXT[file.type] ?? "bin";
+
+    // F5: generate a meaningful sanitized display name; discard raw file.name
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const typeSlug = docType.replace(/_/g, "-");
+    const displayName = `${typeSlug}_${dateStr}.${ext}`;
+
+    // Storage path: opaque UUID — no user-controlled segments after tenantId
+    const storagePath = `${tenantId}/${randomUUID()}.${ext}`;
+
+    // Fetch current docs first — check count limit before uploading
+    const { data: tenant } = await supabase
+      .from("hms_tenants").select("documents").eq("id", tenantId).single();
+    const existing = (tenant?.documents ?? []) as TenantDocument[];
+    if (existing.length >= DOC_MAX_DOCS) {
+      throw new Error(`Maximum ${DOC_MAX_DOCS} documents per tenant. Delete an existing document first.`);
+    }
+
+    const { error: uploadError } = await supabase.storage
+      .from(DOC_BUCKET)
+      .upload(storagePath, buffer, { contentType: file.type, upsert: false });
+    if (uploadError) throw new Error(uploadError.message);
+
+    // F2: store storage path, never a URL (private bucket — URLs don't work and expose project ref)
+    const newDoc: TenantDocument = {
+      id: randomUUID(),
+      name: displayName,
+      path: storagePath,
+      type: docType,
+      uploaded_at: new Date().toISOString(),
+    };
+
+    const { error: updateError } = await supabase
+      .from("hms_tenants").update({ documents: [...existing, newDoc] }).eq("id", tenantId);
+
+    if (updateError) {
+      // F7: DB write failed — clean up the orphaned storage object
+      await supabase.storage.from(DOC_BUCKET).remove([storagePath]);
+      throw new Error(updateError.message);
+    }
+
+    return { document: newDoc };
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function deleteTenantDocument(
+  tenantId: string,
+  docId: string
+): Promise<{ error?: string }> {
+  try {
+    await requireOwnerOrAbove();
+    const hostelId = await resolveHostelId(); // F1
+    const supabase = await createClient();
+    await assertTenantOwnership(supabase, tenantId, hostelId); // F1: IDOR fix
+
+    const { data: tenant } = await supabase
+      .from("hms_tenants").select("documents").eq("id", tenantId).single();
+
+    const existing = (tenant?.documents ?? []) as TenantDocument[];
+    const doc = existing.find((d) => d.id === docId);
+
+    // F2 + F7: use stored path directly; check storage deletion before DB update
+    if (doc?.path) {
+      const { error: storageErr } = await supabase.storage.from(DOC_BUCKET).remove([doc.path]);
+      if (storageErr) throw new Error(`Storage deletion failed: ${storageErr.message}`);
+    }
+
+    const { error } = await supabase
+      .from("hms_tenants").update({ documents: existing.filter((d) => d.id !== docId) }).eq("id", tenantId);
+
+    if (error) throw new Error(error.message);
+    return {};
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// F3: generate a short-lived signed URL with forced download header — never expose raw storage URL
+export async function getDocumentSignedUrl(
+  tenantId: string,
+  docId: string
+): Promise<{ url?: string; error?: string }> {
+  try {
+    await requireOwnerOrAbove();
+    const hostelId = await resolveHostelId();
+    const supabase = await createClient();
+    await assertTenantOwnership(supabase, tenantId, hostelId);
+
+    const { data: tenant } = await supabase
+      .from("hms_tenants").select("documents").eq("id", tenantId).single();
+
+    const doc = ((tenant?.documents ?? []) as TenantDocument[]).find((d) => d.id === docId);
+    if (!doc) throw new Error("Document not found");
+
+    // F3: 1-hour expiry + Content-Disposition: attachment prevents inline execution
+    const { data, error } = await supabase.storage
+      .from(DOC_BUCKET)
+      .createSignedUrl(doc.path, 3600, { download: doc.name });
+
+    if (error) throw new Error(error.message);
+    return { url: data.signedUrl };
   } catch (err: unknown) {
     return { error: err instanceof Error ? err.message : String(err) };
   }

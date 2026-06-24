@@ -130,6 +130,24 @@ export interface Room {
   updated_at: string;
 }
 
+export type DocumentType = "cnic" | "police_verification" | "lease_agreement" | "passport" | "other";
+
+export interface TenantDocument {
+  id: string;
+  name: string;
+  path: string;       // storage path inside tenant-documents bucket, never a public URL
+  type: DocumentType;
+  uploaded_at: string;
+}
+
+export const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
+  cnic:                "CNIC Copy",
+  police_verification: "Police Verification",
+  lease_agreement:     "Lease Agreement",
+  passport:            "Passport Copy",
+  other:               "Other",
+};
+
 export interface Tenant {
   id: string;
   hostel_id: string;
@@ -154,6 +172,7 @@ export interface Tenant {
   emergency_relationship: string | null;
   notes: string | null;
   photo_url: string | null;
+  documents: TenantDocument[];
   created_at: string;
 }
 

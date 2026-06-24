@@ -3,7 +3,7 @@ import { useState, useMemo } from "react";
 import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, History,
-  ClipboardList, CheckCircle2, XCircle, Link2, Loader2,
+  ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -16,9 +16,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize } from "@/lib/utils";
-import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
+import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
 
 interface Props {
@@ -85,6 +86,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     notes: null,
   });
   const [approveSaving, setApproveSaving] = useState(false);
+  const [editingDocs, setEditingDocs] = useState<TenantDocument[]>([]);
 
   // Rooms with remaining capacity
   const availableRooms = useMemo(
@@ -186,11 +188,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   function openAdd() {
     setEditing(null);
     setForm(emptyForm);
+    setEditingDocs([]);
     setDialogOpen(true);
   }
 
   function openEdit(t: Tenant) {
     setEditing(t);
+    setEditingDocs(t.documents ?? []);
     setForm({
       full_name: t.full_name,
       phone: t.phone ?? "",
@@ -386,7 +390,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {t.billing_type === "daily" && <Badge variant="warning" className="text-xs shrink-0">Daily</Badge>}
           </div>
           {/* Meta row — whitespace-nowrap per item so nothing splits mid-word */}
-          <div className="flex flex-wrap gap-x-2 gap-y-0 mt-0.5">
+          <div className="flex flex-wrap gap-x-2 gap-y-0 mt-0.5 items-center">
             {room && (
               <span className="text-xs text-muted-foreground whitespace-nowrap">
                 Rm {room.room_number}{t.bed_number ? ` · ${t.bed_number}` : ""}
@@ -405,6 +409,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {t.check_out && (
               <span className="text-xs text-muted-foreground whitespace-nowrap">
                 Out: {formatDate(t.check_out)}
+              </span>
+            )}
+            {(t.documents?.length ?? 0) > 0 && (
+              <span className="inline-flex items-center gap-0.5 text-xs text-emerald-400 whitespace-nowrap">
+                <ShieldCheck className="w-3 h-3" />{t.documents.length}
               </span>
             )}
           </div>
@@ -1031,6 +1040,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
             <div className="space-y-1.5"><Label>Notes</Label><Input placeholder="Any additional notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
           </div>
+
+          {/* Documents — only shown when editing an existing tenant */}
+          {editing && (
+            <div className="pt-2 border-t border-sidebar-border">
+              <DocumentManager
+                tenantId={editing.id}
+                tenantName={editing.full_name}
+                documents={editingDocs}
+                onChange={setEditingDocs}
+              />
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
             <Button onClick={handleSave} disabled={saving || !form.full_name || (!form.is_waiting && !form.check_in)}>
