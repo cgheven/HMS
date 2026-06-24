@@ -136,7 +136,21 @@ export async function updateApplicationStatus(
   return { success: true };
 }
 
-export async function convertToTenant(appId: string) {
+export interface ConvertFormData {
+  type: string;
+  package_tier: string;
+  billing_type: "monthly" | "daily";
+  monthly_rent: number;
+  daily_rate: number;
+  security_deposit: number;
+  check_in: string;
+  room_id: string | null;
+  bed_number: string | null;
+  is_waiting: boolean;
+  notes: string | null;
+}
+
+export async function convertToTenant(appId: string, extra: ConvertFormData) {
   const profile = await requireOwnerOrAbove();
   const admin = createAdminClient();
 
@@ -168,24 +182,24 @@ export async function convertToTenant(appId: string) {
     }
   }
 
-  // Insert into hms_tenants (waiting list — no room assigned yet)
-  const today = new Date().toISOString().split("T")[0];
   const { error: tenantError } = await admin.from("hms_tenants").insert({
     hostel_id: app.hostel_id,
     full_name: app.full_name,
     phone: app.phone,
     email: app.email,
     cnic: app.cnic,
-    type: app.room_preference ?? "general",
-    package_tier: app.package_tier ?? "space_only",
-    check_in: app.move_in_date ?? today,
-    billing_type: "monthly",
-    monthly_rent: 0,
-    daily_rate: 0,
-    security_deposit: 0,
-    is_active: false,
-    is_waiting: true,
-    notes: app.notes,
+    type: extra.type,
+    package_tier: extra.package_tier,
+    check_in: extra.check_in,
+    billing_type: extra.billing_type,
+    monthly_rent: extra.billing_type === "monthly" ? extra.monthly_rent : 0,
+    daily_rate: extra.billing_type === "daily" ? extra.daily_rate : 0,
+    security_deposit: extra.security_deposit,
+    room_id: extra.is_waiting ? null : (extra.room_id || null),
+    bed_number: extra.bed_number || null,
+    is_active: !extra.is_waiting,
+    is_waiting: extra.is_waiting,
+    notes: extra.notes || null,
   });
 
   if (tenantError) return { success: false, error: tenantError.message };

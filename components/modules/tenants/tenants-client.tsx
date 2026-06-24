@@ -19,7 +19,7 @@ import { formatCurrency, formatDate, formatDateInput, capitalize } from "@/lib/u
 import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
-import { updateApplicationStatus, convertToTenant } from "@/app/actions/applications";
+import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
 
 interface Props {
   hostelId: string | null;
@@ -69,8 +69,22 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [saving, setSaving] = useState(false);
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null);
   const [timelineTenant, setTimelineTenant] = useState<Tenant | null>(null);
-  const [convertAppId, setConvertAppId] = useState<string | null>(null);
   const [appActionLoading, setAppActionLoading] = useState<string | null>(null);
+  const [approvingApp, setApprovingApp] = useState<TenantApplication | null>(null);
+  const [approveForm, setApproveForm] = useState<ConvertFormData>({
+    type: "general",
+    package_tier: "space_only",
+    billing_type: "monthly",
+    monthly_rent: 0,
+    daily_rate: 0,
+    security_deposit: 0,
+    check_in: formatDateInput(new Date()),
+    room_id: null,
+    bed_number: null,
+    is_waiting: true,
+    notes: null,
+  });
+  const [approveSaving, setApproveSaving] = useState(false);
 
   // Rooms with remaining capacity
   const availableRooms = useMemo(
@@ -115,17 +129,47 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setAppActionLoading(null);
   }
 
-  async function handleConvertApp(appId: string) {
-    setAppActionLoading(appId);
-    const result = await convertToTenant(appId);
+  function openApproveDialog(app: TenantApplication) {
+    setApprovingApp(app);
+    setApproveForm({
+      type: app.room_preference ?? "general",
+      package_tier: app.package_tier ?? "space_only",
+      billing_type: "monthly",
+      monthly_rent: 0,
+      daily_rate: 0,
+      security_deposit: 0,
+      check_in: app.move_in_date ?? formatDateInput(new Date()),
+      room_id: null,
+      bed_number: null,
+      is_waiting: true,
+      notes: app.notes ?? null,
+    });
+  }
+
+  async function handleApproveApp() {
+    if (!approvingApp) return;
+    setApproveSaving(true);
+    const result = await convertToTenant(approvingApp.id, approveForm);
     if (result.success) {
-      toast({ title: "Added to waiting list", description: "Tenant created from application." });
+      // If room assigned, update occupancy
+      if (!approveForm.is_waiting && approveForm.room_id) {
+        const room = rooms.find((r) => r.id === approveForm.room_id);
+        if (room) {
+          const supabase = createClient();
+          const newOcc = room.occupied + 1;
+          await supabase.from("hms_rooms").update({
+            occupied: newOcc,
+            status: newOcc >= room.capacity ? "occupied" : "available",
+          }).eq("id", approveForm.room_id);
+        }
+      }
+      toast({ title: approveForm.is_waiting ? "Added to waiting list" : "Tenant activated", description: `${approvingApp.full_name} has been added.` });
+      setApprovingApp(null);
       await Promise.all([reload(), reloadApplications()]);
     } else {
       toast({ title: "Error", description: result.error, variant: "destructive" });
     }
-    setAppActionLoading(null);
-    setConvertAppId(null);
+    setApproveSaving(false);
   }
 
   function copyJoinLink() {
@@ -314,54 +358,90 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const room = t.room_id ? roomMap[t.room_id] : null;
     const initials = t.full_name[0].toUpperCase();
     return (
-      <div className="flex items-center gap-2 px-4 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5">
+      <div className="flex items-center gap-3 px-3 py-3 sm:px-4 rounded-xl hover:bg-white/[0.03] transition-colors">
+        {/* Avatar */}
         <button
           type="button"
-          className="flex items-center gap-4 flex-1 min-w-0 text-left hover:opacity-80 transition-opacity"
           onClick={() => setTimelineTenant(t)}
-          title="View history"
+          className="w-9 h-9 rounded-full shrink-0 overflow-hidden border border-amber/20 bg-amber/10 flex items-center justify-center hover:opacity-80 transition-opacity"
         >
-          <div className="w-9 h-9 rounded-full shrink-0 overflow-hidden border border-amber/20 bg-amber/10 flex items-center justify-center">
-            {t.photo_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={t.photo_url} alt={t.full_name} className="w-full h-full object-cover" />
-            ) : (
-              <span className="text-sm font-semibold text-amber">{initials}</span>
+          {t.photo_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={t.photo_url} alt={t.full_name} className="w-full h-full object-cover" />
+          ) : (
+            <span className="text-sm font-semibold text-amber">{initials}</span>
+          )}
+        </button>
+
+        {/* Info */}
+        <button
+          type="button"
+          onClick={() => setTimelineTenant(t)}
+          className="flex-1 min-w-0 text-left"
+        >
+          {/* Name row — truncate prevents wrapping */}
+          <div className="flex items-center gap-1.5 min-w-0">
+            <p className="text-sm font-medium text-foreground truncate">{t.full_name}</p>
+            <Badge variant="secondary" className="text-xs capitalize shrink-0">{t.type}</Badge>
+            {t.billing_type === "daily" && <Badge variant="warning" className="text-xs shrink-0">Daily</Badge>}
+          </div>
+          {/* Meta row — whitespace-nowrap per item so nothing splits mid-word */}
+          <div className="flex flex-wrap gap-x-2 gap-y-0 mt-0.5">
+            {room && (
+              <span className="text-xs text-muted-foreground whitespace-nowrap">
+                Rm {room.room_number}{t.bed_number ? ` · ${t.bed_number}` : ""}
+              </span>
+            )}
+            {t.phone && (
+              <span className="text-xs text-muted-foreground whitespace-nowrap flex items-center gap-0.5">
+                <Phone className="w-2.5 h-2.5 shrink-0" />{t.phone}
+              </span>
+            )}
+            {t.check_in && (
+              <span className="text-xs text-muted-foreground whitespace-nowrap">
+                In: {formatDate(t.check_in)}
+              </span>
+            )}
+            {t.check_out && (
+              <span className="text-xs text-muted-foreground whitespace-nowrap">
+                Out: {formatDate(t.check_out)}
+              </span>
             )}
           </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <p className="text-sm font-medium text-foreground">{t.full_name}</p>
-              <Badge variant="secondary" className="text-xs capitalize">{t.type}</Badge>
-              {t.billing_type === "daily" && <Badge variant="warning" className="text-xs">Daily</Badge>}
-            </div>
-            <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
-              {room && <span className="text-xs text-muted-foreground">Room {room.room_number}{t.bed_number ? ` · Bed ${t.bed_number}` : ""}</span>}
-              {t.phone && <span className="text-xs text-muted-foreground flex items-center gap-1"><Phone className="w-2.5 h-2.5" />{t.phone}</span>}
-              {t.check_in && <span className="text-xs text-muted-foreground">In: {formatDate(t.check_in)}</span>}
-              {t.check_out && <span className="text-xs text-muted-foreground">Out: {formatDate(t.check_out)}</span>}
-            </div>
-          </div>
         </button>
-        <div className="text-right shrink-0 hidden sm:block">
+
+        {/* Rent — only on md+ */}
+        <div className="text-right shrink-0 hidden md:block">
           {t.billing_type === "daily"
             ? <p className="text-sm font-semibold text-foreground">{formatCurrency(t.daily_rate)}<span className="text-xs text-muted-foreground font-normal">/day</span></p>
             : <p className="text-sm font-semibold text-foreground">{formatCurrency(t.monthly_rent)}<span className="text-xs text-muted-foreground font-normal">/mo</span></p>
           }
           {t.security_deposit > 0 && <p className="text-xs text-muted-foreground">Dep: {formatCurrency(t.security_deposit)}</p>}
         </div>
-        <div className="flex items-center gap-1 shrink-0">
+
+        {/* Actions — Check Out is icon-only on mobile */}
+        <div className="flex items-center gap-0.5 shrink-0">
           {showCheckout && (
-            <Button variant="ghost" size="sm" className="h-8 text-xs gap-1 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 border border-rose-500/20"
-              onClick={() => { setCheckingOut(t); setCheckoutDate(formatDateInput(new Date())); setCheckoutDialogOpen(true); }}>
-              <LogOut className="w-3 h-3" /> Check Out
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 border border-rose-500/20"
+              onClick={() => { setCheckingOut(t); setCheckoutDate(formatDateInput(new Date())); setCheckoutDialogOpen(true); }}
+              title="Check Out"
+            >
+              <LogOut className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline text-xs ml-1.5">Check Out</span>
             </Button>
           )}
           <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" title="History" onClick={() => setTimelineTenant(t)}>
             <History className="w-3.5 h-3.5" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(t)}><Edit2 className="w-3.5 h-3.5" /></Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteTenant(t)}><Trash2 className="w-3.5 h-3.5" /></Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(t)}>
+            <Edit2 className="w-3.5 h-3.5" />
+          </Button>
+          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteTenant(t)}>
+            <Trash2 className="w-3.5 h-3.5" />
+          </Button>
         </div>
       </div>
     );
@@ -419,19 +499,35 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
       {/* Tabs */}
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList>
-          <TabsTrigger value="active"><UserCheck className="w-3.5 h-3.5" /> Active ({active.length})</TabsTrigger>
-          <TabsTrigger value="waiting"><Clock className="w-3.5 h-3.5" /> Waiting ({waiting.length})</TabsTrigger>
-          <TabsTrigger value="checkedout"><Users className="w-3.5 h-3.5" /> Checked Out ({checkedOut.length})</TabsTrigger>
-          <TabsTrigger value="applications" className="relative">
-            <ClipboardList className="w-3.5 h-3.5" /> Applications
-            {applications.filter((a) => a.status === "pending").length > 0 && (
-              <span className="ml-1.5 inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber text-background text-[10px] font-bold leading-none">
-                {applications.filter((a) => a.status === "pending").length}
-              </span>
-            )}
-          </TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto -mx-1 px-1">
+          <TabsList className="flex w-max min-w-full gap-0.5">
+            <TabsTrigger value="active" className="flex-1 gap-1.5 whitespace-nowrap">
+              <UserCheck className="w-3.5 h-3.5 shrink-0" />
+              <span>Active</span>
+              <span className="text-muted-foreground">({active.length})</span>
+            </TabsTrigger>
+            <TabsTrigger value="waiting" className="flex-1 gap-1.5 whitespace-nowrap">
+              <Clock className="w-3.5 h-3.5 shrink-0" />
+              <span>Waiting</span>
+              <span className="text-muted-foreground">({waiting.length})</span>
+            </TabsTrigger>
+            <TabsTrigger value="checkedout" className="flex-1 gap-1.5 whitespace-nowrap">
+              <Users className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">Checked Out</span>
+              <span className="sm:hidden">Out</span>
+              <span className="text-muted-foreground">({checkedOut.length})</span>
+            </TabsTrigger>
+            <TabsTrigger value="applications" className="flex-1 gap-1.5 whitespace-nowrap">
+              <ClipboardList className="w-3.5 h-3.5 shrink-0" />
+              <span>Applications</span>
+              {applications.filter((a) => a.status === "pending").length > 0 && (
+                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber text-background text-[10px] font-bold leading-none shrink-0">
+                  {applications.filter((a) => a.status === "pending").length}
+                </span>
+              )}
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="active">
           <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
@@ -560,7 +656,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                                   variant="ghost"
                                   size="sm"
                                   disabled={isLoading}
-                                  onClick={() => setConvertAppId(app.id)}
+                                  onClick={() => openApproveDialog(app)}
                                   className="h-7 text-xs gap-1 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20"
                                 >
                                   {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
@@ -590,13 +686,190 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         </TabsContent>
       </Tabs>
 
-      <ConfirmDialog
-        open={!!convertAppId}
-        title="Approve Application?"
-        description="This will add the applicant to your waiting list as a new tenant. You can then assign them a room."
-        onConfirm={() => convertAppId && handleConvertApp(convertAppId)}
-        onCancel={() => setConvertAppId(null)}
-      />
+      {/* Approve Application Dialog */}
+      <Dialog open={!!approvingApp} onOpenChange={(open) => { if (!open) setApprovingApp(null); }}>
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              Approve Application
+            </DialogTitle>
+          </DialogHeader>
+
+          {approvingApp && (
+            <div className="space-y-5 py-1">
+              {/* Applicant summary */}
+              <div className="rounded-xl bg-white/[0.03] border border-sidebar-border p-4 space-y-1.5">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Applicant</p>
+                <p className="text-sm font-semibold text-foreground">{approvingApp.full_name}</p>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  {approvingApp.phone && <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{approvingApp.phone}</span>}
+                  {approvingApp.email && <span className="flex items-center gap-1"><Mail className="w-3 h-3" />{approvingApp.email}</span>}
+                  {approvingApp.cnic && <span className="flex items-center gap-1"><CreditCard className="w-3 h-3" />{approvingApp.cnic}</span>}
+                </div>
+                {approvingApp.notes && (
+                  <p className="text-xs text-muted-foreground italic mt-1">"{approvingApp.notes}"</p>
+                )}
+              </div>
+
+              {/* Active vs Waiting toggle */}
+              <div>
+                <Label className="text-xs text-muted-foreground mb-2 block">Add as</Label>
+                <div className="flex gap-2">
+                  <button type="button"
+                    onClick={() => setApproveForm({ ...approveForm, is_waiting: false })}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${!approveForm.is_waiting ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}>
+                    Active Resident
+                  </button>
+                  <button type="button"
+                    onClick={() => setApproveForm({ ...approveForm, is_waiting: true, room_id: null })}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${approveForm.is_waiting ? "bg-amber/10 border-amber/30 text-amber" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}>
+                    Waiting List
+                  </button>
+                </div>
+              </div>
+
+              {/* Type + Package */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label>Tenant Type</Label>
+                  <Select value={approveForm.type} onValueChange={(v) => setApproveForm({ ...approveForm, type: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="student">Student</SelectItem>
+                      <SelectItem value="professional">Professional</SelectItem>
+                      <SelectItem value="general">General</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Package Tier</Label>
+                  <Select value={approveForm.package_tier} onValueChange={(v) => setApproveForm({ ...approveForm, package_tier: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {(Object.entries(PACKAGE_TIER_LABELS) as [PackageTier, string][]).map(([k, label]) => (
+                        <SelectItem key={k} value={k}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {/* Billing type */}
+              <div>
+                <Label className="text-xs text-muted-foreground mb-2 block">Billing</Label>
+                <div className="flex gap-2">
+                  <button type="button"
+                    onClick={() => setApproveForm({ ...approveForm, billing_type: "monthly" })}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${approveForm.billing_type === "monthly" ? "bg-amber/10 border-amber/30 text-amber" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}>
+                    Monthly
+                  </button>
+                  <button type="button"
+                    onClick={() => setApproveForm({ ...approveForm, billing_type: "daily" })}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${approveForm.billing_type === "daily" ? "bg-amber/10 border-amber/30 text-amber" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}>
+                    Daily
+                  </button>
+                </div>
+              </div>
+
+              {/* Rent + Deposit */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label>{approveForm.billing_type === "monthly" ? "Monthly Rent (PKR)" : "Daily Rate (PKR)"}</Label>
+                  <Input
+                    type="number"
+                    placeholder="0"
+                    value={approveForm.billing_type === "monthly" ? approveForm.monthly_rent || "" : approveForm.daily_rate || ""}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value) || 0;
+                      setApproveForm(approveForm.billing_type === "monthly"
+                        ? { ...approveForm, monthly_rent: val }
+                        : { ...approveForm, daily_rate: val });
+                    }}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Security Deposit (PKR)</Label>
+                  <Input
+                    type="number"
+                    placeholder="0"
+                    value={approveForm.security_deposit || ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, security_deposit: parseFloat(e.target.value) || 0 })}
+                  />
+                </div>
+              </div>
+
+              {/* Room + Bed (only for active) */}
+              {!approveForm.is_waiting && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label>Room</Label>
+                    <Select
+                      value={approveForm.room_id ?? ""}
+                      onValueChange={(v) => setApproveForm({
+                        ...approveForm,
+                        room_id: v || null,
+                        monthly_rent: approveForm.monthly_rent || (rooms.find(r => r.id === v)?.monthly_rent ?? 0),
+                      })}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
+                      <SelectContent>
+                        {availableRooms.map((r) => (
+                          <SelectItem key={r.id} value={r.id}>
+                            Rm {r.room_number} · {r.capacity - r.occupied} free · {formatCurrency(r.monthly_rent)}/mo
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Bed Number</Label>
+                    <Input
+                      placeholder="A1"
+                      value={approveForm.bed_number ?? ""}
+                      onChange={(e) => setApproveForm({ ...approveForm, bed_number: e.target.value || null })}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Check-in */}
+              <div className="space-y-1.5">
+                <Label>Check-in Date</Label>
+                <Input
+                  type="date"
+                  value={approveForm.check_in}
+                  onChange={(e) => setApproveForm({ ...approveForm, check_in: e.target.value })}
+                />
+              </div>
+
+              {/* Notes */}
+              <div className="space-y-1.5">
+                <Label>Notes <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                <Input
+                  placeholder="Any additional notes"
+                  value={approveForm.notes ?? ""}
+                  onChange={(e) => setApproveForm({ ...approveForm, notes: e.target.value || null })}
+                />
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setApprovingApp(null)}>Cancel</Button>
+            <Button
+              onClick={handleApproveApp}
+              disabled={approveSaving}
+              className="gap-2 bg-emerald-600 hover:bg-emerald-700 text-white"
+            >
+              {approveSaving
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
+                : <><CheckCircle2 className="w-4 h-4" /> {approveForm.is_waiting ? "Add to Waitlist" : "Activate Tenant"}</>
+              }
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={!!deleteTenant}
