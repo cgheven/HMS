@@ -82,6 +82,7 @@ export async function createHostel(data: {
         phone: data.phone || null,
         email: data.email || null,
         total_capacity: data.total_capacity ?? 0,
+        listing_enabled: true,
       })
       .select("id")
       .single();

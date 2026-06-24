@@ -266,7 +266,7 @@ export async function createHostelForClient(data: {
         .replace(/^-+|-+$/g, "") || `hostel-${i}`;
       const { data: hostel, error: hostelErr } = await admin
         .from("hms_hostels")
-        .insert({ owner_id: userId, name: b.name, city: b.city || null, address: b.address || null, slug: i === 0 ? branchSlug : `${branchSlug}-${i + 1}` })
+        .insert({ owner_id: userId, name: b.name, city: b.city || null, address: b.address || null, slug: i === 0 ? branchSlug : `${branchSlug}-${i + 1}`, listing_enabled: true })
         .select("id")
         .single();
       if (hostelErr) throw hostelErr;

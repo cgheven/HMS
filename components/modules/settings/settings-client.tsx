@@ -220,7 +220,7 @@ export function SettingsClient() {
         total_capacity: hostel.total_capacity?.toString() ?? "",
       });
       setListingForm({
-        listing_enabled: hostel.listing_enabled ?? false,
+        listing_enabled: hostel.listing_enabled ?? true,
         maps_url: hostel.maps_url ?? "",
         description: hostel.description ?? "",
         hostel_type: hostel.hostel_type ?? "",
