@@ -189,7 +189,7 @@ export async function createBranch(data: {
         address: data.address?.trim() || null,
         total_capacity: 0,
         amenities: [],
-        listing_enabled: false,
+        listing_enabled: true,
       })
       .select("*")
       .single();

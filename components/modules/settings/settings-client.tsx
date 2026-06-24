@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, useTransition } from "react";
-import { Building2, User, Save, Loader2, Globe, ExternalLink, Clock, Phone, RefreshCw, Utensils, GitBranch, Plus, Check, ArrowRightLeft, Handshake, Eye, EyeOff, Trash2, X, Pencil } from "lucide-react";
+import { Building2, User, Save, Loader2, Globe, ExternalLink, Clock, Phone, RefreshCw, Utensils, GitBranch, Plus, Check, ArrowRightLeft, Handshake, Eye, EyeOff, Trash2, X, Pencil, FormInput } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useHostelContext } from "@/contexts/hostel-context";
@@ -13,7 +13,8 @@ import { toast } from "@/hooks/use-toast";
 import { getOwnedHostels, switchActiveHostel, renameBranch } from "@/app/actions/branches";
 import { listPartners, createPartner, removePartner } from "@/app/actions/partners";
 import type { PartnerRow } from "@/app/actions/partners";
-import type { HostelType, Hostel } from "@/types";
+import type { HostelType, Hostel, FormConfig, FormFieldConfig } from "@/types";
+import { DEFAULT_FORM_CONFIG } from "@/types";
 
 const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
   { value: "boys",   label: "Boys Only" },
@@ -59,7 +60,7 @@ export function SettingsClient() {
     name: "", address: "", city: "", area: "", phone: "", email: "", total_capacity: "",
   });
   const [listingForm, setListingForm] = useState({
-    listing_enabled: false,
+    listing_enabled: true,
     maps_url: "",
     description: "",
     hostel_type: "" as HostelType | "",
@@ -73,6 +74,9 @@ export function SettingsClient() {
   const [packageForm, setPackageForm] = useState({ food_monthly_rate: "", ac_per_unit_rate: "" });
   const [savingPackage, setSavingPackage] = useState(false);
   const [packageLoaded, setPackageLoaded] = useState(false);
+
+  const [formConfig, setFormConfig] = useState<Required<FormConfig>>({ ...DEFAULT_FORM_CONFIG });
+  const [savingFormConfig, setSavingFormConfig] = useState(false);
 
   type WaitlistEntry = { id: string; name: string; phone: string; created_at: string };
   const [waitlist, setWaitlist]           = useState<WaitlistEntry[]>([]);
@@ -225,6 +229,9 @@ export function SettingsClient() {
       fetchWaitlist(hostel.id);
       fetchPackageConfig(hostel.id);
       fetchPartners(hostel.id);
+      if (hostel.form_config) {
+        setFormConfig({ ...DEFAULT_FORM_CONFIG, ...(hostel.form_config as FormConfig) });
+      }
     }
   }, [hostel]);
 
@@ -256,18 +263,28 @@ export function SettingsClient() {
     if (!hostelId) return;
     setSavingListing(true);
     const supabase = createClient();
-    const { error } = await supabase.from("hms_hostels").update({
+    const updatePayload: Record<string, unknown> = {
       listing_enabled: listingForm.listing_enabled,
       maps_url: listingForm.maps_url || null,
       description: listingForm.description || null,
       hostel_type: listingForm.hostel_type || null,
       amenities: listingForm.amenities,
-    }).eq("id", hostelId);
+    };
+    // Auto-generate slug if enabling listing and no slug exists yet
+    if (listingForm.listing_enabled && !hostel?.slug) {
+      const base = (hostelForm.name || hostel?.name || "hostel")
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      updatePayload.slug = base || hostelId.slice(0, 8);
+    }
+    const { error } = await supabase.from("hms_hostels").update(updatePayload).eq("id", hostelId);
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
     else toast({
       title: listingForm.listing_enabled ? "Listing published" : "Listing hidden",
       description: listingForm.listing_enabled
-        ? "Your hostel is now visible on the public directory."
+        ? "Your hostel is now visible on the public directory. Share Form Link is now active."
         : "Your hostel has been removed from the public directory.",
     });
     setSavingListing(false);
@@ -303,6 +320,20 @@ export function SettingsClient() {
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
     else toast({ title: "Package pricing saved" });
     setSavingPackage(false);
+  }
+
+  async function saveFormConfig(e: React.FormEvent) {
+    e.preventDefault();
+    if (!hostelId) return;
+    setSavingFormConfig(true);
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("hms_hostels")
+      .update({ form_config: formConfig })
+      .eq("id", hostelId);
+    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
+    else toast({ title: "Form fields saved" });
+    setSavingFormConfig(false);
   }
 
   function toggleAmenity(a: string) {
@@ -487,6 +518,90 @@ export function SettingsClient() {
             <Button type="submit" disabled={savingListing} className="gap-2">
               {savingListing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               Save Listing
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
+      <Separator />
+
+      {/* Form Builder */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <FormInput className="w-4 h-4 text-muted-foreground" />
+            <CardTitle className="text-base">Registration Form Fields</CardTitle>
+          </div>
+          <CardDescription>
+            Choose which fields appear on your public tenant registration form. Full Name and WhatsApp are always required.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={saveFormConfig} className="space-y-4">
+            {(
+              [
+                { key: "email",           label: "Email Address",        description: "Tenant's email for correspondence" },
+                { key: "cnic",            label: "CNIC",                 description: "National ID number (42101-XXXXXXX-X)" },
+                { key: "package_tier",    label: "Package Preference",   description: "Space Only / Meals / AC / Cooler" },
+                { key: "room_preference", label: "Room Type Preference", description: "Student / Professional / General" },
+                { key: "move_in_date",    label: "Preferred Move-in Date", description: "Requested check-in date" },
+                { key: "notes",           label: "Message / Questions",  description: "Free text for special requests" },
+              ] as { key: keyof FormConfig; label: string; description: string }[]
+            ).map(({ key, label, description }) => {
+              const field: FormFieldConfig = formConfig[key] ?? { enabled: true, required: false };
+              return (
+                <div key={key} className={`rounded-xl border p-4 transition-colors ${field.enabled ? "border-sidebar-border bg-white/[0.02]" : "border-sidebar-border/40 bg-transparent opacity-60"}`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-foreground">{label}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
+                      {field.enabled && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setFormConfig((c) => ({ ...c, [key]: { ...field, required: !field.required } }))
+                          }
+                          className={`mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                            field.required
+                              ? "bg-rose-500/10 text-rose-400 border-rose-500/20 hover:bg-rose-500/20"
+                              : "bg-white/5 text-muted-foreground border-white/10 hover:text-foreground hover:border-white/20"
+                          }`}
+                        >
+                          {field.required ? "Required" : "Optional"}
+                        </button>
+                      )}
+                    </div>
+                    {/* Enable/disable toggle */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFormConfig((c) => ({
+                          ...c,
+                          [key]: { ...field, enabled: !field.enabled, required: !field.enabled ? false : field.required },
+                        }))
+                      }
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none mt-0.5 ${
+                        field.enabled ? "bg-amber" : "bg-muted"
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform ${
+                          field.enabled ? "translate-x-5" : "translate-x-0"
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
+            <p className="text-xs text-muted-foreground">
+              Disabled fields won&apos;t appear on the form. Required fields must be filled before submission.
+            </p>
+
+            <Button type="submit" disabled={savingFormConfig} className="gap-2">
+              {savingFormConfig ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              Save Form Fields
             </Button>
           </form>
         </CardContent>

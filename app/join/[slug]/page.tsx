@@ -13,11 +13,11 @@ export default async function JoinPage({ params }: Props) {
 
   const { data: hostel } = await admin
     .from("hms_hostels")
-    .select("id, name, slug, city, area, phone, email, hostel_type, amenities, listing_enabled")
+    .select("id, name, slug, city, area, phone, email, hostel_type, amenities, listing_enabled, form_config")
     .eq("slug", slug)
     .maybeSingle();
 
-  if (!hostel || !hostel.listing_enabled) notFound();
+  if (!hostel) notFound();
 
   return <JoinFormClient hostel={hostel as Hostel} />;
 }

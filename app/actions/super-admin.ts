@@ -259,9 +259,14 @@ export async function createHostelForClient(data: {
     const hostelIds: string[] = [];
     for (let i = 0; i < branches.length; i++) {
       const b = branches[i];
+      const branchSlug = b.name
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/^-+|-+$/g, "") || `hostel-${i}`;
       const { data: hostel, error: hostelErr } = await admin
         .from("hms_hostels")
-        .insert({ owner_id: userId, name: b.name, city: b.city || null, address: b.address || null })
+        .insert({ owner_id: userId, name: b.name, city: b.city || null, address: b.address || null, slug: i === 0 ? branchSlug : `${branchSlug}-${i + 1}` })
         .select("id")
         .single();
       if (hostelErr) throw hostelErr;

@@ -1,18 +1,25 @@
 -- Migration 026: Bootstrap the platform super admin account
--- Runs as postgres superuser so we disable the role-escalation guard temporarily,
--- promote the account, then re-enable the guard immediately.
-
 DO $$
+DECLARE
+  trigger_exists boolean;
 BEGIN
-  -- Disable the anti-escalation trigger for this session only
-  ALTER TABLE hms_profiles DISABLE TRIGGER hms_prevent_role_self_escalation;
+  SELECT EXISTS (
+    SELECT 1 FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    WHERE t.tgname = 'hms_prevent_role_self_escalation'
+      AND c.relname = 'hms_profiles'
+  ) INTO trigger_exists;
 
-  -- Promote the super admin account (email hard-coded for bootstrap)
+  IF trigger_exists THEN
+    ALTER TABLE hms_profiles DISABLE TRIGGER hms_prevent_role_self_escalation;
+  END IF;
+
   UPDATE hms_profiles
   SET role = 'super_admin'
   WHERE email = 'admin@yourpulse.io';
 
-  -- Re-enable the trigger immediately after
-  ALTER TABLE hms_profiles ENABLE TRIGGER hms_prevent_role_self_escalation;
+  IF trigger_exists THEN
+    ALTER TABLE hms_profiles ENABLE TRIGGER hms_prevent_role_self_escalation;
+  END IF;
 END;
 $$;

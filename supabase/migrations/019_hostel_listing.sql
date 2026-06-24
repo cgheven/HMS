@@ -7,7 +7,7 @@ alter table hms_hostels
   add column if not exists description    text,
   add column if not exists hostel_type    text check (hostel_type in ('boys','girls','mixed','family')),
   add column if not exists amenities      text[] default '{}',
-  add column if not exists listing_enabled boolean default false not null;
+  add column if not exists listing_enabled boolean default true not null;
 
 -- Public read access for listed hostels (anon + authenticated)
 create policy "Public can view listed hostels"

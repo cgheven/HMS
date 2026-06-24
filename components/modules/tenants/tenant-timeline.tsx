@@ -12,8 +12,10 @@ import type { Tenant, Room, PackageTier } from "@/types";
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
   space_only: "Space Only",
-  space_food: "Space + Food",
-  space_food_ac: "Space + Food + AC",
+  space_food: "Space + 2 Meals",
+  space_3meals: "Space + 3 Meals",
+  space_food_ac: "Space + Meals + AC",
+  space_meals_cooler: "Space + Meals + Cooler",
 };
 
 const DEFAULT_SHOW = 12;

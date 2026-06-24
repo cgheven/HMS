@@ -2,7 +2,7 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   CreditCard, CheckCircle2, Clock, AlertTriangle, Wallet,
-  TrendingUp, Edit2, Banknote, RefreshCw, MessageCircle,
+  TrendingUp, Edit2, Banknote, RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -88,6 +88,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [sendingWa, setSendingWa] = useState<string | null>(null); // paymentId
+  const [postPaymentWa, setPostPaymentWa] = useState<Payment | null>(null);
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
 
@@ -144,7 +145,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
     // --- Client-side input validation (F-004, F-005) ---
     const tier = markDialog.payment_package_tier as PackageTier | undefined;
-    const isAcTier = tier === "space_food_ac";
+    const isAcTier = (tier === "space_food_ac");
 
     if (isAcTier) {
       const rawAc = markForm.ac_units_consumed.trim();
@@ -182,12 +183,17 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
     if (result.error) {
       toast({ title: "Error", description: result.error, variant: "destructive" });
+      setSaving(false);
+      return;
     } else {
-      toast({ title: "Payment recorded" });
+      toast({ title: "Payment recorded! 🎉" });
+      const paidForWa = markDialog;
       setMarkDialog(null);
+      setSaving(false);
       await syncMonth(selectedMonth);
+      setPostPaymentWa(paidForWa);
+      return;
     }
-    setSaving(false);
   }
 
   async function markWaived(p: Payment) {
@@ -223,7 +229,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       const receiptUrl = `${origin}/r/${token}`;
 
       // Normalise Pakistan phone: 03XX... -> 923XX...
-      const rawPhone = (p.tenant as unknown as { phone?: string })?.phone ?? "";
+      const rawPhone = p.tenant?.phone ?? "";
       const normPhone = rawPhone.replace(/\D/g, "").replace(/^0/, "92");
 
       const firstName = p.tenant?.full_name?.split(" ")[0] ?? "there";
@@ -248,6 +254,29 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }
   }
 
+  async function sendReminder(p: Payment) {
+    const rawPhone = p.tenant?.phone ?? "";
+    if (!rawPhone) {
+      toast({ title: "No phone number", description: "This tenant has no phone on file.", variant: "destructive" });
+      return;
+    }
+    const digits = rawPhone.replace(/\D/g, "").replace(/^0/, "92");
+    if (!digits) {
+      toast({ title: "Invalid phone", variant: "destructive" });
+      return;
+    }
+    const firstName = p.tenant?.full_name?.split(" ")[0] ?? "there";
+    const total = Number(p.amount) + Number(p.late_fee ?? 0);
+    const totalFormatted = `Rs. ${total.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+    const message =
+      `Assalam o Alaikum ${firstName},\n\n` +
+      `Friendly reminder — your rent of *${totalFormatted}* for ${p.for_month} is still pending.\n\n` +
+      `Please arrange payment at your earliest convenience.\n\n` +
+      `— ${hostelName}`;
+    const waUrl = `https://wa.me/${digits}?text=${encodeURIComponent(message)}`;
+    window.open(waUrl, "_blank", "noopener,noreferrer");
+  }
+
   const stats = useMemo(() => {
     const due = payments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
     const collected = payments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
@@ -256,70 +285,125 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }, [payments]);
 
   const TIER_LABEL: Record<string, string> = {
-    space_only: "Space",
-    space_food: "Space+Food",
-    space_food_ac: "Space+Food+AC",
+    space_only: "Space Only",
+    space_food: "Space + 2 Meals",
+    space_3meals: "Space + 3 Meals",
+    space_food_ac: "Space + Meals + AC",
+    space_meals_cooler: "Space + Meals + Cooler",
   };
+
+  const WA_ICON = (
+    <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+    </svg>
+  );
+
+  // Table header row
+  function PaymentTableHeader() {
+    return (
+      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-3 px-4 py-2 border-b border-white/5">
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tenant</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Plan</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Amount</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-center w-24">Status</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-36">Action</span>
+      </div>
+    );
+  }
 
   function PaymentRow({ p }: { p: Payment }) {
     const room = p.tenant?.room_id ? roomMap[p.tenant.room_id] : null;
     const cfg = statusConfig[p.status];
     const isLate = (p.status === "pending" || p.status === "overdue") && p.for_month < selectedMonth;
-    const tierLabel = p.payment_package_tier ? TIER_LABEL[p.payment_package_tier] : null;
+    const tierLabel = p.payment_package_tier ? TIER_LABEL[p.payment_package_tier] : "Space Only";
+    const total = Number(p.amount) + Number(p.late_fee || 0);
+
+    const statusColors: Record<PaymentStatus, string> = {
+      paid: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
+      pending: "bg-amber/15 text-amber border-amber/25",
+      overdue: "bg-rose-500/15 text-rose-400 border-rose-500/25",
+      waived: "bg-white/5 text-muted-foreground border-white/10",
+    };
+
     return (
-      <div className="flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-sm font-medium text-foreground">{p.tenant?.full_name ?? "—"}</p>
+      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-3 items-center px-4 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5">
+        {/* Tenant column */}
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground truncate">{p.tenant?.full_name ?? "—"}</p>
+          <div className="flex items-center gap-2 flex-wrap mt-0.5">
             {room && <span className="text-xs text-muted-foreground">Rm {room.room_number}</span>}
-            {tierLabel && tierLabel !== "Space" && (
-              <span className="text-xs text-blue-400 font-medium">{tierLabel}</span>
-            )}
             {isLate && <span className="text-xs text-rose-400 font-medium">Late</span>}
-          </div>
-          <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
-            {p.payment_date && <span className="text-xs text-muted-foreground">Paid: {formatDate(p.payment_date)}</span>}
-            {p.payment_method && <span className="text-xs text-muted-foreground">{methodLabels[p.payment_method]}</span>}
-            {p.receipt_number && <span className="text-xs text-muted-foreground">{p.receipt_number}</span>}
-            {p.food_charge != null && Number(p.food_charge) > 0 && (
-              <span className="text-xs text-muted-foreground">Food: {formatCurrency(p.food_charge)}</span>
-            )}
-            {p.ac_charge != null && Number(p.ac_charge) > 0 && (
-              <span className="text-xs text-muted-foreground">AC: {formatCurrency(p.ac_charge)}</span>
-            )}
+            {p.payment_date && <span className="text-xs text-muted-foreground">Paid {formatDate(p.payment_date)}</span>}
+            {p.payment_method && !p.payment_date && <span className="text-xs text-muted-foreground">{methodLabels[p.payment_method]}</span>}
           </div>
         </div>
-        <div className="text-right shrink-0">
-          <p className="text-sm font-semibold text-foreground">{formatCurrency(Number(p.amount) + Number(p.late_fee || 0))}</p>
+
+        {/* Plan column */}
+        <div className="min-w-0">
+          <span className="text-sm text-blue-400 font-medium truncate">{tierLabel}</span>
+          {(p.food_charge != null && Number(p.food_charge) > 0 || p.ac_charge != null && Number(p.ac_charge) > 0) && (
+            <div className="flex flex-wrap gap-x-2 mt-0.5">
+              {Number(p.food_charge) > 0 && <span className="text-xs text-muted-foreground">Food: {formatCurrency(p.food_charge!)}</span>}
+              {Number(p.ac_charge) > 0 && <span className="text-xs text-muted-foreground">AC: {formatCurrency(p.ac_charge!)}</span>}
+            </div>
+          )}
+        </div>
+
+        {/* Amount column */}
+        <div className="text-right">
+          <p className="text-sm font-semibold text-foreground">{formatCurrency(total)}</p>
           {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
-          <p className={`text-xs font-medium ${cfg.color}`}>{cfg.label}</p>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          {p.status !== "paid" && p.status !== "waived" && (
+
+        {/* Status badge */}
+        <div className="flex justify-center w-24">
+          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${statusColors[p.status]}`}>
+            {cfg.label}
+          </span>
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center justify-end gap-1.5 w-36">
+          {(p.status === "pending" || p.status === "overdue") && (
             <>
-              <Button variant="ghost" size="sm" className="h-7 text-xs gap-1 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
-                <CheckCircle2 className="w-3 h-3" /> Pay
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2.5 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50"
+                onClick={() => sendReminder(p)}
+              >
+                {WA_ICON}
+                Remind
               </Button>
-              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => markOverdue(p)}>
-                <AlertTriangle className="w-3 h-3" />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2.5 text-xs gap-1 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20"
+                onClick={() => openMarkPaid(p)}
+              >
+                <CheckCircle2 className="w-3 h-3" />
+                Pay
               </Button>
             </>
-          )}
-          {p.status === "pending" && (
-            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground" onClick={() => markWaived(p)}>
-              <Edit2 className="w-3 h-3" />
-            </Button>
           )}
           {p.status === "paid" && (
             <Button
               variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-[#25D366] hover:bg-[#25D366]/10"
-              title="Send WhatsApp receipt"
+              size="sm"
+              className="h-7 px-2.5 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50"
               disabled={sendingWa === p.id}
               onClick={() => sendWhatsAppReceipt(p)}
             >
-              <MessageCircle className="w-3.5 h-3.5" />
+              {WA_ICON}
+              Receipt
+            </Button>
+          )}
+          {p.status === "waived" && (
+            <span className="text-xs text-muted-foreground px-2">Waived</span>
+          )}
+          {(p.status === "pending") && (
+            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-muted-foreground" title="Mark waived" onClick={() => markWaived(p)}>
+              <Edit2 className="w-3 h-3" />
             </Button>
           )}
         </div>
@@ -381,8 +465,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 <p className="text-xs">Add active tenants to start tracking payments</p>
               </div>
             ) : (
-              <div className="p-2 space-y-1">
-                {payments.map((p) => <PaymentRow key={p.id} p={p} />)}
+              <div className="p-2">
+                <PaymentTableHeader />
+                <div className="space-y-0.5 mt-1">
+                  {payments.map((p) => <PaymentRow key={p.id} p={p} />)}
+                </div>
               </div>
             )}
           </div>
@@ -428,10 +515,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               {/* Package tier charge breakdown */}
               {markDialog?.payment_package_tier && markDialog.payment_package_tier !== "space_only" && (
                 <div className="mt-1.5 pt-1.5 border-t border-white/10 space-y-0.5">
-                  {(markDialog.payment_package_tier === "space_food" || markDialog.payment_package_tier === "space_food_ac") && (
+                  {(markDialog.payment_package_tier === "space_food" || markDialog.payment_package_tier === "space_3meals" || markDialog.payment_package_tier === "space_food_ac" || markDialog.payment_package_tier === "space_meals_cooler") && (
                     <p className="text-xs text-muted-foreground">Food: {formatCurrency(markDialog.food_charge ?? 0)}</p>
                   )}
-                  {markDialog.payment_package_tier === "space_food_ac" && (
+                  {(markDialog.payment_package_tier === "space_food_ac") && (
                     <p className="text-xs text-muted-foreground">AC: {formatCurrency(markDialog.ac_charge ?? 0)}</p>
                   )}
                   <p className="text-xs font-medium text-foreground">Total: {formatCurrency(markDialog.amount ?? 0)}</p>
@@ -485,6 +572,43 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             <Button variant="outline" onClick={() => setMarkDialog(null)}>Cancel</Button>
             <Button onClick={handleMarkPaid} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700 text-white">
               {saving ? "Saving…" : "Confirm Payment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Post-Payment WhatsApp Receipt Dialog */}
+      <Dialog open={!!postPaymentWa} onOpenChange={(o) => !o && setPostPaymentWa(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-emerald-400">Payment Recorded!</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 text-center">
+              <p className="text-sm font-medium text-foreground">{postPaymentWa?.tenant?.full_name}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{postPaymentWa?.for_month}</p>
+              <p className="text-lg font-bold text-emerald-400 mt-1">
+                {formatCurrency(Number(postPaymentWa?.amount ?? 0) + Number(postPaymentWa?.late_fee ?? 0))}
+              </p>
+            </div>
+            <p className="text-sm text-muted-foreground text-center">Share the receipt with the tenant via WhatsApp?</p>
+          </div>
+          <DialogFooter className="flex gap-2">
+            <Button variant="outline" onClick={() => setPostPaymentWa(null)}>Skip</Button>
+            <Button
+              disabled={sendingWa === postPaymentWa?.id}
+              onClick={async () => {
+                if (postPaymentWa) {
+                  await sendWhatsAppReceipt(postPaymentWa);
+                  setPostPaymentWa(null);
+                }
+              }}
+              className="flex-1 gap-2 bg-[#25D366] hover:bg-[#20ba57] text-white"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+              </svg>
+              Send Receipt
             </Button>
           </DialogFooter>
         </DialogContent>

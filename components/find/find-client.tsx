@@ -1,7 +1,7 @@
 "use client";
 import { useState, useMemo } from "react";
 import {
-  Search, MapPin, Mail, ExternalLink, Home,
+  Search, MapPin, ExternalLink, Home,
   Users, Wifi, Zap, Utensils, Shield, BedDouble, Clock, X, Loader2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -104,7 +104,7 @@ function WaitlistModal({ hostel, onClose }: { hostel: PublicHostel; onClose: () 
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
               <p className="text-sm text-muted-foreground">
-                This hostel is currently full. Leave your details and the owner will reach out when a bed opens up.
+                Leave your details and the owner will reach out on WhatsApp when a space opens up.
               </p>
               <div className="space-y-1.5">
                 <Label>Your Name *</Label>
@@ -131,8 +131,6 @@ function WaitlistModal({ hostel, onClose }: { hostel: PublicHostel; onClose: () 
 function HostelCard({ h }: { h: PublicHostel }) {
   const [waitlistOpen, setWaitlistOpen] = useState(false);
   const typeCfg = h.hostel_type ? TYPE_CONFIG[h.hostel_type] : null;
-  const visibleAmenities = h.amenities.slice(0, 6);
-  const extra = h.amenities.length - 6;
   const waUrl = h.phone ? toWhatsAppUrl(h.phone, h.name) : null;
   const isFull = h.available_beds === 0;
 
@@ -140,22 +138,36 @@ function HostelCard({ h }: { h: PublicHostel }) {
     <>
       {waitlistOpen && <WaitlistModal hostel={h} onClose={() => setWaitlistOpen(false)} />}
 
-      <div className="group flex flex-col rounded-2xl border border-sidebar-border bg-card hover:border-amber/20 hover:bg-card/80 transition-all duration-200 overflow-hidden">
-        {/* Card header */}
-        <div className="px-5 pt-5 pb-4 border-b border-sidebar-border/50">
+      <div className="group flex flex-col rounded-2xl border border-sidebar-border bg-card hover:border-amber/20 transition-colors duration-200 overflow-hidden">
+
+        {/* Header */}
+        <div className="px-5 pt-5 pb-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h3 className="font-semibold text-foreground text-base leading-tight truncate group-hover:text-amber transition-colors">
+              <h3 className="font-semibold text-foreground text-base leading-snug truncate group-hover:text-amber transition-colors">
                 {h.name}
               </h3>
-              {(h.area || h.city) && (
-                <div className="flex items-center gap-1 mt-1.5">
-                  <MapPin className="w-3 h-3 text-muted-foreground shrink-0" />
-                  <span className="text-xs text-muted-foreground truncate">
-                    {[h.area, h.city].filter(Boolean).join(", ")}
-                  </span>
-                </div>
-              )}
+              <div className="flex items-center gap-2 mt-1">
+                {(h.area || h.city) && (
+                  <div className="flex items-center gap-1 min-w-0">
+                    <MapPin className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <span className="text-xs text-muted-foreground truncate">
+                      {[h.area, h.city].filter(Boolean).join(", ")}
+                    </span>
+                  </div>
+                )}
+                {h.maps_url && (
+                  <a
+                    href={h.maps_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-0.5 text-xs text-amber/70 hover:text-amber transition-colors shrink-0"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    Map
+                  </a>
+                )}
+              </div>
             </div>
             {typeCfg && (
               <span className={`shrink-0 inline-flex items-center px-2 py-0.5 rounded-full border text-xs font-medium ${typeCfg.cls}`}>
@@ -165,21 +177,21 @@ function HostelCard({ h }: { h: PublicHostel }) {
           </div>
         </div>
 
-        {/* Body */}
-        <div className="flex flex-col flex-1 gap-4 px-5 py-4">
+        {/* Body — flex-1 so CTA always pins to bottom */}
+        <div className="flex flex-col flex-1 gap-3 px-5 pb-4">
           {h.description && (
             <p className="text-sm text-muted-foreground line-clamp-2">{h.description}</p>
           )}
 
-          {/* Availability + capacity row */}
-          <div className="flex items-center gap-3">
+          {/* Availability */}
+          <div className="flex items-center gap-2.5 flex-wrap">
             {isFull ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/20 text-xs font-medium text-rose-400">
                 <BedDouble className="w-3 h-3" /> Full
               </span>
             ) : (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs font-medium text-emerald-400">
-                <BedDouble className="w-3 h-3" /> {h.available_beds} bed{h.available_beds !== 1 ? "s" : ""} available
+                <BedDouble className="w-3 h-3" /> {h.available_beds} {h.available_beds === 1 ? "bed" : "beds"} available
               </span>
             )}
             {h.total_capacity > 0 && (
@@ -189,58 +201,34 @@ function HostelCard({ h }: { h: PublicHostel }) {
             )}
           </div>
 
+          {/* All amenities — no artificial cap */}
           {h.amenities.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
-              {visibleAmenities.map((a) => <AmenityChip key={a} label={a} />)}
-              {extra > 0 && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-white/[0.03] border border-white/10 text-xs text-muted-foreground">
-                  +{extra} more
-                </span>
-              )}
+              {h.amenities.map((a) => <AmenityChip key={a} label={a} />)}
             </div>
           )}
         </div>
 
-        {/* Primary CTA */}
-        <div className="px-5 pb-4">
-          {isFull ? (
-            <button
-              onClick={() => setWaitlistOpen(true)}
-              className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.07] border border-sidebar-border text-muted-foreground hover:text-foreground text-sm font-medium transition-colors"
-            >
-              <Clock className="w-4 h-4" />
-              Join Waitlist
-            </button>
-          ) : waUrl ? (
+        {/* CTAs — always at card bottom, uniform height */}
+        <div className="px-5 pb-5 flex gap-2">
+          {waUrl && (
             <a
               href={waUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-[#25D366]/10 hover:bg-[#25D366]/20 border border-[#25D366]/25 text-[#25D366] text-sm font-medium transition-colors"
+              className="flex-1 flex items-center justify-center gap-2 h-10 rounded-xl bg-[#25D366] hover:bg-[#20ba57] text-white text-sm font-semibold transition-colors"
             >
               <WhatsAppIcon />
-              Book Now on WhatsApp
-            </a>
-          ) : null}
-        </div>
-
-        {/* Footer: email + map */}
-        <div className="px-5 py-3 border-t border-sidebar-border/50 flex flex-wrap gap-3">
-          {h.email && (
-            <a href={`mailto:${h.email}`} className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
-              <Mail className="w-3 h-3" /> {h.email}
+              Book Now
             </a>
           )}
-          {h.maps_url && (
-            <a
-              href={h.maps_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-amber hover:text-amber/80 transition-colors ml-auto"
-            >
-              View on Map <ExternalLink className="w-3 h-3" />
-            </a>
-          )}
+          <button
+            onClick={() => setWaitlistOpen(true)}
+            className={`flex items-center justify-center gap-1.5 h-10 rounded-xl border border-sidebar-border bg-white/[0.03] hover:bg-white/[0.07] text-muted-foreground hover:text-foreground text-sm font-medium transition-colors ${waUrl ? "px-4" : "flex-1"}`}
+          >
+            <Clock className="w-3.5 h-3.5 shrink-0" />
+            Join Waitlist
+          </button>
         </div>
       </div>
     </>

@@ -62,6 +62,15 @@ export interface ReportData {
   totalCapacity: number;
   totalOccupied: number;
 
+  // Plan distribution (active tenants)
+  planDistribution: {
+    tier: string;
+    label: string;
+    count: number;
+    percentage: number;
+    revenue: number;
+  }[];
+
   // AC analytics
   acByRoom: {
     roomNumber: string;
@@ -163,7 +172,7 @@ export async function getReportData(
       .lte("for_month", to),
     admin
       .from("hms_tenants")
-      .select("id, full_name, check_in, check_out, is_active")
+      .select("id, full_name, check_in, check_out, is_active, package_tier")
       .eq("hostel_id", hostelId),
     admin
       .from("hms_rooms")
@@ -290,6 +299,36 @@ export async function getReportData(
     ? Math.round(acPayments.reduce((s, p) => s + Number(p.ac_units_consumed || 0), 0) / totalAcTenants)
     : 0;
 
+  // Plan distribution — active tenants grouped by package_tier
+  const TIER_LABELS: Record<string, string> = {
+    space_only: "Space Only",
+    space_food: "Space + 2 Meals",
+    space_3meals: "Space + 3 Meals",
+    space_food_ac: "Space + Meals + AC",
+    space_meals_cooler: "Space + Meals + Cooler",
+  };
+  const activeTenants = tenants.filter((t) => t.is_active);
+  const tierCounts: Record<string, number> = {};
+  activeTenants.forEach((t) => {
+    const tier = ((t as { package_tier?: string }).package_tier) ?? "space_only";
+    tierCounts[tier] = (tierCounts[tier] ?? 0) + 1;
+  });
+  const tierRevenue: Record<string, number> = {};
+  paidPayments.forEach((p) => {
+    const tier = (p.payment_package_tier as string) ?? "space_only";
+    tierRevenue[tier] = (tierRevenue[tier] ?? 0) + Number(p.amount) + Number(p.late_fee || 0);
+  });
+  const totalActiveTenants = activeTenants.length;
+  const planDistribution = Object.entries(tierCounts)
+    .map(([tier, count]) => ({
+      tier,
+      label: TIER_LABELS[tier] ?? tier,
+      count,
+      percentage: totalActiveTenants > 0 ? Math.round((count / totalActiveTenants) * 100) : 0,
+      revenue: tierRevenue[tier] ?? 0,
+    }))
+    .sort((a, b) => b.count - a.count);
+
   return {
     data: {
       hostelId,
@@ -310,6 +349,7 @@ export async function getReportData(
       totalOccupied,
       acByRoom,
       acStats: { avgUnitsPerTenant, totalAcRevenue, totalAcTenants },
+      planDistribution,
     },
     error: null,
   };

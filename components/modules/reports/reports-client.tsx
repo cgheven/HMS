@@ -3,7 +3,7 @@ import { useState, useMemo, useCallback } from "react";
 import dynamic from "next/dynamic";
 import {
   BarChart3, TrendingUp, Users, AlertTriangle, Banknote, BedDouble,
-  TrendingDown, Download, FileSpreadsheet, RefreshCw, Zap,
+  TrendingDown, Download, FileSpreadsheet, RefreshCw, Zap, Package,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
@@ -95,6 +95,8 @@ const currencyTooltip = ({ active, payload, label }: { active?: boolean; payload
 };
 
 const COLORS = ["#f5a623", "#10b981", "#3b82f6", "#a855f7", "#ef4444"];
+// One distinct color per plan tier
+const PLAN_COLORS = ["#f5a623", "#10b981", "#3b82f6", "#a855f7", "#06b6d4"];
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function ReportsClient(props: Props) {
@@ -407,6 +409,98 @@ export function ReportsClient(props: Props) {
                 </div>
               )}
             </div>
+            {/* Plan Distribution */}
+            {d.planDistribution.length > 0 && (
+              <div className="rounded-2xl border border-sidebar-border bg-card p-6">
+                <div className="flex items-center gap-2 mb-1">
+                  <Package className="w-4 h-4 text-muted-foreground" />
+                  <h2 className="text-sm font-semibold">Plan Distribution</h2>
+                </div>
+                <p className="text-xs text-muted-foreground mb-5">Active tenants by package · most to least preferred</p>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Donut chart */}
+                  <div className="h-[220px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={d.planDistribution}
+                          dataKey="count"
+                          nameKey="label"
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={55}
+                          outerRadius={85}
+                          paddingAngle={3}
+                        >
+                          {d.planDistribution.map((_, idx) => (
+                            <Cell key={idx} fill={PLAN_COLORS[idx % PLAN_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          formatter={(value: number, name: string) => [`${value} tenant${value !== 1 ? "s" : ""}`, name]}
+                          contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--sidebar-border))", borderRadius: 12, fontSize: 12 }}
+                        />
+                        <Legend
+                          formatter={(value) => <span className="text-xs text-muted-foreground">{value}</span>}
+                          wrapperStyle={{ fontSize: 11 }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* Ranked list */}
+                  <div className="space-y-3 self-center">
+                    {d.planDistribution.map((plan, idx) => (
+                      <div key={plan.tier}>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className="w-2.5 h-2.5 rounded-sm shrink-0"
+                              style={{ background: PLAN_COLORS[idx % PLAN_COLORS.length] }}
+                            />
+                            <span className="text-sm font-medium text-foreground truncate">{plan.label}</span>
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0 ml-2">
+                            <span className="text-xs text-muted-foreground">{plan.count} tenant{plan.count !== 1 ? "s" : ""}</span>
+                            <span className="text-xs font-semibold text-foreground w-8 text-right">{plan.percentage}%</span>
+                          </div>
+                        </div>
+                        <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all"
+                            style={{
+                              width: `${plan.percentage}%`,
+                              background: PLAN_COLORS[idx % PLAN_COLORS.length],
+                            }}
+                          />
+                        </div>
+                        {plan.revenue > 0 && (
+                          <p className="text-xs text-muted-foreground mt-0.5 text-right">{formatCurrency(plan.revenue)} collected</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Summary insight strip */}
+                {d.planDistribution.length >= 2 && (
+                  <div className="mt-5 pt-4 border-t border-sidebar-border/60 flex flex-wrap gap-x-6 gap-y-1">
+                    <p className="text-xs text-muted-foreground">
+                      Most preferred: <span className="text-foreground font-medium">{d.planDistribution[0].label}</span>
+                      {" "}({d.planDistribution[0].percentage}%)
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Least preferred: <span className="text-foreground font-medium">{d.planDistribution[d.planDistribution.length - 1].label}</span>
+                      {" "}({d.planDistribution[d.planDistribution.length - 1].percentage}%)
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Total active tenants: <span className="text-foreground font-medium">{d.planDistribution.reduce((s, p) => s + p.count, 0)}</span>
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
           </TabsContent>
 
           {/* ── REVENUE TAB ──────────────────────────────────────────────── */}

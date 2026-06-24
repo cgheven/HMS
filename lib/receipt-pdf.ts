@@ -1,11 +1,6 @@
 /**
- * Minimal PDF receipt generator — no external dependency required.
- *
- * NOTE: jsPDF is NOT in package.json. This module produces a hand-crafted
- * single-page PDF using only the built-in PDF 1.4 syntax so the route
- * /r/[token] can generate receipts without adding a dependency.
- *
- * The output is a valid Uint8Array that browsers download as a PDF.
+ * Narrow thermal-style receipt PDF — 250pt wide, dynamic height.
+ * No external dependency; pure PDF 1.4 text stream, no jsPDF.
  */
 
 interface ReceiptPayment {
@@ -23,8 +18,7 @@ interface ReceiptPayment {
 interface ReceiptTenant {
   full_name: string;
   phone?: string | null;
-  // F-008: CNIC is sensitive PII; it must NOT appear in public-facing receipts.
-  // The field is omitted from this interface so it cannot be passed in by callers.
+  // F-008: CNIC is sensitive PII; must NOT appear in public-facing receipts.
   room_id?: string | null;
 }
 
@@ -34,12 +28,7 @@ interface ReceiptHostel {
   phone?: string | null;
 }
 
-// ---------------------------------------------------------------------------
-// Tiny PDF builder — enough for a clean text receipt
-// ---------------------------------------------------------------------------
-
 function encodePdfString(str: string): string {
-  // PDF literal string: parentheses and backslash must be escaped
   return str
     .replace(/\\/g, "\\\\")
     .replace(/\(/g, "\\(")
@@ -63,152 +52,151 @@ function methodLabel(m: string | null | undefined): string {
   return m.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function amountInWords(n: number): string {
+  const rounded = Math.round(n);
+  if (rounded === 0) return "Zero Rupees Only";
+  const ones = [
+    "", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+    "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+    "Seventeen", "Eighteen", "Nineteen",
+  ];
+  const tensArr = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
+  function words(num: number): string {
+    if (num === 0) return "";
+    if (num < 20) return ones[num];
+    if (num < 100) return tensArr[Math.floor(num / 10)] + (num % 10 ? " " + ones[num % 10] : "");
+    if (num < 1000) return ones[Math.floor(num / 100)] + " Hundred" + (num % 100 ? " " + words(num % 100) : "");
+    if (num < 100000) return words(Math.floor(num / 1000)) + " Thousand" + (num % 1000 ? " " + words(num % 1000) : "");
+    if (num < 10000000) return words(Math.floor(num / 100000)) + " Lakh" + (num % 100000 ? " " + words(num % 100000) : "");
+    return words(Math.floor(num / 10000000)) + " Crore" + (num % 10000000 ? " " + words(num % 10000000) : "");
+  }
+  return words(rounded) + " Rupees Only";
+}
+
 export function generateReceiptPDF(
   payment: ReceiptPayment,
   tenant: ReceiptTenant,
   hostel: ReceiptHostel
 ): Uint8Array {
-  const PAGE_W = 595; // A4 width in pts
-  const PAGE_H = 842; // A4 height in pts
+  const W = 250;      // narrow thermal width in pts
+  const ML = 12;      // left margin
+  const MR = W - 12;  // right edge
+  const CX = W / 2;
 
-  const lines: string[] = [];
+  // Collect commands top-down (y=0 at top), convert to PDF coords (y=0 at bottom) after.
+  type Cmd = { x: number; y: number; content: string; size: number; bold: boolean };
+  const cmds: Cmd[] = [];
+  let yTop = 14;
 
-  function text(x: number, y: number, content: string, size = 11): void {
-    lines.push(`BT /F1 ${size} Tf ${x} ${PAGE_H - y} Td (${encodePdfString(content)}) Tj ET`);
+  function add(x: number, content: string, size: number, bold: boolean): void {
+    cmds.push({ x, y: yTop, content, size, bold });
   }
-  function boldText(x: number, y: number, content: string, size = 11): void {
-    lines.push(`BT /F2 ${size} Tf ${x} ${PAGE_H - y} Td (${encodePdfString(content)}) Tj ET`);
+  function addCenter(content: string, size: number, bold: boolean): void {
+    const approxWidth = content.length * size * 0.46;
+    add(Math.max(ML, CX - approxWidth / 2), content, size, bold);
   }
-  function hrLine(y: number): void {
-    lines.push(`${40} ${PAGE_H - y} m ${PAGE_W - 40} ${PAGE_H - y} l S`);
+  function addKv(key: string, val: string, bold = false): void {
+    add(ML, key, 8, bold);
+    const approxWidth = val.length * 8 * 0.46;
+    add(Math.max(ML + 60, MR - approxWidth), val, 8, bold);
   }
+  function addDash(): void {
+    add(ML, "- - - - - - - - - - - - - - - - - - - -", 7, false);
+  }
+  function nl(n = 11): void { yTop += n; }
 
-  // ---- Content layout ----
-  let y = 60;
+  // ─── Content ────────────────────────────────────────────────────────
+  addCenter(hostel.name, 12, true); nl(15);
+  if (hostel.address) { addCenter(hostel.address, 7, false); nl(10); }
+  if (hostel.phone) { addCenter(`Tel: ${hostel.phone}`, 7, false); nl(10); }
+  nl(3); addDash(); nl(10);
+  addCenter("PAYMENT RECEIPT", 9, true); nl(10);
+  addDash(); nl(10);
 
-  // Hostel name (large heading)
-  boldText(40, y, hostel.name, 18);
-  y += 24;
-  if (hostel.address) { text(40, y, hostel.address, 9); y += 14; }
-  if (hostel.phone) { text(40, y, `Phone: ${hostel.phone}`, 9); y += 14; }
+  addKv("Receipt #", payment.receipt_number ?? "N/A"); nl(12);
+  addKv("Date", fmtDate(payment.payment_date)); nl(12);
+  addKv("Month", payment.for_month); nl(12);
+  addKv("Method", methodLabel(payment.payment_method)); nl(12);
+  addDash(); nl(10);
 
-  y += 6;
-  hrLine(y);
-  y += 16;
+  add(ML, "Tenant:", 8, true); nl(12);
+  add(ML, tenant.full_name, 8, false); nl(12);
+  if (tenant.phone) { add(ML, `Phone: ${tenant.phone}`, 8, false); nl(12); }
+  nl(2); addDash(); nl(10);
 
-  boldText(40, y, "PAYMENT RECEIPT", 14);
-  y += 20;
-  hrLine(y);
-  y += 16;
-
-  // Receipt meta
-  text(40, y, `Receipt No: ${payment.receipt_number ?? "N/A"}`);
-  text(320, y, `Date: ${fmtDate(payment.payment_date)}`);
-  y += 16;
-  text(40, y, `Month: ${payment.for_month}`);
-  text(320, y, `Method: ${methodLabel(payment.payment_method)}`);
-  y += 20;
-  hrLine(y);
-  y += 16;
-
-  // Tenant info
-  boldText(40, y, "Tenant Information", 11);
-  y += 16;
-  text(40, y, `Name: ${tenant.full_name}`);
-  if (tenant.phone) text(320, y, `Phone: ${tenant.phone}`);
-  y += 14;
-  // F-008: CNIC intentionally excluded — it is sensitive PII that must not
-  // appear on publicly accessible (unauthenticated) receipt documents.
-  y += 6;
-  hrLine(y);
-  y += 16;
-
-  // Payment breakdown
-  boldText(40, y, "Payment Breakdown", 11);
-  y += 16;
-
+  add(ML, "Breakdown:", 8, true); nl(12);
   const baseRent = payment.amount - (payment.food_charge ?? 0) - (payment.ac_charge ?? 0);
-  text(40, y, "Base Rent:");
-  text(400, y, pk(Math.max(0, baseRent)));
-  y += 14;
-
-  if ((payment.food_charge ?? 0) > 0) {
-    text(40, y, "Food Charge:");
-    text(400, y, pk(payment.food_charge!));
-    y += 14;
-  }
-
-  if ((payment.ac_charge ?? 0) > 0) {
-    text(40, y, "AC Charge:");
-    text(400, y, pk(payment.ac_charge!));
-    y += 14;
-  }
-
-  if ((payment.late_fee ?? 0) > 0) {
-    text(40, y, "Late Fee:");
-    text(400, y, pk(payment.late_fee!));
-    y += 14;
-  }
-
-  y += 6;
-  hrLine(y);
-  y += 14;
+  addKv("Base Rent", pk(Math.max(0, baseRent))); nl(12);
+  if ((payment.food_charge ?? 0) > 0) { addKv("Food", pk(payment.food_charge!)); nl(12); }
+  if ((payment.ac_charge ?? 0) > 0)   { addKv("AC Charge", pk(payment.ac_charge!)); nl(12); }
+  if ((payment.late_fee ?? 0) > 0)    { addKv("Late Fee", pk(payment.late_fee!)); nl(12); }
+  nl(2); addDash(); nl(10);
 
   const total = payment.amount + (payment.late_fee ?? 0);
-  boldText(40, y, "TOTAL PAID:", 12);
-  boldText(400, y, pk(total), 12);
-  y += 24;
-  hrLine(y);
-  y += 24;
+  addKv("TOTAL PAID", pk(total), true); nl(15);
+  addDash(); nl(10);
 
-  // Footer
-  text(40, y, "Thank you for your payment. Please keep this receipt for your records.", 9);
-  y += 14;
-  text(40, y, `Generated: ${new Date().toLocaleString("en-PK")}`, 8);
+  add(ML, "In Words:", 7, true); nl(10);
+  const wordsStr = amountInWords(total);
+  for (let i = 0; i < wordsStr.length; i += 36) {
+    add(ML, wordsStr.slice(i, i + 36), 7, false); nl(9);
+  }
+  nl(4); addDash(); nl(10);
 
-  // ---- Assemble PDF structure ----
-  const streamContent = lines.join("\n");
+  addCenter("Thank you for your payment.", 7, false); nl(9);
+  addCenter("Keep this receipt for your records.", 7, false); nl(9);
+  addCenter(`Printed: ${new Date().toLocaleDateString("en-PK")}`, 6, false); nl(8);
+
+  const PAGE_H = yTop + 10;
+
+  // ─── Assemble PDF stream (convert top-down y → bottom-up PDF y) ─────
+  const streamLines: string[] = [];
+  for (const cmd of cmds) {
+    const font = cmd.bold ? "/F2" : "/F1";
+    const pdfY = PAGE_H - cmd.y;
+    streamLines.push(`BT ${font} ${cmd.size} Tf ${cmd.x} ${pdfY} Td (${encodePdfString(cmd.content)}) Tj ET`);
+  }
+
+  const streamContent = streamLines.join("\n");
   const streamBytes = new TextEncoder().encode(streamContent);
   const streamLen = streamBytes.length;
 
   const objects: string[] = [];
-  const offsets: number[] = [];
-
-  // Object 1: Catalog
   objects[0] = "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj";
-  // Object 2: Pages
   objects[1] = "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj";
-  // Object 3: Page
   objects[2] =
-    `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_W} ${PAGE_H}] ` +
+    `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${PAGE_H}] ` +
     `/Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>\nendobj`;
-  // Object 4: Content stream
   objects[3] =
     `4 0 obj\n<< /Length ${streamLen} >>\nstream\n${streamContent}\nendstream\nendobj`;
-  // Object 5: Helvetica
-  objects[4] =
-    "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj";
-  // Object 6: Helvetica-Bold
-  objects[5] =
-    "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj";
+  objects[4] = "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj";
+  objects[5] = "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj";
 
-  const header = "%PDF-1.4\n";
-  let body = header;
+  // Build PDF using byte arrays so xref offsets are byte-accurate (handles non-ASCII safely).
+  const enc = new TextEncoder();
+  const headerBytes = enc.encode("%PDF-1.4\n");
+  const objBytes = objects.map((o) => enc.encode(o + "\n"));
 
-  for (let i = 0; i < objects.length; i++) {
-    offsets[i] = body.length;
-    body += objects[i] + "\n";
+  const offsets: number[] = [];
+  let pos = headerBytes.length;
+  for (const ob of objBytes) {
+    offsets.push(pos);
+    pos += ob.length;
   }
+  const xrefOffset = pos;
 
-  const xrefOffset = body.length;
   const xref =
     `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n` +
     offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n `).join("\n") +
     "\n";
-
   const trailer =
     `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
 
-  const full = body + xref + trailer;
-  return new TextEncoder().encode(full);
+  const xrefBytes = enc.encode(xref + trailer);
+  const pdfBytes = new Uint8Array(headerBytes.length + objBytes.reduce((s, b) => s + b.length, 0) + xrefBytes.length);
+  let bytePos = 0;
+  pdfBytes.set(headerBytes, bytePos); bytePos += headerBytes.length;
+  for (const ob of objBytes) { pdfBytes.set(ob, bytePos); bytePos += ob.length; }
+  pdfBytes.set(xrefBytes, bytePos);
+  return pdfBytes;
 }

@@ -22,7 +22,7 @@ import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types
 // Constants / validation helpers
 // ---------------------------------------------------------------------------
 
-const VALID_TIERS = new Set<string>(["space_only", "space_food", "space_food_ac"]);
+const VALID_TIERS = new Set<string>(["space_only", "space_food", "space_3meals", "space_food_ac", "space_meals_cooler"]);
 const VALID_METHODS = new Set<string>(["cash", "bank_transfer", "jazzcash", "easypaisa", "sadapay", "other"]);
 const VALID_STATUSES = new Set<string>(["paid", "pending", "overdue", "waived"]);
 const MAX_AC_UNITS = 10_000;
@@ -31,7 +31,7 @@ const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 function assertValidTier(v: unknown, field = "payment_package_tier"): asserts v is PackageTier {
   if (typeof v !== "string" || !VALID_TIERS.has(v)) {
-    throw new Error(`Invalid ${field}: "${v}". Must be one of: space_only, space_food, space_food_ac`);
+    throw new Error(`Invalid ${field}: "${v}". Must be one of: space_only, space_food, space_3meals, space_food_ac, space_meals_cooler`);
   }
 }
 
@@ -124,7 +124,7 @@ export async function syncMonthAction(
         if (!VALID_TIERS.has(tier)) throw new Error(`Invalid package_tier in DB for tenant ${t.id}`);
 
         const baseRent = calcBaseRentServer(t, month);
-        const foodCharge = (tier === "space_food" || tier === "space_food_ac") ? foodRate : 0;
+        const foodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
         // AC charge defaults to 0 on sync; entered per-payment when marking paid
         const acCharge = 0;
         const totalAmount = baseRent + foodCharge + acCharge;
@@ -151,7 +151,7 @@ export async function syncMonthAction(
 
     const { data: payments, error: fetchErr } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
       .order("created_at", { ascending: false });
@@ -222,7 +222,7 @@ export async function markPaymentPaidAction(
       throw new Error(`Invalid payment_package_tier on record: "${tier}"`);
     }
 
-    const isAcTier = tier === "space_food_ac";
+    const isAcTier = (tier === "space_food_ac");
 
     // --- Validate AC units (F-003, F-004) ---
     let acUnitsConsumed: number | null = null;
@@ -267,7 +267,7 @@ export async function markPaymentPaidAction(
     // Re-fetch food_charge from the canonical package config rate (never trust
     // the stored row value, which could have been corrupted via direct API PATCH).
     let foodCharge = 0;
-    if (tier === "space_food" || tier === "space_food_ac") {
+    if (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") {
       const { data: foodConfigData } = await supabase
         .from("hms_package_configs")
         .select("food_monthly_rate")
@@ -307,7 +307,7 @@ export async function markPaymentPaidAction(
       .update(updatePayload)
       .eq("id", input.paymentId)
       .eq("hostel_id", hostelId) // double-check ownership
-      .select("*, tenant:hms_tenants(full_name, room_id)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
       .single();
 
     if (error) throw new Error(error.message);
@@ -377,7 +377,7 @@ export async function loadHistoryAction(): Promise<{ payments?: Payment[]; error
 
     const { data, error } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
       .eq("hostel_id", hostelId)
       .order("for_month", { ascending: false })
       .order("created_at", { ascending: false })

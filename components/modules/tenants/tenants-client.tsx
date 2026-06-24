@@ -33,8 +33,10 @@ interface Props {
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
   space_only: "Space Only",
-  space_food: "Space + Food",
-  space_food_ac: "Space + Food + AC",
+  space_food: "Space + 2 Meals",
+  space_3meals: "Space + 3 Meals",
+  space_food_ac: "Space + Meals + AC",
+  space_meals_cooler: "Space + Meals + Cooler",
 };
 
 const emptyForm = {
@@ -45,7 +47,7 @@ const emptyForm = {
   check_in: formatDateInput(new Date()),
   billing_type: "monthly" as "monthly" | "daily",
   monthly_rent: "", daily_rate: "", check_out: "", security_deposit: "0",
-  emergency_contact: "", emergency_phone: "", notes: "",
+  emergency_contact: "", emergency_relationship: "", emergency_phone: "", notes: "",
   is_waiting: false,
   photo_url: "" as string,
 };
@@ -128,13 +130,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
   function copyJoinLink() {
     if (!hostelSlug) {
-      toast({ title: "No slug set", description: "Enable listing in Settings to get a shareable link.", variant: "destructive" });
+      toast({ title: "No form link yet", description: "Contact support to set up your hostel slug.", variant: "destructive" });
       return;
     }
     const url = `${window.location.origin}/join/${hostelSlug}`;
-    navigator.clipboard.writeText(url).then(() => {
-      toast({ title: "Link copied!", description: url });
-    });
+    window.open(url, "_blank", "noopener,noreferrer");
+    navigator.clipboard.writeText(url).catch(() => null);
+    toast({ title: "Form opened + link copied!", description: url });
   }
 
   function openAdd() {
@@ -161,6 +163,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       check_out: t.check_out ?? "",
       security_deposit: t.security_deposit?.toString() ?? "0",
       emergency_contact: t.emergency_contact ?? "",
+      emergency_relationship: t.emergency_relationship ?? "",
       emergency_phone: t.emergency_phone ?? "",
       notes: t.notes ?? "",
       is_waiting: t.is_waiting,
@@ -192,6 +195,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       daily_rate: form.billing_type === "daily" ? parseFloat(form.daily_rate) || 0 : 0,
       security_deposit: parseFloat(form.security_deposit) || 0,
       emergency_contact: form.emergency_contact || null,
+      emergency_relationship: form.emergency_relationship || null,
       emergency_phone: form.emergency_phone || null,
       notes: form.notes || null,
       is_waiting: form.is_waiting,
@@ -310,29 +314,35 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const room = t.room_id ? roomMap[t.room_id] : null;
     const initials = t.full_name[0].toUpperCase();
     return (
-      <div className="flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5">
-        {/* Photo avatar */}
-        <div className="w-9 h-9 rounded-full shrink-0 overflow-hidden border border-amber/20 bg-amber/10 flex items-center justify-center">
-          {t.photo_url ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={t.photo_url} alt={t.full_name} className="w-full h-full object-cover" />
-          ) : (
-            <span className="text-sm font-semibold text-amber">{initials}</span>
-          )}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-sm font-medium text-foreground">{t.full_name}</p>
-            <Badge variant="secondary" className="text-xs capitalize">{t.type}</Badge>
-            {t.billing_type === "daily" && <Badge variant="warning" className="text-xs">Daily</Badge>}
+      <div className="flex items-center gap-2 px-4 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5">
+        <button
+          type="button"
+          className="flex items-center gap-4 flex-1 min-w-0 text-left hover:opacity-80 transition-opacity"
+          onClick={() => setTimelineTenant(t)}
+          title="View history"
+        >
+          <div className="w-9 h-9 rounded-full shrink-0 overflow-hidden border border-amber/20 bg-amber/10 flex items-center justify-center">
+            {t.photo_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={t.photo_url} alt={t.full_name} className="w-full h-full object-cover" />
+            ) : (
+              <span className="text-sm font-semibold text-amber">{initials}</span>
+            )}
           </div>
-          <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
-            {room && <span className="text-xs text-muted-foreground">Room {room.room_number}{t.bed_number ? ` · Bed ${t.bed_number}` : ""}</span>}
-            {t.phone && <span className="text-xs text-muted-foreground flex items-center gap-1"><Phone className="w-2.5 h-2.5" />{t.phone}</span>}
-            {t.check_in && <span className="text-xs text-muted-foreground">In: {formatDate(t.check_in)}</span>}
-            {t.check_out && <span className="text-xs text-muted-foreground">Out: {formatDate(t.check_out)}</span>}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-sm font-medium text-foreground">{t.full_name}</p>
+              <Badge variant="secondary" className="text-xs capitalize">{t.type}</Badge>
+              {t.billing_type === "daily" && <Badge variant="warning" className="text-xs">Daily</Badge>}
+            </div>
+            <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
+              {room && <span className="text-xs text-muted-foreground">Room {room.room_number}{t.bed_number ? ` · Bed ${t.bed_number}` : ""}</span>}
+              {t.phone && <span className="text-xs text-muted-foreground flex items-center gap-1"><Phone className="w-2.5 h-2.5" />{t.phone}</span>}
+              {t.check_in && <span className="text-xs text-muted-foreground">In: {formatDate(t.check_in)}</span>}
+              {t.check_out && <span className="text-xs text-muted-foreground">Out: {formatDate(t.check_out)}</span>}
+            </div>
           </div>
-        </div>
+        </button>
         <div className="text-right shrink-0 hidden sm:block">
           {t.billing_type === "daily"
             ? <p className="text-sm font-semibold text-foreground">{formatCurrency(t.daily_rate)}<span className="text-xs text-muted-foreground font-normal">/day</span></p>
@@ -501,8 +511,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       };
                       const pkgLabels: Record<string, string> = {
                         space_only: "Space Only",
-                        space_food: "Space + Food",
-                        space_food_ac: "Space + Food + AC",
+                        space_food: "Space + 2 Meals",
+                        space_3meals: "Space + 3 Meals",
+                        space_food_ac: "Space + Meals + AC",
+                        space_meals_cooler: "Space + Meals + Cooler",
                       };
                       return (
                         <tr key={app.id} className="hover:bg-white/[0.02] transition-colors">
@@ -727,6 +739,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5"><Label>Emergency Contact</Label><Input placeholder="Name" value={form.emergency_contact} onChange={(e) => setForm({ ...form, emergency_contact: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Emergency Phone</Label><Input placeholder="+92 300 0000000" value={form.emergency_phone} onChange={(e) => setForm({ ...form, emergency_phone: e.target.value })} /></div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Emergency Relationship</Label>
+              <Select value={form.emergency_relationship} onValueChange={(v) => setForm({ ...form, emergency_relationship: v })}>
+                <SelectTrigger><SelectValue placeholder="Select relationship" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Father">Father</SelectItem>
+                  <SelectItem value="Mother">Mother</SelectItem>
+                  <SelectItem value="Brother">Brother</SelectItem>
+                  <SelectItem value="Sister">Sister</SelectItem>
+                  <SelectItem value="Spouse">Spouse</SelectItem>
+                  <SelectItem value="Friend">Friend</SelectItem>
+                  <SelectItem value="Other">Other</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-1.5"><Label>Notes</Label><Input placeholder="Any additional notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>

@@ -15,7 +15,7 @@ import { formatCurrency, capitalize } from "@/lib/utils";
 import type { Room, RoomStatus, SpaceType } from "@/types";
 
 const statusColors: Record<RoomStatus, "success" | "info" | "warning"> = { available: "success", occupied: "info", maintenance: "warning" };
-const emptyRoom = { room_number: "", floor: "", type: "general" as SpaceType, capacity: "1", monthly_rent: "", status: "available" as RoomStatus };
+const emptyRoom = { room_number: "", floor: "", type: "general" as SpaceType, capacity: "1", monthly_rent: "", status: "available" as RoomStatus, has_ac: false, has_cooler: false };
 
 interface Props { hostelId: string | null; initialRooms: Room[]; }
 
@@ -44,7 +44,7 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
   function openAdd() { setEditing(null); setForm(emptyRoom); setDialogOpen(true); }
   function openEdit(room: Room) {
     setEditing(room);
-    setForm({ room_number: room.room_number, floor: room.floor?.toString() ?? "", type: room.type, capacity: room.capacity.toString(), monthly_rent: room.monthly_rent.toString(), status: room.status });
+    setForm({ room_number: room.room_number, floor: room.floor?.toString() ?? "", type: room.type, capacity: room.capacity.toString(), monthly_rent: room.monthly_rent.toString(), status: room.status, has_ac: room.has_ac ?? false, has_cooler: room.has_cooler ?? false });
     setDialogOpen(true);
   }
 
@@ -52,7 +52,7 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
     if (!hostelId || !form.room_number) return;
     setSaving(true);
     const supabase = createClient();
-    const payload = { hostel_id: hostelId, room_number: form.room_number, floor: form.floor ? parseInt(form.floor) : null, type: form.type, capacity: parseInt(form.capacity) || 1, monthly_rent: parseFloat(form.monthly_rent) || 0, status: form.status };
+    const payload = { hostel_id: hostelId, room_number: form.room_number, floor: form.floor ? parseInt(form.floor) : null, type: form.type, capacity: parseInt(form.capacity) || 1, monthly_rent: parseFloat(form.monthly_rent) || 0, status: form.status, has_ac: form.has_ac, has_cooler: form.has_cooler };
     const { error } = editing ? await supabase.from("hms_rooms").update(payload).eq("id", editing.id) : await supabase.from("hms_rooms").insert(payload);
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
     else { toast({ title: editing ? "Room updated" : "Room added" }); setDialogOpen(false); reload(); }
@@ -105,6 +105,12 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
                 {[["Type", capitalize(room.type)], ["Capacity", `${room.occupied}/${room.capacity}`], ["Rent/mo", formatCurrency(room.monthly_rent)]].map(([k, v]) => (
                   <div key={k} className="flex items-center justify-between text-sm"><span className="text-muted-foreground">{k}</span><span className="font-medium">{v}</span></div>
                 ))}
+                {(room.has_ac || room.has_cooler) && (
+                  <div className="flex gap-1.5 flex-wrap">
+                    {room.has_ac && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">AC</span>}
+                    {room.has_cooler && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">Cooler</span>}
+                  </div>
+                )}
                 <div className="flex gap-2 pt-2">
                   <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={() => openEdit(room)}><Edit2 className="w-3 h-3" /> Edit</Button>
                   <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(room.id)}><Trash2 className="w-3 h-3" /></Button>
@@ -138,6 +144,25 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5"><Label>Capacity</Label><Input type="number" min="1" value={form.capacity} onChange={(e) => setForm({ ...form, capacity: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Monthly Rent (PKR)</Label><Input type="number" value={form.monthly_rent} onChange={(e) => setForm({ ...form, monthly_rent: e.target.value })} /></div>
+            </div>
+            <div className="space-y-2">
+              <Label>Amenities</Label>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, has_ac: !form.has_ac })}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${form.has_ac ? "bg-blue-500/10 border-blue-500/25 text-blue-400" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}
+                >
+                  <span className="w-4 h-4 flex items-center justify-center">{form.has_ac ? "✓" : "○"}</span> AC Available
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, has_cooler: !form.has_cooler })}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${form.has_cooler ? "bg-cyan-500/10 border-cyan-500/25 text-cyan-400" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}
+                >
+                  <span className="w-4 h-4 flex items-center justify-center">{form.has_cooler ? "✓" : "○"}</span> Cooler Available
+                </button>
+              </div>
             </div>
           </div>
           <DialogFooter>

@@ -14,7 +14,7 @@ export type HostelType = "boys" | "girls" | "mixed" | "family";
 export type EmployeeStatus = "active" | "inactive";
 export type SalaryStatus = "pending" | "paid";
 export type ProspectStatus = "pending" | "visited" | "onboarded";
-export type PackageTier = "space_only" | "space_food" | "space_food_ac";
+export type PackageTier = "space_only" | "space_food" | "space_3meals" | "space_food_ac"  | "space_meals_cooler";
 export type Role = "super_admin" | "owner" | "partner";
 export type LeadStatus = "new" | "contacted" | "converted" | "rejected";
 export type ApplicationStatus = "pending" | "approved" | "rejected";
@@ -51,6 +51,29 @@ export interface AdminUser {
   hostels: { id: string; name: string; total_capacity: number }[];
 }
 
+export interface FormFieldConfig {
+  enabled: boolean;
+  required: boolean;
+}
+
+export interface FormConfig {
+  email?: FormFieldConfig;
+  cnic?: FormFieldConfig;
+  package_tier?: FormFieldConfig;
+  room_preference?: FormFieldConfig;
+  move_in_date?: FormFieldConfig;
+  notes?: FormFieldConfig;
+}
+
+export const DEFAULT_FORM_CONFIG: Required<FormConfig> = {
+  email:           { enabled: true, required: false },
+  cnic:            { enabled: true, required: false },
+  package_tier:    { enabled: true, required: false },
+  room_preference: { enabled: true, required: false },
+  move_in_date:    { enabled: true, required: false },
+  notes:           { enabled: true, required: false },
+};
+
 export interface Hostel {
   id: string;
   owner_id: string;
@@ -67,6 +90,7 @@ export interface Hostel {
   amenities: string[];
   listing_enabled: boolean;
   slug: string | null;
+  form_config: FormConfig | null;
   created_at: string;
   updated_at: string;
 }
@@ -100,6 +124,8 @@ export interface Room {
   occupied: number;
   monthly_rent: number;
   status: RoomStatus;
+  has_ac: boolean;
+  has_cooler: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -125,6 +151,7 @@ export interface Tenant {
   bed_number: string | null;
   emergency_contact: string | null;
   emergency_phone: string | null;
+  emergency_relationship: string | null;
   notes: string | null;
   photo_url: string | null;
   created_at: string;
@@ -148,7 +175,7 @@ export interface Payment {
   payment_package_tier?: PackageTier | null;
   created_at: string;
   updated_at: string;
-  tenant?: { full_name: string; room_id: string | null } | null;
+  tenant?: { full_name: string; room_id: string | null; phone?: string | null } | null;
 }
 
 export interface Complaint {
