@@ -555,7 +555,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                 </div>
                 <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.07] bg-white/[0.02]">
                   <span className="text-sm font-semibold">Total Due Today</span>
-                  <span className="text-sm font-bold text-amber">{formatCurrency(SECURITY_DEPOSIT)}</span>
+                  <span className="text-sm font-bold text-amber">{formatCurrency(selected.price + SECURITY_DEPOSIT)}</span>
                 </div>
               </div>
               <p className="text-[11px] text-muted-foreground/40 -mt-3">Monthly rent due on the 1st of each month</p>
