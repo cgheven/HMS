@@ -133,6 +133,9 @@ export interface PublicRoom {
   has_cooler: boolean;
   photo_path: string | null;
   photo_path_2: string | null;
+  photo_path_3: string | null;
+  photo_path_4: string | null;
+  photo_path_5: string | null;
 }
 
 export interface PublicHostelDetail extends PublicHostel {
@@ -155,6 +158,9 @@ export interface Room {
   has_cooler: boolean;
   photo_path: string | null;
   photo_path_2: string | null;
+  photo_path_3: string | null;
+  photo_path_4: string | null;
+  photo_path_5: string | null;
   created_at: string;
   updated_at: string;
 }

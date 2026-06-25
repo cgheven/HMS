@@ -17,9 +17,24 @@ import type { Room, RoomStatus, SpaceType } from "@/types";
 const statusColors: Record<RoomStatus, "success" | "info" | "warning"> = { available: "success", occupied: "info", maintenance: "warning" };
 const emptyRoom = { room_number: "", floor: "", type: "general" as SpaceType, capacity: "1", monthly_rent: "", status: "available" as RoomStatus, has_ac: false, has_cooler: false };
 
-interface Props { hostelId: string | null; initialRooms: Room[]; }
+// Fields for each slot — slot 0 = photo_path, slot 1 = photo_path_2, etc.
+const PHOTO_FIELDS = ["photo_path", "photo_path_2", "photo_path_3", "photo_path_4", "photo_path_5"] as const;
+const PHOTO_SUFFIXES = ["", "_2", "_3", "_4", "_5"] as const;
+const MAX_PHOTOS = 5;
 
-interface PhotoSlot { file: File | null; preview: string | null; }
+interface PhotoSlot {
+  file: File | null;
+  preview: string | null;
+  cleared: boolean; // true means "delete this slot on save"
+}
+
+function emptySlot(): PhotoSlot { return { file: null, preview: null, cleared: false }; }
+
+function roomToSlots(room: Room): PhotoSlot[] {
+  return PHOTO_FIELDS.map((f) => ({ file: null, preview: room[f] ?? null, cleared: false }));
+}
+
+interface Props { hostelId: string | null; initialRooms: Room[]; }
 
 export function SpacesClient({ hostelId, initialRooms }: Props) {
   const [rooms, setRooms] = useState<Room[]>(initialRooms);
@@ -31,10 +46,14 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
   const [saving, setSaving] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
-  const [photo1, setPhoto1] = useState<PhotoSlot>({ file: null, preview: null });
-  const [photo2, setPhoto2] = useState<PhotoSlot>({ file: null, preview: null });
-  const file1Ref = useRef<HTMLInputElement>(null);
-  const file2Ref = useRef<HTMLInputElement>(null);
+  const [photos, setPhotos] = useState<PhotoSlot[]>(Array.from({ length: MAX_PHOTOS }, emptySlot));
+  const fileRefs = [
+    useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null),
+  ];
 
   useEffect(() => {
     const q = search.toLowerCase();
@@ -51,20 +70,18 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
   function openAdd() {
     setEditing(null);
     setForm(emptyRoom);
-    setPhoto1({ file: null, preview: null });
-    setPhoto2({ file: null, preview: null });
+    setPhotos(Array.from({ length: MAX_PHOTOS }, emptySlot));
     setDialogOpen(true);
   }
 
   function openEdit(room: Room) {
     setEditing(room);
     setForm({ room_number: room.room_number, floor: room.floor?.toString() ?? "", type: room.type, capacity: room.capacity.toString(), monthly_rent: room.monthly_rent.toString(), status: room.status, has_ac: room.has_ac ?? false, has_cooler: room.has_cooler ?? false });
-    setPhoto1({ file: null, preview: room.photo_path ?? null });
-    setPhoto2({ file: null, preview: room.photo_path_2 ?? null });
+    setPhotos(roomToSlots(room));
     setDialogOpen(true);
   }
 
-  function handlePhotoChange(slot: 1 | 2, e: React.ChangeEvent<HTMLInputElement>) {
+  function handlePhotoChange(index: number, e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 5 * 1024 * 1024) {
@@ -72,30 +89,22 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
       return;
     }
     const preview = URL.createObjectURL(file);
-    if (slot === 1) setPhoto1({ file, preview });
-    else setPhoto2({ file, preview });
+    setPhotos((prev) => {
+      const next = [...prev];
+      next[index] = { file, preview, cleared: false };
+      return next;
+    });
+    // reset input so same file can be re-selected if needed
+    if (fileRefs[index].current) fileRefs[index].current!.value = "";
   }
 
-  function clearPhoto(slot: 1 | 2) {
-    if (slot === 1) {
-      setPhoto1({ file: null, preview: editing?.photo_path ?? null });
-      if (file1Ref.current) file1Ref.current.value = "";
-    } else {
-      setPhoto2({ file: null, preview: editing?.photo_path_2 ?? null });
-      if (file2Ref.current) file2Ref.current.value = "";
-    }
-  }
-
-  async function uploadPhoto(supabase: ReturnType<typeof createClient>, roomId: string, slot: 1 | 2, photo: PhotoSlot) {
-    if (!photo.file || !hostelId) return;
-    const ext = photo.file.type === "image/png" ? "png" : photo.file.type === "image/webp" ? "webp" : "jpg";
-    const suffix = slot === 2 ? "_2" : "";
-    const path = `${hostelId}/${roomId}${suffix}.${ext}`;
-    const { error } = await supabase.storage.from("room-photos").upload(path, photo.file, { upsert: true, contentType: photo.file.type });
-    if (error) return;
-    const { data: { publicUrl } } = supabase.storage.from("room-photos").getPublicUrl(path);
-    const field = slot === 2 ? "photo_path_2" : "photo_path";
-    await supabase.from("hms_rooms").update({ [field]: publicUrl }).eq("id", roomId);
+  function clearPhoto(index: number) {
+    // Mark as cleared — handleSave will null the DB field and remove the file from storage
+    setPhotos((prev) => {
+      const next = [...prev];
+      next[index] = { file: null, preview: null, cleared: true };
+      return next;
+    });
   }
 
   async function handleSave() {
@@ -125,10 +134,34 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
       roomId = inserted.id;
     }
 
-    await Promise.all([
-      uploadPhoto(supabase, roomId, 1, photo1),
-      uploadPhoto(supabase, roomId, 2, photo2),
-    ]);
+    // Process each photo slot: upload new files, clear removed slots
+    const dbUpdate: Record<string, string | null> = {};
+
+    await Promise.all(photos.map(async (slot, i) => {
+      const field = PHOTO_FIELDS[i];
+      const suffix = PHOTO_SUFFIXES[i];
+
+      if (slot.file) {
+        const ext = slot.file.type === "image/png" ? "png" : slot.file.type === "image/webp" ? "webp" : "jpg";
+        const path = `${hostelId}/${roomId}${suffix}.${ext}`;
+        const { error } = await supabase.storage.from("room-photos").upload(path, slot.file, { upsert: true, contentType: slot.file.type });
+        if (!error) {
+          const { data: { publicUrl } } = supabase.storage.from("room-photos").getPublicUrl(path);
+          dbUpdate[field] = publicUrl;
+        }
+      } else if (slot.cleared) {
+        // Remove from storage (best-effort — ignore errors)
+        const exts = ["jpg", "jpeg", "png", "webp"];
+        for (const ext of exts) {
+          await supabase.storage.from("room-photos").remove([`${hostelId}/${roomId}${suffix}.${ext}`]);
+        }
+        dbUpdate[field] = null;
+      }
+    }));
+
+    if (Object.keys(dbUpdate).length > 0) {
+      await supabase.from("hms_rooms").update(dbUpdate).eq("id", roomId);
+    }
 
     toast({ title: editing ? "Room updated" : "Room added" });
     setDialogOpen(false);
@@ -138,44 +171,23 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
 
   async function handleDelete(id: string) {
     const supabase = createClient();
+    // Fetch photo paths before deleting the row so we can clean up storage
+    const { data: room } = await supabase.from("hms_rooms").select("photo_path,photo_path_2,photo_path_3,photo_path_4,photo_path_5").eq("id", id).single();
     const { error } = await supabase.from("hms_rooms").delete().eq("id", id);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: "Room deleted" }); reload(); }
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (room) {
+      const urls = [room.photo_path, room.photo_path_2, room.photo_path_3, room.photo_path_4, room.photo_path_5].filter(Boolean) as string[];
+      const paths = urls.map((url) => url.split("/room-photos/")[1]).filter(Boolean);
+      if (paths.length > 0) await supabase.storage.from("room-photos").remove(paths);
+    }
+    toast({ title: "Room deleted" });
+    reload();
   }
 
   const stats = { total: rooms.length, available: rooms.filter((r) => r.status === "available").length, occupied: rooms.filter((r) => r.status === "occupied").length, maintenance: rooms.filter((r) => r.status === "maintenance").length };
 
-  function PhotoUploader({ slot, photo, fileRef }: { slot: 1 | 2; photo: PhotoSlot; fileRef: React.RefObject<HTMLInputElement | null> }) {
-    return (
-      <div className="flex-1 space-y-1.5">
-        <Label className="text-xs">Photo {slot}</Label>
-        {photo.preview ? (
-          <div className="relative rounded-xl overflow-hidden border border-sidebar-border h-28">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={photo.preview} alt={`Photo ${slot}`} className="w-full h-full object-cover" />
-            <div className="absolute top-1.5 right-1.5 flex gap-1">
-              <button type="button" onClick={() => fileRef.current?.click()} className="p-1 rounded bg-black/60 hover:bg-black/80 text-white transition-colors" title="Replace">
-                <ImagePlus className="w-3 h-3" />
-              </button>
-              <button type="button" onClick={() => clearPhoto(slot)} className="p-1 rounded bg-black/60 hover:bg-black/80 text-white transition-colors" title="Remove">
-                <X className="w-3 h-3" />
-              </button>
-            </div>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            className="flex flex-col items-center justify-center gap-1.5 w-full h-28 rounded-xl border-2 border-dashed border-sidebar-border hover:border-amber/30 hover:bg-amber/5 transition-colors text-muted-foreground hover:text-amber"
-          >
-            <ImagePlus className="w-5 h-5" />
-            <span className="text-[11px] font-medium">Upload</span>
-          </button>
-        )}
-        <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => handlePhotoChange(slot, e)} className="hidden" />
-      </div>
-    );
-  }
+  // How many filled slots exist (to decide where to show the "add" button)
+  const filledCount = photos.filter((s) => s.preview).length;
 
   return (
     <div className="space-y-6">
@@ -204,45 +216,43 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
         <Card><CardContent className="flex flex-col items-center justify-center py-16 text-muted-foreground"><BedDouble className="w-10 h-10 mb-3 opacity-30" /><p className="font-medium">{search ? "No rooms match" : "No rooms yet"}</p></CardContent></Card>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {filtered.map((room) => (
-            <Card key={room.id} className="hover:shadow-md transition-shadow overflow-hidden">
-              {(room.photo_path || room.photo_path_2) && (
-                <div className="flex h-32 overflow-hidden">
-                  {room.photo_path && (
-                    <div className={`relative overflow-hidden ${room.photo_path_2 ? "w-1/2 border-r border-sidebar-border" : "w-full"}`}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={room.photo_path} alt={`Room ${room.room_number}`} className="w-full h-full object-cover" />
-                    </div>
-                  )}
-                  {room.photo_path_2 && (
-                    <div className={`relative overflow-hidden ${room.photo_path ? "w-1/2" : "w-full"}`}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={room.photo_path_2} alt={`Room ${room.room_number} (2)`} className="w-full h-full object-cover" />
-                    </div>
-                  )}
-                </div>
-              )}
-              <CardHeader className="pb-2 flex flex-row items-start justify-between">
-                <div><CardTitle className="text-lg">Room {room.room_number}</CardTitle>{room.floor != null && <p className="text-xs text-muted-foreground">Floor {room.floor}</p>}</div>
-                <Badge variant={statusColors[room.status]}>{capitalize(room.status)}</Badge>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {[["Type", capitalize(room.type)], ["Capacity", `${room.occupied}/${room.capacity}`], ["Rent/mo", formatCurrency(room.monthly_rent)]].map(([k, v]) => (
-                  <div key={k} className="flex items-center justify-between text-sm"><span className="text-muted-foreground">{k}</span><span className="font-medium">{v}</span></div>
-                ))}
-                {(room.has_ac || room.has_cooler) && (
-                  <div className="flex gap-1.5 flex-wrap">
-                    {room.has_ac && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">AC</span>}
-                    {room.has_cooler && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">Cooler</span>}
+          {filtered.map((room) => {
+            const roomPhotos = PHOTO_FIELDS.map((f) => room[f]).filter(Boolean) as string[];
+            return (
+              <Card key={room.id} className="hover:shadow-md transition-shadow overflow-hidden">
+                {roomPhotos.length > 0 && (
+                  <div className="relative h-32 overflow-hidden">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={roomPhotos[0]} alt={`Room ${room.room_number}`} className="w-full h-full object-cover" />
+                    {roomPhotos.length > 1 && (
+                      <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm text-[11px] text-white/80 font-medium">
+                        +{roomPhotos.length - 1} more
+                      </span>
+                    )}
                   </div>
                 )}
-                <div className="flex gap-2 pt-2">
-                  <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={() => openEdit(room)}><Edit2 className="w-3 h-3" /> Edit</Button>
-                  <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(room.id)}><Trash2 className="w-3 h-3" /></Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                <CardHeader className="pb-2 flex flex-row items-start justify-between">
+                  <div><CardTitle className="text-lg">Room {room.room_number}</CardTitle>{room.floor != null && <p className="text-xs text-muted-foreground">Floor {room.floor}</p>}</div>
+                  <Badge variant={statusColors[room.status]}>{capitalize(room.status)}</Badge>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {[["Type", capitalize(room.type)], ["Capacity", `${room.occupied}/${room.capacity}`], ["Rent/mo", formatCurrency(room.monthly_rent)]].map(([k, v]) => (
+                    <div key={k} className="flex items-center justify-between text-sm"><span className="text-muted-foreground">{k}</span><span className="font-medium">{v}</span></div>
+                  ))}
+                  {(room.has_ac || room.has_cooler) && (
+                    <div className="flex gap-1.5 flex-wrap">
+                      {room.has_ac && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">AC</span>}
+                      {room.has_cooler && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">Cooler</span>}
+                    </div>
+                  )}
+                  <div className="flex gap-2 pt-2">
+                    <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={() => openEdit(room)}><Edit2 className="w-3 h-3" /> Edit</Button>
+                    <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(room.id)}><Trash2 className="w-3 h-3" /></Button>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
 
@@ -258,14 +268,51 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
         <DialogContent className="sm:max-w-lg">
           <DialogHeader><DialogTitle>{editing ? "Edit Room" : "Add Room"}</DialogTitle></DialogHeader>
           <div className="grid gap-4 py-2">
-            {/* Photos — side by side */}
+
+            {/* Photos — up to 5 in a grid */}
             <div>
-              <Label className="mb-2 block">Room Photos (up to 2)</Label>
-              <div className="flex gap-3">
-                <PhotoUploader slot={1} photo={photo1} fileRef={file1Ref} />
-                <PhotoUploader slot={2} photo={photo2} fileRef={file2Ref} />
+              <Label className="mb-2 block">Room Photos <span className="text-muted-foreground font-normal">({filledCount}/{MAX_PHOTOS})</span></Label>
+              <div className="grid grid-cols-5 gap-2">
+                {Array.from({ length: MAX_PHOTOS }).map((_, i) => {
+                  const slot = photos[i];
+                  const isFirst = i === 0;
+                  return (
+                    <div key={i} className={isFirst ? "col-span-2 row-span-2" : ""}>
+                      {slot.preview ? (
+                        <div className={`relative rounded-xl overflow-hidden border border-sidebar-border group ${isFirst ? "h-40" : "h-[74px]"}`}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={slot.preview} alt={`Photo ${i + 1}`} className="w-full h-full object-cover" />
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/50 transition-colors flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100">
+                            <button type="button" onClick={() => fileRefs[i].current?.click()} className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white backdrop-blur-sm transition-colors" title="Replace">
+                              <ImagePlus className="w-3.5 h-3.5" />
+                            </button>
+                            <button type="button" onClick={() => clearPhoto(i)} className="p-1.5 rounded-lg bg-rose-500/30 hover:bg-rose-500/50 text-white backdrop-blur-sm transition-colors" title="Remove">
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => fileRefs[i].current?.click()}
+                          className={`w-full rounded-xl border-2 border-dashed border-sidebar-border hover:border-amber/30 hover:bg-amber/5 transition-colors flex flex-col items-center justify-center gap-1 text-muted-foreground hover:text-amber ${isFirst ? "h-40" : "h-[74px]"}`}
+                        >
+                          <ImagePlus className={isFirst ? "w-5 h-5" : "w-3.5 h-3.5"} />
+                          {isFirst && <span className="text-[11px] font-medium">Main Photo</span>}
+                        </button>
+                      )}
+                      <input
+                        ref={fileRefs[i]}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        onChange={(e) => handlePhotoChange(i, e)}
+                        className="hidden"
+                      />
+                    </div>
+                  );
+                })}
               </div>
-              <p className="text-[11px] text-muted-foreground mt-1.5">JPG, PNG or WebP · max 5 MB each · shown on public listing</p>
+              <p className="text-[11px] text-muted-foreground mt-1.5">Up to 5 photos · JPG, PNG or WebP · max 5 MB each · shown on public listing</p>
             </div>
 
             <div className="grid grid-cols-2 gap-4">

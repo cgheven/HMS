@@ -291,7 +291,7 @@ interface RoomDetailModalProps {
 }
 
 function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
-  const photos = [room.photo_path, room.photo_path_2].filter(Boolean) as string[];
+  const photos = [room.photo_path, room.photo_path_2, room.photo_path_3, room.photo_path_4, room.photo_path_5].filter(Boolean) as string[];
   const [photoIdx, setPhotoIdx]   = useState(0);
   const [selectedTier, setSelectedTier] = useState("space_only");
   const [regOpen, setRegOpen]     = useState(false);
@@ -723,7 +723,7 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
   const [detailOpen, setDetailOpen] = useState(false);
   const [activePhoto, setActivePhoto] = useState(0);
 
-  const photos = [room.photo_path, room.photo_path_2].filter(Boolean) as string[];
+  const photos = [room.photo_path, room.photo_path_2, room.photo_path_3, room.photo_path_4, room.photo_path_5].filter(Boolean) as string[];
   const available = room.capacity - room.occupied;
   const isFull = room.status === "occupied" || available <= 0;
 

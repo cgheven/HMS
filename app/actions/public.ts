@@ -81,7 +81,7 @@ export async function getPublicHostel(slug: string): Promise<{ hostel?: PublicHo
       admin.from("hms_profiles").select("full_name").eq("id", hostelData.owner_id).maybeSingle(),
       admin
         .from("hms_rooms")
-        .select("id,room_number,floor,type,capacity,occupied,monthly_rent,status,has_ac,has_cooler,photo_path,photo_path_2")
+        .select("id,room_number,floor,type,capacity,occupied,monthly_rent,status,has_ac,has_cooler,photo_path,photo_path_2,photo_path_3,photo_path_4,photo_path_5")
         .eq("hostel_id", hostelId)
         .neq("status", "maintenance")
         .order("room_number"),
