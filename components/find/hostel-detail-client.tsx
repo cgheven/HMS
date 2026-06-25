@@ -4,7 +4,7 @@ import Link from "next/link";
 import {
   ArrowLeft, MapPin, ExternalLink, BedDouble, Zap, Wifi,
   Utensils, Shield, ChevronLeft, ChevronRight, Clock, Loader2, X,
-  Phone, Mail, Wind, Thermometer, Users, CheckCircle2,
+  Wind, Thermometer, Users, CheckCircle2,
 } from "lucide-react";
 import { joinWaitlist, submitApplication } from "@/app/actions/public";
 import { Button } from "@/components/ui/button";
@@ -881,9 +881,6 @@ export function HostelDetailClient({ hostel }: { hostel: PublicHostelDetail }) {
   const availableRooms = hostel.rooms.filter((r) => r.status === "available" && r.capacity - r.occupied > 0);
   const fullRooms      = hostel.rooms.filter((r) => r.status !== "available" || r.capacity - r.occupied <= 0);
 
-  const minRent = hostel.rooms.length > 0 ? Math.min(...hostel.rooms.map((r) => r.monthly_rent)) : null;
-  const maxRent = hostel.rooms.length > 0 ? Math.max(...hostel.rooms.map((r) => r.monthly_rent)) : null;
-
   return (
     <>
       {waitlistOpen && <WaitlistModal hostelId={hostel.id} hostelName={hostel.name} onClose={() => setWaitlistOpen(false)} />}
@@ -908,52 +905,56 @@ export function HostelDetailClient({ hostel }: { hostel: PublicHostelDetail }) {
           </nav>
 
           <div className="border-b border-white/[0.06] bg-[#0D0D0F]">
-            <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4">
-              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+            <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-6">
 
+                {/* Left: identity + location + amenities */}
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2 mb-1.5">
-                    <h1 className="font-serif text-xl sm:text-2xl font-medium leading-tight">{hostel.name}</h1>
+
+                  {/* Title + badges */}
+                  <div className="flex flex-wrap items-center gap-2 mb-3">
+                    <h1 className="font-serif text-2xl sm:text-[28px] font-medium leading-tight tracking-tight">{hostel.name}</h1>
                     {hostel.hostel_type && (
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber/10 text-amber border border-amber/20">
+                      <span className="text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-amber/10 text-amber border border-amber/20 leading-none">
                         {TYPE_LABELS[hostel.hostel_type]}
                       </span>
                     )}
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${hostel.available_beds > 0 ? "bg-emerald-500/10 text-emerald-400 border-emerald-400/20" : "bg-rose-500/10 text-rose-400 border-rose-400/20"}`}>
+                    <span className={`text-[10px] font-semibold px-2.5 py-0.5 rounded-full border leading-none ${hostel.available_beds > 0 ? "bg-emerald-500/10 text-emerald-400 border-emerald-400/20" : "bg-rose-500/10 text-rose-400 border-rose-400/20"}`}>
                       {hostel.available_beds > 0 ? `${hostel.available_beds} beds free` : "Currently full"}
                     </span>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground/60">
-                    {(hostel.area || hostel.city) && (
-                      <span className="flex items-center gap-1">
-                        <MapPin className="w-3 h-3 shrink-0" />
+                  {/* Location + Maps button */}
+                  {(hostel.area || hostel.city) && (
+                    <div className="flex items-center gap-2 mb-4">
+                      <MapPin className="w-3.5 h-3.5 text-muted-foreground/40 shrink-0" />
+                      <span className="text-sm text-muted-foreground/60">
                         {[hostel.area, hostel.city].filter(Boolean).join(", ")}
-                        {safeMapsUrl && (
-                          <a href={safeMapsUrl} target="_blank" rel="noopener noreferrer" aria-label="Open in maps" className="text-amber hover:text-amber/80 transition-colors ml-0.5">
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
-                        )}
                       </span>
-                    )}
-                    {minRent !== null && (
-                      <span className="text-amber/80 font-medium">
-                        {minRent === maxRent ? formatCurrency(minRent) : `${formatCurrency(minRent)} – ${formatCurrency(maxRent!)}`}/mo
-                      </span>
-                    )}
-                    {hostel.total_capacity > 0 && (
-                      <span className="flex items-center gap-1"><Users className="w-3 h-3" /> {hostel.total_capacity} capacity</span>
-                    )}
-                  </div>
-
-                  {hostel.description && (
-                    <p className="text-xs text-muted-foreground/60 mt-2 leading-relaxed line-clamp-2 max-w-xl">{hostel.description}</p>
+                      {safeMapsUrl && (
+                        <a
+                          href={safeMapsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label="Open in Google Maps"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.04] border border-white/[0.09] text-[11px] text-muted-foreground/60 hover:text-foreground hover:border-white/20 hover:bg-white/[0.07] transition-all"
+                        >
+                          <ExternalLink className="w-2.5 h-2.5" /> Maps
+                        </a>
+                      )}
+                    </div>
                   )}
 
+                  {/* Description */}
+                  {hostel.description && (
+                    <p className="text-sm text-muted-foreground/55 leading-relaxed line-clamp-2 max-w-xl mb-4">{hostel.description}</p>
+                  )}
+
+                  {/* Amenity chips */}
                   {(hostel.amenities ?? []).length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-2.5">
+                    <div className="flex flex-wrap gap-1.5">
                       {(hostel.amenities ?? []).map((a) => (
-                        <span key={a} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/[0.04] border border-white/[0.07] text-[11px] text-muted-foreground/70">
+                        <span key={a} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/[0.03] border border-white/[0.07] text-[11px] text-muted-foreground/65">
                           {AMENITY_ICONS[a] ?? null} {a}
                         </span>
                       ))}
@@ -961,27 +962,24 @@ export function HostelDetailClient({ hostel }: { hostel: PublicHostelDetail }) {
                   )}
                 </div>
 
-                <div className="flex sm:flex-col items-center gap-2 shrink-0 flex-wrap">
+                {/* Right: CTAs — WhatsApp (primary) + Waitlist only */}
+                <div className="flex sm:flex-col gap-2.5 shrink-0 sm:min-w-[160px]">
                   {waGeneral && (
-                    <a href={waGeneral} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 h-9 px-4 rounded-xl bg-[#25D366]/10 hover:bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/20 text-sm font-semibold transition-colors whitespace-nowrap">
-                      <WhatsAppIcon cls="w-3.5 h-3.5" /> WhatsApp
+                    <a
+                      href={waGeneral}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-[#25D366] hover:bg-[#20bd5a] text-black text-sm font-bold transition-colors shadow-[0_0_24px_rgba(37,211,102,0.18)] whitespace-nowrap"
+                    >
+                      <WhatsAppIcon cls="w-4 h-4" /> WhatsApp
                     </a>
                   )}
-                  <div className="flex gap-2">
-                    {hostel.phone && (
-                      <a href={`tel:${hostel.phone}`} className="flex items-center gap-1.5 h-9 px-3 rounded-xl border border-white/[0.08] hover:bg-white/[0.04] text-xs text-muted-foreground/80 hover:text-foreground transition-colors whitespace-nowrap">
-                        <Phone className="w-3.5 h-3.5 shrink-0" /> {hostel.phone}
-                      </a>
-                    )}
-                    {hostel.email && (
-                      <a href={`mailto:${hostel.email}`} aria-label={`Email ${hostel.email}`} className="flex items-center justify-center w-11 h-11 rounded-xl border border-white/[0.08] hover:bg-white/[0.04] text-muted-foreground/60 hover:text-foreground transition-colors">
-                        <Mail className="w-3.5 h-3.5" />
-                      </a>
-                    )}
-                    <button onClick={() => setWaitlistOpen(true)} className="flex items-center gap-1.5 h-9 px-3 rounded-xl border border-white/[0.08] hover:bg-white/[0.04] text-xs text-muted-foreground/70 hover:text-foreground transition-colors">
-                      <Clock className="w-3.5 h-3.5" /> Waitlist
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => setWaitlistOpen(true)}
+                    className="flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-white/[0.10] hover:border-white/[0.18] hover:bg-white/[0.04] text-sm text-muted-foreground/80 hover:text-foreground transition-all whitespace-nowrap"
+                  >
+                    <Clock className="w-3.5 h-3.5" /> Join Waitlist
+                  </button>
                 </div>
               </div>
             </div>

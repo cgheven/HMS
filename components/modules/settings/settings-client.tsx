@@ -1,6 +1,6 @@
 "use client";
-import { useEffect, useState, useTransition } from "react";
-import { Building2, User, Save, Loader2, Globe, ExternalLink, Clock, Phone, RefreshCw, Utensils, GitBranch, Plus, Check, ArrowRightLeft, Handshake, Eye, EyeOff, Trash2, X, Pencil, FormInput } from "lucide-react";
+import { useEffect, useRef, useState, useTransition } from "react";
+import { Building2, User, Save, Loader2, Globe, ExternalLink, Clock, Phone, RefreshCw, Utensils, GitBranch, Plus, Check, ArrowRightLeft, Handshake, Eye, EyeOff, Trash2, X, Pencil, FormInput, ImagePlus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useHostelContext } from "@/contexts/hostel-context";
@@ -71,6 +71,10 @@ export function SettingsClient() {
   const [savingHostel, setSavingHostel] = useState(false);
   const [savingListing, setSavingListing] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
+
+  const [coverImageUrl, setCoverImageUrl] = useState<string | null>(null);
+  const [uploadingCover, setUploadingCover] = useState(false);
+  const coverInputRef = useRef<HTMLInputElement>(null);
 
   const [packageForm, setPackageForm] = useState({ food_bd_rate: "", food_3meals_rate: "", ac_per_unit_rate: "" });
   const [savingPackage, setSavingPackage] = useState(false);
@@ -233,6 +237,7 @@ export function SettingsClient() {
         amenities: hostel.amenities ?? [],
         food_closed_on_sundays: hostel.food_closed_on_sundays ?? false,
       });
+      setCoverImageUrl(hostel.cover_image_url ?? null);
       fetchWaitlist(hostel.id);
       fetchPackageConfig(hostel.id);
       fetchPartners(hostel.id);
@@ -297,6 +302,48 @@ export function SettingsClient() {
         : "Your hostel has been removed from the public directory.",
     });
     setSavingListing(false);
+  }
+
+  async function uploadCoverImage(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !hostelId) return;
+    if (file.size > 3 * 1024 * 1024) {
+      toast({ title: "File too large", description: "Cover image must be under 3 MB.", variant: "destructive" });
+      return;
+    }
+    setUploadingCover(true);
+    const supabase = createClient();
+    const ext = file.type === "image/png" ? "png" : file.type === "image/webp" ? "webp" : "jpg";
+    const path = `${hostelId}/cover.${ext}`;
+    const { error: uploadErr } = await supabase.storage
+      .from("hostel-covers")
+      .upload(path, file, { upsert: true, contentType: file.type });
+    if (uploadErr) {
+      toast({ title: "Upload failed", description: uploadErr.message, variant: "destructive" });
+      setUploadingCover(false);
+      return;
+    }
+    const { data: { publicUrl } } = supabase.storage.from("hostel-covers").getPublicUrl(path);
+    const { error: updateErr } = await supabase
+      .from("hms_hostels")
+      .update({ cover_image_url: publicUrl })
+      .eq("id", hostelId);
+    if (updateErr) {
+      toast({ title: "Error", description: updateErr.message, variant: "destructive" });
+    } else {
+      setCoverImageUrl(publicUrl);
+      toast({ title: "Cover image updated" });
+    }
+    setUploadingCover(false);
+    if (coverInputRef.current) coverInputRef.current.value = "";
+  }
+
+  async function removeCoverImage() {
+    if (!hostelId) return;
+    const supabase = createClient();
+    await supabase.from("hms_hostels").update({ cover_image_url: null }).eq("id", hostelId);
+    setCoverImageUrl(null);
+    toast({ title: "Cover image removed" });
   }
 
   async function saveProfile(e: React.FormEvent) {
@@ -469,6 +516,54 @@ export function SettingsClient() {
                     Name, city, area, phone, email, and capacity are pulled from{" "}
                     <strong className="text-foreground">Hostel Information</strong> above — no need to enter them again.
                   </span>
+                </div>
+
+                {/* Cover Image */}
+                <div className="space-y-2">
+                  <Label>Cover Image</Label>
+                  <p className="text-xs text-muted-foreground">Shown on the /find directory card. JPEG, PNG or WebP · max 3 MB.</p>
+                  {coverImageUrl ? (
+                    <div className="relative w-full h-36 rounded-xl overflow-hidden border border-white/[0.08] group">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={coverImageUrl} alt="Cover" className="w-full h-full object-cover" />
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
+                        <button
+                          type="button"
+                          onClick={() => coverInputRef.current?.click()}
+                          className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium backdrop-blur-sm transition-colors"
+                        >
+                          {uploadingCover ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImagePlus className="w-3.5 h-3.5" />}
+                          Replace
+                        </button>
+                        <button
+                          type="button"
+                          onClick={removeCoverImage}
+                          className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-xs font-medium backdrop-blur-sm transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" /> Remove
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => coverInputRef.current?.click()}
+                      disabled={uploadingCover}
+                      className="w-full h-28 rounded-xl border-2 border-dashed border-white/[0.08] hover:border-amber/30 hover:bg-amber/[0.02] flex flex-col items-center justify-center gap-2 text-muted-foreground hover:text-foreground transition-all"
+                    >
+                      {uploadingCover
+                        ? <Loader2 className="w-5 h-5 animate-spin text-amber" />
+                        : <ImagePlus className="w-5 h-5" />}
+                      <span className="text-xs">{uploadingCover ? "Uploading…" : "Click to upload cover image"}</span>
+                    </button>
+                  )}
+                  <input
+                    ref={coverInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    onChange={uploadCoverImage}
+                  />
                 </div>
 
                 {/* Google Maps link */}

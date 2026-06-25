@@ -128,19 +128,32 @@ function HostelCard({ h }: { h: PublicHostel }) {
 
       <article className="group flex flex-col rounded-2xl border border-white/[0.07] bg-[#111113] hover:border-amber/30 transition-all duration-300 overflow-hidden">
 
-        {/* Visual header — gradient with tile pattern */}
+        {/* Visual header — cover photo or gradient fallback */}
         <div
           className="relative h-44 shrink-0 overflow-hidden"
-          style={{ background: `linear-gradient(135deg, ${gradient.gradientFrom} 0%, ${gradient.gradientTo} 100%)` }}
+          style={h.cover_image_url ? undefined : { background: `linear-gradient(135deg, ${gradient.gradientFrom} 0%, ${gradient.gradientTo} 100%)` }}
         >
-          {/* Dot-grid tile pattern */}
-          <div
-            className="absolute inset-0"
-            style={{
-              backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.07) 1px, transparent 1px)",
-              backgroundSize: "18px 18px",
-            }}
-          />
+          {h.cover_image_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={h.cover_image_url}
+              alt={h.name}
+              className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+            />
+          ) : (
+            /* Dot-grid tile pattern for gradient fallback */
+            <div
+              className="absolute inset-0"
+              style={{
+                backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.07) 1px, transparent 1px)",
+                backgroundSize: "18px 18px",
+              }}
+            />
+          )}
+          {/* Scrim so text is readable over photos */}
+          {h.cover_image_url && (
+            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-black/20" />
+          )}
 
           {/* Availability badge — bottom left */}
           <div className="absolute bottom-3 left-3">

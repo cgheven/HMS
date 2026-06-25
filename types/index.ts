@@ -93,6 +93,7 @@ export interface Hostel {
   slug: string | null;
   form_config: FormConfig | null;
   food_closed_on_sundays: boolean;
+  cover_image_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -116,6 +117,7 @@ export interface PublicHostel {
   available_beds: number;
   slug: string | null;
   food_closed_on_sundays: boolean;
+  cover_image_url: string | null;
 }
 
 export interface PublicRoom {

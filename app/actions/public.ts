@@ -9,7 +9,7 @@ export async function getPublicHostels(): Promise<{ hostels?: PublicHostel[]; er
 
     const { data, error } = await admin
       .from("hms_hostels")
-      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays")
+      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays,cover_image_url")
       .eq("listing_enabled", true)
       .order("name");
     if (error) throw error;
@@ -60,7 +60,7 @@ export async function getPublicHostel(slug: string): Promise<{ hostel?: PublicHo
 
     const { data: hostelData, error: hostelErr } = await admin
       .from("hms_hostels")
-      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays")
+      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays,cover_image_url")
       .eq("slug", slug)
       .eq("listing_enabled", true)
       .single();
