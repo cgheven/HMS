@@ -313,11 +313,14 @@ export function SettingsClient() {
     }
     setUploadingCover(true);
     const supabase = createClient();
-    const ext = file.type === "image/png" ? "png" : file.type === "image/webp" ? "webp" : "jpg";
+    // Derive MIME type from file name extension — not file.type which is browser-determined and can be empty/spoofed
+    const fname = file.name.toLowerCase();
+    const ext = fname.endsWith(".png") ? "png" : fname.endsWith(".webp") ? "webp" : "jpg";
+    const contentType = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
     const path = `${hostelId}/cover.${ext}`;
     const { error: uploadErr } = await supabase.storage
       .from("hostel-covers")
-      .upload(path, file, { upsert: true, contentType: file.type });
+      .upload(path, file, { upsert: true, contentType });
     if (uploadErr) {
       toast({ title: "Upload failed", description: uploadErr.message, variant: "destructive" });
       setUploadingCover(false);
@@ -341,6 +344,10 @@ export function SettingsClient() {
   async function removeCoverImage() {
     if (!hostelId) return;
     const supabase = createClient();
+    // Delete the storage object across all possible extensions to avoid orphaned files
+    await Promise.all(["jpg", "jpeg", "png", "webp"].map((ext) =>
+      supabase.storage.from("hostel-covers").remove([`${hostelId}/cover.${ext}`])
+    ));
     await supabase.from("hms_hostels").update({ cover_image_url: null }).eq("id", hostelId);
     setCoverImageUrl(null);
     toast({ title: "Cover image removed" });

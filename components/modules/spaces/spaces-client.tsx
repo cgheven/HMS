@@ -142,9 +142,12 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
       const suffix = PHOTO_SUFFIXES[i];
 
       if (slot.file) {
-        const ext = slot.file.type === "image/png" ? "png" : slot.file.type === "image/webp" ? "webp" : "jpg";
+        // Derive MIME type from file name extension — not file.type which is browser-determined and can be empty/spoofed
+        const fname = slot.file.name.toLowerCase();
+        const ext = fname.endsWith(".png") ? "png" : fname.endsWith(".webp") ? "webp" : "jpg";
+        const contentType = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
         const path = `${hostelId}/${roomId}${suffix}.${ext}`;
-        const { error } = await supabase.storage.from("room-photos").upload(path, slot.file, { upsert: true, contentType: slot.file.type });
+        const { error } = await supabase.storage.from("room-photos").upload(path, slot.file, { upsert: true, contentType });
         if (!error) {
           const { data: { publicUrl } } = supabase.storage.from("room-photos").getPublicUrl(path);
           dbUpdate[field] = publicUrl;
@@ -220,17 +223,23 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
             const roomPhotos = PHOTO_FIELDS.map((f) => room[f]).filter(Boolean) as string[];
             return (
               <Card key={room.id} className="hover:shadow-md transition-shadow overflow-hidden">
-                {roomPhotos.length > 0 && (
-                  <div className="relative h-32 overflow-hidden">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={roomPhotos[0]} alt={`Room ${room.room_number}`} className="w-full h-full object-cover" />
-                    {roomPhotos.length > 1 && (
-                      <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm text-[11px] text-white/80 font-medium">
-                        +{roomPhotos.length - 1} more
-                      </span>
-                    )}
-                  </div>
-                )}
+                <div className="relative h-32 overflow-hidden bg-sidebar-accent/40">
+                  {roomPhotos.length > 0 ? (
+                    <>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={roomPhotos[0]} alt={`Room ${room.room_number}`} className="w-full h-full object-cover" />
+                      {roomPhotos.length > 1 && (
+                        <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded-full bg-black/60 backdrop-blur-sm text-[11px] text-white/80 font-medium">
+                          +{roomPhotos.length - 1} more
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground/20">
+                      <BedDouble className="w-9 h-9" />
+                    </div>
+                  )}
+                </div>
                 <CardHeader className="pb-2 flex flex-row items-start justify-between">
                   <div><CardTitle className="text-lg">Room {room.room_number}</CardTitle>{room.floor != null && <p className="text-xs text-muted-foreground">Floor {room.floor}</p>}</div>
                   <Badge variant={statusColors[room.status]}>{capitalize(room.status)}</Badge>
