@@ -17,7 +17,7 @@ export default async function JoinPage({ params }: Props) {
     .eq("slug", slug)
     .maybeSingle();
 
-  if (!hostel) notFound();
+  if (!hostel || !hostel.listing_enabled) notFound();
 
   return <JoinFormClient hostel={hostel as Hostel} />;
 }

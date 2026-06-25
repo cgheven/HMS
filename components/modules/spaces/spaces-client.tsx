@@ -1,6 +1,6 @@
 "use client";
-import { useState, useEffect } from "react";
-import { Plus, BedDouble, Users, Wrench, Search, Edit2, Trash2 } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Plus, BedDouble, Users, Wrench, Search, Edit2, Trash2, ImagePlus, X } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,6 +19,8 @@ const emptyRoom = { room_number: "", floor: "", type: "general" as SpaceType, ca
 
 interface Props { hostelId: string | null; initialRooms: Room[]; }
 
+interface PhotoSlot { file: File | null; preview: string | null; }
+
 export function SpacesClient({ hostelId, initialRooms }: Props) {
   const [rooms, setRooms] = useState<Room[]>(initialRooms);
   const [filtered, setFiltered] = useState<Room[]>(initialRooms);
@@ -28,6 +30,11 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
   const [form, setForm] = useState(emptyRoom);
   const [saving, setSaving] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  const [photo1, setPhoto1] = useState<PhotoSlot>({ file: null, preview: null });
+  const [photo2, setPhoto2] = useState<PhotoSlot>({ file: null, preview: null });
+  const file1Ref = useRef<HTMLInputElement>(null);
+  const file2Ref = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const q = search.toLowerCase();
@@ -41,21 +48,91 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
     setRooms((data as Room[]) ?? []);
   }
 
-  function openAdd() { setEditing(null); setForm(emptyRoom); setDialogOpen(true); }
+  function openAdd() {
+    setEditing(null);
+    setForm(emptyRoom);
+    setPhoto1({ file: null, preview: null });
+    setPhoto2({ file: null, preview: null });
+    setDialogOpen(true);
+  }
+
   function openEdit(room: Room) {
     setEditing(room);
     setForm({ room_number: room.room_number, floor: room.floor?.toString() ?? "", type: room.type, capacity: room.capacity.toString(), monthly_rent: room.monthly_rent.toString(), status: room.status, has_ac: room.has_ac ?? false, has_cooler: room.has_cooler ?? false });
+    setPhoto1({ file: null, preview: room.photo_path ?? null });
+    setPhoto2({ file: null, preview: room.photo_path_2 ?? null });
     setDialogOpen(true);
+  }
+
+  function handlePhotoChange(slot: 1 | 2, e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      toast({ title: "File too large", description: "Room photo must be under 5 MB.", variant: "destructive" });
+      return;
+    }
+    const preview = URL.createObjectURL(file);
+    if (slot === 1) setPhoto1({ file, preview });
+    else setPhoto2({ file, preview });
+  }
+
+  function clearPhoto(slot: 1 | 2) {
+    if (slot === 1) {
+      setPhoto1({ file: null, preview: editing?.photo_path ?? null });
+      if (file1Ref.current) file1Ref.current.value = "";
+    } else {
+      setPhoto2({ file: null, preview: editing?.photo_path_2 ?? null });
+      if (file2Ref.current) file2Ref.current.value = "";
+    }
+  }
+
+  async function uploadPhoto(supabase: ReturnType<typeof createClient>, roomId: string, slot: 1 | 2, photo: PhotoSlot) {
+    if (!photo.file || !hostelId) return;
+    const ext = photo.file.type === "image/png" ? "png" : photo.file.type === "image/webp" ? "webp" : "jpg";
+    const suffix = slot === 2 ? "_2" : "";
+    const path = `${hostelId}/${roomId}${suffix}.${ext}`;
+    const { error } = await supabase.storage.from("room-photos").upload(path, photo.file, { upsert: true, contentType: photo.file.type });
+    if (error) return;
+    const { data: { publicUrl } } = supabase.storage.from("room-photos").getPublicUrl(path);
+    const field = slot === 2 ? "photo_path_2" : "photo_path";
+    await supabase.from("hms_rooms").update({ [field]: publicUrl }).eq("id", roomId);
   }
 
   async function handleSave() {
     if (!hostelId || !form.room_number) return;
     setSaving(true);
     const supabase = createClient();
-    const payload = { hostel_id: hostelId, room_number: form.room_number, floor: form.floor ? parseInt(form.floor) : null, type: form.type, capacity: parseInt(form.capacity) || 1, monthly_rent: parseFloat(form.monthly_rent) || 0, status: form.status, has_ac: form.has_ac, has_cooler: form.has_cooler };
-    const { error } = editing ? await supabase.from("hms_rooms").update(payload).eq("id", editing.id) : await supabase.from("hms_rooms").insert(payload);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: editing ? "Room updated" : "Room added" }); setDialogOpen(false); reload(); }
+    const payload = {
+      hostel_id: hostelId,
+      room_number: form.room_number,
+      floor: form.floor ? parseInt(form.floor) : null,
+      type: form.type,
+      capacity: parseInt(form.capacity) || 1,
+      monthly_rent: parseFloat(form.monthly_rent) || 0,
+      status: form.status,
+      has_ac: form.has_ac,
+      has_cooler: form.has_cooler,
+    };
+
+    let roomId: string;
+    if (editing) {
+      const { error } = await supabase.from("hms_rooms").update(payload).eq("id", editing.id);
+      if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); setSaving(false); return; }
+      roomId = editing.id;
+    } else {
+      const { data: inserted, error } = await supabase.from("hms_rooms").insert(payload).select("id").single();
+      if (error || !inserted) { toast({ title: "Error", description: error?.message ?? "Insert failed", variant: "destructive" }); setSaving(false); return; }
+      roomId = inserted.id;
+    }
+
+    await Promise.all([
+      uploadPhoto(supabase, roomId, 1, photo1),
+      uploadPhoto(supabase, roomId, 2, photo2),
+    ]);
+
+    toast({ title: editing ? "Room updated" : "Room added" });
+    setDialogOpen(false);
+    reload();
     setSaving(false);
   }
 
@@ -67,6 +144,38 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
   }
 
   const stats = { total: rooms.length, available: rooms.filter((r) => r.status === "available").length, occupied: rooms.filter((r) => r.status === "occupied").length, maintenance: rooms.filter((r) => r.status === "maintenance").length };
+
+  function PhotoUploader({ slot, photo, fileRef }: { slot: 1 | 2; photo: PhotoSlot; fileRef: React.RefObject<HTMLInputElement | null> }) {
+    return (
+      <div className="flex-1 space-y-1.5">
+        <Label className="text-xs">Photo {slot}</Label>
+        {photo.preview ? (
+          <div className="relative rounded-xl overflow-hidden border border-sidebar-border h-28">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={photo.preview} alt={`Photo ${slot}`} className="w-full h-full object-cover" />
+            <div className="absolute top-1.5 right-1.5 flex gap-1">
+              <button type="button" onClick={() => fileRef.current?.click()} className="p-1 rounded bg-black/60 hover:bg-black/80 text-white transition-colors" title="Replace">
+                <ImagePlus className="w-3 h-3" />
+              </button>
+              <button type="button" onClick={() => clearPhoto(slot)} className="p-1 rounded bg-black/60 hover:bg-black/80 text-white transition-colors" title="Remove">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            className="flex flex-col items-center justify-center gap-1.5 w-full h-28 rounded-xl border-2 border-dashed border-sidebar-border hover:border-amber/30 hover:bg-amber/5 transition-colors text-muted-foreground hover:text-amber"
+          >
+            <ImagePlus className="w-5 h-5" />
+            <span className="text-[11px] font-medium">Upload</span>
+          </button>
+        )}
+        <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => handlePhotoChange(slot, e)} className="hidden" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -96,7 +205,23 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filtered.map((room) => (
-            <Card key={room.id} className="hover:shadow-md transition-shadow">
+            <Card key={room.id} className="hover:shadow-md transition-shadow overflow-hidden">
+              {(room.photo_path || room.photo_path_2) && (
+                <div className="flex h-32 overflow-hidden">
+                  {room.photo_path && (
+                    <div className={`relative overflow-hidden ${room.photo_path_2 ? "w-1/2 border-r border-sidebar-border" : "w-full"}`}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={room.photo_path} alt={`Room ${room.room_number}`} className="w-full h-full object-cover" />
+                    </div>
+                  )}
+                  {room.photo_path_2 && (
+                    <div className={`relative overflow-hidden ${room.photo_path ? "w-1/2" : "w-full"}`}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={room.photo_path_2} alt={`Room ${room.room_number} (2)`} className="w-full h-full object-cover" />
+                    </div>
+                  )}
+                </div>
+              )}
               <CardHeader className="pb-2 flex flex-row items-start justify-between">
                 <div><CardTitle className="text-lg">Room {room.room_number}</CardTitle>{room.floor != null && <p className="text-xs text-muted-foreground">Floor {room.floor}</p>}</div>
                 <Badge variant={statusColors[room.status]}>{capitalize(room.status)}</Badge>
@@ -130,9 +255,19 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
       />
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader><DialogTitle>{editing ? "Edit Room" : "Add Room"}</DialogTitle></DialogHeader>
           <div className="grid gap-4 py-2">
+            {/* Photos — side by side */}
+            <div>
+              <Label className="mb-2 block">Room Photos (up to 2)</Label>
+              <div className="flex gap-3">
+                <PhotoUploader slot={1} photo={photo1} fileRef={file1Ref} />
+                <PhotoUploader slot={2} photo={photo2} fileRef={file2Ref} />
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1.5">JPG, PNG or WebP · max 5 MB each · shown on public listing</p>
+            </div>
+
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5"><Label>Room Number *</Label><Input placeholder="101" value={form.room_number} onChange={(e) => setForm({ ...form, room_number: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Floor</Label><Input type="number" value={form.floor} onChange={(e) => setForm({ ...form, floor: e.target.value })} /></div>
@@ -148,18 +283,10 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
             <div className="space-y-2">
               <Label>Amenities</Label>
               <div className="flex gap-3">
-                <button
-                  type="button"
-                  onClick={() => setForm({ ...form, has_ac: !form.has_ac })}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${form.has_ac ? "bg-blue-500/10 border-blue-500/25 text-blue-400" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}
-                >
+                <button type="button" onClick={() => setForm({ ...form, has_ac: !form.has_ac })} className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${form.has_ac ? "bg-blue-500/10 border-blue-500/25 text-blue-400" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}>
                   <span className="w-4 h-4 flex items-center justify-center">{form.has_ac ? "✓" : "○"}</span> AC Available
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setForm({ ...form, has_cooler: !form.has_cooler })}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${form.has_cooler ? "bg-cyan-500/10 border-cyan-500/25 text-cyan-400" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}
-                >
+                <button type="button" onClick={() => setForm({ ...form, has_cooler: !form.has_cooler })} className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${form.has_cooler ? "bg-cyan-500/10 border-cyan-500/25 text-cyan-400" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}>
                   <span className="w-4 h-4 flex items-center justify-center">{form.has_cooler ? "✓" : "○"}</span> Cooler Available
                 </button>
               </div>

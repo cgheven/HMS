@@ -1,5 +1,5 @@
 "use server";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { headers } from "next/headers";
 
 export interface OnboardingFormData {
@@ -40,42 +40,42 @@ export async function submitOnboarding(
 
   if (branchCount < 1) return { success: false, error: "Branch count must be at least 1." };
 
-  // --- Get client IP from headers (best-effort) ---
+  // --- Get client IP from headers (use rightmost entry set by trusted proxy, not client) ---
   let ipAddress: string | null = null;
   try {
     const headersList = await headers();
     ipAddress =
-      headersList.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+      headersList.get("x-vercel-forwarded-for") ??
       headersList.get("x-real-ip") ??
+      headersList.get("x-forwarded-for")?.split(",").at(-1)?.trim() ??
       null;
   } catch {
     // non-fatal
   }
 
-  // --- F-005: IP-based rate limiting ---
-  // Reject if more than 5 submissions from the same IP in the last hour.
+  // --- IP-based rate limiting (uses admin client to bypass RLS which blocks anon reads) ---
   if (ipAddress) {
-    try {
-      const supabase = await createClient();
-      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-      const { count } = await supabase
-        .from("hms_platform_leads")
-        .select("id", { count: "exact", head: true })
-        .eq("ip_address", ipAddress)
-        .gte("created_at", oneHourAgo);
-      if (typeof count === "number" && count >= 5) {
-        // Silently succeed to avoid leaking rate-limit info to bots
-        return { success: true };
-      }
-    } catch {
-      // non-fatal: if the rate-limit check fails, proceed with insert
+    const adminForCount = createAdminClient();
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const { count, error: countErr } = await adminForCount
+      .from("hms_platform_leads")
+      .select("id", { count: "exact", head: true })
+      .eq("ip_address", ipAddress)
+      .gte("created_at", oneHourAgo);
+    if (countErr) {
+      // Fail closed: cannot verify rate limit
+      return { success: false, error: "Service temporarily unavailable. Please try again." };
+    }
+    if (typeof count === "number" && count >= 5) {
+      // Silently succeed to avoid leaking rate-limit info to bots
+      return { success: true };
     }
   }
 
   // --- Insert into hms_platform_leads ---
   try {
-    const supabase = await createClient();
-    const { error } = await supabase.from("hms_platform_leads").insert({
+    const adminClient = createAdminClient();
+    const { error } = await adminClient.from("hms_platform_leads").insert({
       business_name: businessName,
       owner_name: ownerName,
       phone,

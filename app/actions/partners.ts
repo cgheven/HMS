@@ -19,9 +19,7 @@ async function requireOwnerOrAbove() {
     .eq("id", user.id)
     .single();
 
-  // Allow super_admin / owner roles, or legacy is_admin flag
   const allowed =
-    profile?.is_admin ||
     profile?.role === "super_admin" ||
     profile?.role === "owner";
 

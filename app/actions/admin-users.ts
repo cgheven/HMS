@@ -245,16 +245,36 @@ export async function resetUserPassword(data: {
   newPassword: string;
 }): Promise<{ error?: string }> {
   try {
-    await requireAdmin();
+    const caller = await requireAdmin();
 
     if (data.newPassword.length < 8) throw new Error("Password must be at least 8 characters");
 
     const admin = createAdminClient();
+
+    // SECURITY: block reset of super_admin accounts
+    const { data: targetProfile } = await admin
+      .from("hms_profiles")
+      .select("role")
+      .eq("id", data.userId)
+      .single();
+    if (targetProfile?.role === "super_admin") {
+      throw new Error("Cannot reset super_admin password");
+    }
+
     const { error } = await admin.auth.admin.updateUserById(data.userId, {
       password: data.newPassword,
     });
-
     if (error) throw error;
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: "admin.reset_user_password",
+      entity: "user",
+      entity_id: data.userId,
+      meta: {},
+    });
+
     return {};
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to reset password" };

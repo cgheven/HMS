@@ -1,5 +1,6 @@
 "use server";
 
+import { randomBytes } from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { writeAuditLog } from "@/lib/audit";
@@ -233,7 +234,7 @@ export async function createHostelForClient(data: {
     const admin = createAdminClient();
 
     // 1. Create auth user
-    const tempPassword = `Pulse${Math.random().toString(36).slice(2, 10)}!`;
+    const tempPassword = `Pulse${randomBytes(12).toString("base64url")}!`;
     const { data: created, error: authErr } = await admin.auth.admin.createUser({
       email: data.ownerEmail,
       password: tempPassword,
@@ -344,17 +345,23 @@ export async function deleteClient(ownerId: string): Promise<{ error?: string }>
     const caller = await requireSuperAdmin();
     const admin = createAdminClient();
 
-    const { count } = await admin
-      .from("hms_tenants")
-      .select("id", { count: "exact", head: true })
-      .in(
-        "hostel_id",
-        (await admin.from("hms_hostels").select("id").eq("owner_id", ownerId)).data?.map((h) => h.id) ?? []
-      )
-      .eq("is_active", true);
+    // SECURITY: abort on inner query error instead of silently proceeding with empty hostel list
+    const { data: ownerHostels, error: hostelErr } = await admin
+      .from("hms_hostels")
+      .select("id")
+      .eq("owner_id", ownerId);
+    if (hostelErr) return { error: "Could not verify tenant status. Please try again." };
+    const hostelIds = (ownerHostels ?? []).map((h) => h.id);
 
-    if ((count ?? 0) > 0) {
-      return { error: `Cannot delete — this client has ${count} active tenant(s) across their branches.` };
+    if (hostelIds.length > 0) {
+      const { count } = await admin
+        .from("hms_tenants")
+        .select("id", { count: "exact", head: true })
+        .in("hostel_id", hostelIds)
+        .eq("is_active", true);
+      if ((count ?? 0) > 0) {
+        return { error: `Cannot delete — this client has ${count} active tenant(s) across their branches.` };
+      }
     }
 
     await admin.from("hms_owner_hostels").delete().eq("owner_id", ownerId);

@@ -24,3 +24,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# supabase cli temp files (auto-generated, never commit)
+supabase/.temp/

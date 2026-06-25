@@ -80,6 +80,7 @@ export interface Hostel {
   name: string;
   address: string | null;
   phone: string | null;
+  whatsapp: string | null;
   email: string | null;
   total_capacity: number;
   city: string | null;
@@ -91,6 +92,7 @@ export interface Hostel {
   listing_enabled: boolean;
   slug: string | null;
   form_config: FormConfig | null;
+  food_closed_on_sundays: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -102,6 +104,7 @@ export interface PublicHostel {
   name: string;
   address: string | null;
   phone: string | null;
+  whatsapp: string | null;
   email: string | null;
   total_capacity: number;
   city: string | null;
@@ -112,6 +115,28 @@ export interface PublicHostel {
   amenities: string[];
   available_beds: number;
   slug: string | null;
+  food_closed_on_sundays: boolean;
+}
+
+export interface PublicRoom {
+  id: string;
+  room_number: string;
+  floor: number | null;
+  type: SpaceType;
+  capacity: number;
+  occupied: number;
+  monthly_rent: number;
+  status: RoomStatus;
+  has_ac: boolean;
+  has_cooler: boolean;
+  photo_path: string | null;
+  photo_path_2: string | null;
+}
+
+export interface PublicHostelDetail extends PublicHostel {
+  rooms: PublicRoom[];
+  food_menu: FoodItem[];
+  package_config: PackageConfig | null;
 }
 
 export interface Room {
@@ -126,6 +151,8 @@ export interface Room {
   status: RoomStatus;
   has_ac: boolean;
   has_cooler: boolean;
+  photo_path: string | null;
+  photo_path_2: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -383,6 +410,8 @@ export interface PackageConfig {
   id: string;
   hostel_id: string;
   food_monthly_rate: number;
+  food_bd_rate: number;
+  food_3meals_rate: number;
   ac_per_unit_rate: number;
   created_at: string;
   updated_at: string;

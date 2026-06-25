@@ -1,3 +1,4 @@
+import "server-only";
 import { createClient } from "@supabase/supabase-js";
 
 // Server-only — NEVER import this in client components
@@ -14,6 +15,11 @@ export function createAdminClient() {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
+    },
+    global: {
+      // Prevent Next.js Data Cache from storing Supabase responses —
+      // admin reads must always reflect the latest DB state.
+      fetch: (input, init) => fetch(input, { ...init, cache: "no-store" }),
     },
   });
 }

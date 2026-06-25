@@ -57,7 +57,7 @@ export function SettingsClient() {
   const [lastCreatedPartner, setLastCreatedPartner] = useState<{ name: string; email: string; password: string } | null>(null);
 
   const [hostelForm, setHostelForm] = useState({
-    name: "", address: "", city: "", area: "", phone: "", email: "", total_capacity: "",
+    name: "", address: "", city: "", area: "", phone: "", whatsapp: "", email: "", total_capacity: "",
   });
   const [listingForm, setListingForm] = useState({
     listing_enabled: true,
@@ -65,13 +65,14 @@ export function SettingsClient() {
     description: "",
     hostel_type: "" as HostelType | "",
     amenities: [] as string[],
+    food_closed_on_sundays: false,
   });
   const [profileForm, setProfileForm] = useState({ full_name: "" });
   const [savingHostel, setSavingHostel] = useState(false);
   const [savingListing, setSavingListing] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
 
-  const [packageForm, setPackageForm] = useState({ food_monthly_rate: "", ac_per_unit_rate: "" });
+  const [packageForm, setPackageForm] = useState({ food_bd_rate: "", food_3meals_rate: "", ac_per_unit_rate: "" });
   const [savingPackage, setSavingPackage] = useState(false);
   const [packageLoaded, setPackageLoaded] = useState(false);
 
@@ -98,12 +99,16 @@ export function SettingsClient() {
     const supabase = createClient();
     const { data } = await supabase
       .from("hms_package_configs")
-      .select("food_monthly_rate, ac_per_unit_rate")
+      .select("food_monthly_rate, food_bd_rate, food_3meals_rate, ac_per_unit_rate")
       .eq("hostel_id", id)
       .maybeSingle();
     if (data) {
+      // If explicit rates are set use them; otherwise fall back to legacy per-meal * multiplier
+      const bdRate     = data.food_bd_rate     > 0 ? data.food_bd_rate     : (data.food_monthly_rate ?? 0) * 2;
+      const meals3Rate = data.food_3meals_rate  > 0 ? data.food_3meals_rate  : (data.food_monthly_rate ?? 0) * 3;
       setPackageForm({
-        food_monthly_rate: data.food_monthly_rate?.toString() ?? "0",
+        food_bd_rate:     bdRate.toString(),
+        food_3meals_rate: meals3Rate.toString(),
         ac_per_unit_rate: data.ac_per_unit_rate?.toString() ?? "0",
       });
     }
@@ -163,9 +168,9 @@ export function SettingsClient() {
     if (hostelId) await fetchPartners(hostelId);
   }
 
-  function buildWhatsAppLink(partner: { name: string; email: string; password: string }) {
+  function buildWhatsAppLink(partner: { name: string; email: string }) {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const msg = `Assalam o Alaikum ${partner.name},\n\nYour partner access for *${hostel?.name ?? "the hostel"}* has been set up.\n\nLogin URL: ${origin}/partner/login\nEmail: ${partner.email}\nPassword: ${partner.password}\n\nYou can view tenants and payments for your hostel.\n\nWelcome aboard!`;
+    const msg = `Assalam o Alaikum ${partner.name},\n\nYour partner access for *${hostel?.name ?? "the hostel"}* has been set up.\n\nLogin URL: ${origin}/partner/login\nEmail: ${partner.email}\n\nPlease ask the hostel owner for your password.\n\nYou can view tenants and payments for your hostel.\n\nWelcome aboard!`;
     return `https://wa.me/?text=${encodeURIComponent(msg)}`;
   }
 
@@ -216,6 +221,7 @@ export function SettingsClient() {
         city: hostel.city ?? "",
         area: hostel.area ?? "",
         phone: hostel.phone ?? "",
+        whatsapp: hostel.whatsapp ?? "",
         email: hostel.email ?? "",
         total_capacity: hostel.total_capacity?.toString() ?? "",
       });
@@ -225,6 +231,7 @@ export function SettingsClient() {
         description: hostel.description ?? "",
         hostel_type: hostel.hostel_type ?? "",
         amenities: hostel.amenities ?? [],
+        food_closed_on_sundays: hostel.food_closed_on_sundays ?? false,
       });
       fetchWaitlist(hostel.id);
       fetchPackageConfig(hostel.id);
@@ -250,6 +257,7 @@ export function SettingsClient() {
       city: hostelForm.city || null,
       area: hostelForm.area || null,
       phone: hostelForm.phone || null,
+      whatsapp: hostelForm.whatsapp || null,
       email: hostelForm.email || null,
       total_capacity: parseInt(hostelForm.total_capacity) || 0,
     }).eq("id", hostelId);
@@ -269,6 +277,7 @@ export function SettingsClient() {
       description: listingForm.description || null,
       hostel_type: listingForm.hostel_type || null,
       amenities: listingForm.amenities,
+      food_closed_on_sundays: listingForm.food_closed_on_sundays,
     };
     // Auto-generate slug if enabling listing and no slug exists yet
     if (listingForm.listing_enabled && !hostel?.slug) {
@@ -311,7 +320,10 @@ export function SettingsClient() {
       .upsert(
         {
           hostel_id: hostelId,
-          food_monthly_rate: parseFloat(packageForm.food_monthly_rate) || 0,
+          food_bd_rate:     parseFloat(packageForm.food_bd_rate)     || 0,
+          food_3meals_rate: parseFloat(packageForm.food_3meals_rate) || 0,
+          // Keep food_monthly_rate in sync — the billing trigger reads this column
+          food_monthly_rate: parseFloat(packageForm.food_bd_rate) || 0,
           ac_per_unit_rate: parseFloat(packageForm.ac_per_unit_rate) || 0,
           updated_at: new Date().toISOString(),
         },
@@ -382,13 +394,19 @@ export function SettingsClient() {
                 <Input placeholder="+92 300 0000000" value={hostelForm.phone} onChange={(e) => setHostelForm({ ...hostelForm, phone: e.target.value })} />
               </div>
               <div className="space-y-1.5">
+                <Label>WhatsApp</Label>
+                <Input placeholder="+92 300 0000000" value={hostelForm.whatsapp} onChange={(e) => setHostelForm({ ...hostelForm, whatsapp: e.target.value })} />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
                 <Label>Email</Label>
                 <Input type="email" placeholder="hostel@example.com" value={hostelForm.email} onChange={(e) => setHostelForm({ ...hostelForm, email: e.target.value })} />
               </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Total Capacity</Label>
-              <Input type="number" placeholder="0" min="0" value={hostelForm.total_capacity} onChange={(e) => setHostelForm({ ...hostelForm, total_capacity: e.target.value })} />
+              <div className="space-y-1.5">
+                <Label>Total Capacity</Label>
+                <Input type="number" placeholder="0" min="0" value={hostelForm.total_capacity} onChange={(e) => setHostelForm({ ...hostelForm, total_capacity: e.target.value })} />
+              </div>
             </div>
             <Button type="submit" disabled={savingHostel} className="gap-2">
               {savingHostel ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save Hostel
@@ -511,6 +529,27 @@ export function SettingsClient() {
                       </button>
                     ))}
                   </div>
+                </div>
+
+                {/* Kitchen / Sunday food */}
+                <div className="flex items-center justify-between p-3.5 rounded-xl border border-sidebar-border bg-white/[0.02]">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Kitchen closed on Sundays</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Enable if meals are not served on Sundays — shown on your public page</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setListingForm((f) => ({ ...f, food_closed_on_sundays: !f.food_closed_on_sundays }))}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none ${
+                      listingForm.food_closed_on_sundays ? "bg-amber" : "bg-muted"
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform ${
+                        listingForm.food_closed_on_sundays ? "translate-x-5" : "translate-x-0"
+                      }`}
+                    />
+                  </button>
                 </div>
               </>
             )}
@@ -685,39 +724,84 @@ export function SettingsClient() {
             <CardTitle className="text-base">Package Pricing</CardTitle>
           </div>
           <CardDescription>
-            Set monthly rates used when calculating tenant charges for Space + Food and Space + Food + AC packages.
+            Controls what tenants see on the public hostel page when selecting a package. Room base rent is set per-room in Spaces.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={savePackageConfig} className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <form onSubmit={savePackageConfig} className="space-y-5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-1.5">
-                <Label>Food Monthly Rate (Rs.)</Label>
+                <Label>Breakfast + Dinner / month (Rs.)</Label>
                 <Input
                   type="number"
                   min="0"
                   step="1"
-                  placeholder="0"
-                  value={packageForm.food_monthly_rate}
-                  onChange={(e) => setPackageForm({ ...packageForm, food_monthly_rate: e.target.value })}
+                  placeholder="e.g. 8000"
+                  value={packageForm.food_bd_rate}
+                  onChange={(e) => setPackageForm({ ...packageForm, food_bd_rate: e.target.value })}
                   disabled={!packageLoaded}
                 />
-                <p className="text-xs text-muted-foreground">Charged per tenant per month on food-inclusive packages</p>
+                <p className="text-xs text-muted-foreground">Added on top of room rent for this package</p>
               </div>
               <div className="space-y-1.5">
-                <Label>AC Per-Unit Rate (Rs./unit)</Label>
+                <Label>Breakfast + Lunch + Dinner / month (Rs.)</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder="e.g. 12000"
+                  value={packageForm.food_3meals_rate}
+                  onChange={(e) => setPackageForm({ ...packageForm, food_3meals_rate: e.target.value })}
+                  disabled={!packageLoaded}
+                />
+                <p className="text-xs text-muted-foreground">Added on top of room rent for this package</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label>AC Per-Unit Rate (Rs. / unit consumed)</Label>
                 <Input
                   type="number"
                   min="0"
                   step="0.01"
-                  placeholder="0"
+                  placeholder="e.g. 80"
                   value={packageForm.ac_per_unit_rate}
                   onChange={(e) => setPackageForm({ ...packageForm, ac_per_unit_rate: e.target.value })}
                   disabled={!packageLoaded}
                 />
-                <p className="text-xs text-muted-foreground">Multiplied by kWh consumed when marking AC-tier payments</p>
+                <p className="text-xs text-muted-foreground">Billed separately based on units consumed each month</p>
               </div>
             </div>
+
+            {/* Live preview */}
+            {packageLoaded && (parseFloat(packageForm.food_bd_rate) > 0 || parseFloat(packageForm.food_3meals_rate) > 0) && (
+              <div className="rounded-xl border border-border bg-muted/40 p-4">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">What tenants will see (room rent + food add-on)</p>
+                <div className="space-y-1.5 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Space Only</span>
+                    <span className="font-medium">Room rent only</span>
+                  </div>
+                  {parseFloat(packageForm.food_bd_rate) > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Space + Breakfast + Dinner</span>
+                      <span className="font-medium">Room rent + Rs. {parseFloat(packageForm.food_bd_rate).toLocaleString()}</span>
+                    </div>
+                  )}
+                  {parseFloat(packageForm.food_3meals_rate) > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Space + Breakfast + Lunch + Dinner</span>
+                      <span className="font-medium">Room rent + Rs. {parseFloat(packageForm.food_3meals_rate).toLocaleString()}</span>
+                    </div>
+                  )}
+                  {parseFloat(packageForm.ac_per_unit_rate) > 0 && (
+                    <div className="flex justify-between pt-1.5 border-t border-border mt-1.5">
+                      <span className="text-muted-foreground">AC (billed separately)</span>
+                      <span className="font-medium">Rs. {parseFloat(packageForm.ac_per_unit_rate)} / unit</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <Button type="submit" disabled={savingPackage || !packageLoaded} className="gap-2">
               {savingPackage ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               Save Package Pricing
@@ -1079,7 +1163,7 @@ export function SettingsClient() {
                   {/* Actions */}
                   <div className="flex items-center gap-1.5 shrink-0">
                     <a
-                      href={buildWhatsAppLink({ name: p.full_name ?? "Partner", email: p.email, password: "••••••••" })}
+                      href={buildWhatsAppLink({ name: p.full_name ?? "Partner", email: p.email })}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#25D366]/10 border border-[#25D366]/25 text-[#25D366] text-xs font-medium hover:bg-[#25D366]/15 transition-colors"

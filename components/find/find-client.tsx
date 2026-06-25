@@ -1,7 +1,8 @@
 "use client";
 import { useState, useMemo } from "react";
+import Link from "next/link";
 import {
-  Search, MapPin, ExternalLink, Home,
+  Search, MapPin, ExternalLink, Home, ArrowRight,
   Users, Wifi, Zap, Utensils, Shield, BedDouble, Clock, X, Loader2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -10,46 +11,35 @@ import { Label } from "@/components/ui/label";
 import { joinWaitlist } from "@/app/actions/public";
 import type { PublicHostel, HostelType } from "@/types";
 
-function toWhatsAppUrl(phone: string, hostelName: string): string | null {
-  const digits = phone.replace(/\D/g, "");
-  if (!digits) return null;
-  const normalized = digits.startsWith("0")
-    ? "92" + digits.slice(1)
-    : digits.startsWith("92")
-    ? digits
-    : digits;
-  const text = encodeURIComponent(`Hi! I saw your listing on HMS Directory and I'm interested in staying at ${hostelName}. Is there availability?`);
-  return `https://wa.me/${normalized}?text=${text}`;
-}
+// ── Marquee animation ─────────────────────────────────────────────────────────
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+const MARQUEE_CITIES = [
+  "Karachi", "Lahore", "Islamabad", "Peshawar", "Quetta",
+  "Rawalpindi", "Faisalabad", "Multan", "Hyderabad", "Sialkot",
+  "Gujranwala", "Bahawalpur", "Sukkur", "Abbottabad", "Mardan",
+];
 
-const TYPE_CONFIG: Record<HostelType, { label: string; cls: string }> = {
-  boys:   { label: "Boys Only",  cls: "bg-blue-500/10 text-blue-400 border-blue-500/20" },
-  girls:  { label: "Girls Only", cls: "bg-pink-500/10 text-pink-400 border-pink-500/20" },
-  mixed:  { label: "Mixed",      cls: "bg-purple-500/10 text-purple-400 border-purple-500/20" },
-  family: { label: "Family",     cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" },
+// ── Type config ───────────────────────────────────────────────────────────────
+
+const TYPE_CONFIG: Record<HostelType, { label: string; badgeCls: string; gradientFrom: string; gradientTo: string }> = {
+  boys:   { label: "Boys Only",  badgeCls: "bg-blue-500/20 text-blue-300 border-blue-400/20",    gradientFrom: "#0a1628", gradientTo: "#0f2347" },
+  girls:  { label: "Girls Only", badgeCls: "bg-pink-500/20 text-pink-300 border-pink-400/20",    gradientFrom: "#1a0d18", gradientTo: "#2d1529" },
+  mixed:  { label: "Mixed",      badgeCls: "bg-violet-500/20 text-violet-300 border-violet-400/20", gradientFrom: "#110d1e", gradientTo: "#1e1436" },
+  family: { label: "Family",     badgeCls: "bg-emerald-500/20 text-emerald-300 border-emerald-400/20", gradientFrom: "#0a1a11", gradientTo: "#0f2d1a" },
 };
+
+const DEFAULT_GRADIENT = { gradientFrom: "#1a1208", gradientTo: "#2a1e05" };
 
 const AMENITY_ICONS: Record<string, React.ReactNode> = {
-  "WiFi": <Wifi className="w-3 h-3" />,
-  "Generator / UPS": <Zap className="w-3 h-3" />,
-  "Meals Included": <Utensils className="w-3 h-3" />,
-  "Security Guard": <Shield className="w-3 h-3" />,
+  "WiFi":              <Wifi className="w-3 h-3" />,
+  "Generator / UPS":   <Zap className="w-3 h-3" />,
+  "Meals Included":    <Utensils className="w-3 h-3" />,
+  "Security Guard":    <Shield className="w-3 h-3" />,
 };
 
-function AmenityChip({ label }: { label: string }) {
+function WhatsAppIcon({ cls = "w-3.5 h-3.5" }: { cls?: string }) {
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/[0.05] border border-white/10 text-xs text-muted-foreground">
-      {AMENITY_ICONS[label] ?? null}
-      {label}
-    </span>
-  );
-}
-
-function WhatsAppIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-current" xmlns="http://www.w3.org/2000/svg">
+    <svg viewBox="0 0 24 24" className={`fill-current ${cls}`} xmlns="http://www.w3.org/2000/svg">
       <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
     </svg>
   );
@@ -58,10 +48,10 @@ function WhatsAppIcon() {
 // ── Waitlist modal ────────────────────────────────────────────────────────────
 
 function WaitlistModal({ hostel, onClose }: { hostel: PublicHostel; onClose: () => void }) {
-  const [name, setName]       = useState("");
-  const [phone, setPhone]     = useState("");
+  const [name, setName]   = useState("");
+  const [phone, setPhone] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [done, setDone]       = useState(false);
+  const [done, setDone]   = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -73,20 +63,17 @@ function WaitlistModal({ hostel, onClose }: { hostel: PublicHostel; onClose: () 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-sm rounded-2xl border border-sidebar-border bg-sidebar shadow-2xl overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-sidebar-border">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-[#111113] shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.06]">
           <div>
-            <p className="font-semibold text-sm text-foreground">Join Waitlist</p>
+            <p className="font-semibold text-sm">Join Waitlist</p>
             <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-[220px]">{hostel.name}</p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
-
-        {/* Body */}
         <div className="px-5 py-5">
           {done ? (
             <div className="flex flex-col items-center gap-3 py-4 text-center">
@@ -94,7 +81,7 @@ function WaitlistModal({ hostel, onClose }: { hostel: PublicHostel; onClose: () 
                 <Clock className="w-5 h-5 text-emerald-400" />
               </div>
               <div>
-                <p className="font-medium text-foreground">You're on the list!</p>
+                <p className="font-medium">You&apos;re on the list!</p>
                 <p className="text-sm text-muted-foreground mt-1">
                   The hostel owner will contact you on <strong className="text-foreground">{phone}</strong> when a space opens up.
                 </p>
@@ -103,9 +90,7 @@ function WaitlistModal({ hostel, onClose }: { hostel: PublicHostel; onClose: () 
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Leave your details and the owner will reach out on WhatsApp when a space opens up.
-              </p>
+              <p className="text-sm text-muted-foreground">Leave your details — the owner contacts you directly on WhatsApp.</p>
               <div className="space-y-1.5">
                 <Label>Your Name *</Label>
                 <Input placeholder="Ali Ahmed" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -131,123 +116,158 @@ function WaitlistModal({ hostel, onClose }: { hostel: PublicHostel; onClose: () 
 function HostelCard({ h }: { h: PublicHostel }) {
   const [waitlistOpen, setWaitlistOpen] = useState(false);
   const typeCfg = h.hostel_type ? TYPE_CONFIG[h.hostel_type] : null;
-  const waUrl = h.phone ? toWhatsAppUrl(h.phone, h.name) : null;
+  const gradient = typeCfg ?? DEFAULT_GRADIENT;
   const isFull = h.available_beds === 0;
+  const detailHref = h.slug ? `/find/${h.slug}` : null;
+  // SECURITY: reject javascript: URIs — only allow https:// links
+  const safeMapsUrl = h.maps_url?.match(/^https?:\/\//i) ? h.maps_url : null;
 
   return (
     <>
       {waitlistOpen && <WaitlistModal hostel={h} onClose={() => setWaitlistOpen(false)} />}
 
-      <div className="group flex flex-col rounded-2xl border border-sidebar-border bg-card hover:border-amber/20 transition-colors duration-200 overflow-hidden">
+      <article className="group flex flex-col rounded-2xl border border-white/[0.07] bg-[#111113] hover:border-amber/30 transition-all duration-300 overflow-hidden">
 
-        {/* Header */}
-        <div className="px-5 pt-5 pb-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h3 className="font-semibold text-foreground text-base leading-snug truncate group-hover:text-amber transition-colors">
-                {h.name}
-              </h3>
-              <div className="flex items-center gap-2 mt-1">
-                {(h.area || h.city) && (
-                  <div className="flex items-center gap-1 min-w-0">
-                    <MapPin className="w-3 h-3 text-muted-foreground shrink-0" />
-                    <span className="text-xs text-muted-foreground truncate">
-                      {[h.area, h.city].filter(Boolean).join(", ")}
-                    </span>
-                  </div>
-                )}
-                {h.maps_url && (
-                  <a
-                    href={h.maps_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-0.5 text-xs text-amber/70 hover:text-amber transition-colors shrink-0"
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                    Map
-                  </a>
-                )}
-              </div>
-            </div>
-            {typeCfg && (
-              <span className={`shrink-0 inline-flex items-center px-2 py-0.5 rounded-full border text-xs font-medium ${typeCfg.cls}`}>
-                {typeCfg.label}
-              </span>
-            )}
-          </div>
-        </div>
+        {/* Visual header — gradient with tile pattern */}
+        <div
+          className="relative h-44 shrink-0 overflow-hidden"
+          style={{ background: `linear-gradient(135deg, ${gradient.gradientFrom} 0%, ${gradient.gradientTo} 100%)` }}
+        >
+          {/* Dot-grid tile pattern */}
+          <div
+            className="absolute inset-0"
+            style={{
+              backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.07) 1px, transparent 1px)",
+              backgroundSize: "18px 18px",
+            }}
+          />
 
-        {/* Body — flex-1 so CTA always pins to bottom */}
-        <div className="flex flex-col flex-1 gap-3 px-5 pb-4">
-          {h.description && (
-            <p className="text-sm text-muted-foreground line-clamp-2">{h.description}</p>
-          )}
-
-          {/* Availability */}
-          <div className="flex items-center gap-2.5 flex-wrap">
+          {/* Availability badge — bottom left */}
+          <div className="absolute bottom-3 left-3">
             {isFull ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/10 border border-rose-500/20 text-xs font-medium text-rose-400">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/50 backdrop-blur-sm border border-white/10 text-xs font-semibold text-rose-300">
                 <BedDouble className="w-3 h-3" /> Full
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs font-medium text-emerald-400">
-                <BedDouble className="w-3 h-3" /> {h.available_beds} {h.available_beds === 1 ? "bed" : "beds"} available
-              </span>
-            )}
-            {h.total_capacity > 0 && (
-              <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                <Users className="w-3 h-3" /> {h.total_capacity} total
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/50 backdrop-blur-sm border border-emerald-400/30 text-xs font-semibold text-emerald-300">
+                <BedDouble className="w-3 h-3" /> {h.available_beds} {h.available_beds === 1 ? "bed" : "beds"} free
               </span>
             )}
           </div>
 
-          {/* All amenities — no artificial cap */}
+          {/* Type badge — top right */}
+          {typeCfg && (
+            <div className="absolute top-3 right-3">
+              <span className={`inline-flex items-center px-2.5 py-1 rounded-full border text-[11px] font-semibold backdrop-blur-sm ${typeCfg.badgeCls}`}>
+                {typeCfg.label}
+              </span>
+            </div>
+          )}
+
+          {/* Maps link — top left */}
+          {safeMapsUrl && (
+            <a
+              href={safeMapsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="absolute top-3 left-3 inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-black/40 backdrop-blur-sm border border-white/10 text-[11px] text-white/70 hover:text-white transition-colors"
+            >
+              <ExternalLink className="w-3 h-3" /> Map
+            </a>
+          )}
+
+          {/* Subtle corner glow on hover */}
+          <div className="absolute inset-0 bg-amber/0 group-hover:bg-amber/5 transition-all duration-500" />
+        </div>
+
+        {/* Info */}
+        <div className="flex flex-col flex-1 px-5 pt-4 pb-3 gap-2.5">
+          {/* Name + location */}
+          <div>
+            {detailHref ? (
+              <Link href={detailHref} className="block group/title">
+                <h3 className="font-serif text-[17px] font-medium text-foreground leading-snug group-hover/title:text-amber transition-colors line-clamp-1">
+                  {h.name}
+                </h3>
+              </Link>
+            ) : (
+              <h3 className="font-serif text-[17px] font-medium text-foreground leading-snug line-clamp-1">{h.name}</h3>
+            )}
+            {(h.area || h.city) && (
+              <div className="flex items-center gap-1 mt-0.5">
+                <MapPin className="w-3 h-3 text-muted-foreground/60 shrink-0" />
+                <span className="text-xs text-muted-foreground/70 truncate">
+                  {[h.area, h.city].filter(Boolean).join(", ")}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Description */}
+          {h.description && (
+            <p className="text-xs text-muted-foreground/70 leading-relaxed line-clamp-2">{h.description}</p>
+          )}
+
+          {/* Capacity */}
+          {h.total_capacity > 0 && (
+            <div className="flex items-center gap-1 text-xs text-muted-foreground/50">
+              <Users className="w-3 h-3" /> {h.total_capacity} capacity
+            </div>
+          )}
+
+          {/* Amenity chips */}
           {h.amenities.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
-              {h.amenities.map((a) => <AmenityChip key={a} label={a} />)}
+              {h.amenities.slice(0, 5).map((a) => (
+                <span key={a} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/[0.04] border border-white/[0.07] text-[11px] text-muted-foreground/80">
+                  {AMENITY_ICONS[a] ?? null}
+                  {a}
+                </span>
+              ))}
+              {h.amenities.length > 5 && (
+                <span className="text-[11px] text-muted-foreground/50 self-center">+{h.amenities.length - 5} more</span>
+              )}
             </div>
           )}
         </div>
 
-        {/* CTAs — always at card bottom, uniform height */}
+        {/* CTAs */}
         <div className="px-5 pb-5 flex gap-2">
-          {waUrl && (
-            <a
-              href={waUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex-1 flex items-center justify-center gap-2 h-10 rounded-xl bg-[#25D366] hover:bg-[#20ba57] text-white text-sm font-semibold transition-colors"
+          {detailHref ? (
+            <Link
+              href={detailHref}
+              className="flex-1 flex items-center justify-center gap-2 h-10 rounded-xl bg-amber hover:bg-amber/90 text-black text-sm font-semibold transition-colors"
             >
-              <WhatsAppIcon />
-              Book Now
-            </a>
+              View Rooms <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+          ) : (
+            <div className="flex-1" />
           )}
           <button
             onClick={() => setWaitlistOpen(true)}
-            className={`flex items-center justify-center gap-1.5 h-10 rounded-xl border border-sidebar-border bg-white/[0.03] hover:bg-white/[0.07] text-muted-foreground hover:text-foreground text-sm font-medium transition-colors ${waUrl ? "px-4" : "flex-1"}`}
+            className={`flex items-center justify-center gap-1.5 h-10 rounded-xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.07] text-muted-foreground hover:text-foreground text-sm font-medium transition-colors ${detailHref ? "px-4" : "flex-1"}`}
           >
             <Clock className="w-3.5 h-3.5 shrink-0" />
-            Join Waitlist
+            {isFull ? "Waitlist" : "Join Waitlist"}
           </button>
         </div>
-      </div>
+      </article>
     </>
   );
 }
 
-// ── Grid: groups multi-hostel owners ─────────────────────────────────────────
+// ── Grid ──────────────────────────────────────────────────────────────────────
 
-function ownerInitials(name: string | null): string {
+function ownerInitials(name: string | null) {
   if (!name) return "?";
   return name.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2);
 }
 
 function HostelGrid({ hostels }: { hostels: PublicHostel[] }) {
-  // Count hostels per owner
   const countByOwner: Record<string, number> = {};
   for (const h of hostels) countByOwner[h.owner_id] = (countByOwner[h.owner_id] ?? 0) + 1;
 
-  // Separate multi-hostel owners from singles
   const groups: Record<string, PublicHostel[]> = {};
   const singles: PublicHostel[] = [];
 
@@ -261,41 +281,33 @@ function HostelGrid({ hostels }: { hostels: PublicHostel[] }) {
   }
 
   return (
-    <div className="space-y-8">
-      {/* Multi-hostel owner groups */}
+    <div className="space-y-10">
       {Object.values(groups).map((group) => {
         const owner = group[0];
         return (
           <div key={owner.owner_id}>
-            <div className="flex items-center gap-2.5 mb-3">
-              <div className="w-7 h-7 rounded-full bg-amber/10 border border-amber/20 flex items-center justify-center shrink-0">
-                <span className="text-[10px] font-bold text-amber">{ownerInitials(owner.owner_name)}</span>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-8 h-8 rounded-full bg-amber/10 border border-amber/20 flex items-center justify-center shrink-0">
+                <span className="text-[11px] font-bold text-amber">{ownerInitials(owner.owner_name)}</span>
               </div>
               <div className="flex items-center gap-2 min-w-0">
-                <span className="text-sm font-medium text-foreground truncate">
-                  {owner.owner_name ?? "Hostel Owner"}
-                </span>
-                <span className="text-xs text-muted-foreground shrink-0">
-                  · {group.length} properties
-                </span>
+                <span className="text-sm font-medium truncate">{owner.owner_name ?? "Hostel Owner"}</span>
+                <span className="text-xs text-muted-foreground shrink-0">· {group.length} properties</span>
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
               {group.map((h) => <HostelCard key={h.id} h={h} />)}
             </div>
           </div>
         );
       })}
 
-      {/* Single-hostel owners — flat grid */}
       {singles.length > 0 && (
         <div>
           {Object.keys(groups).length > 0 && (
-            <p className="text-xs font-semibold text-muted-foreground/50 uppercase tracking-widest mb-3">
-              Other Hostels
-            </p>
+            <p className="text-[11px] font-semibold text-muted-foreground/40 uppercase tracking-widest mb-4">Other Hostels</p>
           )}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {singles.map((h) => <HostelCard key={h.id} h={h} />)}
           </div>
         </div>
@@ -304,33 +316,43 @@ function HostelGrid({ hostels }: { hostels: PublicHostel[] }) {
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Filter pill ───────────────────────────────────────────────────────────────
+
+function Pill({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all whitespace-nowrap ${
+        active
+          ? "bg-amber/15 text-amber border-amber/30"
+          : "border-white/[0.08] text-muted-foreground hover:text-foreground hover:border-white/20"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 const ALL_TYPES: { value: HostelType | "all"; label: string }[] = [
-  { value: "all",    label: "All Types" },
+  { value: "all",    label: "All" },
   { value: "boys",   label: "Boys" },
   { value: "girls",  label: "Girls" },
   { value: "mixed",  label: "Mixed" },
   { value: "family", label: "Family" },
 ];
 
-interface Props { hostels: PublicHostel[] }
-
-export function FindClient({ hostels }: Props) {
+export function FindClient({ hostels }: { hostels: PublicHostel[] }) {
   const [search, setSearch]         = useState("");
   const [typeFilter, setTypeFilter] = useState<HostelType | "all">("all");
   const [cityFilter, setCityFilter] = useState("all");
   const [areaFilter, setAreaFilter] = useState("all");
 
-  const cities = useMemo(() => {
-    const set = new Set(hostels.map((h) => h.city).filter(Boolean) as string[]);
-    return Array.from(set).sort();
-  }, [hostels]);
-
-  const areas = useMemo(() => {
-    const source = cityFilter === "all" ? hostels : hostels.filter((h) => h.city === cityFilter);
-    const set = new Set(source.map((h) => h.area).filter(Boolean) as string[]);
-    return Array.from(set).sort();
+  const cities = useMemo(() => Array.from(new Set(hostels.map((h) => h.city).filter(Boolean) as string[])).sort(), [hostels]);
+  const areas  = useMemo(() => {
+    const src = cityFilter === "all" ? hostels : hostels.filter((h) => h.city === cityFilter);
+    return Array.from(new Set(src.map((h) => h.area).filter(Boolean) as string[])).sort();
   }, [hostels, cityFilter]);
 
   const filtered = useMemo(() => {
@@ -339,129 +361,147 @@ export function FindClient({ hostels }: Props) {
       if (typeFilter !== "all" && h.hostel_type !== typeFilter) return false;
       if (cityFilter !== "all" && h.city !== cityFilter) return false;
       if (areaFilter !== "all" && h.area !== areaFilter) return false;
-      if (q) {
-        return (
-          h.name.toLowerCase().includes(q) ||
-          (h.city ?? "").toLowerCase().includes(q) ||
-          (h.area ?? "").toLowerCase().includes(q) ||
-          (h.description ?? "").toLowerCase().includes(q)
-        );
-      }
+      if (q) return h.name.toLowerCase().includes(q) || (h.city ?? "").toLowerCase().includes(q) || (h.area ?? "").toLowerCase().includes(q) || (h.description ?? "").toLowerCase().includes(q);
       return true;
     });
   }, [hostels, search, typeFilter, cityFilter, areaFilter]);
 
-  const filterPill = (active: boolean, onClick: () => void, label: string) => (
-    <button
-      key={label}
-      onClick={onClick}
-      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors whitespace-nowrap ${
-        active
-          ? "bg-amber/10 text-amber border-amber/30"
-          : "border-sidebar-border text-muted-foreground hover:text-foreground"
-      }`}
-    >
-      {label}
-    </button>
-  );
+  const marqueeItems = [...MARQUEE_CITIES, ...MARQUEE_CITIES, ...MARQUEE_CITIES];
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Compact hero — 2-col on desktop */}
-      <div className="border-b border-sidebar-border bg-sidebar/50 backdrop-blur-md">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-5 sm:py-7 flex flex-col sm:flex-row sm:items-center gap-4">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-7 h-7 rounded-lg bg-amber/10 border border-amber/20 flex items-center justify-center shrink-0">
+    <>
+      <style>{`
+        @keyframes marquee-scroll {
+          from { transform: translateX(0); }
+          to   { transform: translateX(-33.333%); }
+        }
+      `}</style>
+
+      <div className="min-h-screen bg-[#0A0A0B]">
+
+        {/* ── Header bar ────────────────────────────────────────────────────── */}
+        <div className="relative overflow-hidden border-b border-white/[0.06]">
+          {/* Subtle marquee — only visible on wider viewports, very faint */}
+          <div className="absolute inset-0 flex items-center pointer-events-none select-none overflow-hidden">
+            <div
+              className="whitespace-nowrap text-[56px] font-serif font-bold text-white/[0.018] leading-none"
+              style={{ animation: "marquee-scroll 50s linear infinite" }}
+            >
+              {marqueeItems.map((city, i) => (
+                <span key={i} className="mx-8">{city}</span>
+              ))}
+            </div>
+          </div>
+
+          <div className="relative max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center gap-4">
+            {/* Brand + title */}
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="w-7 h-7 rounded-lg bg-amber/15 border border-amber/25 flex items-center justify-center shrink-0">
                 <Home className="w-3.5 h-3.5 text-amber" />
               </div>
-              <p className="text-xs font-semibold text-amber uppercase tracking-widest">HMS Directory</p>
-            </div>
-            <h1 className="text-2xl sm:text-3xl font-serif font-normal tracking-tight">
-              Find Your Perfect Hostel
-            </h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Browse verified hostels. Contact directly — no fees, no middlemen.
-            </p>
-          </div>
-
-          <div className="relative sm:w-72 lg:w-96 shrink-0">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-            <Input
-              placeholder="Search by name, city, area…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 h-10 bg-card border-sidebar-border"
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Sticky filter bar */}
-      <div className="sticky top-0 z-10 border-b border-sidebar-border bg-background/95 backdrop-blur-sm">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6">
-          <div className="flex flex-wrap gap-x-4 gap-y-2 py-2.5 items-center">
-            {/* Type */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest shrink-0">Type</span>
-              <div className="flex gap-1">
-                {ALL_TYPES.map((t) => filterPill(typeFilter === t.value, () => setTypeFilter(t.value), t.label))}
+              <div className="min-w-0">
+                <h1 className="font-serif text-lg sm:text-xl font-medium text-foreground leading-tight truncate">
+                  Find Your <span className="text-amber">Perfect Hostel</span>
+                </h1>
+                <p className="text-[11px] text-muted-foreground/50 hidden sm:block">Verified hostels · Direct contact · No fees</p>
               </div>
             </div>
 
-            {cities.length > 0 && (
-              <>
-                <div className="w-px h-4 bg-sidebar-border hidden sm:block" />
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest shrink-0">City</span>
-                  <div className="flex gap-1">
-                    {filterPill(cityFilter === "all", () => { setCityFilter("all"); setAreaFilter("all"); }, "All")}
-                    {cities.map((c) => filterPill(cityFilter === c, () => { setCityFilter(c); setAreaFilter("all"); }, c))}
-                  </div>
-                </div>
-              </>
-            )}
+            {/* Search */}
+            <div className="relative w-56 sm:w-72 lg:w-80 shrink-0">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/50" />
+              <input
+                type="text"
+                placeholder="Search by name, city, area…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full h-9 pl-9 pr-3 rounded-xl border border-white/[0.09] bg-white/[0.04] text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-amber/40 focus:bg-white/[0.06] transition-all"
+              />
+            </div>
+          </div>
+        </div>
 
-            {areas.length > 0 && (
-              <>
-                <div className="w-px h-4 bg-sidebar-border hidden sm:block" />
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest shrink-0">Area</span>
-                  <div className="flex flex-wrap gap-1">
-                    {filterPill(areaFilter === "all", () => setAreaFilter("all"), "All")}
-                    {areas.map((a) => filterPill(areaFilter === a, () => setAreaFilter(a), a))}
-                  </div>
+        {/* ── Filter bar ────────────────────────────────────────────────────── */}
+        <div className="sticky top-0 z-10 border-b border-white/[0.05] bg-[#0A0A0B]/90 backdrop-blur-md">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6">
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 py-3">
+              {/* Type */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-semibold text-muted-foreground/40 uppercase tracking-widest shrink-0">Type</span>
+                <div className="flex gap-1">
+                  {ALL_TYPES.map((t) => (
+                    <Pill key={t.value} active={typeFilter === t.value} onClick={() => setTypeFilter(t.value)} label={t.label} />
+                  ))}
                 </div>
-              </>
-            )}
+              </div>
 
-            <span className="ml-auto text-xs text-muted-foreground shrink-0">
-              {filtered.length} {filtered.length === 1 ? "hostel" : "hostels"}
-            </span>
+              {cities.length > 0 && (
+                <>
+                  <div className="w-px h-4 bg-white/[0.07] hidden sm:block" />
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-semibold text-muted-foreground/40 uppercase tracking-widest shrink-0">City</span>
+                    <div className="flex gap-1 flex-wrap">
+                      <Pill active={cityFilter === "all"} onClick={() => { setCityFilter("all"); setAreaFilter("all"); }} label="All" />
+                      {cities.map((c) => <Pill key={c} active={cityFilter === c} onClick={() => { setCityFilter(c); setAreaFilter("all"); }} label={c} />)}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {areas.length > 0 && (
+                <>
+                  <div className="w-px h-4 bg-white/[0.07] hidden sm:block" />
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-semibold text-muted-foreground/40 uppercase tracking-widest shrink-0">Area</span>
+                    <div className="flex gap-1 flex-wrap">
+                      <Pill active={areaFilter === "all"} onClick={() => setAreaFilter("all")} label="All" />
+                      {areas.map((a) => <Pill key={a} active={areaFilter === a} onClick={() => setAreaFilter(a)} label={a} />)}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <span className="ml-auto text-xs text-muted-foreground/50 shrink-0 tabular-nums">
+                {filtered.length} {filtered.length === 1 ? "hostel" : "hostels"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Listings ──────────────────────────────────────────────────────── */}
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-5">
+          {filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-32 gap-4 text-center">
+              <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center">
+                <Home className="w-7 h-7 text-muted-foreground/25" />
+              </div>
+              <div>
+                <p className="font-medium">No hostels found</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {search || typeFilter !== "all" || cityFilter !== "all" || areaFilter !== "all"
+                    ? "Try adjusting your filters."
+                    : "No hostels are listed yet. Check back soon."}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <HostelGrid hostels={filtered} />
+          )}
+        </div>
+
+        {/* ── Footer strip ──────────────────────────────────────────────────── */}
+        <div className="border-t border-white/[0.05] mt-8">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 rounded-md bg-amber/15 border border-amber/25 flex items-center justify-center">
+                <Home className="w-2.5 h-2.5 text-amber" />
+              </div>
+              <span className="text-xs text-muted-foreground/50">HMS Directory</span>
+            </div>
+            <p className="text-xs text-muted-foreground/40">Verified hostels · Direct contact · No fees</p>
           </div>
         </div>
       </div>
-
-      {/* Grid */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
-        {filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-24 gap-4 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-sidebar-border flex items-center justify-center">
-              <Home className="w-7 h-7 text-muted-foreground/30" />
-            </div>
-            <div>
-              <p className="font-medium text-foreground">No hostels found</p>
-              <p className="text-sm text-muted-foreground mt-1">
-                {search || typeFilter !== "all" || cityFilter !== "all" || areaFilter !== "all"
-                  ? "Try adjusting your filters."
-                  : "No hostels are listed yet. Check back soon."}
-              </p>
-            </div>
-          </div>
-        ) : (
-          <HostelGrid hostels={filtered} />
-        )}
-      </div>
-    </div>
+    </>
   );
 }

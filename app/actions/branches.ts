@@ -112,6 +112,7 @@ export async function switchActiveHostel(
     const cookieStore = await cookies();
     cookieStore.set(COOKIE_NAME, hostelId, {
       httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
       path: "/",
       maxAge: COOKIE_MAX_AGE,
       sameSite: "lax",
