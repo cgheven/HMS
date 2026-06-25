@@ -133,17 +133,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
   function openApproveDialog(app: TenantApplication) {
     setApprovingApp(app);
+    // Match room_preference (room number string) to an actual room
+    const matchedRoom = app.room_preference
+      ? rooms.find((r) => r.room_number === app.room_preference) ?? null
+      : null;
     setApproveForm({
-      type: app.room_preference ?? "general",
+      type: matchedRoom?.type ?? app.room_preference ?? "general",
       package_tier: app.package_tier ?? "space_only",
       billing_type: "monthly",
-      monthly_rent: 0,
+      monthly_rent: matchedRoom?.monthly_rent ?? 0,
       daily_rate: 0,
-      security_deposit: 0,
+      security_deposit: 10000,
       check_in: app.move_in_date ?? formatDateInput(new Date()),
-      room_id: null,
+      room_id: matchedRoom?.id ?? null,
       bed_number: null,
-      is_waiting: true,
+      is_waiting: matchedRoom === null, // auto-switch to Active if room found
       notes: app.notes ?? null,
     });
   }
@@ -818,7 +822,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       onValueChange={(v) => setApproveForm({
                         ...approveForm,
                         room_id: v || null,
-                        monthly_rent: approveForm.monthly_rent || (rooms.find(r => r.id === v)?.monthly_rent ?? 0),
+                        monthly_rent: rooms.find(r => r.id === v)?.monthly_rent ?? approveForm.monthly_rent,
                       })}
                     >
                       <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
