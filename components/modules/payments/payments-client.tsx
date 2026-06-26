@@ -12,7 +12,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
-import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig } from "@/types";
+import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount } from "@/types";
+import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import {
   syncMonthAction,
   markPaymentPaidAction,
@@ -40,12 +41,14 @@ interface RoomRow { id: string; room_number: string; floor: number | null; }
 interface Props {
   hostelId: string | null;
   hostelName?: string;
-  hostelPhone?: string;
+  hostelPhone?: string | null;
   payments: Payment[];
   tenants: TenantRow[];
   rooms: RoomRow[];
   initialMonth: string;
   packageConfig: PackageConfig | null;
+  paymentMethods?: PaymentMethodAccount[];
+  reminderTemplate?: string | null;
 }
 
 const methodLabels: Record<PaymentMethod, string> = {
@@ -70,7 +73,7 @@ function genReceipt(tenantName: string, month: string) {
 // Maximum AC units allowed in the UI (matches DB constraint in migration 022)
 const MAX_AC_UNITS = 10_000;
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate }: Props) {
   const [selectedMonth, setSelectedMonth] = useState(initialMonth);
   const [payments, setPayments] = useState<Payment[]>(initialPayments);
   const [allHistory, setAllHistory] = useState<Payment[]>([]);
@@ -255,7 +258,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }
 
   async function sendReminder(p: Payment) {
-    const rawPhone = p.tenant?.phone ?? "";
+    const rawPhone = (p.tenant as { phone?: string | null } | null)?.phone ?? "";
     if (!rawPhone) {
       toast({ title: "No phone number", description: "This tenant has no phone on file.", variant: "destructive" });
       return;
@@ -265,14 +268,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       toast({ title: "Invalid phone", variant: "destructive" });
       return;
     }
-    const firstName = p.tenant?.full_name?.split(" ")[0] ?? "there";
     const total = Number(p.amount) + Number(p.late_fee ?? 0);
-    const totalFormatted = `Rs. ${total.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
-    const message =
-      `Assalam o Alaikum ${firstName},\n\n` +
-      `Friendly reminder — your rent of *${totalFormatted}* for ${p.for_month} is still pending.\n\n` +
-      `Please arrange payment at your earliest convenience.\n\n` +
-      `— ${hostelName}`;
+    const message = buildReminderMessage({
+      template: reminderTemplate,
+      tenantName: p.tenant?.full_name ?? "Tenant",
+      amount: total,
+      month: p.for_month,
+      hostelName,
+      accounts: paymentMethods,
+    });
     const waUrl = `https://wa.me/${digits}?text=${encodeURIComponent(message)}`;
     window.open(waUrl, "_blank", "noopener,noreferrer");
   }
@@ -298,10 +302,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     </svg>
   );
 
-  // Table header row
+  // Desktop-only table header
   function PaymentTableHeader() {
     return (
-      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-3 px-4 py-2 border-b border-white/5">
+      <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-3 px-4 py-2 border-b border-white/5">
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tenant</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Plan</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Amount</span>
@@ -319,95 +323,102 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     const total = Number(p.amount) + Number(p.late_fee || 0);
 
     const statusColors: Record<PaymentStatus, string> = {
-      paid: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
+      paid:    "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
       pending: "bg-amber/15 text-amber border-amber/25",
       overdue: "bg-rose-500/15 text-rose-400 border-rose-500/25",
-      waived: "bg-white/5 text-muted-foreground border-white/10",
+      waived:  "bg-white/5 text-muted-foreground border-white/10",
     };
 
-    return (
-      <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-3 items-center px-4 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5">
-        {/* Tenant column */}
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-foreground truncate">{p.tenant?.full_name ?? "—"}</p>
-          <div className="flex items-center gap-2 flex-wrap mt-0.5">
-            {room && <span className="text-xs text-muted-foreground">Rm {room.room_number}</span>}
-            {isLate && <span className="text-xs text-rose-400 font-medium">Late</span>}
-            {p.payment_date && <span className="text-xs text-muted-foreground">Paid {formatDate(p.payment_date)}</span>}
-            {p.payment_method && !p.payment_date && <span className="text-xs text-muted-foreground">{methodLabels[p.payment_method]}</span>}
-          </div>
-        </div>
+    const actionButtons = (
+      <>
+        {(p.status === "pending" || p.status === "overdue") && (
+          <>
+            <Button variant="ghost" size="sm" className="h-7 px-2.5 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" onClick={() => sendReminder(p)}>
+              {WA_ICON} Remind
+            </Button>
+            <Button variant="ghost" size="sm" className="h-7 px-2.5 text-xs gap-1 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
+              <CheckCircle2 className="w-3 h-3" /> Pay
+            </Button>
+          </>
+        )}
+        {p.status === "paid" && (
+          <Button variant="ghost" size="sm" className="h-7 px-2.5 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" disabled={sendingWa === p.id} onClick={() => sendWhatsAppReceipt(p)}>
+            {WA_ICON} Receipt
+          </Button>
+        )}
+        {p.status === "waived" && <span className="text-xs text-muted-foreground px-2">Waived</span>}
+        {p.status === "pending" && (
+          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-muted-foreground" title="Mark waived" onClick={() => markWaived(p)}>
+            <Edit2 className="w-3 h-3" />
+          </Button>
+        )}
+      </>
+    );
 
-        {/* Plan column */}
-        <div className="min-w-0">
-          <span className="text-sm text-blue-400 font-medium truncate">{tierLabel}</span>
-          {(p.food_charge != null && Number(p.food_charge) > 0 || p.ac_charge != null && Number(p.ac_charge) > 0) && (
-            <div className="flex flex-wrap gap-x-2 mt-0.5">
-              {Number(p.food_charge) > 0 && <span className="text-xs text-muted-foreground">Food: {formatCurrency(p.food_charge!)}</span>}
-              {Number(p.ac_charge) > 0 && <span className="text-xs text-muted-foreground">AC: {formatCurrency(p.ac_charge!)}</span>}
+    return (
+      <>
+        {/* ── Mobile card (< md) ─────────────────────────────── */}
+        <div className="md:hidden rounded-xl border border-white/5 bg-white/[0.02] p-3.5 space-y-3 hover:border-white/10 transition-colors">
+          {/* Row 1: name + amount */}
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-foreground leading-tight">{p.tenant?.full_name ?? "—"}</p>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                {room && <span className="text-xs text-muted-foreground">Rm {room.room_number}</span>}
+                <span className="text-xs text-blue-400">{tierLabel}</span>
+                {isLate && <span className="text-xs text-rose-400 font-medium">Late</span>}
+              </div>
+              {p.payment_date && <p className="text-xs text-muted-foreground mt-0.5">Paid {formatDate(p.payment_date)}</p>}
+            </div>
+            <div className="text-right shrink-0">
+              <p className="text-base font-bold text-foreground">{formatCurrency(total)}</p>
+              {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
+              <span className={`inline-flex items-center mt-1 px-2 py-0.5 rounded-full text-xs font-medium border ${statusColors[p.status]}`}>
+                {cfg.label}
+              </span>
+            </div>
+          </div>
+          {/* Row 2: actions */}
+          {p.status !== "waived" && (
+            <div className="flex items-center gap-1.5 pt-0.5 border-t border-white/5">
+              {actionButtons}
             </div>
           )}
         </div>
 
-        {/* Amount column */}
-        <div className="text-right">
-          <p className="text-sm font-semibold text-foreground">{formatCurrency(total)}</p>
-          {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
+        {/* ── Desktop table row (≥ md) ───────────────────────── */}
+        <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-3 items-center px-4 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground truncate">{p.tenant?.full_name ?? "—"}</p>
+            <div className="flex items-center gap-2 flex-wrap mt-0.5">
+              {room && <span className="text-xs text-muted-foreground">Rm {room.room_number}</span>}
+              {isLate && <span className="text-xs text-rose-400 font-medium">Late</span>}
+              {p.payment_date && <span className="text-xs text-muted-foreground">Paid {formatDate(p.payment_date)}</span>}
+            </div>
+          </div>
+          <div className="min-w-0">
+            <span className="text-sm text-blue-400 font-medium">{tierLabel}</span>
+            {(Number(p.food_charge) > 0 || Number(p.ac_charge) > 0) && (
+              <div className="flex flex-wrap gap-x-2 mt-0.5">
+                {Number(p.food_charge) > 0 && <span className="text-xs text-muted-foreground">Food: {formatCurrency(p.food_charge!)}</span>}
+                {Number(p.ac_charge) > 0 && <span className="text-xs text-muted-foreground">AC: {formatCurrency(p.ac_charge!)}</span>}
+              </div>
+            )}
+          </div>
+          <div className="text-right">
+            <p className="text-sm font-semibold text-foreground">{formatCurrency(total)}</p>
+            {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
+          </div>
+          <div className="flex justify-center w-24">
+            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${statusColors[p.status]}`}>
+              {cfg.label}
+            </span>
+          </div>
+          <div className="flex items-center justify-end gap-1.5 w-36">
+            {actionButtons}
+          </div>
         </div>
-
-        {/* Status badge */}
-        <div className="flex justify-center w-24">
-          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${statusColors[p.status]}`}>
-            {cfg.label}
-          </span>
-        </div>
-
-        {/* Actions */}
-        <div className="flex items-center justify-end gap-1.5 w-36">
-          {(p.status === "pending" || p.status === "overdue") && (
-            <>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2.5 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50"
-                onClick={() => sendReminder(p)}
-              >
-                {WA_ICON}
-                Remind
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2.5 text-xs gap-1 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20"
-                onClick={() => openMarkPaid(p)}
-              >
-                <CheckCircle2 className="w-3 h-3" />
-                Pay
-              </Button>
-            </>
-          )}
-          {p.status === "paid" && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2.5 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50"
-              disabled={sendingWa === p.id}
-              onClick={() => sendWhatsAppReceipt(p)}
-            >
-              {WA_ICON}
-              Receipt
-            </Button>
-          )}
-          {p.status === "waived" && (
-            <span className="text-xs text-muted-foreground px-2">Waived</span>
-          )}
-          {(p.status === "pending") && (
-            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-muted-foreground" title="Mark waived" onClick={() => markWaived(p)}>
-              <Edit2 className="w-3 h-3" />
-            </Button>
-          )}
-        </div>
-      </div>
+      </>
     );
   }
 
@@ -428,21 +439,21 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         {[
-          { label: "Total Due", value: formatCurrency(stats.due), icon: CreditCard, color: "text-foreground", bg: "bg-white/5 border border-white/10" },
-          { label: "Collected", value: formatCurrency(stats.collected), icon: Wallet, color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20" },
-          { label: "Pending", value: formatCurrency(stats.pending), icon: Clock, color: "text-amber", bg: "bg-amber/10 border border-amber/20" },
-          { label: "Collection Rate", value: `${stats.rate}%`, icon: TrendingUp, color: "text-blue-400", bg: "bg-blue-500/10 border border-blue-500/20" },
+          { label: "Total Due",       value: formatCurrency(stats.due),       icon: CreditCard, color: "text-foreground",   bg: "bg-white/5 border border-white/10" },
+          { label: "Collected",       value: formatCurrency(stats.collected),  icon: Wallet,     color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20" },
+          { label: "Pending",         value: formatCurrency(stats.pending),    icon: Clock,      color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
+          { label: "Collection Rate", value: `${stats.rate}%`,                 icon: TrendingUp, color: "text-blue-400",   bg: "bg-blue-500/10 border border-blue-500/20" },
         ].map(({ label, value, icon: Icon, color, bg }) => (
-          <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-5">
-            <div className="flex items-center gap-3">
-              <div className={`flex items-center justify-center w-9 h-9 rounded-xl ${bg} shrink-0`}>
-                <Icon className={`w-4 h-4 ${color}`} />
+          <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5">
+            <div className="flex items-start gap-3">
+              <div className={`flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl ${bg} shrink-0 mt-0.5`}>
+                <Icon className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${color}`} />
               </div>
-              <div>
-                <p className="text-xs text-muted-foreground">{label}</p>
-                <p className="text-xl font-bold text-foreground leading-none mt-0.5">{value}</p>
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wide leading-tight">{label}</p>
+                <p className={`text-base sm:text-xl font-bold leading-none mt-1.5 ${color}`}>{value}</p>
               </div>
             </div>
           </div>
@@ -467,7 +478,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             ) : (
               <div className="p-2">
                 <PaymentTableHeader />
-                <div className="space-y-0.5 mt-1">
+                <div className="space-y-2 md:space-y-0.5 mt-1">
                   {payments.map((p) => <PaymentRow key={p.id} p={p} />)}
                 </div>
               </div>

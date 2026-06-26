@@ -74,6 +74,14 @@ export const DEFAULT_FORM_CONFIG: Required<FormConfig> = {
   notes:           { enabled: true, required: false },
 };
 
+export interface PaymentMethodAccount {
+  id: string;
+  label: string;
+  account_title?: string;
+  account_number?: string;
+  iban?: string;
+}
+
 export interface Hostel {
   id: string;
   owner_id: string;
@@ -94,6 +102,8 @@ export interface Hostel {
   form_config: FormConfig | null;
   food_closed_on_sundays: boolean;
   cover_image_url: string | null;
+  payment_methods: PaymentMethodAccount[];
+  reminder_template: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -46,7 +46,7 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, late_fee, food_charge, ac_charge, payment_method, payment_date, receipt_number, payment_package_tier, tenant:hms_tenants(full_name, phone)"
+        "id, for_month, amount, late_fee, food_charge, ac_charge, payment_method, payment_date, receipt_number, payment_package_tier, tenant:hms_tenants(full_name, phone, security_deposit, check_in)"
       )
       .eq("id", link.payment_id)
       .single(),
@@ -62,6 +62,11 @@ export async function GET(
   }
 
   const tenant = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
+  const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null } | null;
+
+  // Include security deposit only on the first month's receipt (move-in month)
+  const checkInMonth = tenantTyped?.check_in?.slice(0, 7);
+  const securityDeposit = checkInMonth === payment.for_month ? Number(tenantTyped?.security_deposit ?? 0) : 0;
 
   const pdfBytes = generateReceiptPDF(
     {
@@ -71,13 +76,14 @@ export async function GET(
       late_fee: Number(payment.late_fee ?? 0),
       food_charge: Number(payment.food_charge ?? 0),
       ac_charge: Number(payment.ac_charge ?? 0),
+      security_deposit: securityDeposit,
       payment_method: payment.payment_method,
       payment_date: payment.payment_date,
       payment_package_tier: payment.payment_package_tier,
     },
     {
-      full_name: (tenant as { full_name?: string })?.full_name ?? "Tenant",
-      phone: (tenant as { phone?: string | null })?.phone,
+      full_name: tenantTyped?.full_name ?? "Tenant",
+      phone: tenantTyped?.phone,
       // F-008: cnic intentionally omitted from public receipt
     },
     {

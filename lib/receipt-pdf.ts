@@ -10,6 +10,7 @@ interface ReceiptPayment {
   late_fee?: number;
   food_charge?: number;
   ac_charge?: number;
+  security_deposit?: number;
   payment_method?: string | null;
   payment_date?: string | null;
   payment_package_tier?: string | null;
@@ -127,12 +128,16 @@ export function generateReceiptPDF(
   add(ML, "Breakdown:", 8, true); nl(12);
   const baseRent = payment.amount - (payment.food_charge ?? 0) - (payment.ac_charge ?? 0);
   addKv("Base Rent", pk(Math.max(0, baseRent))); nl(12);
-  if ((payment.food_charge ?? 0) > 0) { addKv("Food", pk(payment.food_charge!)); nl(12); }
-  if ((payment.ac_charge ?? 0) > 0)   { addKv("AC Charge", pk(payment.ac_charge!)); nl(12); }
-  if ((payment.late_fee ?? 0) > 0)    { addKv("Late Fee", pk(payment.late_fee!)); nl(12); }
+  if ((payment.food_charge ?? 0) > 0)    { addKv("Food", pk(payment.food_charge!)); nl(12); }
+  if ((payment.ac_charge ?? 0) > 0)      { addKv("AC Charge", pk(payment.ac_charge!)); nl(12); }
+  if ((payment.late_fee ?? 0) > 0)       { addKv("Late Fee", pk(payment.late_fee!)); nl(12); }
+  if ((payment.security_deposit ?? 0) > 0) {
+    addKv("Security Deposit", pk(payment.security_deposit!)); nl(12);
+    add(ML, "(refundable on checkout)", 6, false); nl(10);
+  }
   nl(2); addDash(); nl(10);
 
-  const total = payment.amount + (payment.late_fee ?? 0);
+  const total = payment.amount + (payment.late_fee ?? 0) + (payment.security_deposit ?? 0);
   addKv("TOTAL PAID", pk(total), true); nl(15);
   addDash(); nl(10);
 

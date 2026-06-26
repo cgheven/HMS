@@ -594,12 +594,12 @@ export async function updatePaymentCharges(
 
 export async function getPaymentsPageData(forMonth: string) {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null };
-  const { supabase, hostelId } = ctx;
+  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null };
+  const { supabase, hostelId, hostel } = ctx;
 
   const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig] = await Promise.all([
     supabase.from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
       .eq("hostel_id", hostelId)
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false }),
@@ -619,5 +619,9 @@ export async function getPaymentsPageData(forMonth: string) {
     tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active"> & { package_tier: PackageTier })[],
     rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor">[],
     packageConfig,
+    hostelName: hostel?.name ?? "",
+    hostelPhone: hostel?.whatsapp ?? hostel?.phone ?? null,
+    paymentMethods: hostel?.payment_methods ?? [],
+    reminderTemplate: hostel?.reminder_template ?? null,
   };
 }
