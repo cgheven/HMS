@@ -71,6 +71,28 @@ export interface ReportData {
     revenue: number;
   }[];
 
+  // Payment method breakdown (for bank reconciliation)
+  paymentMethodBreakdown: {
+    method: string;
+    label: string;
+    count: number;
+    amount: number;
+  }[];
+
+  // Paid payments list for reconciliation detail
+  paidPaymentsList: {
+    id: string;
+    tenantName: string;
+    phone: string | null;
+    roomNumber: string | null;
+    forMonth: string;
+    amount: number;
+    lateFee: number;
+    method: string;
+    paymentDate: string | null;
+    receiptNumber: string | null;
+  }[];
+
   // AC analytics
   acByRoom: {
     roomNumber: string;
@@ -148,7 +170,7 @@ export async function getReportData(
   ] = await Promise.all([
     admin
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, status, late_fee, food_charge, ac_charge, payment_package_tier, tenant:hms_tenants(full_name, room_id, hms_rooms(room_number))")
+      .select("id, tenant_id, for_month, amount, status, late_fee, food_charge, ac_charge, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
@@ -197,7 +219,10 @@ export async function getReportData(
     ac_charge: unknown;
     ac_units_consumed?: unknown;
     payment_package_tier: unknown;
-    tenant: { full_name: string; room_id: string | null; hms_rooms: { room_number: string } | { room_number: string }[] | null } | null;
+    payment_method: string | null;
+    payment_date: string | null;
+    receipt_number: string | null;
+    tenant: { full_name: string; phone: string | null; room_id: string | null; hms_rooms: { room_number: string } | { room_number: string }[] | null } | null;
   };
   const payments = ((paymentsRes.data ?? []) as unknown as PaymentRow[]);
   const expenses = expensesRes.data ?? [];
@@ -299,6 +324,51 @@ export async function getReportData(
     ? Math.round(acPayments.reduce((s, p) => s + Number(p.ac_units_consumed || 0), 0) / totalAcTenants)
     : 0;
 
+  // Payment method breakdown (reconciliation)
+  const METHOD_LABELS: Record<string, string> = {
+    cash: "Cash",
+    bank_transfer: "Bank Transfer",
+    jazzcash: "JazzCash",
+    easypaisa: "Easypaisa",
+    cheque: "Cheque",
+    online: "Online",
+  };
+
+  const methodMap: Record<string, { count: number; amount: number }> = {};
+  paidPayments.forEach((p) => {
+    const m = p.payment_method ?? "cash";
+    if (!methodMap[m]) methodMap[m] = { count: 0, amount: 0 };
+    methodMap[m].count += 1;
+    methodMap[m].amount += Number(p.amount) + Number(p.late_fee || 0);
+  });
+  const paymentMethodBreakdown = Object.entries(methodMap)
+    .map(([method, { count, amount }]) => ({
+      method,
+      label: METHOD_LABELS[method] ?? method,
+      count,
+      amount,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+
+  const paidPaymentsList = paidPayments
+    .map((p) => {
+      const roomsRaw = p.tenant?.hms_rooms;
+      const roomEntry = Array.isArray(roomsRaw) ? roomsRaw[0] : roomsRaw;
+      return {
+        id: p.id,
+        tenantName: p.tenant?.full_name ?? "Unknown",
+        phone: p.tenant?.phone ?? null,
+        roomNumber: (roomEntry as { room_number?: string } | null)?.room_number ?? null,
+        forMonth: p.for_month,
+        amount: Number(p.amount) + Number(p.late_fee || 0),
+        lateFee: Number(p.late_fee || 0),
+        method: p.payment_method ?? "cash",
+        paymentDate: p.payment_date,
+        receiptNumber: p.receipt_number,
+      };
+    })
+    .sort((a, b) => (b.paymentDate ?? "").localeCompare(a.paymentDate ?? ""));
+
   // Plan distribution — active tenants grouped by package_tier
   const TIER_LABELS: Record<string, string> = {
     space_only: "Space Only",
@@ -350,6 +420,8 @@ export async function getReportData(
       acByRoom,
       acStats: { avgUnitsPerTenant, totalAcRevenue, totalAcTenants },
       planDistribution,
+      paymentMethodBreakdown,
+      paidPaymentsList,
     },
     error: null,
   };

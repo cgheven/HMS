@@ -282,3 +282,128 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
   const filename = `report-${data.hostelName.replace(/\s+/g, "-").toLowerCase()}-${label.replace(/\s+/g, "-")}.xlsx`;
   XLSX.writeFile(wb, filename);
 }
+
+// ---------------------------------------------------------------------------
+// Reconciliation exports — operates on a filtered payment list
+// ---------------------------------------------------------------------------
+type ReconciliationRow = ReportData["paidPaymentsList"][number];
+
+const METHOD_LABELS: Record<string, string> = {
+  cash: "Cash",
+  bank_transfer: "Bank Transfer",
+  jazzcash: "JazzCash",
+  easypaisa: "Easypaisa",
+  cheque: "Cheque",
+  online: "Online",
+};
+
+function fmtDate(d: string | null): string {
+  if (!d) return "—";
+  return new Date(d).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+export async function exportReconciliationPDF(
+  rows: ReconciliationRow[],
+  hostelName: string,
+  period: string,
+  methodLabel: string
+): Promise<void> {
+  const { default: jsPDF } = await import("jspdf");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { default: autoTable } = await import("jspdf-autotable") as any;
+
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const MARGIN = 14;
+  let y = 16;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.text(hostelName, MARGIN, y); y += 7;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(120, 120, 120);
+  doc.text(`Reconciliation Report · ${period}${methodLabel !== "All Methods" ? ` · ${methodLabel}` : ""}   Generated: ${new Date().toLocaleDateString()}`, MARGIN, y); y += 5;
+
+  doc.setDrawColor(200, 200, 200);
+  doc.line(MARGIN, y, 196, y); y += 5;
+
+  doc.setTextColor(0, 0, 0);
+
+  const total = rows.reduce((s, r) => s + r.amount, 0);
+
+  autoTable(doc, {
+    startY: y,
+    head: [["Tenant", "Mobile", "Room", "Period", "Receipt #", "Method", "Date", "Amount (Rs.)"]],
+    body: rows.map((r) => [
+      r.tenantName,
+      r.phone ?? "—",
+      r.roomNumber ? `Rm ${r.roomNumber}` : "—",
+      r.forMonth,
+      r.receiptNumber ?? "—",
+      METHOD_LABELS[r.method] ?? r.method,
+      fmtDate(r.paymentDate),
+      r.amount.toLocaleString("en-PK"),
+    ]),
+    foot: [["", "", "", "", "", "", "Total", total.toLocaleString("en-PK")]],
+    headStyles: { fillColor: [30, 30, 30], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
+    footStyles: { fillColor: [245, 166, 35], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 8 },
+    bodyStyles: { fontSize: 8 },
+    alternateRowStyles: { fillColor: [248, 248, 248] },
+    margin: { left: MARGIN, right: MARGIN },
+    columnStyles: { 7: { halign: "right" } },
+  });
+
+  const slug = methodLabel === "All Methods" ? "all" : methodLabel.toLowerCase().replace(/\s+/g, "-");
+  doc.save(`reconciliation-${period}-${slug}.pdf`);
+}
+
+export async function exportReconciliationExcel(
+  rows: ReconciliationRow[],
+  hostelName: string,
+  period: string,
+  methodLabel: string
+): Promise<void> {
+  const XLSX = await import("xlsx");
+
+  const total = rows.reduce((s, r) => s + r.amount, 0);
+
+  const sheetRows = [
+    [`Reconciliation Report — ${hostelName}`],
+    [`Period: ${period}${methodLabel !== "All Methods" ? ` | Method: ${methodLabel}` : ""}`],
+    [],
+    ["Tenant", "Mobile", "Room", "Period", "Receipt #", "Method", "Payment Date", "Amount (Rs.)"],
+    ...rows.map((r) => [
+      r.tenantName,
+      r.phone ?? "",
+      r.roomNumber ? `Rm ${r.roomNumber}` : "",
+      r.forMonth,
+      r.receiptNumber ?? "",
+      METHOD_LABELS[r.method] ?? r.method,
+      fmtDate(r.paymentDate),
+      r.amount,
+    ]),
+    [],
+    ["", "", "", "", "", "", "Total", total],
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(sheetRows);
+
+  const range = XLSX.utils.decode_range(ws["!ref"] ?? "A1");
+  const colWidths: number[] = [];
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+      if (!cell) continue;
+      const len = String(cell.v ?? "").length;
+      if (!colWidths[C] || colWidths[C] < len) colWidths[C] = len;
+    }
+  }
+  ws["!cols"] = colWidths.map((w) => ({ wch: Math.min(w + 2, 40) }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Reconciliation");
+
+  const slug = methodLabel === "All Methods" ? "all" : methodLabel.toLowerCase().replace(/\s+/g, "-");
+  XLSX.writeFile(wb, `reconciliation-${period}-${slug}.xlsx`);
+}

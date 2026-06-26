@@ -1,9 +1,9 @@
 "use client";
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import {
   BarChart3, TrendingUp, Users, AlertTriangle, Banknote, BedDouble,
-  TrendingDown, Download, FileSpreadsheet, RefreshCw, Zap, Package,
+  TrendingDown, Download, FileSpreadsheet, RefreshCw, Zap, Package, CreditCard,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
@@ -14,6 +14,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
 import { getReportData, type ReportData } from "@/app/actions/reports";
 import type { RevenueMonth, AgingBucket } from "@/types";
@@ -296,6 +297,7 @@ export function ReportsClient(props: Props) {
           <TabsList>
             <TabsTrigger value="overview"><BarChart3 className="w-3.5 h-3.5" /> Overview</TabsTrigger>
             <TabsTrigger value="revenue"><TrendingUp className="w-3.5 h-3.5" /> Revenue</TabsTrigger>
+            <TabsTrigger value="reconciliation"><CreditCard className="w-3.5 h-3.5" /> Reconciliation</TabsTrigger>
             <TabsTrigger value="occupancy"><BedDouble className="w-3.5 h-3.5" /> Occupancy</TabsTrigger>
             <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> AC Analytics</TabsTrigger>
           </TabsList>
@@ -616,6 +618,11 @@ export function ReportsClient(props: Props) {
             )}
           </TabsContent>
 
+          {/* ── RECONCILIATION TAB ───────────────────────────────────────── */}
+          <TabsContent value="reconciliation" className="space-y-6 mt-4">
+            <ReconciliationTab data={d} period={currentRange.label} />
+          </TabsContent>
+
           {/* ── OCCUPANCY TAB ────────────────────────────────────────────── */}
           <TabsContent value="occupancy" className="space-y-6 mt-4">
             {/* Summary cards by type */}
@@ -752,6 +759,210 @@ export function ReportsClient(props: Props) {
           </TabsContent>
         </Tabs>
       )}
+    </div>
+  );
+}
+
+// ── Method colors ────────────────────────────────────────────────────────────
+const METHOD_COLORS: Record<string, string> = {
+  cash: "#10b981",
+  bank_transfer: "#3b82f6",
+  jazzcash: "#f5a623",
+  easypaisa: "#a855f7",
+  cheque: "#06b6d4",
+  online: "#ef4444",
+};
+
+function methodColor(method: string) {
+  return METHOD_COLORS[method] ?? "#888";
+}
+
+// ── Reconciliation tab ────────────────────────────────────────────────────────
+function ReconciliationTab({ data: d, period }: { data: ReportData; period: string }) {
+  const [methodFilter, setMethodFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [exporting, setExporting] = useState<"pdf" | "xlsx" | null>(null);
+
+  const filteredList = useMemo(() => {
+    return d.paidPaymentsList.filter((p) => {
+      if (methodFilter !== "all" && p.method !== methodFilter) return false;
+      if (search) {
+        const q = search.toLowerCase();
+        return p.tenantName.toLowerCase().includes(q) || p.forMonth.includes(q) || (p.receiptNumber ?? "").toLowerCase().includes(q);
+      }
+      return true;
+    });
+  }, [d.paidPaymentsList, methodFilter, search]);
+
+  const filteredTotal = filteredList.reduce((s, p) => s + p.amount, 0);
+
+  const activeMethodLabel = methodFilter === "all"
+    ? "All Methods"
+    : (d.paymentMethodBreakdown.find(m => m.method === methodFilter)?.label ?? methodFilter);
+
+  async function handleExportPDF() {
+    setExporting("pdf");
+    try {
+      const { exportReconciliationPDF } = await import("@/lib/report-export");
+      await exportReconciliationPDF(filteredList, d.hostelName, period, activeMethodLabel);
+      toast({ title: "PDF downloaded" });
+    } catch (err) {
+      toast({ title: "Export failed", description: String(err), variant: "destructive" });
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  async function handleExportExcel() {
+    setExporting("xlsx");
+    try {
+      const { exportReconciliationExcel } = await import("@/lib/report-export");
+      await exportReconciliationExcel(filteredList, d.hostelName, period, activeMethodLabel);
+      toast({ title: "Excel downloaded" });
+    } catch (err) {
+      toast({ title: "Export failed", description: String(err), variant: "destructive" });
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  if (d.paymentMethodBreakdown.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-2 text-muted-foreground rounded-2xl border border-sidebar-border bg-card">
+        <CreditCard className="w-10 h-10 opacity-20" />
+        <p className="text-sm">No paid payments in this period</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Method summary cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+        {d.paymentMethodBreakdown.map((m) => (
+          <div key={m.method} className="rounded-2xl border border-sidebar-border bg-card p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: methodColor(m.method) }} />
+              <p className="text-xs text-muted-foreground font-medium">{m.label}</p>
+            </div>
+            <p className="text-lg font-bold text-foreground">{formatCurrency(m.amount)}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{m.count} payment{m.count !== 1 ? "s" : ""}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Payment list */}
+      <div className="rounded-2xl border border-sidebar-border bg-card p-6">
+        <div className="flex flex-col gap-3 mb-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h2 className="text-sm font-semibold">Payment Transactions</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {filteredList.length} transaction{filteredList.length !== 1 ? "s" : ""} · {formatCurrency(filteredTotal)}
+                {methodFilter !== "all" && <span className="ml-1 text-amber">· {activeMethodLabel}</span>}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExportPDF}
+                disabled={!!exporting || filteredList.length === 0}
+                className="gap-1.5 h-8 text-xs"
+              >
+                {exporting === "pdf" ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                PDF
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExportExcel}
+                disabled={!!exporting || filteredList.length === 0}
+                className="gap-1.5 h-8 text-xs"
+              >
+                {exporting === "xlsx" ? <RefreshCw className="w-3 h-3 animate-spin" /> : <FileSpreadsheet className="w-3 h-3" />}
+                Excel
+              </Button>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Select value={methodFilter} onValueChange={setMethodFilter}>
+              <SelectTrigger className="h-8 text-xs w-44">
+                <SelectValue placeholder="All Methods" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Methods</SelectItem>
+                {d.paymentMethodBreakdown.map((m) => (
+                  <SelectItem key={m.method} value={m.method}>
+                    <span className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full shrink-0 inline-block" style={{ background: methodColor(m.method) }} />
+                      {m.label}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <input
+              type="text"
+              placeholder="Search tenant, month, receipt…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 px-3 text-xs rounded-lg border border-sidebar-border bg-white/5 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-amber/50 w-52"
+            />
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-muted-foreground font-medium border-b border-sidebar-border">
+                <th className="text-left pb-2 pr-3">Tenant</th>
+                <th className="text-left pb-2 pr-3">Mobile</th>
+                <th className="text-left pb-2 pr-3">Room</th>
+                <th className="text-left pb-2 pr-3">Period</th>
+                <th className="text-left pb-2 pr-3">Receipt #</th>
+                <th className="text-left pb-2 pr-3">Method</th>
+                <th className="text-left pb-2 pr-3">Date</th>
+                <th className="text-right pb-2">Amount</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-sidebar-border/50">
+              {filteredList.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="py-8 text-center text-xs text-muted-foreground">No transactions match</td>
+                </tr>
+              ) : (
+                filteredList.map((p) => (
+                  <tr key={p.id} className="hover:bg-white/[0.02]">
+                    <td className="py-2.5 pr-3 font-medium">{p.tenantName}</td>
+                    <td className="py-2.5 pr-3 text-xs text-muted-foreground">{p.phone ?? "—"}</td>
+                    <td className="py-2.5 pr-3 text-xs text-muted-foreground">{p.roomNumber ? `Rm ${p.roomNumber}` : "—"}</td>
+                    <td className="py-2.5 pr-3 text-muted-foreground">{p.forMonth}</td>
+                    <td className="py-2.5 pr-3 text-xs text-muted-foreground font-mono">{p.receiptNumber ?? "—"}</td>
+                    <td className="py-2.5 pr-3">
+                      <span className="inline-flex items-center gap-1.5 text-xs">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: methodColor(p.method) }} />
+                        {d.paymentMethodBreakdown.find(m => m.method === p.method)?.label ?? p.method}
+                      </span>
+                    </td>
+                    <td className="py-2.5 pr-3 text-xs text-muted-foreground">
+                      {p.paymentDate ? new Date(p.paymentDate).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                    </td>
+                    <td className="py-2.5 text-right font-semibold text-emerald-400">{formatCurrency(p.amount)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+            {filteredList.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-sidebar-border font-semibold">
+                  <td colSpan={7} className="pt-2.5 text-xs text-muted-foreground">Total</td>
+                  <td className="pt-2.5 text-right text-emerald-400">{formatCurrency(filteredTotal)}</td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
