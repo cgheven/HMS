@@ -2,7 +2,7 @@
 import dynamic from "next/dynamic";
 import {
   BedDouble, Wallet, TrendingDown, Banknote,
-  Clock, CheckCircle2, FileWarning, ChefHat, Users, UserCog,
+  Clock, CheckCircle2, FileWarning, ChefHat, Users, UserCog, ShieldCheck,
 } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -125,14 +125,22 @@ export function DashboardClient({ data }: Props) {
         </div>
       </div>
 
-      {/* ── Quick Stats ─── moved to row 2 for visibility ──── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* ── Quick Stats ─────────────────────────────────────── */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         {[
-          { label: "Active Tenants", value: String(stats.total_tenants),          icon: Users,        color: "text-blue-400",   iconBg: "bg-blue-500/10 border-blue-500/20",   hover: "hover:border-blue-500/30",   delay: 150 },
-          { label: "Kitchen Costs",  value: formatCurrency(stats.monthly_kitchen), icon: ChefHat,      color: "text-amber",       iconBg: "bg-amber/10 border-amber/20",          hover: "hover:border-amber/30",       delay: 225 },
-          { label: "Staff Salaries", value: formatCurrency(stats.monthly_salaries),icon: UserCog,      color: "text-purple-400", iconBg: "bg-purple-500/10 border-purple-500/20",hover: "hover:border-purple-500/30",  delay: 300 },
-          { label: "Total Expenses", value: formatCurrency(stats.monthly_expenses),icon: TrendingDown, color: "text-rose-400",   iconBg: "bg-rose-500/10 border-rose-500/20",    hover: "hover:border-rose-500/30",    delay: 375 },
-        ].map(({ label, value, icon: Icon, color, iconBg, hover, delay }) => (
+          { label: "Active Tenants", value: String(stats.total_tenants),           sub: undefined,                                          icon: Users,        color: "text-blue-400",   iconBg: "bg-blue-500/10 border-blue-500/20",     hover: "hover:border-blue-500/30",   delay: 150 },
+          { label: "Kitchen Costs",  value: formatCurrency(stats.monthly_kitchen),  sub: undefined,                                          icon: ChefHat,      color: "text-amber",       iconBg: "bg-amber/10 border-amber/20",            hover: "hover:border-amber/30",       delay: 225 },
+          { label: "Staff Salaries", value: formatCurrency(stats.monthly_salaries), sub: undefined,                                          icon: UserCog,      color: "text-purple-400", iconBg: "bg-purple-500/10 border-purple-500/20",  hover: "hover:border-purple-500/30",  delay: 300 },
+          { label: "Total Expenses", value: formatCurrency(stats.monthly_expenses), sub: undefined,                                          icon: TrendingDown, color: "text-rose-400",   iconBg: "bg-rose-500/10 border-rose-500/20",      hover: "hover:border-rose-500/30",    delay: 375 },
+          {
+            label: "Deposits Held",
+            value: formatCurrency(stats.security_deposit_total),
+            sub: stats.security_deposit_count > 0
+              ? `${stats.security_deposit_count} tenant${stats.security_deposit_count !== 1 ? "s" : ""}`
+              : "No deposits yet",
+            icon: ShieldCheck, color: "text-violet-400", iconBg: "bg-violet-500/10 border-violet-500/20", hover: "hover:border-violet-500/30", delay: 450,
+          },
+        ].map(({ label, value, sub, icon: Icon, color, iconBg, hover, delay }) => (
           <div
             key={label}
             className={`relative rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 ${hover} transition-all animate-fade-up`}
@@ -142,6 +150,7 @@ export function DashboardClient({ data }: Props) {
               <div className="min-w-0 flex-1">
                 <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">{label}</p>
                 <p className={`mt-2 text-lg sm:text-2xl font-bold leading-none ${color}`}>{value}</p>
+                {sub && <p className="mt-1.5 text-[10px] sm:text-xs text-muted-foreground">{sub}</p>}
               </div>
               <div className={`flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl border shrink-0 ${iconBg}`}>
                 <Icon className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${color}`} />

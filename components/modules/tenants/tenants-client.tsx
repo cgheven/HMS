@@ -89,6 +89,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [approveSaving, setApproveSaving] = useState(false);
   const [editingDocs, setEditingDocs] = useState<TenantDocument[]>([]);
   const [typeFilter, setTypeFilter] = useState<"all" | "student" | "professional" | "general">("all");
+  const [depositFilter, setDepositFilter] = useState(false);
   const [exportLoading, setExportLoading] = useState<"excel" | "pdf" | null>(null);
 
   // Rooms with remaining capacity
@@ -363,6 +364,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
   function filterList(list: Tenant[]) {
     let result = typeFilter !== "all" ? list.filter((t) => t.type === typeFilter) : list;
+    if (depositFilter) result = result.filter((t) => Number(t.security_deposit) > 0);
     if (search) {
       const q = search.toLowerCase();
       result = result.filter((t) =>
@@ -427,7 +429,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       doc.text(`Tenants — ${tabLabel}`, 14, 16);
       doc.setFontSize(9);
       doc.setTextColor(120, 120, 120);
-      doc.text(`Generated ${new Date().toLocaleDateString()}${typeFilter !== "all" ? ` · Filter: ${capitalize(typeFilter)}` : ""}`, 14, 23);
+      doc.text(`Generated ${new Date().toLocaleDateString()}${typeFilter !== "all" ? ` · Type: ${capitalize(typeFilter)}` : ""}${depositFilter ? " · With Deposit" : ""}`, 14, 23);
 
       const rows = getCurrentFilteredList().map((t) => {
         const room = t.room_id ? roomMap[t.room_id] : null;
@@ -439,13 +441,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           PACKAGE_TIER_LABELS[t.package_tier as PackageTier] ?? t.package_tier,
           room ? `Rm ${room.room_number}${t.bed_number ? ` · ${t.bed_number}` : ""}` : "—",
           t.monthly_rent ? `Rs ${t.monthly_rent.toLocaleString()}` : "—",
+          t.security_deposit > 0 ? `Rs ${t.security_deposit.toLocaleString()}` : "—",
           t.check_in ?? "—",
         ];
       });
 
       autoTable(doc, {
         startY: 28,
-        head: [["Name", "Phone", "CNIC", "Type", "Package", "Room", "Rent", "Check In"]],
+        head: [["Name", "Phone", "CNIC", "Type", "Package", "Room", "Rent", "Deposit", "Check In"]],
         body: rows,
         theme: "striped",
         headStyles: { fillColor: [245, 158, 11], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 9 },
@@ -618,15 +621,29 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         ))}
       </div>
 
-      {/* Search */}
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-        <Input placeholder="Search by name, phone, CNIC…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+      {/* Search + Export (same row) */}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input placeholder="Search by name, phone, CNIC…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+        </div>
+        {tab !== "applications" && (
+          <div className="flex items-center gap-1.5 shrink-0">
+            <Button variant="outline" size="sm" className="h-9 w-9 p-0 sm:w-auto sm:px-3 sm:gap-1.5 text-xs" disabled={!!exportLoading} onClick={exportExcel} title="Export to Excel">
+              {exportLoading === "excel" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />}
+              <span className="hidden sm:inline">Excel</span>
+            </Button>
+            <Button variant="outline" size="sm" className="h-9 w-9 p-0 sm:w-auto sm:px-3 sm:gap-1.5 text-xs" disabled={!!exportLoading} onClick={exportPDF} title="Export to PDF">
+              {exportLoading === "pdf" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5 text-rose-400" />}
+              <span className="hidden sm:inline">PDF</span>
+            </Button>
+          </div>
+        )}
       </div>
 
-      {/* Type filter + Export */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-1.5 flex-wrap">
+      {/* Filter chips — single scrollable row, never wraps */}
+      <div className="overflow-x-auto scrollbar-hide -mx-1 px-1">
+        <div className="flex items-center gap-1.5 w-max">
           {(["all", "student", "professional", "general"] as const).map((type) => {
             const allTenants = [...active, ...waiting, ...checkedOut];
             const count = type === "all" ? allTenants.length : allTenants.filter((t) => t.type === type).length;
@@ -635,7 +652,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 key={type}
                 onClick={() => setTypeFilter(type)}
                 className={cn(
-                  "px-3 py-1 rounded-full text-xs font-medium border transition-all",
+                  "px-3 py-1.5 rounded-full text-xs font-medium border transition-all whitespace-nowrap",
                   typeFilter === type
                     ? "bg-amber/15 border-amber/30 text-amber"
                     : "border-sidebar-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40"
@@ -646,38 +663,25 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </button>
             );
           })}
-        </div>
 
-        {tab !== "applications" && (
-          <div className="flex items-center gap-1.5 shrink-0">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1.5 text-xs"
-              disabled={!!exportLoading}
-              onClick={exportExcel}
-              title="Export to Excel"
-            >
-              {exportLoading === "excel"
-                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                : <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />}
-              <span className="hidden sm:inline">Excel</span>
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1.5 text-xs"
-              disabled={!!exportLoading}
-              onClick={exportPDF}
-              title="Export to PDF"
-            >
-              {exportLoading === "pdf"
-                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                : <FileText className="w-3.5 h-3.5 text-rose-400" />}
-              <span className="hidden sm:inline">PDF</span>
-            </Button>
-          </div>
-        )}
+          <span className="w-px h-4 bg-sidebar-border mx-0.5 shrink-0" />
+
+          <button
+            onClick={() => setDepositFilter((v) => !v)}
+            className={cn(
+              "px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap",
+              depositFilter
+                ? "bg-violet-500/15 border-violet-500/30 text-violet-400"
+                : "border-sidebar-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40"
+            )}
+          >
+            <ShieldCheck className="w-3 h-3 shrink-0" />
+            With Deposit
+            <span className="opacity-50 tabular-nums">
+              ({[...active, ...waiting, ...checkedOut].filter((t) => Number(t.security_deposit) > 0).length})
+            </span>
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}

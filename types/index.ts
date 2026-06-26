@@ -324,6 +324,8 @@ export interface DashboardStats {
   unpaid_bills_amount: number;
   occupancy_rate: number;
   monthly_revenue: number;
+  security_deposit_total: number;
+  security_deposit_count: number;
 }
 
 export interface Defaulter {

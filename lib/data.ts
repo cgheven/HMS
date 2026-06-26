@@ -112,7 +112,7 @@ export async function getDashboardData() {
     pendingPaymentsRes, allPayments6moRes,
   ] = await Promise.all([
     supabase.from("hms_rooms").select("status,monthly_rent").eq("hostel_id", hostelId),
-    supabase.from("hms_tenants").select("monthly_rent").eq("hostel_id", hostelId).eq("is_active", true),
+    supabase.from("hms_tenants").select("monthly_rent,security_deposit").eq("hostel_id", hostelId).eq("is_active", true).eq("is_waiting", false),
     supabase.from("hms_expenses").select("amount").eq("hostel_id", hostelId).gte("date", start).lte("date", end),
     supabase.from("hms_kitchen_expenses").select("amount").eq("hostel_id", hostelId).gte("date", start).lte("date", end),
     supabase.from("hms_bills").select("id,hostel_id,title,category,amount,due_date,paid_date,status,notes,created_at").eq("hostel_id", hostelId).neq("status", "paid").order("due_date").limit(5),
@@ -136,6 +136,9 @@ export async function getDashboardData() {
   const monthlyUncollected = pendingRows.reduce((s, p) => s + Number(p.amount), 0);
   const unpaidBills = bills.data ?? [];
   const monthlyRevenue = (tenants.data ?? []).reduce((s, t) => s + Number(t.monthly_rent), 0);
+  const depositTenants = (tenants.data ?? []).filter((t) => Number(t.security_deposit) > 0);
+  const securityDepositTotal = depositTenants.reduce((s, t) => s + Number(t.security_deposit), 0);
+  const securityDepositCount = depositTenants.length;
 
   const defaulters = pendingRows.map((p) => ({
     id: p.id,
@@ -168,6 +171,8 @@ export async function getDashboardData() {
     unpaid_bills_amount: unpaidBills.reduce((s, b) => s + Number(b.amount), 0),
     occupancy_rate: totalRooms > 0 ? Math.round((occupiedRooms / totalRooms) * 100) : 0,
     monthly_revenue: monthlyRevenue,
+    security_deposit_total: securityDepositTotal,
+    security_deposit_count: securityDepositCount,
   };
 
   return { hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters };
