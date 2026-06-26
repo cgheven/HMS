@@ -22,6 +22,7 @@ import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
+import { backfillTenantPaymentsAction } from "@/app/actions/tenants";
 
 interface Props {
   hostelId: string | null;
@@ -264,15 +265,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const prevRoomId = editing?.room_id;
     const newRoomId = payload.room_id;
 
-    const { error } = editing
-      ? await supabase.from("hms_tenants").update(payload).eq("id", editing.id)
-      : await supabase.from("hms_tenants").insert(payload);
+    let newTenantId: string | null = null;
+    const { data: mutData, error } = editing
+      ? await supabase.from("hms_tenants").update(payload).eq("id", editing.id).select("id").single()
+      : await supabase.from("hms_tenants").insert(payload).select("id").single();
 
     if (error) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
       setSaving(false);
       return;
     }
+    if (!editing) newTenantId = (mutData as { id: string } | null)?.id ?? null;
 
     // Update room occupancy counts
     if (!editing && newRoomId) {
@@ -299,6 +302,26 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         if (newRoom) {
           const newOcc = newRoom.occupied + 1;
           await supabase.from("hms_rooms").update({ occupied: newOcc, status: newOcc >= newRoom.capacity ? "occupied" : "available" }).eq("id", newRoomId);
+        }
+      }
+    }
+
+    // Backfill past months as Paid (Cash) for historical tenants
+    if (newTenantId && !form.is_waiting && form.check_in) {
+      const checkInMonth = form.check_in.slice(0, 7);
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      if (checkInMonth < currentMonth) {
+        const backfill = await backfillTenantPaymentsAction(newTenantId);
+        if (backfill.success && (backfill.monthsCreated ?? 0) > 0) {
+          toast({
+            title: "Tenant added",
+            description: `${backfill.monthsCreated} past month${backfill.monthsCreated === 1 ? "" : "s"} recorded as Paid (Cash).`,
+          });
+          setDialogOpen(false);
+          await reload();
+          setSaving(false);
+          return;
         }
       }
     }

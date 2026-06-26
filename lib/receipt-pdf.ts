@@ -10,6 +10,8 @@ interface ReceiptPayment {
   late_fee?: number;
   food_charge?: number;
   ac_charge?: number;
+  ac_units_consumed?: number | null;
+  ac_per_unit_rate?: number;
   security_deposit?: number;
   payment_method?: string | null;
   payment_date?: string | null;
@@ -46,6 +48,12 @@ function fmtDate(dateStr: string | null | undefined): string {
   if (!dateStr) return "—";
   const d = new Date(dateStr);
   return d.toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function fmtMonth(yyyyMM: string): string {
+  const [y, m] = yyyyMM.split("-");
+  const date = new Date(Number(y), Number(m) - 1, 1);
+  return date.toLocaleDateString("en-PK", { month: "long", year: "numeric" });
 }
 
 function methodLabel(m: string | null | undefined): string {
@@ -102,11 +110,12 @@ export function generateReceiptPDF(
     add(Math.max(ML + 60, MR - approxWidth), val, 8, bold);
   }
   function addDash(): void {
-    add(ML, "- - - - - - - - - - - - - - - - - - - -", 7, false);
+    add(ML, "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -", 7, false);
   }
   function nl(n = 11): void { yTop += n; }
 
   // ─── Content ────────────────────────────────────────────────────────
+  addDash(); nl(10);
   addCenter(hostel.name, 12, true); nl(15);
   if (hostel.address) { addCenter(hostel.address, 7, false); nl(10); }
   if (hostel.phone) { addCenter(`Tel: ${hostel.phone}`, 7, false); nl(10); }
@@ -116,7 +125,7 @@ export function generateReceiptPDF(
 
   addKv("Receipt #", payment.receipt_number ?? "N/A"); nl(12);
   addKv("Date", fmtDate(payment.payment_date)); nl(12);
-  addKv("Month", payment.for_month); nl(12);
+  addKv("Period", fmtMonth(payment.for_month)); nl(12);
   addKv("Method", methodLabel(payment.payment_method)); nl(12);
   addDash(); nl(10);
 
@@ -129,7 +138,17 @@ export function generateReceiptPDF(
   const baseRent = payment.amount - (payment.food_charge ?? 0) - (payment.ac_charge ?? 0);
   addKv("Base Rent", pk(Math.max(0, baseRent))); nl(12);
   if ((payment.food_charge ?? 0) > 0)    { addKv("Food", pk(payment.food_charge!)); nl(12); }
-  if ((payment.ac_charge ?? 0) > 0)      { addKv("AC Charge", pk(payment.ac_charge!)); nl(12); }
+  if ((payment.ac_charge ?? 0) > 0) {
+    addKv("AC Charges", pk(payment.ac_charge!));
+    if (payment.ac_per_unit_rate != null) {
+      // Prefer stored units over back-calculating via division (avoids rounding error)
+      const units = (payment.ac_units_consumed != null && payment.ac_units_consumed > 0)
+        ? payment.ac_units_consumed
+        : Math.round(payment.ac_charge! / payment.ac_per_unit_rate);
+      add(ML + 4, `${units} units x Rs. ${payment.ac_per_unit_rate}/unit`, 6, false);
+    }
+    nl(12);
+  }
   if ((payment.late_fee ?? 0) > 0)       { addKv("Late Fee", pk(payment.late_fee!)); nl(12); }
   if ((payment.security_deposit ?? 0) > 0) {
     addKv("Security Deposit", pk(payment.security_deposit!)); nl(12);
@@ -150,7 +169,8 @@ export function generateReceiptPDF(
 
   addCenter("Thank you for your payment.", 7, false); nl(9);
   addCenter("Keep this receipt for your records.", 7, false); nl(9);
-  addCenter(`Printed: ${new Date().toLocaleDateString("en-PK")}`, 6, false); nl(8);
+  addCenter(`Printed: ${new Date().toLocaleDateString("en-PK")}`, 6, false); nl(10);
+  addDash(); nl(8);
 
   const PAGE_H = yTop + 10;
 

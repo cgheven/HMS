@@ -46,7 +46,7 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, late_fee, food_charge, ac_charge, payment_method, payment_date, receipt_number, payment_package_tier, tenant:hms_tenants(full_name, phone, security_deposit, check_in)"
+        "id, for_month, amount, late_fee, food_charge, ac_charge, ac_units_consumed, payment_method, payment_date, receipt_number, payment_package_tier, tenant:hms_tenants(full_name, phone, security_deposit, check_in)"
       )
       .eq("id", link.payment_id)
       .single(),
@@ -76,6 +76,7 @@ export async function GET(
       late_fee: Number(payment.late_fee ?? 0),
       food_charge: Number(payment.food_charge ?? 0),
       ac_charge: Number(payment.ac_charge ?? 0),
+      ac_units_consumed: payment.ac_units_consumed ? Number(payment.ac_units_consumed) : null,
       security_deposit: securityDeposit,
       payment_method: payment.payment_method,
       payment_date: payment.payment_date,

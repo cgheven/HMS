@@ -14,7 +14,9 @@
  * Fixes: F-001 (billing integrity), F-003 (overflow), F-004 (validation), F-006 (dead code)
  */
 
+import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
 
@@ -118,35 +120,74 @@ export async function syncMonthAction(
     const foodRate = Number(configData?.food_monthly_rate ?? 0);
 
     if (activeTenants.length > 0) {
-      const rows = activeTenants.map((t) => {
+      // Fetch existing payment rows so we can skip paid/waived and preserve ac_charge on pending rows
+      const { data: existingRows } = await supabase
+        .from("hms_payments")
+        .select("tenant_id, status, ac_charge, ac_units_consumed")
+        .eq("hostel_id", hostelId)
+        .eq("for_month", month);
+
+      type ExistingRow = { tenant_id: string; status: string; ac_charge: number | null; ac_units_consumed: number | null };
+      const existingMap = new Map<string, ExistingRow>(
+        (existingRows ?? []).map((r) => [r.tenant_id, r])
+      );
+
+      const newRows: object[] = [];      // tenants with no payment row yet
+      const pendingUpdates: object[] = []; // pending rows that need tier/amount refresh
+
+      for (const t of activeTenants) {
         const tier = (t.package_tier ?? "space_only") as PackageTier;
-        // Validate tier from DB (should always be valid, belt-and-suspenders)
         if (!VALID_TIERS.has(tier)) throw new Error(`Invalid package_tier in DB for tenant ${t.id}`);
 
         const baseRent = calcBaseRentServer(t, month);
         const foodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
-        // AC charge defaults to 0 on sync; entered per-payment when marking paid
-        const acCharge = 0;
-        const totalAmount = baseRent + foodCharge + acCharge;
 
-        return {
-          hostel_id: hostelId,
-          tenant_id: t.id,
-          for_month: month,
-          amount: totalAmount,
-          status: "pending" as PaymentStatus,
-          payment_package_tier: tier,
-          food_charge: foodCharge,
-          ac_units_consumed: 0,
-          ac_charge: acCharge,
-        };
-      });
+        const existing = existingMap.get(t.id);
 
-      const { error: upsertErr } = await supabase
-        .from("hms_payments")
-        .upsert(rows, { onConflict: "tenant_id,for_month", ignoreDuplicates: true });
+        if (!existing) {
+          // New tenant — create fresh row
+          newRows.push({
+            hostel_id: hostelId,
+            tenant_id: t.id,
+            for_month: month,
+            amount: baseRent + foodCharge,
+            status: "pending" as PaymentStatus,
+            payment_package_tier: tier,
+            food_charge: foodCharge,
+            ac_units_consumed: 0,
+            ac_charge: 0,
+          });
+        } else if (existing.status === "pending") {
+          // Pending row — refresh tier/amount but preserve any existing ac_charge
+          const preservedAC = Number(existing.ac_charge ?? 0);
+          pendingUpdates.push({
+            hostel_id: hostelId,
+            tenant_id: t.id,
+            for_month: month,
+            amount: baseRent + foodCharge,
+            payment_package_tier: tier,
+            food_charge: foodCharge,
+            ac_charge: preservedAC,
+            ac_units_consumed: existing.ac_units_consumed ?? 0,
+          });
+          // status stays "pending" — not included so it isn't overwritten
+        }
+        // paid/waived rows are skipped entirely
+      }
 
-      if (upsertErr) throw new Error(upsertErr.message);
+      // Insert new rows
+      if (newRows.length > 0) {
+        const { error: insertErr } = await supabase.from("hms_payments").insert(newRows);
+        if (insertErr) throw new Error(insertErr.message);
+      }
+
+      // Update pending rows (upsert so it handles any race between the two steps)
+      if (pendingUpdates.length > 0) {
+        const { error: updateErr } = await supabase
+          .from("hms_payments")
+          .upsert(pendingUpdates, { onConflict: "tenant_id,for_month", ignoreDuplicates: false });
+        if (updateErr) throw new Error(updateErr.message);
+      }
     }
 
     const { data: payments, error: fetchErr } = await supabase
@@ -416,4 +457,142 @@ function calcBaseRentServer(
   const end = checkOut && checkOut < monthEnd ? checkOut : monthEnd;
   const days = Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
   return days * Number(t.daily_rate);
+}
+
+// ---------------------------------------------------------------------------
+// applyRoomACUnitsAction
+// Splits total AC units across all eligible AC-tier tenants in a room and
+// updates their payment records for the given month.
+// ---------------------------------------------------------------------------
+
+// Only tenants on the AC package (space_food_ac) are billed — Space Only tenants are excluded
+const AC_TIERS = new Set<string>(["space_food_ac"]);
+
+export async function applyRoomACUnitsAction(
+  roomId: string,
+  forMonth: string,
+  totalUnits: number
+): Promise<{
+  success: boolean;
+  error?: string;
+  eligibleCount?: number;
+  perUnitRate?: number;
+  perTenantUnits?: number;
+  perTenantCharge?: number;
+  skippedFirstMonth?: number;
+}> {
+  try {
+    // ── Auth & ownership guard ──────────────────────────────────
+    const ctx = await getAuthContext();
+    if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
+    const { hostelId } = ctx;
+
+    // ── Input validation — use canonical MONTH_RE (rejects 2024-00, 2024-13) ──
+    if (!roomId || typeof roomId !== "string") throw new Error("Invalid room ID");
+    if (!forMonth || !MONTH_RE.test(forMonth)) throw new Error("Invalid month format");
+    const units = Number(totalUnits);
+    if (!Number.isFinite(units) || units < 0 || units > 99_999)
+      throw new Error("Total units must be between 0 and 99,999");
+
+    // ── Scoped client for reads (RLS provides defense-in-depth) ──
+    const supabase = await createClient();
+    const adminDb = createAdminClient();
+
+    // ── Verify room belongs to this hostel ──────────────────────
+    const { data: room } = await supabase
+      .from("hms_rooms")
+      .select("id, hostel_id, has_ac")
+      .eq("id", roomId)
+      .eq("hostel_id", hostelId)
+      .single();
+    if (!room) throw new Error("Room not found or access denied");
+    if (!room.has_ac) throw new Error("This room does not have AC");
+
+    // ── Get package config for per-unit rate ────────────────────
+    const { data: pkgConfig } = await supabase
+      .from("hms_package_configs")
+      .select("ac_per_unit_rate")
+      .eq("hostel_id", hostelId)
+      .single();
+    const perUnitRate = Number(pkgConfig?.ac_per_unit_rate ?? 0);
+    if (perUnitRate <= 0) throw new Error("AC per-unit rate is not configured. Set it in Settings → Packages.");
+
+    // ── Find active AC-package tenants in this room ───────────────
+    // Space Only / food-only tenants are excluded — they don't have AC in their plan
+    const { data: allTenants } = await supabase
+      .from("hms_tenants")
+      .select("id, check_in, package_tier")
+      .eq("hostel_id", hostelId)
+      .eq("room_id", roomId)
+      .eq("is_active", true);
+
+    const acTenants = (allTenants ?? []).filter(t => AC_TIERS.has(t.package_tier ?? ""));
+    if (acTenants.length === 0)
+      throw new Error("No tenants with AC package found in this room. Assign the Space + AC plan to a tenant first.");
+
+    // ── Skip first-month tenants (no AC charge on joining month) ──
+    const eligible = acTenants.filter((t) => t.check_in?.slice(0, 7) !== forMonth);
+    const skippedFirstMonth = acTenants.length - eligible.length;
+    if (eligible.length === 0)
+      throw new Error("All AC tenants in this room are in their first month — no AC charge applies");
+
+    // ── Fair split: last tenant absorbs rounding remainder ────────
+    // Ensures sum of all tenant charges exactly equals total bill.
+    const n = eligible.length;
+    const totalCharge = Math.round(units * perUnitRate);
+    const baseCharge = n > 1 ? Math.floor(totalCharge / n) : totalCharge;
+    const lastCharge = totalCharge - baseCharge * (n - 1);
+    const baseUnits = n > 1 ? Math.round((units / n) * 100) / 100 : units;
+    const lastUnits = Math.round((units - baseUnits * (n - 1)) * 100) / 100;
+
+    // ── Update each eligible tenant's payment (admin client for writes) ──
+    const updateResults = await Promise.all(
+      eligible.map((tenant, idx) => {
+        const isLast = idx === n - 1;
+        return adminDb
+          .from("hms_payments")
+          .update({
+            ac_units_consumed: isLast ? lastUnits : baseUnits,
+            ac_charge: isLast ? lastCharge : baseCharge,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("tenant_id", tenant.id)
+          .eq("for_month", forMonth)
+          .eq("hostel_id", hostelId)
+          .select("id");
+      })
+    );
+
+    // ── Verify all payment rows were found — guard against missing rows ──
+    const updatedCount = updateResults.reduce((sum, r) => sum + (r.data?.length ?? 0), 0);
+    if (updatedCount < eligible.length) {
+      throw new Error(
+        `Only ${updatedCount} of ${eligible.length} payment rows were updated. ` +
+        `Please sync payments for ${forMonth} first, then apply AC billing.`
+      );
+    }
+
+    // ── Save reading record only after payments are confirmed updated ──
+    const { error: readingError } = await adminDb
+      .from("hms_room_ac_readings")
+      .upsert(
+        {
+          hostel_id: hostelId,
+          room_id: roomId,
+          for_month: forMonth,
+          total_units: units,
+          per_unit_rate: perUnitRate,
+          tenant_count: eligible.length,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "room_id,for_month" }
+      );
+    if (readingError) throw readingError;
+
+    revalidatePath("/payments");
+    revalidatePath("/dashboard");
+    return { success: true, eligibleCount: eligible.length, perUnitRate, perTenantUnits: baseUnits, perTenantCharge: baseCharge, skippedFirstMonth };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }

@@ -82,6 +82,18 @@ export interface PaymentMethodAccount {
   iban?: string;
 }
 
+export interface RoomACReading {
+  id: string;
+  hostel_id: string;
+  room_id: string;
+  for_month: string;
+  total_units: number;
+  per_unit_rate: number;
+  tenant_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Hostel {
   id: string;
   owner_id: string;

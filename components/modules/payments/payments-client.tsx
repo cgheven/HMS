@@ -1,8 +1,9 @@
 "use client";
 import { useState, useMemo, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import {
   CreditCard, CheckCircle2, Clock, AlertTriangle, Wallet,
-  TrendingUp, Edit2, Banknote, RefreshCw,
+  TrendingUp, Banknote, RefreshCw, Zap, Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,9 +18,9 @@ import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import {
   syncMonthAction,
   markPaymentPaidAction,
-  markPaymentWaivedAction,
   markPaymentOverdueAction,
   loadHistoryAction,
+  applyRoomACUnitsAction,
 } from "@/app/actions/payments";
 import { createInvoiceLink } from "@/app/actions/tenants";
 
@@ -36,7 +37,7 @@ interface TenantRow {
   package_tier: PackageTier;
 }
 
-interface RoomRow { id: string; room_number: string; floor: number | null; }
+interface RoomRow { id: string; room_number: string; floor: number | null; has_ac?: boolean | null; }
 
 interface Props {
   hostelId: string | null;
@@ -49,6 +50,7 @@ interface Props {
   packageConfig: PackageConfig | null;
   paymentMethods?: PaymentMethodAccount[];
   reminderTemplate?: string | null;
+  acReadings?: { room_id: string; total_units: number; per_unit_rate: number; tenant_count: number }[];
 }
 
 const methodLabels: Record<PaymentMethod, string> = {
@@ -70,10 +72,11 @@ function genReceipt(tenantName: string, month: string) {
   return `HMS-${month.replace("-", "")}-${initials}-${rand}`;
 }
 
-// Maximum AC units allowed in the UI (matches DB constraint in migration 022)
+// Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, acReadings = [] }: Props) {
+  const router = useRouter();
   const [selectedMonth, setSelectedMonth] = useState(initialMonth);
   const [payments, setPayments] = useState<Payment[]>(initialPayments);
   const [allHistory, setAllHistory] = useState<Payment[]>([]);
@@ -92,8 +95,22 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [syncing, setSyncing] = useState(false);
   const [sendingWa, setSendingWa] = useState<string | null>(null); // paymentId
   const [postPaymentWa, setPostPaymentWa] = useState<Payment | null>(null);
+  const [acUnits, setAcUnits] = useState<Record<string, string>>({});
+  const [applyingAC, setApplyingAC] = useState<string | null>(null);
+  const [roomFilter, setRoomFilter] = useState<string>("all");
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
+
+  // Pre-populate AC units from saved readings on mount / when acReadings changes
+  useEffect(() => {
+    if (acReadings.length > 0) {
+      setAcUnits(prev => {
+        const next = { ...prev };
+        acReadings.forEach(r => { if (!next[r.room_id]) next[r.room_id] = String(r.total_units); });
+        return next;
+      });
+    }
+  }, [acReadings]);
 
   // All payment mutations go through Server Actions — not the browser Supabase client
   const syncMonth = useCallback(async (month: string) => {
@@ -139,7 +156,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       late_fee: "0",
       notes: "",
       receipt_number: genReceipt(tenantName, p.for_month),
-      ac_units_consumed: "0",
+      ac_units_consumed: p.ac_units_consumed ? String(Math.round(p.ac_units_consumed)) : "0",
     });
   }
 
@@ -197,16 +214,6 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       setPostPaymentWa(paidForWa);
       return;
     }
-  }
-
-  async function markWaived(p: Payment) {
-    const result = await markPaymentWaivedAction(p.id);
-    if (result.error) {
-      toast({ title: "Error", description: result.error, variant: "destructive" });
-      return;
-    }
-    toast({ title: "Payment waived" });
-    await syncMonth(selectedMonth);
   }
 
   async function markOverdue(p: Payment) {
@@ -276,10 +283,55 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       month: p.for_month,
       hostelName,
       accounts: paymentMethods,
+      ac_charge: (p.ac_charge ?? 0) > 0 ? Number(p.ac_charge) : undefined,
+      ac_units: (p.ac_units_consumed ?? 0) > 0 ? Number(p.ac_units_consumed) : undefined,
+      ac_rate: packageConfig?.ac_per_unit_rate ?? undefined,
     });
     const waUrl = `https://wa.me/${digits}?text=${encodeURIComponent(message)}`;
     window.open(waUrl, "_blank", "noopener,noreferrer");
   }
+
+  async function applyACUnits(roomId: string) {
+    const units = Number(acUnits[roomId] ?? "");
+    if (!Number.isFinite(units) || units < 0) return;
+    setApplyingAC(roomId);
+    try {
+      const result = await applyRoomACUnitsAction(roomId, selectedMonth, units);
+      if (!result.success) {
+        toast({ title: "AC Billing Error", description: result.error, variant: "destructive" });
+      } else {
+        const cleared = units === 0;
+        toast({
+          title: cleared ? "AC charge cleared" : "AC units applied",
+          description: cleared
+            ? "AC charges removed for all tenants in this room."
+            : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${result.perTenantUnits} units each · Rs ${result.perTenantCharge?.toLocaleString()} each`,
+        });
+        await syncMonth(selectedMonth);
+        router.refresh(); // refresh server props so acReadings badge updates
+      }
+    } finally {
+      setApplyingAC(null);
+    }
+  }
+
+  // Show all AC rooms — tenant tier filtering happens at billing time, not here
+  const acRooms = useMemo(() => {
+    return rooms
+      .filter(r => r.has_ac)
+      .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
+  }, [rooms]);
+
+  // Rooms that have at least one payment this month — for the Room filter
+  const roomsInMonth = useMemo(() => {
+    const ids = new Set(payments.map(p => p.tenant?.room_id).filter(Boolean));
+    return rooms.filter(r => ids.has(r.id)).sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
+  }, [payments, rooms]);
+
+  const filteredPayments = useMemo(() => {
+    if (roomFilter === "all") return payments;
+    return payments.filter(p => p.tenant?.room_id === roomFilter);
+  }, [payments, roomFilter]);
 
   const stats = useMemo(() => {
     const due = payments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
@@ -305,12 +357,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // Desktop-only table header
   function PaymentTableHeader() {
     return (
-      <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-3 px-4 py-2 border-b border-white/5">
+      <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-6 px-5 py-2.5 border-b border-white/5">
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tenant</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Plan</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Amount</span>
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-center w-24">Status</span>
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-36">Action</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-center w-28">Status</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-44">Action</span>
       </div>
     );
   }
@@ -333,25 +385,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       <>
         {(p.status === "pending" || p.status === "overdue") && (
           <>
-            <Button variant="ghost" size="sm" className="h-7 px-2.5 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" onClick={() => sendReminder(p)}>
+            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" onClick={() => sendReminder(p)}>
               {WA_ICON} Remind
             </Button>
-            <Button variant="ghost" size="sm" className="h-7 px-2.5 text-xs gap-1 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
+            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
               <CheckCircle2 className="w-3 h-3" /> Pay
             </Button>
           </>
         )}
         {p.status === "paid" && (
-          <Button variant="ghost" size="sm" className="h-7 px-2.5 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" disabled={sendingWa === p.id} onClick={() => sendWhatsAppReceipt(p)}>
+          <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" disabled={sendingWa === p.id} onClick={() => sendWhatsAppReceipt(p)}>
             {WA_ICON} Receipt
           </Button>
         )}
         {p.status === "waived" && <span className="text-xs text-muted-foreground px-2">Waived</span>}
-        {p.status === "pending" && (
-          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-muted-foreground" title="Mark waived" onClick={() => markWaived(p)}>
-            <Edit2 className="w-3 h-3" />
-          </Button>
-        )}
       </>
     );
 
@@ -387,7 +434,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         </div>
 
         {/* ── Desktop table row (≥ md) ───────────────────────── */}
-        <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-3 items-center px-4 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5">
+        <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-6 items-center px-5 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5">
           <div className="min-w-0">
             <p className="text-sm font-medium text-foreground truncate">{p.tenant?.full_name ?? "—"}</p>
             <div className="flex items-center gap-2 flex-wrap mt-0.5">
@@ -409,12 +456,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             <p className="text-sm font-semibold text-foreground">{formatCurrency(total)}</p>
             {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
           </div>
-          <div className="flex justify-center w-24">
+          <div className="flex justify-center w-28">
             <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${statusColors[p.status]}`}>
               {cfg.label}
             </span>
           </div>
-          <div className="flex items-center justify-end gap-1.5 w-36">
+          <div className="flex items-center justify-end gap-2 w-44">
             {actionButtons}
           </div>
         </div>
@@ -461,10 +508,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       </div>
 
       {/* Tabs */}
-      <Tabs value={tab} onValueChange={(v) => { setTab(v); if (v === "history") loadHistory(); }}>
+      <Tabs value={tab} onValueChange={(v) => { setTab(v); if (v === "history") loadHistory(); if (v !== "monthly") setRoomFilter("all"); }}>
         <TabsList>
           <TabsTrigger value="monthly"><Banknote className="w-3.5 h-3.5" /> Monthly View</TabsTrigger>
           <TabsTrigger value="history"><Clock className="w-3.5 h-3.5" /> All History</TabsTrigger>
+          {acRooms.length > 0 && (
+            <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> AC Billing</TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="monthly">
@@ -477,10 +527,36 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               </div>
             ) : (
               <div className="p-2">
+                {/* Room filter dropdown */}
+                {roomsInMonth.length > 1 && (
+                  <div className="flex items-center gap-2 px-2 pt-1 pb-3">
+                    <Select value={roomFilter} onValueChange={setRoomFilter}>
+                      <SelectTrigger className="h-8 w-44 text-xs">
+                        <SelectValue placeholder="All Rooms" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Rooms ({payments.length})</SelectItem>
+                        {roomsInMonth.map(r => {
+                          const count = payments.filter(p => p.tenant?.room_id === r.id).length;
+                          return (
+                            <SelectItem key={r.id} value={r.id}>
+                              Room {r.room_number} ({count})
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
                 <PaymentTableHeader />
                 <div className="space-y-2 md:space-y-0.5 mt-1">
-                  {payments.map((p) => <PaymentRow key={p.id} p={p} />)}
+                  {filteredPayments.map((p) => <PaymentRow key={p.id} p={p} />)}
                 </div>
+                {filteredPayments.length === 0 && roomFilter !== "all" && (
+                  <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
+                    No payments for this room
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -510,6 +586,71 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             )}
           </div>
         </TabsContent>
+
+        <TabsContent value="ac">
+          <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
+            <div className="flex items-center gap-2 mb-1">
+              <Zap className="w-4 h-4 text-amber" />
+              <h3 className="text-sm font-semibold">AC Billing</h3>
+              <span className="text-xs text-muted-foreground">— enter total units consumed per room for {selectedMonth}</span>
+            </div>
+            <div className="space-y-2">
+              {acRooms.map(room => {
+                const saved = acReadings.find(r => r.room_id === room.id);
+                const acTenantCount = tenants.filter(t => t.room_id === room.id && t.is_active && t.package_tier === "space_food_ac").length;
+                const totalTenants = tenants.filter(t => t.room_id === room.id && t.is_active).length;
+                return (
+                  <div key={room.id} className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium">Room {room.room_number}</span>
+                        {acTenantCount > 0 ? (
+                          <span className="text-xs text-amber">
+                            {acTenantCount} of {totalTenants} billed for AC
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground/60">No AC-package tenants</span>
+                        )}
+                      </div>
+                      {saved ? (
+                        <p className="text-xs text-emerald-400 mt-0.5">
+                          {saved.total_units} units saved · Rs {saved.per_unit_rate}/unit · {saved.tenant_count} tenants billed
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground/50 mt-0.5">No reading for this month yet</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Input
+                        type="number"
+                        min={0}
+                        max={99999}
+                        placeholder="Units"
+                        value={acUnits[room.id] ?? ""}
+                        onChange={e => setAcUnits(prev => ({ ...prev, [room.id]: e.target.value }))}
+                        disabled={acTenantCount === 0}
+                        className="w-28 h-9 text-sm text-center disabled:opacity-40"
+                      />
+                      <Button
+                        size="sm"
+                        className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
+                        variant="ghost"
+                        disabled={applyingAC === room.id || acUnits[room.id] === undefined || acUnits[room.id] === "" || acTenantCount === 0}
+                        onClick={() => applyACUnits(room.id)}
+                      >
+                        {applyingAC === room.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                        Apply
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-xs text-muted-foreground pt-1">
+              After applying, switch to <span className="text-foreground font-medium">Monthly View</span> and filter by room to verify the split.
+            </p>
+          </div>
+        </TabsContent>
       </Tabs>
 
       {/* Mark Paid Dialog */}
@@ -523,21 +664,21 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               <p className="text-xs text-muted-foreground">Tenant</p>
               <p className="text-sm font-medium">{markDialog?.tenant?.full_name}</p>
               <p className="text-xs text-muted-foreground">{markDialog?.for_month}</p>
-              {/* Package tier charge breakdown */}
-              {markDialog?.payment_package_tier && markDialog.payment_package_tier !== "space_only" && (
-                <div className="mt-1.5 pt-1.5 border-t border-white/10 space-y-0.5">
-                  {(markDialog.payment_package_tier === "space_food" || markDialog.payment_package_tier === "space_3meals" || markDialog.payment_package_tier === "space_food_ac" || markDialog.payment_package_tier === "space_meals_cooler") && (
-                    <p className="text-xs text-muted-foreground">Food: {formatCurrency(markDialog.food_charge ?? 0)}</p>
-                  )}
-                  {(markDialog.payment_package_tier === "space_food_ac") && (
-                    <p className="text-xs text-muted-foreground">AC: {formatCurrency(markDialog.ac_charge ?? 0)}</p>
-                  )}
-                  <p className="text-xs font-medium text-foreground">Total: {formatCurrency(markDialog.amount ?? 0)}</p>
-                </div>
-              )}
-              {(!markDialog?.payment_package_tier || markDialog.payment_package_tier === "space_only") && (
-                <p className="text-xs text-muted-foreground mt-0.5">{formatCurrency(markDialog?.amount ?? 0)}</p>
-              )}
+              {/* Charge breakdown — always show rent + any add-ons */}
+              {markDialog && (() => {
+                const food = markDialog.food_charge ?? 0;
+                const ac = markDialog.ac_charge ?? 0;
+                const baseRent = (markDialog.amount ?? 0) - food - ac;
+                const hasAddons = food > 0 || ac > 0;
+                return (
+                  <div className="mt-1.5 pt-1.5 border-t border-white/10 space-y-0.5">
+                    <p className="text-xs text-muted-foreground">Rent: {formatCurrency(Math.max(0, baseRent))}</p>
+                    {food > 0 && <p className="text-xs text-muted-foreground">Food: {formatCurrency(food)}</p>}
+                    {ac > 0 && <p className="text-xs text-muted-foreground">AC: {formatCurrency(ac)}</p>}
+                    {hasAddons && <p className="text-xs font-medium text-foreground">Total: {formatCurrency(markDialog.amount ?? 0)}</p>}
+                  </div>
+                );
+              })()}
             </div>
 
             {/* AC units consumed — only for space_food_ac (F-003, F-004) */}

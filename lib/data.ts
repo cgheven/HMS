@@ -594,10 +594,10 @@ export async function updatePaymentCharges(
 
 export async function getPaymentsPageData(forMonth: string) {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null };
+  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, acReadings: [] };
   const { supabase, hostelId, hostel } = ctx;
 
-  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig] = await Promise.all([
+  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig, { data: acReadings }] = await Promise.all([
     supabase.from("hms_payments")
       .select("*, tenant:hms_tenants(full_name, room_id, phone)")
       .eq("hostel_id", hostelId)
@@ -608,20 +608,25 @@ export async function getPaymentsPageData(forMonth: string) {
       .eq("hostel_id", hostelId)
       .eq("is_active", true),
     supabase.from("hms_rooms")
-      .select("id, room_number, floor")
+      .select("id, room_number, floor, has_ac")
       .eq("hostel_id", hostelId),
     getPackageConfig(hostelId),
+    supabase.from("hms_room_ac_readings")
+      .select("room_id, total_units, per_unit_rate, tenant_count")
+      .eq("hostel_id", hostelId)
+      .eq("for_month", forMonth),
   ]);
 
   return {
     hostelId,
     payments: (payments ?? []) as Payment[],
     tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active"> & { package_tier: PackageTier })[],
-    rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor">[],
+    rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor" | "has_ac">[],
     packageConfig,
     hostelName: hostel?.name ?? "",
     hostelPhone: hostel?.whatsapp ?? hostel?.phone ?? null,
     paymentMethods: hostel?.payment_methods ?? [],
     reminderTemplate: hostel?.reminder_template ?? null,
+    acReadings: (acReadings ?? []) as { room_id: string; total_units: number; per_unit_rate: number; tenant_count: number }[],
   };
 }

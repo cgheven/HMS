@@ -1,7 +1,9 @@
 "use server";
 
 import { randomUUID } from "crypto";
+import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrAbove } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import type { Payment, PackageTier, PaymentMethod, TenantDocument, DocumentType } from "@/types";
@@ -436,5 +438,109 @@ export async function createInvoiceLink(
     return { token: (data as { token: string }).token };
   } catch (err: unknown) {
     return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// backfillTenantPaymentsAction
+// When a tenant is added with a historical check_in date, create payment
+// records for all past months (check_in month → last month) marked as Paid/Cash.
+// Current month is intentionally excluded — handled by normal Sync.
+// ---------------------------------------------------------------------------
+
+const FOOD_TIERS = new Set<string>(["space_food", "space_3meals", "space_food_ac", "space_meals_cooler"]);
+
+function getPastMonths(checkIn: string): string[] {
+  const [ciYear, ciMonth] = checkIn.slice(0, 7).split("-").map(Number);
+  const now = new Date();
+  const curYear = now.getFullYear();
+  const curMonth = now.getMonth() + 1; // 1-based
+  const months: string[] = [];
+  let y = ciYear, m = ciMonth;
+  while (y < curYear || (y === curYear && m < curMonth)) {
+    months.push(`${y}-${String(m).padStart(2, "0")}`);
+    m++;
+    if (m > 12) { m = 1; y++; }
+  }
+  return months;
+}
+
+function lastDayOfMonth(yyyyMM: string): string {
+  const [y, m] = yyyyMM.split("-").map(Number);
+  return new Date(y, m, 0).toISOString().slice(0, 10);
+}
+
+function genReceiptNumber(tenantName: string, month: string): string {
+  const initials = tenantName.split(" ").map((w: string) => w[0] ?? "").join("").toUpperCase().slice(0, 2);
+  const rand = Math.floor(Math.random() * 900 + 100);
+  return `HMS-${month.replace("-", "")}-${initials}-${rand}`;
+}
+
+export async function backfillTenantPaymentsAction(
+  tenantId: string
+): Promise<{ success: boolean; monthsCreated?: number; error?: string }> {
+  try {
+    await requireOwnerOrAbove();
+    const ctx = await getAuthContext();
+    if (!ctx?.hostelId) throw new Error("Unauthorized");
+    const { hostelId } = ctx;
+
+    const adminDb = createAdminClient();
+
+    // Fetch tenant — verify it belongs to this hostel
+    const { data: tenant } = await adminDb
+      .from("hms_tenants")
+      .select("id, full_name, hostel_id, check_in, monthly_rent, security_deposit, package_tier, billing_type")
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+      .single();
+
+    if (!tenant) throw new Error("Tenant not found");
+    if (tenant.billing_type !== "monthly") return { success: true, monthsCreated: 0 }; // daily tenants: skip
+    if (!tenant.check_in) return { success: true, monthsCreated: 0 };
+
+    const pastMonths = getPastMonths(tenant.check_in);
+    if (pastMonths.length === 0) return { success: true, monthsCreated: 0 };
+
+    // Get food rate from package config
+    const { data: pkgConfig } = await adminDb
+      .from("hms_package_configs")
+      .select("food_monthly_rate")
+      .eq("hostel_id", hostelId)
+      .single();
+    const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
+    const foodCharge = FOOD_TIERS.has(tenant.package_tier ?? "") ? foodRate : 0;
+    const baseRent = Number(tenant.monthly_rent);
+    const totalAmount = baseRent + foodCharge;
+    const checkInMonth = tenant.check_in.slice(0, 7);
+
+    const rows = pastMonths.map((month) => ({
+      hostel_id: hostelId,
+      tenant_id: tenantId,
+      for_month: month,
+      amount: totalAmount,
+      food_charge: foodCharge,
+      ac_charge: 0,
+      late_fee: 0,
+      status: "paid" as const,
+      payment_method: "cash" as const,
+      payment_date: lastDayOfMonth(month),
+      receipt_number: genReceiptNumber(tenant.full_name, month),
+      payment_package_tier: tenant.package_tier,
+      // Security deposit recorded on first month's payment date for reference
+      ...(month === checkInMonth ? { notes: `Security deposit: Rs ${tenant.security_deposit ?? 0} (paid on joining)` } : {}),
+    }));
+
+    // ignoreDuplicates: never overwrite if somehow a record already exists
+    const { error } = await adminDb
+      .from("hms_payments")
+      .upsert(rows, { onConflict: "tenant_id,for_month", ignoreDuplicates: true });
+
+    if (error) throw error;
+
+    revalidatePath("/payments");
+    return { success: true, monthsCreated: pastMonths.length };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
