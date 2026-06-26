@@ -1,11 +1,13 @@
 "use client";
-import { useState } from "react";
-import { Home, CheckCircle2, Loader2, Phone, Mail, User, CreditCard, Calendar, MessageSquare } from "lucide-react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import { Home, CheckCircle2, Loader2, Phone, Mail, User, CreditCard, Calendar, MessageSquare, Camera, Upload, X, RefreshCw } from "lucide-react";
 import { submitApplication } from "@/app/actions/applications";
+import { uploadApplicationCnic } from "@/app/actions/public";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { Hostel, PackageTier, FormConfig } from "@/types";
 import { DEFAULT_FORM_CONFIG } from "@/types";
 
@@ -47,6 +49,117 @@ export function JoinFormClient({ hostel }: Props) {
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // CNIC document upload state
+  const cnicFileRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [cnicDoc, setCnicDoc] = useState<{ path: string; previewUrl: string } | null>(null);
+  const [cnicUploading, setCnicUploading] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [facingMode, setFacingMode] = useState<"user" | "environment">("environment");
+  const [cameraError, setCameraError] = useState<string | null>(null);
+
+  // Attach camera stream to video element whenever stream changes
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
+  // Start / restart camera stream
+  const startCnicCamera = useCallback(async (mode: "user" | "environment") => {
+    setCameraError(null);
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop());
+      setStream(null);
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError("Camera not supported in this browser.");
+      return;
+    }
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: mode, width: { ideal: 1280 } },
+      });
+      setStream(s);
+      if (videoRef.current) {
+        videoRef.current.srcObject = s;
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("Permission") || msg.includes("NotAllowed") || msg.includes("denied")) {
+        setCameraError("Camera access denied. Please allow camera permissions and try again.");
+      } else if (msg.includes("NotReadable") || msg.includes("in use")) {
+        setCameraError("Camera is in use by another application.");
+      } else {
+        setCameraError("Could not access camera: " + msg);
+      }
+    }
+  }, [stream]);
+
+  async function processCnicFile(file: File) {
+    setCnicUploading(true);
+    const previewUrl = URL.createObjectURL(file);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const result = await uploadApplicationCnic(hostel.id, fd);
+      if (result.error) {
+        URL.revokeObjectURL(previewUrl);
+        setError(result.error);
+      } else if (result.path) {
+        setCnicDoc({ path: result.path, previewUrl });
+      }
+    } catch (err: unknown) {
+      URL.revokeObjectURL(previewUrl);
+      setError(err instanceof Error ? err.message : "Upload failed. Please try again.");
+    } finally {
+      setCnicUploading(false);
+    }
+  }
+
+  function handleCnicFileInput(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    void processCnicFile(file);
+  }
+
+  async function openCnicCamera() {
+    setCameraOpen(true);
+    await startCnicCamera(facingMode);
+  }
+
+  async function flipCamera() {
+    const next = facingMode === "user" ? "environment" : "user";
+    setFacingMode(next);
+    await startCnicCamera(next);
+  }
+
+  async function captureFromCamera() {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    canvas.toBlob(async (blob) => {
+      if (!blob) return;
+      closeCamera();
+      await processCnicFile(new File([blob], "cnic.jpg", { type: "image/jpeg" }));
+    }, "image/jpeg", 0.92);
+  }
+
+  function closeCamera() {
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    setStream(null);
+    setCameraOpen(false);
+    setCameraError(null);
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -67,6 +180,7 @@ export function JoinFormClient({ hostel }: Props) {
       room_preference: show("room_preference") && form.room_preference !== "no_preference" ? form.room_preference : undefined,
       move_in_date: show("move_in_date") ? form.move_in_date || undefined : undefined,
       notes: show("notes") ? form.notes || undefined : undefined,
+      cnic_doc_path: cnicDoc?.path,
     });
     setLoading(false);
 
@@ -212,6 +326,78 @@ export function JoinFormClient({ hostel }: Props) {
                 <p className="text-xs text-muted-foreground">Format: 42101-1234567-1</p>
               </div>
             )}
+
+            {/* CNIC Document Upload */}
+            <div className="space-y-2">
+              <Label className="flex items-center gap-1.5">
+                <CreditCard className="w-3.5 h-3.5 text-muted-foreground" />
+                CNIC Document <span className="text-muted-foreground text-xs font-normal">(optional)</span>
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Upload a photo or scan of your CNIC for identity verification.{" "}
+                <span className="text-muted-foreground">(optional)</span>
+              </p>
+              <input
+                ref={cnicFileRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                className="hidden"
+                onChange={handleCnicFileInput}
+              />
+              {cnicUploading ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Uploading...
+                </div>
+              ) : cnicDoc ? (
+                <div className="flex items-center gap-2">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={cnicDoc.previewUrl}
+                    alt="CNIC preview"
+                    className="w-24 h-16 object-cover rounded border border-sidebar-border"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs gap-1 text-rose-400 hover:bg-rose-500/10"
+                    onClick={() => {
+                      URL.revokeObjectURL(cnicDoc.previewUrl);
+                      setCnicDoc(null);
+                    }}
+                  >
+                    <X className="w-3 h-3" />
+                    Remove
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 h-8 text-xs"
+                    onClick={() => cnicFileRef.current?.click()}
+                    disabled={cnicUploading}
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    Upload CNIC
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 h-8 text-xs"
+                    onClick={openCnicCamera}
+                    disabled={cnicUploading}
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    Take Photo
+                  </Button>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Preferences — only render the card if at least one preference field is visible */}
@@ -321,6 +507,67 @@ export function JoinFormClient({ hostel }: Props) {
           </p>
         </form>
       </div>
+
+      {/* CNIC Camera Dialog */}
+      <Dialog open={cameraOpen} onOpenChange={(o) => { if (!o) closeCamera(); }}>
+        <DialogContent className="sm:max-w-md p-0 overflow-hidden">
+          <DialogHeader className="px-4 pt-4 pb-2">
+            <DialogTitle className="text-sm">Take CNIC Photo</DialogTitle>
+          </DialogHeader>
+
+          <div className="relative bg-black aspect-video w-full overflow-hidden">
+            {cameraError ? (
+              <div className="flex items-center justify-center h-full text-sm text-muted-foreground px-6 text-center">
+                {cameraError}
+              </div>
+            ) : (
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-cover"
+              />
+            )}
+            {/* Hidden canvas for capture */}
+            <canvas ref={canvasRef} className="hidden" />
+          </div>
+
+          <div className="flex items-center justify-between px-4 py-3 gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 h-8 text-xs"
+              onClick={closeCamera}
+            >
+              <X className="w-3.5 h-3.5" />
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 h-8 text-xs"
+              onClick={flipCamera}
+              disabled={!!cameraError}
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Flip
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="gap-1.5 h-8 text-xs bg-amber text-background hover:bg-amber/90 font-semibold"
+              onClick={captureFromCamera}
+              disabled={!!cameraError || !stream}
+            >
+              <Camera className="w-3.5 h-3.5" />
+              Capture
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

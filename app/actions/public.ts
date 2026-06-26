@@ -4,6 +4,49 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWaitlistEmail } from "@/lib/email";
 import type { PublicHostel, PublicHostelDetail, PublicRoom, FoodItem } from "@/types";
 
+// ---------------------------------------------------------------------------
+// Image validation helpers (F-004: magic-byte check)
+// ---------------------------------------------------------------------------
+
+const CNIC_ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
+const CNIC_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+const CNIC_EXT_MAP: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+};
+
+/**
+ * Validate image magic bytes server-side.
+ * The client-supplied Content-Type header is attacker-controlled; we must
+ * verify the actual file content against known image signatures.
+ *
+ * Signatures:
+ *   JPEG  : FF D8 FF
+ *   PNG   : 89 50 4E 47 0D 0A 1A 0A
+ *   WebP  : 52 49 46 46 ?? ?? ?? ?? 57 45 42 50  (RIFF....WEBP)
+ */
+function validateImageMagicBytes(buf: Buffer): boolean {
+  if (buf.length < 12) return false;
+
+  // JPEG: starts with FF D8 FF
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true;
+
+  // PNG: starts with 89 50 4E 47 0D 0A 1A 0A
+  if (
+    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+    buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a
+  ) return true;
+
+  // WebP: RIFF at bytes 0-3 and WEBP at bytes 8-11
+  if (
+    buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+    buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50
+  ) return true;
+
+  return false;
+}
+
 export async function getPublicHostels(): Promise<{ hostels?: PublicHostel[]; error?: string }> {
   try {
     const admin = createAdminClient();
@@ -184,6 +227,57 @@ export async function joinWaitlist(
 }
 
 
+export async function uploadApplicationCnic(
+  hostelId: string,
+  formData: FormData
+): Promise<{ path?: string; error?: string }> {
+  try {
+    const file = formData.get("file") as File | null;
+    if (!file) return { error: "No file provided." };
+
+    // Validate MIME type
+    if (!CNIC_ALLOWED_MIME.has(file.type)) {
+      return { error: "Invalid file type. Only JPEG, PNG, and WebP images are allowed." };
+    }
+
+    // Validate size
+    if (file.size > CNIC_MAX_BYTES) {
+      return { error: "File too large. Maximum size is 5 MB." };
+    }
+
+    // Validate magic bytes
+    const arrayBuffer = await file.arrayBuffer();
+    const buf = Buffer.from(arrayBuffer);
+    if (!validateImageMagicBytes(buf)) {
+      return { error: "Invalid image file. Please upload a valid JPEG, PNG, or WebP image." };
+    }
+
+    const admin = createAdminClient();
+
+    // SECURITY: verify hostel exists and is publicly listed before accepting any document
+    const { data: hostelCheck } = await admin
+      .from("hms_hostels")
+      .select("id")
+      .eq("id", hostelId)
+      .eq("listing_enabled", true)
+      .maybeSingle();
+    if (!hostelCheck) return { error: "Hostel not found." };
+
+    const ext = CNIC_EXT_MAP[file.type] ?? "jpg";
+    const path = `${hostelId}/${crypto.randomUUID()}.${ext}`;
+
+    const { error: uploadError } = await admin.storage
+      .from("application-docs")
+      .upload(path, buf, { contentType: file.type, upsert: false });
+
+    if (uploadError) return { error: "Upload failed. Please try again." };
+
+    return { path };
+  } catch {
+    return { error: "Something went wrong. Please try again." };
+  }
+}
+
 export async function submitApplication(
   hostelId: string,
   data: {
@@ -195,6 +289,7 @@ export async function submitApplication(
     package_tier: string;
     move_in_date?: string;
     notes?: string;
+    cnic_doc_path?: string;
   }
 ): Promise<{ error?: string }> {
   try {
@@ -220,6 +315,7 @@ export async function submitApplication(
       package_tier: data.package_tier,
       move_in_date: data.move_in_date || null,
       notes: data.notes?.trim().slice(0, 500) || null,
+      cnic_doc_path: data.cnic_doc_path || null,
     };
     const { error } = await admin.from("hms_tenant_applications").insert(payload);
     if (error) throw error;

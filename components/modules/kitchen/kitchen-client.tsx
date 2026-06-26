@@ -566,7 +566,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
             </div>
           </DialogHeader>
 
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 overflow-y-auto scrollbar-thin">
             {/* Selected items */}
             <div className="px-6 pt-4 pb-3">
               {selectedItems.length === 0 ? (
@@ -685,7 +685,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
             <DialogTitle>{groceryEditing ? "Edit Grocery Item" : "Add Grocery Item"}</DialogTitle>
           </DialogHeader>
 
-          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          <div className="flex-1 overflow-y-auto scrollbar-thin px-6 py-4 space-y-4">
             {/* Quick presets */}
             {!groceryEditing && (
               <div className="space-y-2">

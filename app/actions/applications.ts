@@ -15,6 +15,7 @@ interface ApplicationInput {
   room_preference?: string;
   move_in_date?: string;
   notes?: string;
+  cnic_doc_path?: string;
 }
 
 export async function submitApplication(hostelId: string, data: ApplicationInput) {
@@ -46,6 +47,7 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     room_preference: data.room_preference || null,
     move_in_date: data.move_in_date || null,
     notes: data.notes?.trim() || null,
+    cnic_doc_path: data.cnic_doc_path || null,
     status: "pending",
   });
 
@@ -164,6 +166,18 @@ export async function updateApplicationStatus(
 
   if (error) return { success: false, error: error.message };
   return { success: true };
+}
+
+export async function getApplicationDocUrl(
+  path: string
+): Promise<{ url?: string; error?: string }> {
+  await requireOwnerOrAbove();
+  const admin = createAdminClient();
+  const { data, error } = await admin.storage
+    .from("application-docs")
+    .createSignedUrl(path, 3600);
+  if (error || !data?.signedUrl) return { error: error?.message ?? "Could not generate URL." };
+  return { url: data.signedUrl };
 }
 
 export interface ConvertFormData {

@@ -486,6 +486,7 @@ export interface TenantApplication {
   move_in_date: string | null;
   notes: string | null;
   photo_url: string | null;
+  cnic_doc_path: string | null;
   status: ApplicationStatus;
   applied_at: string;
   reviewed_at: string | null;

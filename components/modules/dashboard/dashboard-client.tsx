@@ -53,7 +53,7 @@ export function DashboardClient({ data }: Props) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
 
         {/* Net Profit — most prominent, full-width on mobile */}
-        <div className={`col-span-2 lg:col-span-1 relative rounded-2xl border p-5 transition-all duration-300 animate-fade-up ${isProfit ? "border-emerald-500/30 bg-emerald-500/[0.06] hover:border-emerald-500/50" : "border-rose-500/30 bg-rose-500/[0.06] hover:border-rose-500/50"}`}>
+        <div className={`col-span-2 lg:col-span-1 relative rounded-2xl border p-4 sm:p-5 transition-all duration-300 animate-fade-up ${isProfit ? "border-emerald-500/30 bg-emerald-500/[0.06] hover:border-emerald-500/50" : "border-rose-500/30 bg-rose-500/[0.06] hover:border-rose-500/50"}`}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Net Profit</p>
@@ -71,55 +71,55 @@ export function DashboardClient({ data }: Props) {
         </div>
 
         {/* Collected */}
-        <div className="relative rounded-2xl border border-sidebar-border bg-card p-5 hover:border-emerald-500/30 transition-all animate-fade-up" style={{ animationDelay: "75ms" }}>
-          <div className="flex items-start justify-between gap-3">
+        <div className="relative rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 hover:border-emerald-500/30 transition-all animate-fade-up" style={{ animationDelay: "75ms" }}>
+          <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">Collected</p>
-              <p className="mt-2 text-2xl font-bold leading-none truncate">{formatCurrency(stats.monthly_collected)}</p>
+              <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">Collected</p>
+              <p className="mt-2 text-lg sm:text-2xl font-bold leading-none">{formatCurrency(stats.monthly_collected)}</p>
               <div className="mt-2 flex items-center gap-2">
                 <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
                   <div className="h-full bg-emerald-400 rounded-full transition-all" style={{ width: `${collectionRate}%` }} />
                 </div>
                 <span className="text-xs text-emerald-400 font-semibold shrink-0">{collectionRate}%</span>
               </div>
-              <p className="mt-1 text-xs text-muted-foreground truncate">{formatCurrency(stats.monthly_revenue)} expected</p>
+              <p className="mt-1 text-[10px] sm:text-xs text-muted-foreground">{formatCurrency(stats.monthly_revenue)} expected</p>
             </div>
-            <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 shrink-0">
-              <Wallet className="w-4 h-4 text-emerald-400" />
+            <div className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 shrink-0">
+              <Wallet className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />
             </div>
           </div>
         </div>
 
         {/* Outstanding */}
-        <div className="relative rounded-2xl border border-sidebar-border bg-card p-5 hover:border-amber/30 transition-all animate-fade-up" style={{ animationDelay: "150ms" }}>
-          <div className="flex items-start justify-between gap-3">
+        <div className="relative rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 hover:border-amber/30 transition-all animate-fade-up" style={{ animationDelay: "150ms" }}>
+          <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">Outstanding</p>
-              <p className="mt-2 text-2xl font-bold leading-none truncate">{formatCurrency(stats.monthly_uncollected)}</p>
-              <p className="mt-2 text-xs text-muted-foreground">
+              <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">Outstanding</p>
+              <p className="mt-2 text-lg sm:text-2xl font-bold leading-none">{formatCurrency(stats.monthly_uncollected)}</p>
+              <p className="mt-2 text-[10px] sm:text-xs text-muted-foreground">
                 {defaulters.length > 0
                   ? `${defaulters.length} tenant${defaulters.length !== 1 ? "s" : ""} yet to pay`
                   : "Nothing pending"}
               </p>
             </div>
-            <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-amber/10 border border-amber/20 shrink-0">
-              <Clock className="w-4 h-4 text-amber" />
+            <div className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-amber/10 border border-amber/20 shrink-0">
+              <Clock className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber" />
             </div>
           </div>
         </div>
 
         {/* Occupancy */}
-        <div className="relative rounded-2xl border border-sidebar-border bg-card p-5 hover:border-blue-500/30 transition-all animate-fade-up" style={{ animationDelay: "225ms" }}>
-          <div className="flex items-start justify-between gap-3">
+        <div className="relative rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 hover:border-blue-500/30 transition-all animate-fade-up" style={{ animationDelay: "225ms" }}>
+          <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">Occupancy</p>
-              <p className="mt-2 text-2xl font-bold leading-none">{stats.occupancy_rate}%</p>
-              <p className="mt-2 text-xs text-muted-foreground">
+              <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">Occupancy</p>
+              <p className="mt-2 text-lg sm:text-2xl font-bold leading-none">{stats.occupancy_rate}%</p>
+              <p className="mt-2 text-[10px] sm:text-xs text-muted-foreground">
                 {stats.occupied_rooms}/{stats.total_rooms} rooms · {stats.available_rooms} empty
               </p>
             </div>
-            <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 shrink-0">
-              <BedDouble className="w-4 h-4 text-blue-400" />
+            <div className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 shrink-0">
+              <BedDouble className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-400" />
             </div>
           </div>
         </div>
@@ -135,16 +135,16 @@ export function DashboardClient({ data }: Props) {
         ].map(({ label, value, icon: Icon, color, iconBg, hover, delay }) => (
           <div
             key={label}
-            className={`relative rounded-2xl border border-sidebar-border bg-card p-5 ${hover} transition-all animate-fade-up`}
+            className={`relative rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 ${hover} transition-all animate-fade-up`}
             style={{ animationDelay: `${delay}ms` }}
           >
-            <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start justify-between gap-2">
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider truncate">{label}</p>
-                <p className={`mt-2 text-2xl font-bold leading-none truncate ${color}`}>{value}</p>
+                <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">{label}</p>
+                <p className={`mt-2 text-lg sm:text-2xl font-bold leading-none ${color}`}>{value}</p>
               </div>
-              <div className={`flex items-center justify-center w-9 h-9 rounded-xl border shrink-0 ${iconBg}`}>
-                <Icon className={`w-4 h-4 ${color}`} />
+              <div className={`flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl border shrink-0 ${iconBg}`}>
+                <Icon className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${color}`} />
               </div>
             </div>
           </div>

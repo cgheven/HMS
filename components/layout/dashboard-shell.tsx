@@ -19,7 +19,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           hostels={hostels}
           setActiveHostel={setActiveHostel}
         />
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto scrollbar-thin">
           <div className="container mx-auto px-4 sm:px-6 py-6 max-w-7xl">
             {children}
           </div>

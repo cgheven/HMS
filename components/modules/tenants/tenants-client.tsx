@@ -4,6 +4,7 @@ import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, History,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
+  FileSpreadsheet, FileText, ExternalLink,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -15,7 +16,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
-import { formatCurrency, formatDate, formatDateInput, capitalize } from "@/lib/utils";
+import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
 import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
@@ -87,6 +88,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   });
   const [approveSaving, setApproveSaving] = useState(false);
   const [editingDocs, setEditingDocs] = useState<TenantDocument[]>([]);
+  const [typeFilter, setTypeFilter] = useState<"all" | "student" | "professional" | "general">("all");
+  const [exportLoading, setExportLoading] = useState<"excel" | "pdf" | null>(null);
 
   // Rooms with remaining capacity
   const availableRooms = useMemo(
@@ -198,7 +201,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setDialogOpen(true);
   }
 
-  function openEdit(t: Tenant) {
+  function openEdit(t: Tenant, forceActive = false) {
     setEditing(t);
     setEditingDocs(t.documents ?? []);
     setForm({
@@ -210,7 +213,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       package_tier: t.package_tier ?? "space_only",
       room_id: t.room_id ?? "",
       bed_number: t.bed_number ?? "",
-      check_in: t.check_in,
+      check_in: t.check_in ?? formatDateInput(new Date()),
       billing_type: t.billing_type ?? "monthly",
       monthly_rent: t.monthly_rent.toString(),
       daily_rate: t.daily_rate?.toString() ?? "0",
@@ -220,7 +223,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       emergency_relationship: t.emergency_relationship ?? "",
       emergency_phone: t.emergency_phone ?? "",
       notes: t.notes ?? "",
-      is_waiting: t.is_waiting,
+      is_waiting: forceActive ? false : t.is_waiting,
       photo_url: t.photo_url ?? "",
     });
     setDialogOpen(true);
@@ -299,7 +302,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       }
     }
 
-    toast({ title: editing ? "Tenant updated" : form.is_waiting ? "Added to waiting list" : "Tenant added" });
+    toast({
+      title: editing
+        ? editing.is_waiting && !form.is_waiting
+          ? `${form.full_name} activated`
+          : "Tenant updated"
+        : form.is_waiting
+          ? "Added to waiting list"
+          : "Tenant added",
+    });
     setDialogOpen(false);
     await reload();
     setSaving(false);
@@ -351,12 +362,105 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   }
 
   function filterList(list: Tenant[]) {
-    if (!search) return list;
-    const q = search.toLowerCase();
-    return list.filter((t) => t.full_name.toLowerCase().includes(q) || (t.phone ?? "").includes(q) || (t.cnic ?? "").includes(q));
+    let result = typeFilter !== "all" ? list.filter((t) => t.type === typeFilter) : list;
+    if (search) {
+      const q = search.toLowerCase();
+      result = result.filter((t) =>
+        t.full_name.toLowerCase().includes(q) ||
+        (t.phone ?? "").includes(q) ||
+        (t.cnic ?? "").includes(q)
+      );
+    }
+    return result;
   }
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
+
+  function getCurrentFilteredList() {
+    const map: Record<string, Tenant[]> = { active, waiting, checkedout: checkedOut };
+    return filterList(map[tab] ?? active);
+  }
+
+  async function exportExcel() {
+    setExportLoading("excel");
+    try {
+      const XLSX = await import("xlsx");
+      const rows = getCurrentFilteredList().map((t) => {
+        const room = t.room_id ? roomMap[t.room_id] : null;
+        return {
+          Name: t.full_name,
+          Phone: t.phone ?? "",
+          Email: t.email ?? "",
+          CNIC: t.cnic ?? "",
+          Type: capitalize(t.type),
+          Package: PACKAGE_TIER_LABELS[t.package_tier as PackageTier] ?? t.package_tier,
+          Room: room ? `Rm ${room.room_number}` : "",
+          Bed: t.bed_number ?? "",
+          "Monthly Rent (PKR)": t.monthly_rent,
+          "Security Deposit (PKR)": t.security_deposit,
+          "Check In": t.check_in ?? "",
+          "Check Out": t.check_out ?? "",
+        };
+      });
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Tenants");
+      const label = tab === "checkedout" ? "checked-out" : tab;
+      XLSX.writeFile(wb, `tenants-${label}-${new Date().toISOString().split("T")[0]}.xlsx`);
+    } catch {
+      toast({ title: "Export failed", description: "Could not generate Excel file.", variant: "destructive" });
+    } finally {
+      setExportLoading(null);
+    }
+  }
+
+  async function exportPDF() {
+    setExportLoading("pdf");
+    try {
+      const { default: jsPDF } = await import("jspdf");
+      const { default: autoTable } = await import("jspdf-autotable");
+      const doc = new jsPDF({ orientation: "landscape" });
+
+      const tabLabel = tab === "checkedout" ? "Checked Out" : capitalize(tab);
+      doc.setFontSize(16);
+      doc.setTextColor(30, 30, 30);
+      doc.text(`Tenants — ${tabLabel}`, 14, 16);
+      doc.setFontSize(9);
+      doc.setTextColor(120, 120, 120);
+      doc.text(`Generated ${new Date().toLocaleDateString()}${typeFilter !== "all" ? ` · Filter: ${capitalize(typeFilter)}` : ""}`, 14, 23);
+
+      const rows = getCurrentFilteredList().map((t) => {
+        const room = t.room_id ? roomMap[t.room_id] : null;
+        return [
+          t.full_name,
+          t.phone ?? "—",
+          t.cnic ?? "—",
+          capitalize(t.type),
+          PACKAGE_TIER_LABELS[t.package_tier as PackageTier] ?? t.package_tier,
+          room ? `Rm ${room.room_number}${t.bed_number ? ` · ${t.bed_number}` : ""}` : "—",
+          t.monthly_rent ? `Rs ${t.monthly_rent.toLocaleString()}` : "—",
+          t.check_in ?? "—",
+        ];
+      });
+
+      autoTable(doc, {
+        startY: 28,
+        head: [["Name", "Phone", "CNIC", "Type", "Package", "Room", "Rent", "Check In"]],
+        body: rows,
+        theme: "striped",
+        headStyles: { fillColor: [245, 158, 11], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 9 },
+        bodyStyles: { fontSize: 8.5 },
+        alternateRowStyles: { fillColor: [248, 248, 248] },
+      });
+
+      const label = tab === "checkedout" ? "checked-out" : tab;
+      doc.save(`tenants-${label}-${new Date().toISOString().split("T")[0]}.pdf`);
+    } catch {
+      toast({ title: "Export failed", description: "Could not generate PDF.", variant: "destructive" });
+    } finally {
+      setExportLoading(null);
+    }
+  }
 
   const stats = {
     active: active.length,
@@ -364,12 +468,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     vacantRooms: rooms.filter((r) => r.status === "available").length,
   };
 
-  function TenantRow({ t, showCheckout = false }: { t: Tenant; showCheckout?: boolean }) {
+  function TenantRow({ t, showCheckout = false, showActivate = false }: { t: Tenant; showCheckout?: boolean; showActivate?: boolean }) {
     const room = t.room_id ? roomMap[t.room_id] : null;
     const initials = t.full_name[0].toUpperCase();
     return (
-      <div className="flex items-center gap-3 px-3 py-3 sm:px-4 rounded-xl hover:bg-white/[0.03] transition-colors">
-        {/* Avatar */}
+      <div className="flex items-center gap-3 px-3 py-3.5 sm:px-4 sm:py-3 rounded-xl hover:bg-white/[0.03] transition-colors">
+        {/* Avatar — tapping it opens the timeline on mobile */}
         <button
           type="button"
           onClick={() => setTimelineTenant(t)}
@@ -389,13 +493,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           onClick={() => setTimelineTenant(t)}
           className="flex-1 min-w-0 text-left"
         >
-          {/* Name row — truncate prevents wrapping */}
           <div className="flex items-center gap-1.5 min-w-0">
             <p className="text-sm font-medium text-foreground truncate">{t.full_name}</p>
             <Badge variant="secondary" className="text-xs capitalize shrink-0">{t.type}</Badge>
             {t.billing_type === "daily" && <Badge variant="warning" className="text-xs shrink-0">Daily</Badge>}
           </div>
-          {/* Meta row — whitespace-nowrap per item so nothing splits mid-word */}
           <div className="flex flex-wrap gap-x-2 gap-y-0 mt-0.5 items-center">
             {room && (
               <span className="text-xs text-muted-foreground whitespace-nowrap">
@@ -408,12 +510,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </span>
             )}
             {t.check_in && (
-              <span className="text-xs text-muted-foreground whitespace-nowrap">
+              <span className="text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
                 In: {formatDate(t.check_in)}
               </span>
             )}
             {t.check_out && (
-              <span className="text-xs text-muted-foreground whitespace-nowrap">
+              <span className="text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
                 Out: {formatDate(t.check_out)}
               </span>
             )}
@@ -434,8 +536,20 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           {t.security_deposit > 0 && <p className="text-xs text-muted-foreground">Dep: {formatCurrency(t.security_deposit)}</p>}
         </div>
 
-        {/* Actions — Check Out is icon-only on mobile */}
+        {/* Actions — History hidden on mobile (avatar tap opens timeline) */}
         <div className="flex items-center gap-0.5 shrink-0">
+          {showActivate && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 border border-emerald-500/20"
+              onClick={() => openEdit(t, true)}
+              title="Activate Tenant"
+            >
+              <UserCheck className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline text-xs ml-1.5">Activate</span>
+            </Button>
+          )}
           {showCheckout && (
             <Button
               variant="ghost"
@@ -448,7 +562,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               <span className="hidden sm:inline text-xs ml-1.5">Check Out</span>
             </Button>
           )}
-          <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" title="History" onClick={() => setTimelineTenant(t)}>
+          <Button variant="ghost" size="icon" className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground" title="History" onClick={() => setTimelineTenant(t)}>
             <History className="w-3.5 h-3.5" />
           </Button>
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(t)}>
@@ -486,22 +600,20 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-3 gap-3 sm:gap-4">
         {[
-          { label: "Active Tenants", value: stats.active, icon: UserCheck, color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20" },
-          { label: "Waiting List", value: stats.waiting, icon: Clock, color: "text-amber", bg: "bg-amber/10 border border-amber/20" },
-          { label: "Vacant Rooms", value: stats.vacantRooms, icon: BedDouble, color: "text-blue-400", bg: "bg-blue-500/10 border border-blue-500/20" },
-        ].map(({ label, value, icon: Icon, color, bg }) => (
-          <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-5">
-            <div className="flex items-center gap-3">
-              <div className={`flex items-center justify-center w-9 h-9 rounded-xl ${bg} shrink-0`}>
-                <Icon className={`w-4 h-4 ${color}`} />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">{label}</p>
-                <p className="text-2xl font-bold text-foreground leading-none mt-0.5">{value}</p>
+          { label: "Active Tenants", value: stats.active, icon: UserCheck, color: "text-emerald-400", iconBg: "bg-emerald-500/10 border-emerald-500/20" },
+          { label: "Waiting List", value: stats.waiting, icon: Clock, color: "text-amber", iconBg: "bg-amber/10 border-amber/20" },
+          { label: "Vacant Rooms", value: stats.vacantRooms, icon: BedDouble, color: "text-blue-400", iconBg: "bg-blue-500/10 border-blue-500/20" },
+        ].map(({ label, value, icon: Icon, color, iconBg }) => (
+          <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-3 sm:p-5">
+            <div className="flex items-start justify-between gap-1 mb-2">
+              <p className="text-[10px] sm:text-xs font-medium text-muted-foreground leading-tight">{label}</p>
+              <div className={`flex items-center justify-center w-7 h-7 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl border ${iconBg} shrink-0`}>
+                <Icon className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${color}`} />
               </div>
             </div>
+            <p className={`text-2xl sm:text-3xl font-bold leading-none ${color}`}>{value}</p>
           </div>
         ))}
       </div>
@@ -512,29 +624,86 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         <Input placeholder="Search by name, phone, CNIC…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
       </div>
 
+      {/* Type filter + Export */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {(["all", "student", "professional", "general"] as const).map((type) => {
+            const allTenants = [...active, ...waiting, ...checkedOut];
+            const count = type === "all" ? allTenants.length : allTenants.filter((t) => t.type === type).length;
+            return (
+              <button
+                key={type}
+                onClick={() => setTypeFilter(type)}
+                className={cn(
+                  "px-3 py-1 rounded-full text-xs font-medium border transition-all",
+                  typeFilter === type
+                    ? "bg-amber/15 border-amber/30 text-amber"
+                    : "border-sidebar-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40"
+                )}
+              >
+                {type === "all" ? "All" : capitalize(type)}
+                <span className="ml-1 opacity-50 tabular-nums">({count})</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {tab !== "applications" && (
+          <div className="flex items-center gap-1.5 shrink-0">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-xs"
+              disabled={!!exportLoading}
+              onClick={exportExcel}
+              title="Export to Excel"
+            >
+              {exportLoading === "excel"
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />}
+              <span className="hidden sm:inline">Excel</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-xs"
+              disabled={!!exportLoading}
+              onClick={exportPDF}
+              title="Export to PDF"
+            >
+              {exportLoading === "pdf"
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <FileText className="w-3.5 h-3.5 text-rose-400" />}
+              <span className="hidden sm:inline">PDF</span>
+            </Button>
+          </div>
+        )}
+      </div>
+
       {/* Tabs */}
       <Tabs value={tab} onValueChange={setTab}>
-        <div className="overflow-x-auto -mx-1 px-1">
-          <TabsList className="flex w-max min-w-full gap-0.5">
-            <TabsTrigger value="active" className="flex-1 gap-1.5 whitespace-nowrap">
+        <div className="overflow-x-auto -mx-1 px-1 scrollbar-hide">
+          <TabsList className="flex w-max gap-0.5">
+            <TabsTrigger value="active" className="shrink-0 gap-1.5 whitespace-nowrap">
               <UserCheck className="w-3.5 h-3.5 shrink-0" />
               <span>Active</span>
               <span className="text-muted-foreground">({active.length})</span>
             </TabsTrigger>
-            <TabsTrigger value="waiting" className="flex-1 gap-1.5 whitespace-nowrap">
+            <TabsTrigger value="waiting" className="shrink-0 gap-1.5 whitespace-nowrap">
               <Clock className="w-3.5 h-3.5 shrink-0" />
               <span>Waiting</span>
               <span className="text-muted-foreground">({waiting.length})</span>
             </TabsTrigger>
-            <TabsTrigger value="checkedout" className="flex-1 gap-1.5 whitespace-nowrap">
+            <TabsTrigger value="checkedout" className="shrink-0 gap-1.5 whitespace-nowrap">
               <Users className="w-3.5 h-3.5 shrink-0" />
               <span className="hidden sm:inline">Checked Out</span>
               <span className="sm:hidden">Out</span>
               <span className="text-muted-foreground">({checkedOut.length})</span>
             </TabsTrigger>
-            <TabsTrigger value="applications" className="flex-1 gap-1.5 whitespace-nowrap">
+            <TabsTrigger value="applications" className="shrink-0 gap-1.5 whitespace-nowrap">
               <ClipboardList className="w-3.5 h-3.5 shrink-0" />
-              <span>Applications</span>
+              <span className="hidden sm:inline">Applications</span>
+              <span className="sm:hidden">Apps</span>
               {applications.filter((a) => a.status === "pending").length > 0 && (
                 <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber text-background text-[10px] font-bold leading-none shrink-0">
                   {applications.filter((a) => a.status === "pending").length}
@@ -552,7 +721,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <p className="text-sm">{search ? "No tenants match" : "No active tenants yet"}</p>
               </div>
             ) : (
-              <div className="p-2 space-y-1">
+              <div className="divide-y divide-sidebar-border/50">
                 {filterList(active).map((t) => <TenantRow key={t.id} t={t} showCheckout />)}
               </div>
             )}
@@ -567,8 +736,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <p className="text-sm">{search ? "No tenants match" : "Waiting list is empty"}</p>
               </div>
             ) : (
-              <div className="p-2 space-y-1">
-                {filterList(waiting).map((t) => <TenantRow key={t.id} t={t} />)}
+              <div className="divide-y divide-sidebar-border/50">
+                {filterList(waiting).map((t) => <TenantRow key={t.id} t={t} showActivate />)}
               </div>
             )}
           </div>
@@ -582,7 +751,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <p className="text-sm">{search ? "No tenants match" : "No checked-out tenants"}</p>
               </div>
             ) : (
-              <div className="p-2 space-y-1">
+              <div className="divide-y divide-sidebar-border/50">
                 {filterList(checkedOut).map((t) => <TenantRow key={t.id} t={t} />)}
               </div>
             )}
@@ -644,8 +813,19 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                                   </a>
                                 )}
                                 {app.email && <span className="text-xs text-muted-foreground">{app.email}</span>}
+                                {app.cnic && <span className="text-xs text-muted-foreground flex items-center gap-1"><CreditCard className="w-2.5 h-2.5" />{app.cnic}</span>}
                               </div>
                               {app.notes && <p className="text-xs text-muted-foreground mt-0.5 italic line-clamp-1">{app.notes}</p>}
+                              {app.cnic_doc_path && (
+                                <a
+                                  href={`/api/documents?path=${encodeURIComponent(`application-docs/${app.cnic_doc_path}`)}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="mt-0.5 inline-flex items-center gap-1 text-xs text-blue-400 hover:underline"
+                                >
+                                  <ExternalLink className="w-2.5 h-2.5" /> CNIC Doc
+                                </a>
+                              )}
                             </div>
                           </td>
                           <td className="px-4 py-3 hidden sm:table-cell">
@@ -703,7 +883,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
       {/* Approve Application Dialog */}
       <Dialog open={!!approvingApp} onOpenChange={(open) => { if (!open) setApprovingApp(null); }}>
-        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto scrollbar-thin">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -896,17 +1076,23 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
       {/* Add / Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto scrollbar-thin">
           <DialogHeader>
-            <DialogTitle>{editing ? "Edit Tenant" : "Add Tenant"}</DialogTitle>
+            <DialogTitle>
+              {editing
+                ? editing.is_waiting
+                  ? "Activate / Edit Tenant"
+                  : "Edit Tenant"
+                : "Add Tenant"}
+            </DialogTitle>
           </DialogHeader>
           <div className="grid gap-4 py-2">
-            {/* Status toggle */}
-            {!editing && (
+            {/* Status toggle — always shown for new tenants; shown when editing a waiting tenant to allow activation */}
+            {(!editing || editing.is_waiting) && (
               <div className="flex gap-2">
                 <button type="button"
                   onClick={() => setForm({ ...form, is_waiting: false })}
-                  className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${!form.is_waiting ? "bg-amber/10 border-amber/30 text-amber" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}>
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${!form.is_waiting ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}>
                   Active Resident
                 </button>
                 <button type="button"
@@ -1061,7 +1247,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
             <Button onClick={handleSave} disabled={saving || !form.full_name || (!form.is_waiting && !form.check_in)}>
-              {saving ? "Saving…" : editing ? "Update" : "Add Tenant"}
+              {saving
+                ? "Saving…"
+                : editing
+                  ? editing.is_waiting && !form.is_waiting
+                    ? "Activate Tenant"
+                    : "Update"
+                  : "Add Tenant"}
             </Button>
           </DialogFooter>
         </DialogContent>
