@@ -184,9 +184,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       return;
     }
     const url = `${window.location.origin}/join/${hostelSlug}`;
-    window.open(url, "_blank", "noopener,noreferrer");
-    navigator.clipboard.writeText(url).catch(() => null);
-    toast({ title: "Form opened + link copied!", description: url });
+    navigator.clipboard.writeText(url).then(() => {
+      toast({ title: "Link copied!", description: url });
+    }).catch(() => {
+      toast({ title: "Could not copy", description: url, variant: "destructive" });
+    });
   }
 
   function openAdd() {

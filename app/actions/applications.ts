@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrAbove } from "@/lib/auth";
+import { sendApplicationEmail } from "@/lib/email";
 import type { ApplicationStatus, PackageTier } from "@/types";
 
 interface ApplicationInput {
@@ -49,6 +50,35 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
   });
 
   if (error) return { success: false, error: error.message };
+
+  // Fire-and-forget: fetch owner email and send notification; never block the response
+  void (async () => {
+    try {
+      const { data: hostel } = await admin
+        .from("hms_hostels")
+        .select("name, owner_id")
+        .eq("id", hostelId)
+        .single();
+      if (!hostel) return;
+      const { data: { user: owner } } = await admin.auth.admin.getUserById(hostel.owner_id);
+      if (!owner?.email) return;
+      await sendApplicationEmail({
+        ownerEmail: owner.email,
+        hostelName: hostel.name,
+        applicantName: data.full_name.trim(),
+        phone: data.phone.trim(),
+        email: data.email?.trim() || null,
+        cnic: data.cnic?.trim() || null,
+        packageTier: data.package_tier,
+        roomPreference: data.room_preference || null,
+        moveInDate: data.move_in_date || null,
+        notes: data.notes?.trim() || null,
+      });
+    } catch {
+      // Email failure must never surface to the applicant
+    }
+  })();
+
   return { success: true };
 }
 

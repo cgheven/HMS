@@ -1,6 +1,7 @@
 "use server";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { sendWaitlistEmail } from "@/lib/email";
 import type { PublicHostel, PublicHostelDetail, PublicRoom, FoodItem } from "@/types";
 
 export async function getPublicHostels(): Promise<{ hostels?: PublicHostel[]; error?: string }> {
@@ -131,10 +132,10 @@ export async function joinWaitlist(
     if (!cleanName || !cleanPhone) throw new Error("Name and phone are required");
     const admin = createAdminClient();
 
-    // SECURITY: validate hostel is publicly listed
+    // SECURITY: validate hostel is publicly listed; grab name+owner for email notification
     const { data: hostelCheck } = await admin
       .from("hms_hostels")
-      .select("id")
+      .select("id, name, owner_id")
       .eq("id", hostelId)
       .eq("listing_enabled", true)
       .maybeSingle();
@@ -159,6 +160,23 @@ export async function joinWaitlist(
         { onConflict: "hostel_id,phone", ignoreDuplicates: true }
       );
     if (error) return { error: "Something went wrong. Please try again." };
+
+    // Fire-and-forget owner notification — never blocks the response
+    void (async () => {
+      try {
+        const { data: { user: owner } } = await admin.auth.admin.getUserById(hostelCheck.owner_id);
+        if (!owner?.email) return;
+        await sendWaitlistEmail({
+          ownerEmail: owner.email,
+          hostelName: hostelCheck.name,
+          name: cleanName,
+          phone: cleanPhone,
+        });
+      } catch {
+        // Email failure must never surface to the user
+      }
+    })();
+
     return {};
   } catch {
     return { error: "Something went wrong. Please try again." };

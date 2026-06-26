@@ -20,6 +20,8 @@ export function HostelSwitcher({ activeHostel }: Props) {
   const [hostels, setHostels] = useState<OwnedHostel[]>([]);
   const [loadingHostels, setLoadingHostels] = useState(false);
   const [switching, setSwitching] = useState<string | null>(null);
+  // Optimistic name shown immediately on click, before server refresh completes
+  const [optimisticName, setOptimisticName] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -40,16 +42,25 @@ export function HostelSwitcher({ activeHostel }: Props) {
       setOpen(false);
       return;
     }
+    const target = hostels.find((h) => h.id === hostelId);
+    // Show new name immediately — feels instant to the user
+    setOptimisticName(target?.name ?? null);
+    setOpen(false);
     setSwitching(hostelId);
     const result = await switchActiveHostel(hostelId);
     setSwitching(null);
-    setOpen(false);
     if (result.error) {
+      setOptimisticName(null);
       toast({ title: "Could not switch branch", description: result.error, variant: "destructive" });
       return;
     }
     startTransition(() => { router.refresh(); });
   }
+
+  // Clear optimistic name once the server refresh delivers the real activeHostel
+  useEffect(() => {
+    setOptimisticName(null);
+  }, [activeHostel?.id]);
 
   // Single-hostel: just show the name, no switcher needed
   if (!multiHostel && !loadingHostels) {
@@ -59,7 +70,7 @@ export function HostelSwitcher({ activeHostel }: Props) {
           <Home className="w-3.5 h-3.5 text-amber" />
         </div>
         <span className="font-semibold text-sm truncate text-foreground">
-          {activeHostel?.name ?? "My Hostel"}
+          {optimisticName ?? activeHostel?.name ?? "My Hostel"}
         </span>
       </div>
     );
@@ -81,7 +92,7 @@ export function HostelSwitcher({ activeHostel }: Props) {
         disabled={loadingHostels || isPending}
       >
         <span className="truncate max-w-[140px]">
-          {loadingHostels ? "Loading…" : (activeHostel?.name ?? "My Hostel")}
+          {optimisticName ?? (loadingHostels ? "Loading…" : (activeHostel?.name ?? "My Hostel"))}
         </span>
         {loadingHostels || isPending ? (
           <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin shrink-0" />

@@ -118,7 +118,7 @@ export async function switchActiveHostel(
       sameSite: "lax",
     });
 
-    revalidatePath("/");
+    // router.refresh() in the client handles cache invalidation — revalidatePath is redundant here
     return { success: true };
   } catch (e) {
     return { success: false, error: (e as Error).message };
