@@ -35,8 +35,9 @@ export function DashboardClient({ data }: Props) {
 
   const { stats, upcomingBills, monthlyData, defaulters } = data;
   const isProfit = stats.net_profit >= 0;
-  const collectionRate = stats.monthly_revenue > 0
-    ? Math.min(100, Math.round((stats.monthly_collected / stats.monthly_revenue) * 100))
+  const monthlyExpected = stats.monthly_collected + stats.monthly_uncollected;
+  const collectionRate = monthlyExpected > 0
+    ? Math.min(100, Math.round((stats.monthly_collected / monthlyExpected) * 100))
     : 0;
 
   return (
@@ -82,7 +83,7 @@ export function DashboardClient({ data }: Props) {
                 </div>
                 <span className="text-xs text-emerald-400 font-semibold shrink-0">{collectionRate}%</span>
               </div>
-              <p className="mt-1 text-[10px] sm:text-xs text-muted-foreground">{formatCurrency(stats.monthly_revenue)} expected</p>
+              <p className="mt-1 text-[10px] sm:text-xs text-muted-foreground">{formatCurrency(monthlyExpected)} expected</p>
             </div>
             <div className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 shrink-0">
               <Wallet className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />
