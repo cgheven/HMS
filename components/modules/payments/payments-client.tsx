@@ -35,6 +35,7 @@ interface TenantRow {
   room_id: string | null;
   is_active: boolean;
   package_tier: PackageTier;
+  security_deposit: number;
 }
 
 interface RoomRow { id: string; room_number: string; floor: number | null; has_ac?: boolean | null; }
@@ -660,22 +661,35 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             <DialogTitle>Record Payment</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            <div className="rounded-lg bg-white/5 px-3 py-2 space-y-0.5">
-              <p className="text-xs text-muted-foreground">Tenant</p>
-              <p className="text-sm font-medium">{markDialog?.tenant?.full_name}</p>
-              <p className="text-xs text-muted-foreground">{markDialog?.for_month}</p>
-              {/* Charge breakdown — always show rent + any add-ons */}
+            <div className="rounded-lg bg-white/5 px-3 py-2.5 space-y-1.5">
+              {/* Tenant + month inline */}
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium leading-none">{markDialog?.tenant?.full_name}</p>
+                <p className="text-xs text-muted-foreground shrink-0">{markDialog?.for_month}</p>
+              </div>
+              {/* Charge breakdown — key/value rows */}
               {markDialog && (() => {
-                const food = markDialog.food_charge ?? 0;
                 const ac = markDialog.ac_charge ?? 0;
-                const baseRent = (markDialog.amount ?? 0) - food - ac;
-                const hasAddons = food > 0 || ac > 0;
+                const rentIncFood = (markDialog.amount ?? 0) - ac;
+                const deposit = tenants.find(t => t.id === markDialog.tenant_id)?.security_deposit ?? 0;
                 return (
-                  <div className="mt-1.5 pt-1.5 border-t border-white/10 space-y-0.5">
-                    <p className="text-xs text-muted-foreground">Rent: {formatCurrency(Math.max(0, baseRent))}</p>
-                    {food > 0 && <p className="text-xs text-muted-foreground">Food: {formatCurrency(food)}</p>}
-                    {ac > 0 && <p className="text-xs text-muted-foreground">AC: {formatCurrency(ac)}</p>}
-                    {hasAddons && <p className="text-xs font-medium text-foreground">Total: {formatCurrency(markDialog.amount ?? 0)}</p>}
+                  <div className="pt-1.5 border-t border-white/10 space-y-1">
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>Rent</span><span>{formatCurrency(Math.max(0, rentIncFood))}</span>
+                    </div>
+                    {ac > 0 && (
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>AC</span><span>{formatCurrency(ac)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between text-xs font-medium text-foreground">
+                      <span>Total</span><span>{formatCurrency(markDialog.amount ?? 0)}</span>
+                    </div>
+                    {deposit > 0 && (
+                      <div className="flex justify-between text-xs text-muted-foreground border-t border-white/10 pt-1">
+                        <span>Deposit Held</span><span>{formatCurrency(deposit)}</span>
+                      </div>
+                    )}
                   </div>
                 );
               })()}
