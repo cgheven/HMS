@@ -448,10 +448,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           </div>
           <div className="min-w-0">
             <span className="text-sm text-blue-400 font-medium">{tierLabel}</span>
-            {(Number(p.food_charge) > 0 || Number(p.ac_charge) > 0) && (
-              <div className="flex flex-wrap gap-x-2 mt-0.5">
-                {Number(p.food_charge) > 0 && <span className="text-xs text-muted-foreground">Food: {formatCurrency(p.food_charge!)}</span>}
-                {Number(p.ac_charge) > 0 && <span className="text-xs text-muted-foreground">AC: {formatCurrency(p.ac_charge!)}</span>}
+            {Number(p.ac_charge) > 0 && (
+              <div className="mt-0.5">
+                <span className="text-xs text-muted-foreground">AC: {formatCurrency(p.ac_charge!)}</span>
               </div>
             )}
           </div>
