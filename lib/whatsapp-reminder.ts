@@ -2,7 +2,7 @@ import type { PaymentMethodAccount } from "@/types";
 
 export const DEFAULT_REMINDER_TEMPLATE = `Assalam o Alaikum {name},
 
-Friendly reminder — your rent of {amount} for {month} is still pending.{ac}
+Friendly reminder — your rent of {amount} for {month} is still pending.{ac}{deposit}
 
 {accounts}
 
@@ -42,6 +42,7 @@ interface BuildArgs {
   ac_units?: number;
   ac_charge?: number;
   ac_rate?: number;
+  security_deposit?: number;
 }
 
 export function buildReminderMessage(args: BuildArgs): string {
@@ -51,11 +52,15 @@ export function buildReminderMessage(args: BuildArgs): string {
   const accountsBlock = formatAccounts(args.accounts);
   const acLine = formatACLine(args.ac_units, args.ac_charge, args.ac_rate);
   const acBlock = acLine ? "\n" + acLine : "";
+  const depositBlock = (args.security_deposit && args.security_deposit > 0)
+    ? `\n🔒 Security Deposit: *Rs ${new Intl.NumberFormat("en-PK").format(Math.round(args.security_deposit))}* (held)`
+    : "";
   return tpl
     .replace(/\{name\}/g,     firstName)
     .replace(/\{amount\}/g,   amountStr)
     .replace(/\{month\}/g,    args.month)
     .replace(/\{hostel\}/g,   args.hostelName)
     .replace(/\{accounts\}/g, accountsBlock)
-    .replace(/\{ac\}/g,       acBlock);
+    .replace(/\{ac\}/g,       acBlock)
+    .replace(/\{deposit\}/g,  depositBlock);
 }

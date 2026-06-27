@@ -277,6 +277,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       return;
     }
     const total = Number(p.amount) + Number(p.late_fee ?? 0);
+    const tenantDeposit = tenants.find(t => t.id === p.tenant_id)?.security_deposit ?? 0;
     const message = buildReminderMessage({
       template: reminderTemplate,
       tenantName: p.tenant?.full_name ?? "Tenant",
@@ -287,6 +288,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       ac_charge: (p.ac_charge ?? 0) > 0 ? Number(p.ac_charge) : undefined,
       ac_units: (p.ac_units_consumed ?? 0) > 0 ? Number(p.ac_units_consumed) : undefined,
       ac_rate: packageConfig?.ac_per_unit_rate ?? undefined,
+      security_deposit: tenantDeposit > 0 ? tenantDeposit : undefined,
     });
     const waUrl = `https://wa.me/${digits}?text=${encodeURIComponent(message)}`;
     window.open(waUrl, "_blank", "noopener,noreferrer");
@@ -669,13 +671,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               </div>
               {/* Charge breakdown — key/value rows */}
               {markDialog && (() => {
+                const food = markDialog.food_charge ?? 0;
                 const ac = markDialog.ac_charge ?? 0;
-                const rentIncFood = (markDialog.amount ?? 0) - ac;
+                const baseRent = (markDialog.amount ?? 0) - food - ac;
                 const deposit = tenants.find(t => t.id === markDialog.tenant_id)?.security_deposit ?? 0;
                 return (
                   <div className="pt-1.5 border-t border-white/10 space-y-1">
                     <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>Rent</span><span>{formatCurrency(Math.max(0, rentIncFood))}</span>
+                      <span>Rent</span><span>{formatCurrency(Math.max(0, baseRent))}</span>
                     </div>
                     {ac > 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground">
