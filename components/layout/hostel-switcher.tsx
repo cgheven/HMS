@@ -91,7 +91,7 @@ export function HostelSwitcher({ activeHostel }: Props) {
         className="flex items-center gap-1.5 font-semibold text-sm text-foreground hover:text-amber transition-colors"
         disabled={loadingHostels || isPending}
       >
-        <span className="truncate max-w-[140px]">
+        <span className="truncate max-w-[220px]">
           {optimisticName ?? (loadingHostels ? "Loading…" : (activeHostel?.name ?? "My Hostel"))}
         </span>
         {loadingHostels || isPending ? (
@@ -109,7 +109,7 @@ export function HostelSwitcher({ activeHostel }: Props) {
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full mt-2 w-64 z-20 rounded-xl border border-sidebar-border bg-sidebar shadow-2xl overflow-hidden animate-fade-up">
+          <div className="absolute left-0 top-full mt-2 w-80 z-20 rounded-xl border border-sidebar-border bg-sidebar shadow-2xl overflow-hidden animate-fade-up">
             <div className="px-3 py-2.5 border-b border-sidebar-border">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                 Switch Branch
