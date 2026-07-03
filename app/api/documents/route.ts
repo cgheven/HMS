@@ -40,7 +40,23 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "File not found" }, { status: 404 });
   }
 
-  const contentType = upstream.headers.get("content-type") ?? "application/octet-stream";
+  let contentType = upstream.headers.get("content-type") ?? "application/octet-stream";
+
+  // Supabase often returns octet-stream when no MIME type was set at upload time.
+  // Infer from the extension so the browser renders instead of downloading.
+  if (contentType === "application/octet-stream") {
+    const ext = objectPath.split(".").pop()?.toLowerCase();
+    const MIME: Record<string, string> = {
+      pdf:  "application/pdf",
+      png:  "image/png",
+      jpg:  "image/jpeg",
+      jpeg: "image/jpeg",
+      gif:  "image/gif",
+      webp: "image/webp",
+    };
+    if (ext && MIME[ext]) contentType = MIME[ext];
+  }
+
   const body = await upstream.arrayBuffer();
 
   return new NextResponse(body, {

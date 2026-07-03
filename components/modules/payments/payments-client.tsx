@@ -21,6 +21,7 @@ import {
   markPaymentOverdueAction,
   loadHistoryAction,
   applyRoomACUnitsAction,
+  saveACJoinReadingAction,
 } from "@/app/actions/payments";
 import { createInvoiceLink } from "@/app/actions/tenants";
 
@@ -52,6 +53,7 @@ interface Props {
   paymentMethods?: PaymentMethodAccount[];
   reminderTemplate?: string | null;
   acReadings?: { room_id: string; total_units: number; per_unit_rate: number; tenant_count: number }[];
+  acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
 }
 
 const methodLabels: Record<PaymentMethod, string> = {
@@ -76,7 +78,7 @@ function genReceipt(tenantName: string, month: string) {
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, acReadings = [] }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, acReadings = [], acJoinReadings = [] }: Props) {
   const router = useRouter();
   const [selectedMonth, setSelectedMonth] = useState(initialMonth);
   const [payments, setPayments] = useState<Payment[]>(initialPayments);
@@ -99,6 +101,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [acUnits, setAcUnits] = useState<Record<string, string>>({});
   const [applyingAC, setApplyingAC] = useState<string | null>(null);
   const [roomFilter, setRoomFilter] = useState<string>("all");
+  // joinUnits keyed by `${tenantId}_${month}` so values don't bleed across months
+  const [joinUnits, setJoinUnits] = useState<Record<string, string>>({});
+  const [savingJoin, setSavingJoin] = useState<string | null>(null);
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
 
@@ -112,6 +117,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       });
     }
   }, [acReadings]);
+
+  // Pre-populate join reading inputs from server-fetched values
+  useEffect(() => {
+    if (acJoinReadings.length === 0) return;
+    setJoinUnits(prev => {
+      const next = { ...prev };
+      acJoinReadings.forEach(r => {
+        const k = `${r.tenant_id}_${r.for_month}`;
+        if (!(k in next)) next[k] = String(r.units_at_join);
+      });
+      return next;
+    });
+  }, [acJoinReadings]);
 
   // All payment mutations go through Server Actions — not the browser Supabase client
   const syncMonth = useCallback(async (month: string) => {
@@ -294,6 +312,28 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     window.open(waUrl, "_blank", "noopener,noreferrer");
   }
 
+  async function handleSaveJoinReading(roomId: string, tenantId: string) {
+    const key = `${tenantId}_${selectedMonth}`;
+    const raw = joinUnits[key] ?? "";
+    const value = parseFloat(raw);
+    if (!Number.isFinite(value) || value < 0) {
+      toast({ title: "Invalid units", description: "Enter a non-negative number.", variant: "destructive" });
+      return;
+    }
+    setSavingJoin(tenantId);
+    try {
+      const result = await saveACJoinReadingAction(roomId, selectedMonth, tenantId, value);
+      if (!result.success) {
+        toast({ title: "Error saving join reading", description: result.error, variant: "destructive" });
+      } else {
+        toast({ title: "Join reading saved" });
+        router.refresh();
+      }
+    } finally {
+      setSavingJoin(null);
+    }
+  }
+
   async function applyACUnits(roomId: string) {
     const units = Number(acUnits[roomId] ?? "");
     if (!Number.isFinite(units) || units < 0) return;
@@ -308,7 +348,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           title: cleared ? "AC charge cleared" : "AC units applied",
           description: cleared
             ? "AC charges removed for all tenants in this room."
-            : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${result.perTenantUnits} units each · Rs ${result.perTenantCharge?.toLocaleString()} each`,
+            : result.proRatedCount && result.proRatedCount > 0
+              ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${result.proRatedCount} with segment billing`
+              : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${result.perTenantUnits} units each · Rs ${result.perTenantCharge?.toLocaleString()} each`,
         });
         await syncMonth(selectedMonth);
         router.refresh(); // refresh server props so acReadings badge updates
@@ -601,49 +643,102 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 const saved = acReadings.find(r => r.room_id === room.id);
                 const acTenantCount = tenants.filter(t => t.room_id === room.id && t.is_active && t.package_tier === "space_food_ac").length;
                 const totalTenants = tenants.filter(t => t.room_id === room.id && t.is_active).length;
+                const midMonthJoiners = tenants.filter(
+                  t => t.room_id === room.id && t.is_active && t.package_tier === "space_food_ac" && t.check_in > `${selectedMonth}-01`
+                );
                 return (
-                  <div key={room.id} className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm font-medium">Room {room.room_number}</span>
-                        {acTenantCount > 0 ? (
-                          <span className="text-xs text-amber">
-                            {acTenantCount} of {totalTenants} billed for AC
-                          </span>
+                  <div key={room.id} className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 space-y-3">
+                    {/* Room header + total-units row */}
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium">Room {room.room_number}</span>
+                          {acTenantCount > 0 ? (
+                            <span className="text-xs text-amber">
+                              {acTenantCount} of {totalTenants} billed for AC
+                            </span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground/60">No AC-package tenants</span>
+                          )}
+                        </div>
+                        {saved ? (
+                          <p className="text-xs text-emerald-400 mt-0.5">
+                            {saved.total_units} units saved · Rs {saved.per_unit_rate}/unit · {saved.tenant_count} tenants billed
+                          </p>
                         ) : (
-                          <span className="text-xs text-muted-foreground/60">No AC-package tenants</span>
+                          <p className="text-xs text-muted-foreground/50 mt-0.5">No reading for this month yet</p>
                         )}
                       </div>
-                      {saved ? (
-                        <p className="text-xs text-emerald-400 mt-0.5">
-                          {saved.total_units} units saved · Rs {saved.per_unit_rate}/unit · {saved.tenant_count} tenants billed
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Input
+                          type="number"
+                          min={0}
+                          max={99999}
+                          placeholder="Units"
+                          value={acUnits[room.id] ?? ""}
+                          onChange={e => setAcUnits(prev => ({ ...prev, [room.id]: e.target.value }))}
+                          disabled={acTenantCount === 0}
+                          className="w-28 h-9 text-sm text-center disabled:opacity-40"
+                        />
+                        <Button
+                          size="sm"
+                          className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
+                          variant="ghost"
+                          disabled={applyingAC === room.id || acUnits[room.id] === undefined || acUnits[room.id] === "" || acTenantCount === 0}
+                          onClick={() => applyACUnits(room.id)}
+                        >
+                          {applyingAC === room.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                          Apply
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Mid-month joiner readings */}
+                    {midMonthJoiners.length > 0 && (
+                      <div className="border-t border-white/5 pt-2.5 space-y-1.5">
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-semibold">
+                          Mid-month joiners
                         </p>
-                      ) : (
-                        <p className="text-xs text-muted-foreground/50 mt-0.5">No reading for this month yet</p>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Input
-                        type="number"
-                        min={0}
-                        max={99999}
-                        placeholder="Units"
-                        value={acUnits[room.id] ?? ""}
-                        onChange={e => setAcUnits(prev => ({ ...prev, [room.id]: e.target.value }))}
-                        disabled={acTenantCount === 0}
-                        className="w-28 h-9 text-sm text-center disabled:opacity-40"
-                      />
-                      <Button
-                        size="sm"
-                        className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
-                        variant="ghost"
-                        disabled={applyingAC === room.id || acUnits[room.id] === undefined || acUnits[room.id] === "" || acTenantCount === 0}
-                        onClick={() => applyACUnits(room.id)}
-                      >
-                        {applyingAC === room.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-                        Apply
-                      </Button>
-                    </div>
+                        {midMonthJoiners.map(tenant => {
+                          const joinKey = `${tenant.id}_${selectedMonth}`;
+                          const savedJoin = acJoinReadings.find(
+                            r => r.room_id === room.id && r.tenant_id === tenant.id && r.for_month === selectedMonth
+                          );
+                          const inputVal = joinUnits[joinKey] ?? (savedJoin ? String(savedJoin.units_at_join) : "");
+                          const isSaved = !!savedJoin && joinUnits[joinKey] === undefined;
+                          return (
+                            <div key={tenant.id} className="flex items-center gap-3">
+                              <span className="text-xs text-muted-foreground flex-1 min-w-0 truncate">{tenant.full_name}</span>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  max={99999}
+                                  placeholder="Units"
+                                  value={inputVal}
+                                  onChange={e => setJoinUnits(prev => ({ ...prev, [joinKey]: e.target.value }))}
+                                  className="w-28 h-9 text-sm text-center"
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={savingJoin === tenant.id || !joinUnits[joinKey]}
+                                  onClick={() => handleSaveJoinReading(room.id, tenant.id)}
+                                  className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
+                                >
+                                  {savingJoin === tenant.id
+                                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                                    : isSaved
+                                    ? <CheckCircle2 className="w-3 h-3" />
+                                    : <Zap className="w-3 h-3" />}
+                                  {savingJoin !== tenant.id && (isSaved ? "Saved" : "Save")}
+                                </Button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}

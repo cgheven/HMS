@@ -30,6 +30,7 @@ const VALID_STATUSES = new Set<string>(["paid", "pending", "overdue", "waived"])
 const MAX_AC_UNITS = 10_000;
 const MAX_LATE_FEE = 9_999_999.99;
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function assertValidTier(v: unknown, field = "payment_package_tier"): asserts v is PackageTier {
   if (typeof v !== "string" || !VALID_TIERS.has(v)) {
@@ -480,6 +481,7 @@ export async function applyRoomACUnitsAction(
   perTenantUnits?: number;
   perTenantCharge?: number;
   skippedFirstMonth?: number;
+  proRatedCount?: number;
 }> {
   try {
     // ── Auth & ownership guard ──────────────────────────────────
@@ -488,7 +490,7 @@ export async function applyRoomACUnitsAction(
     const { hostelId } = ctx;
 
     // ── Input validation — use canonical MONTH_RE (rejects 2024-00, 2024-13) ──
-    if (!roomId || typeof roomId !== "string") throw new Error("Invalid room ID");
+    if (!roomId || !UUID_RE.test(roomId)) throw new Error("Invalid room ID");
     if (!forMonth || !MONTH_RE.test(forMonth)) throw new Error("Invalid month format");
     const units = Number(totalUnits);
     if (!Number.isFinite(units) || units < 0 || units > 99_999)
@@ -530,37 +532,101 @@ export async function applyRoomACUnitsAction(
     if (acTenants.length === 0)
       throw new Error("No tenants with AC package found in this room. Assign the Space + AC plan to a tenant first.");
 
-    // ── Skip first-month tenants (no AC charge on joining month) ──
-    const eligible = acTenants.filter((t) => t.check_in?.slice(0, 7) !== forMonth);
-    const skippedFirstMonth = acTenants.length - eligible.length;
-    if (eligible.length === 0)
-      throw new Error("All AC tenants in this room are in their first month — no AC charge applies");
+    const eligible = acTenants;
 
-    // ── Fair split: last tenant absorbs rounding remainder ────────
-    // Ensures sum of all tenant charges exactly equals total bill.
+    // ── Fetch join readings for segment billing ──────────────────
+    const { data: joinReadingsRaw } = await adminDb
+      .from("hms_room_ac_join_readings")
+      .select("tenant_id, units_at_join")
+      .eq("room_id", roomId)
+      .eq("for_month", forMonth)
+      .eq("hostel_id", hostelId)
+      .order("units_at_join", { ascending: true });
+
+    // Ignore any reading for a tenant who joined on or before the 1st — they are full-month tenants.
+    const joinReadings = (joinReadingsRaw ?? []).filter(r => {
+      const tenant = eligible.find(t => t.id === r.tenant_id);
+      return tenant ? tenant.check_in > `${forMonth}-01` : false;
+    }) as { tenant_id: string; units_at_join: number }[];
     const n = eligible.length;
     const totalCharge = Math.round(units * perUnitRate);
-    const baseCharge = n > 1 ? Math.floor(totalCharge / n) : totalCharge;
-    const lastCharge = totalCharge - baseCharge * (n - 1);
-    const baseUnits = n > 1 ? Math.round((units / n) * 100) / 100 : units;
-    const lastUnits = Math.round((units - baseUnits * (n - 1)) * 100) / 100;
+    let proRatedCount = 0;
+
+    let tenantBilling: { id: string; tenantUnits: number; charge: number }[];
+
+    if (joinReadings.length === 0) {
+      // ── Equal split: last tenant absorbs rounding remainder ──
+      const baseCharge = n > 1 ? Math.floor(totalCharge / n) : totalCharge;
+      const lastCharge = totalCharge - baseCharge * (n - 1);
+      const baseUnits = n > 1 ? Math.round((units / n) * 100) / 100 : units;
+      const lastUnits = Math.round((units - baseUnits * (n - 1)) * 100) / 100;
+      tenantBilling = eligible.map((t, idx) => ({
+        id: t.id,
+        tenantUnits: idx === n - 1 ? lastUnits : baseUnits,
+        charge: idx === n - 1 ? lastCharge : baseCharge,
+      }));
+    } else {
+      // ── Segment billing ──────────────────────────────────────
+      proRatedCount = joinReadings.length;
+      const joinedIds = new Set(joinReadings.map(r => r.tenant_id));
+      const fullMonth = eligible.filter(t => !joinedIds.has(t.id));
+      const midMonth = eligible.filter(t => joinedIds.has(t.id));
+
+      const eventPoints = Array.from(
+        new Set([0, ...joinReadings.map(r => Math.min(Number(r.units_at_join), units)), units])
+      ).sort((a, b) => a - b);
+
+      const accumulated = new Map<string, number>(eligible.map(t => [t.id, 0]));
+
+      for (let i = 0; i < eventPoints.length - 1; i++) {
+        const from = eventPoints[i];
+        const to = eventPoints[i + 1];
+        const segUnits = to - from;
+        if (segUnits <= 0) continue;
+        const present = [
+          ...fullMonth,
+          ...midMonth.filter(t => {
+            const r = joinReadings.find(jr => jr.tenant_id === t.id);
+            return r ? Number(r.units_at_join) <= from : false;
+          }),
+        ];
+        if (present.length === 0) continue;
+        const share = segUnits / present.length;
+        for (const t of present) accumulated.set(t.id, (accumulated.get(t.id) ?? 0) + share);
+      }
+
+      if (units === 0) {
+        tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
+      } else {
+        const rows = eligible.map(t => {
+          const tu = accumulated.get(t.id) ?? 0;
+          return {
+            id: t.id,
+            tenantUnits: Math.round(tu * 100) / 100,
+            charge: Math.max(0, Math.round((tu / units) * totalCharge)),
+          };
+        });
+        const sumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.charge, 0);
+        if (rows.length > 0) rows[rows.length - 1].charge = Math.max(0, totalCharge - sumExceptLast);
+        tenantBilling = rows;
+      }
+    }
 
     // ── Update each eligible tenant's payment (admin client for writes) ──
     const updateResults = await Promise.all(
-      eligible.map((tenant, idx) => {
-        const isLast = idx === n - 1;
-        return adminDb
+      tenantBilling.map(({ id, tenantUnits, charge }) =>
+        adminDb
           .from("hms_payments")
           .update({
-            ac_units_consumed: isLast ? lastUnits : baseUnits,
-            ac_charge: isLast ? lastCharge : baseCharge,
+            ac_units_consumed: tenantUnits,
+            ac_charge: charge,
             updated_at: new Date().toISOString(),
           })
-          .eq("tenant_id", tenant.id)
+          .eq("tenant_id", id)
           .eq("for_month", forMonth)
           .eq("hostel_id", hostelId)
-          .select("id");
-      })
+          .select("id")
+      )
     );
 
     // ── Verify all payment rows were found — guard against missing rows ──
@@ -591,7 +657,82 @@ export async function applyRoomACUnitsAction(
 
     revalidatePath("/payments");
     revalidatePath("/dashboard");
-    return { success: true, eligibleCount: eligible.length, perUnitRate, perTenantUnits: baseUnits, perTenantCharge: baseCharge, skippedFirstMonth };
+    const first = tenantBilling[0];
+    return {
+      success: true,
+      eligibleCount: eligible.length,
+      perUnitRate,
+      perTenantUnits: first?.tenantUnits ?? 0,
+      perTenantCharge: first?.charge ?? 0,
+      skippedFirstMonth: 0,
+      proRatedCount,
+    };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// saveACJoinReadingAction
+// Records the meter reading at the moment a mid-month AC-tier tenant joins,
+// enabling segment-based billing when applyRoomACUnitsAction runs at month end.
+// ---------------------------------------------------------------------------
+
+export async function saveACJoinReadingAction(
+  roomId: string,
+  forMonth: string,
+  tenantId: string,
+  unitsAtJoin: number
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const ctx = await getAuthContext();
+    if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
+    const { hostelId } = ctx;
+
+    if (!roomId || !UUID_RE.test(roomId)) throw new Error("Invalid room ID");
+    if (!forMonth || !MONTH_RE.test(forMonth)) throw new Error("Invalid month format");
+    if (!tenantId || !UUID_RE.test(tenantId)) throw new Error("Invalid tenant ID");
+    assertNonNegativeFinite(unitsAtJoin, "units_at_join", 99_999);
+
+    const supabase = await createClient();
+    const adminDb = createAdminClient();
+
+    const { data: room } = await supabase
+      .from("hms_rooms")
+      .select("id")
+      .eq("id", roomId)
+      .eq("hostel_id", hostelId)
+      .single();
+    if (!room) throw new Error("Room not found or access denied");
+
+    const { data: tenant } = await supabase
+      .from("hms_tenants")
+      .select("id, package_tier, room_id, is_active")
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+      .single();
+    if (!tenant) throw new Error("Tenant not found or access denied");
+    if (!tenant.is_active) throw new Error("Tenant is not active");
+    if (tenant.room_id !== roomId) throw new Error("Tenant is not in this room");
+    if (tenant.package_tier !== "space_food_ac") throw new Error("Tenant does not have the AC package");
+
+    const { error } = await adminDb
+      .from("hms_room_ac_join_readings")
+      .upsert(
+        {
+          hostel_id: hostelId,
+          room_id: roomId,
+          for_month: forMonth,
+          tenant_id: tenantId,
+          units_at_join: unitsAtJoin,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "room_id,for_month,tenant_id" }
+      );
+    if (error) throw new Error(error.message);
+
+    revalidatePath("/payments");
+    return { success: true };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }

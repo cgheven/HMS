@@ -594,10 +594,10 @@ export async function updatePaymentCharges(
 
 export async function getPaymentsPageData(forMonth: string) {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, acReadings: [] };
+  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, acReadings: [], acJoinReadings: [] };
   const { supabase, hostelId, hostel } = ctx;
 
-  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig, { data: acReadings }] = await Promise.all([
+  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig, { data: acReadings }, { data: acJoinReadings }] = await Promise.all([
     supabase.from("hms_payments")
       .select("*, tenant:hms_tenants(full_name, room_id, phone)")
       .eq("hostel_id", hostelId)
@@ -615,6 +615,9 @@ export async function getPaymentsPageData(forMonth: string) {
       .select("room_id, total_units, per_unit_rate, tenant_count")
       .eq("hostel_id", hostelId)
       .eq("for_month", forMonth),
+    supabase.from("hms_room_ac_join_readings")
+      .select("room_id, tenant_id, units_at_join, for_month")
+      .eq("hostel_id", hostelId),
   ]);
 
   return {
@@ -628,5 +631,6 @@ export async function getPaymentsPageData(forMonth: string) {
     paymentMethods: hostel?.payment_methods ?? [],
     reminderTemplate: hostel?.reminder_template ?? null,
     acReadings: (acReadings ?? []) as { room_id: string; total_units: number; per_unit_rate: number; tenant_count: number }[],
+    acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
   };
 }

@@ -94,6 +94,17 @@ export interface RoomACReading {
   updated_at: string;
 }
 
+export interface ACJoinReading {
+  id: string;
+  hostel_id: string;
+  room_id: string;
+  for_month: string;
+  tenant_id: string;
+  units_at_join: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Hostel {
   id: string;
   owner_id: string;

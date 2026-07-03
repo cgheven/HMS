@@ -106,11 +106,13 @@ export function generateReceiptPDF(
   }
   function addKv(key: string, val: string, bold = false): void {
     add(ML, key, 8, bold);
-    const approxWidth = val.length * 8 * 0.46;
-    add(Math.max(ML + 60, MR - approxWidth), val, 8, bold);
+    // Use 0.58 multiplier so long values don't overflow the right margin
+    const approxWidth = val.length * 8 * 0.58;
+    add(Math.max(ML + 70, MR - approxWidth), val, 8, bold);
   }
+  // Dashes that span from ML to MR — left-anchored, full content width
   function addDash(): void {
-    add(ML, "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -", 7, false);
+    add(ML, "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -", 7, false);
   }
   function nl(n = 11): void { yTop += n; }
 
@@ -123,7 +125,9 @@ export function generateReceiptPDF(
   addCenter("PAYMENT RECEIPT", 9, true); nl(10);
   addDash(); nl(10);
 
-  addKv("Receipt #", payment.receipt_number ?? "N/A"); nl(12);
+  // Receipt # on two lines so a long ID (e.g. HMS-202607-SK-8040) never overflows
+  add(ML, "Receipt #", 8, false); nl(11);
+  add(ML + 4, payment.receipt_number ?? "N/A", 7, false); nl(13);
   addKv("Date", fmtDate(payment.payment_date)); nl(12);
   addKv("Period", fmtMonth(payment.for_month)); nl(12);
   addKv("Method", methodLabel(payment.payment_method)); nl(12);
@@ -139,15 +143,17 @@ export function generateReceiptPDF(
   addKv("Base Rent", pk(Math.max(0, baseRent))); nl(12);
   if ((payment.food_charge ?? 0) > 0)    { addKv("Food", pk(payment.food_charge!)); nl(12); }
   if ((payment.ac_charge ?? 0) > 0) {
-    addKv("AC Charges", pk(payment.ac_charge!));
-    if (payment.ac_per_unit_rate != null) {
-      // Prefer stored units over back-calculating via division (avoids rounding error)
+    addKv("AC Charges", pk(payment.ac_charge!)); nl(11);
+    if (payment.ac_per_unit_rate != null && payment.ac_per_unit_rate > 0) {
+      // Prefer stored units; fall back to back-calculating via division
       const units = (payment.ac_units_consumed != null && payment.ac_units_consumed > 0)
         ? payment.ac_units_consumed
         : Math.round(payment.ac_charge! / payment.ac_per_unit_rate);
-      add(ML + 4, `${units} units x Rs. ${payment.ac_per_unit_rate}/unit`, 6, false);
+      add(ML + 4, `${units} units x Rs. ${payment.ac_per_unit_rate}/unit`, 6, false); nl(9);
+    } else {
+      nl(1);
     }
-    nl(12);
+    nl(2);
   }
   if ((payment.late_fee ?? 0) > 0)       { addKv("Late Fee", pk(payment.late_fee!)); nl(12); }
   if ((payment.security_deposit ?? 0) > 0) {
