@@ -93,12 +93,14 @@ export function generateReceiptPDF(
   const CX = W / 2;
 
   // Collect commands top-down (y=0 at top), convert to PDF coords (y=0 at bottom) after.
-  type Cmd = { x: number; y: number; content: string; size: number; bold: boolean };
+  type Cmd =
+    | { kind: "text"; x: number; y: number; content: string; size: number; bold: boolean }
+    | { kind: "line"; y: number };
   const cmds: Cmd[] = [];
   let yTop = 14;
 
   function add(x: number, content: string, size: number, bold: boolean): void {
-    cmds.push({ x, y: yTop, content, size, bold });
+    cmds.push({ kind: "text", x, y: yTop, content, size, bold });
   }
   function addCenter(content: string, size: number, bold: boolean): void {
     const approxWidth = content.length * size * 0.46;
@@ -106,18 +108,17 @@ export function generateReceiptPDF(
   }
   function addKv(key: string, val: string, bold = false): void {
     add(ML, key, 8, bold);
-    // Use 0.58 multiplier so long values don't overflow the right margin
+    // 0.58 multiplier keeps long values from overflowing the right margin
     const approxWidth = val.length * 8 * 0.58;
     add(Math.max(ML + 70, MR - approxWidth), val, 8, bold);
   }
-  // Dashes that span from ML to MR — left-anchored, full content width
+  // Draws a thin solid rule from ML to MR — guaranteed to span the full content width.
   function addDash(): void {
-    add(ML, "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -", 7, false);
+    cmds.push({ kind: "line", y: yTop });
   }
   function nl(n = 11): void { yTop += n; }
 
   // ─── Content ────────────────────────────────────────────────────────
-  addDash(); nl(10);
   addCenter(hostel.name, 12, true); nl(15);
   if (hostel.address) { addCenter(hostel.address, 7, false); nl(10); }
   if (hostel.phone) { addCenter(`Tel: ${hostel.phone}`, 7, false); nl(10); }
@@ -139,17 +140,18 @@ export function generateReceiptPDF(
   nl(2); addDash(); nl(10);
 
   add(ML, "Breakdown:", 8, true); nl(12);
-  const baseRent = payment.amount - (payment.food_charge ?? 0) - (payment.ac_charge ?? 0);
-  addKv("Base Rent", pk(Math.max(0, baseRent))); nl(12);
-  if ((payment.food_charge ?? 0) > 0)    { addKv("Food", pk(payment.food_charge!)); nl(12); }
+  // Food is part of the package price — show the package amount (rent + food) as one line.
+  const monthlyRent = payment.amount - (payment.ac_charge ?? 0);
+  addKv("Monthly Rent", pk(Math.max(0, monthlyRent))); nl(12);
   if ((payment.ac_charge ?? 0) > 0) {
     addKv("AC Charges", pk(payment.ac_charge!)); nl(11);
-    if (payment.ac_per_unit_rate != null && payment.ac_per_unit_rate > 0) {
-      // Prefer stored units; fall back to back-calculating via division
-      const units = (payment.ac_units_consumed != null && payment.ac_units_consumed > 0)
-        ? payment.ac_units_consumed
-        : Math.round(payment.ac_charge! / payment.ac_per_unit_rate);
-      add(ML + 4, `${units} units x Rs. ${payment.ac_per_unit_rate}/unit`, 6, false); nl(9);
+    const acUnits = Number(payment.ac_units_consumed ?? 0);
+    if (acUnits > 0) {
+      // Use provided rate, or back-calculate from charge ÷ units
+      const rate = (payment.ac_per_unit_rate && payment.ac_per_unit_rate > 0)
+        ? payment.ac_per_unit_rate
+        : Math.round(payment.ac_charge! / acUnits);
+      add(ML + 4, `${acUnits} units x Rs. ${rate}/unit`, 6, false); nl(9);
     } else {
       nl(1);
     }
@@ -174,8 +176,7 @@ export function generateReceiptPDF(
   nl(4); addDash(); nl(10);
 
   addCenter("Thank you for your payment.", 7, false); nl(9);
-  addCenter("Keep this receipt for your records.", 7, false); nl(9);
-  addCenter(`Printed: ${new Date().toLocaleDateString("en-PK")}`, 6, false); nl(10);
+  addCenter("Keep this receipt for your records.", 7, false); nl(10);
   addDash(); nl(8);
 
   const PAGE_H = yTop + 10;
@@ -183,9 +184,14 @@ export function generateReceiptPDF(
   // ─── Assemble PDF stream (convert top-down y → bottom-up PDF y) ─────
   const streamLines: string[] = [];
   for (const cmd of cmds) {
-    const font = cmd.bold ? "/F2" : "/F1";
     const pdfY = PAGE_H - cmd.y;
-    streamLines.push(`BT ${font} ${cmd.size} Tf ${cmd.x} ${pdfY} Td (${encodePdfString(cmd.content)}) Tj ET`);
+    if (cmd.kind === "line") {
+      // Thin solid rule spanning the full content width — perfectly centred by definition
+      streamLines.push(`0.4 w ${ML} ${pdfY} m ${MR} ${pdfY} l S`);
+    } else {
+      const font = cmd.bold ? "/F2" : "/F1";
+      streamLines.push(`BT ${font} ${cmd.size} Tf ${cmd.x} ${pdfY} Td (${encodePdfString(cmd.content)}) Tj ET`);
+    }
   }
 
   const streamContent = streamLines.join("\n");

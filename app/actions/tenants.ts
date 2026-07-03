@@ -290,7 +290,8 @@ export type TimelineEventType =
   | "payment"
   | "package_changed"
   | "check_out"
-  | "status_change";
+  | "status_change"
+  | "pending";
 
 export interface TimelineEvent {
   id: string;
@@ -303,6 +304,7 @@ export interface TimelineEvent {
   forMonth?: string;
   foodCharge?: number;
   acCharge?: number;
+  paymentId?: string;
 }
 
 export async function getTenantTimeline(
@@ -378,6 +380,7 @@ export async function getTenantTimeline(
           forMonth: p.for_month,
           foodCharge: p.food_charge != null ? Number(p.food_charge) : undefined,
           acCharge: p.ac_charge != null ? Number(p.ac_charge) : undefined,
+          paymentId: p.id,
         });
       } else if (p.status === "waived") {
         events.push({
@@ -387,6 +390,18 @@ export async function getTenantTimeline(
           label: "Payment waived",
           sub: p.for_month,
           forMonth: p.for_month,
+        });
+      } else if (p.status === "pending" || p.status === "overdue") {
+        events.push({
+          id: `pending-${p.id}`,
+          type: "pending",
+          // Use billing month start as the date — more meaningful than created_at
+          date: `${p.for_month}-01`,
+          label: `Rs. ${totalPaid.toLocaleString()} ${p.status === "overdue" ? "overdue" : "due"}`,
+          sub: `${p.for_month} · ${p.status === "overdue" ? "Overdue — not yet collected" : "Pending — not yet collected"}`,
+          amount: totalPaid,
+          forMonth: p.for_month,
+          paymentId: p.id,
         });
       }
     }

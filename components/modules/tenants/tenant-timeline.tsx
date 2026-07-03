@@ -1,15 +1,15 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, ShieldCheck, FileText, FileImage, Download, Loader2 } from "lucide-react";
+import { useState, useCallback, useEffect } from "react";
+import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, FileText, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatCurrency, formatDate } from "@/lib/utils";
-import { getTenantTimeline, getDocumentSignedUrl, type TimelineEvent } from "@/app/actions/tenants";
+import { getTenantTimeline, createInvoiceLink, type TimelineEvent } from "@/app/actions/tenants";
 import { toast } from "@/hooks/use-toast";
-import type { Tenant, Room, PackageTier, TenantDocument, DocumentType } from "@/types";
-import { DOCUMENT_TYPE_LABELS } from "@/types";
+import type { Tenant, Room, PackageTier, TenantDocument } from "@/types";
+import { DocumentManager } from "./document-manager";
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
   space_only: "Space Only",
@@ -19,80 +19,15 @@ const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
   space_meals_cooler: "Space + Meals + Cooler",
 };
 
+const PACKAGE_TIER_SHORT: Record<PackageTier, string> = {
+  space_only: "Space",
+  space_food: "Food",
+  space_3meals: "3 Meals",
+  space_food_ac: "AC",
+  space_meals_cooler: "Cooler",
+};
+
 const DEFAULT_SHOW = 12;
-
-function docTypeIcon(type: DocumentType) {
-  if (type === "cnic" || type === "passport") return <FileImage className="w-3.5 h-3.5 text-blue-400 shrink-0" />;
-  if (type === "police_verification") return <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
-  return <FileText className="w-3.5 h-3.5 text-amber/80 shrink-0" />;
-}
-
-function DocumentsSection({ tenantId, documents }: { tenantId: string; documents: TenantDocument[] }) {
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
-
-  async function handleDownload(doc: TenantDocument) {
-    setDownloadingId(doc.id);
-    const result = await getDocumentSignedUrl(tenantId, doc.id);
-    setDownloadingId(null);
-    if (result.error) {
-      toast({ title: "Cannot open document", description: result.error, variant: "destructive" });
-    } else if (result.url) {
-      const a = document.createElement("a");
-      a.href = result.url;
-      a.rel = "noopener noreferrer";
-      a.click();
-    }
-  }
-
-  return (
-    <div className="mt-4">
-      <div className="flex items-center gap-2 mb-3">
-        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Verification Documents</p>
-        {documents.length > 0 && (
-          <span className="inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-bold">
-            {documents.length}
-          </span>
-        )}
-      </div>
-
-      {documents.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-sidebar-border py-5 flex flex-col items-center gap-1.5 text-center">
-          <ShieldCheck className="w-6 h-6 text-muted-foreground/25" />
-          <p className="text-xs text-muted-foreground/60">No verification documents uploaded</p>
-        </div>
-      ) : (
-        <div className="space-y-1.5">
-          {documents.map((doc) => (
-            <div
-              key={doc.id}
-              className="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-sidebar-border bg-white/[0.02]"
-            >
-              {docTypeIcon(doc.type)}
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-medium text-foreground truncate">{doc.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {DOCUMENT_TYPE_LABELS[doc.type]} · {formatDate(doc.uploaded_at)}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleDownload(doc)}
-                disabled={downloadingId === doc.id}
-                className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors shrink-0"
-                title="Download"
-              >
-                {downloadingId === doc.id
-                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  : <Download className="w-3.5 h-3.5" />
-                }
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 interface Props {
   tenant: Tenant;
@@ -111,6 +46,8 @@ function EventIcon({ type }: { type: TimelineEvent["type"] }) {
       return <LogOut className="w-4 h-4 text-rose-400" />;
     case "package_changed":
       return <AlertCircle className="w-4 h-4 text-blue-400" />;
+    case "pending":
+      return <Clock className="w-4 h-4 text-amber/70" />;
     case "status_change":
     default:
       return <Clock className="w-4 h-4 text-amber" />;
@@ -119,12 +56,13 @@ function EventIcon({ type }: { type: TimelineEvent["type"] }) {
 
 function eventDotColor(type: TimelineEvent["type"]): string {
   switch (type) {
-    case "joined":       return "bg-emerald-500 border-emerald-400";
-    case "payment":      return "bg-emerald-600 border-emerald-400";
-    case "check_out":    return "bg-rose-500 border-rose-400";
+    case "joined":        return "bg-emerald-500 border-emerald-400";
+    case "payment":       return "bg-emerald-600 border-emerald-400";
+    case "check_out":     return "bg-rose-500 border-rose-400";
     case "package_changed": return "bg-blue-500 border-blue-400";
+    case "pending":       return "bg-amber/30 border-amber/50";
     case "status_change":
-    default:             return "bg-amber border-amber/60";
+    default:              return "bg-amber border-amber/60";
   }
 }
 
@@ -133,6 +71,16 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
   const [loading, setLoading] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [generatingReceipt, setGeneratingReceipt] = useState<string | null>(null);
+  const [localDocs, setLocalDocs] = useState<TenantDocument[]>(tenant.documents ?? []);
+
+  // Sync documents when a different tenant is selected without unmounting
+  useEffect(() => {
+    setLocalDocs(tenant.documents ?? []);
+    setLoaded(false);
+    setEvents(null);
+    setShowAll(false);
+  }, [tenant.id]);
 
   const load = useCallback(async () => {
     if (loaded) return;
@@ -150,6 +98,17 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
   function handleOpenChange(o: boolean) {
     if (o && !loaded) load();
     if (!o) onClose();
+  }
+
+  async function openReceipt(paymentId: string) {
+    setGeneratingReceipt(paymentId);
+    const result = await createInvoiceLink(paymentId);
+    setGeneratingReceipt(null);
+    if (result.error) {
+      toast({ title: "Failed to open receipt", description: result.error, variant: "destructive" });
+      return;
+    }
+    window.open(`/r/${result.token}`, "_blank", "noopener,noreferrer");
   }
 
   const totalPaid = (events ?? [])
@@ -209,7 +168,7 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
             { label: "Total Paid", value: formatCurrency(totalPaid) },
             {
               label: "Package",
-              value: PACKAGE_TIER_LABELS[tenant.package_tier ?? "space_only"].split(" ").slice(0, 1).join(""),
+              value: PACKAGE_TIER_SHORT[tenant.package_tier ?? "space_only"] ?? "—",
             },
             {
               label: "Room",
@@ -223,8 +182,15 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
           ))}
         </div>
 
-        {/* Verification Documents */}
-        <DocumentsSection tenantId={tenant.id} documents={tenant.documents ?? []} />
+        {/* Verification Documents (with upload) */}
+        <div className="mt-4">
+          <DocumentManager
+            tenantId={tenant.id}
+            tenantName={tenant.full_name}
+            documents={localDocs}
+            onChange={setLocalDocs}
+          />
+        </div>
 
         {/* Timeline */}
         <div className="mt-4 border-t border-sidebar-border pt-4">
@@ -268,21 +234,33 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
                         {event.sub && (
                           <p className="text-xs text-muted-foreground mt-0.5">{event.sub}</p>
                         )}
-                        {/* Food / AC breakdown for payment events */}
-                        {event.type === "payment" && (event.foodCharge ?? 0) > 0 && (
+                        {/* AC breakdown for payment events */}
+                        {event.type === "payment" && (event.acCharge ?? 0) > 0 && (
                           <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-muted-foreground">
-                            {(event.foodCharge ?? 0) > 0 && (
-                              <span>Food: {formatCurrency(event.foodCharge!)}</span>
-                            )}
                             {(event.acCharge ?? 0) > 0 && (
                               <span>AC: {formatCurrency(event.acCharge!)}</span>
                             )}
                           </div>
                         )}
                       </div>
-                      <p className="text-xs text-muted-foreground shrink-0 whitespace-nowrap">
-                        {formatDate(event.date)}
-                      </p>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <p className="text-xs text-muted-foreground whitespace-nowrap">
+                          {formatDate(event.date)}
+                        </p>
+                        {(event.type === "payment" || event.type === "pending") && event.paymentId && (
+                          <button
+                            type="button"
+                            title="View Receipt"
+                            disabled={generatingReceipt === event.paymentId}
+                            onClick={() => openReceipt(event.paymentId!)}
+                            className="inline-flex items-center justify-center w-6 h-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors"
+                          >
+                            {generatingReceipt === event.paymentId
+                              ? <Loader2 className="w-3 h-3 animate-spin" />
+                              : <FileText className="w-3 h-3" />}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}

@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   CreditCard, CheckCircle2, Clock, AlertTriangle, Wallet,
-  TrendingUp, Banknote, RefreshCw, Zap, Loader2,
+  TrendingUp, Banknote, RefreshCw, Zap, Loader2, FileText,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -97,6 +97,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [sendingWa, setSendingWa] = useState<string | null>(null); // paymentId
+  const [generatingReceipt, setGeneratingReceipt] = useState<string | null>(null); // paymentId
   const [postPaymentWa, setPostPaymentWa] = useState<Payment | null>(null);
   const [acUnits, setAcUnits] = useState<Record<string, string>>({});
   const [applyingAC, setApplyingAC] = useState<string | null>(null);
@@ -243,6 +244,17 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }
     toast({ title: "Marked as overdue" });
     await syncMonth(selectedMonth);
+  }
+
+  async function openReceipt(paymentId: string) {
+    setGeneratingReceipt(paymentId);
+    const result = await createInvoiceLink(paymentId);
+    setGeneratingReceipt(null);
+    if (result.error) {
+      toast({ title: "Failed to open receipt", description: result.error, variant: "destructive" });
+      return;
+    }
+    window.open(`/r/${result.token}`, "_blank", "noopener,noreferrer");
   }
 
   async function sendWhatsAppReceipt(p: Payment) {
@@ -624,6 +636,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       <p className="text-sm font-semibold">{formatCurrency(p.amount)}</p>
                       <p className={`text-xs ${statusConfig[p.status].color}`}>{statusConfig[p.status].label}</p>
                     </div>
+                    {p.status === "paid" && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                        title="View Receipt"
+                        disabled={generatingReceipt === p.id}
+                        onClick={() => openReceipt(p.id)}
+                      >
+                        {generatingReceipt === p.id
+                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          : <FileText className="w-3.5 h-3.5" />}
+                      </Button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -696,9 +722,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     {/* Mid-month joiner readings */}
                     {midMonthJoiners.length > 0 && (
                       <div className="border-t border-white/5 pt-2.5 space-y-1.5">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-semibold">
-                          Mid-month joiners
-                        </p>
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-semibold">
+                            Mid-month joiners
+                          </p>
+                          <span className="text-[10px] text-muted-foreground/50">— meter reading when they joined</span>
+                        </div>
                         {midMonthJoiners.map(tenant => {
                           const joinKey = `${tenant.id}_${selectedMonth}`;
                           const savedJoin = acJoinReadings.find(
@@ -739,12 +768,42 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         })}
                       </div>
                     )}
+
+                    {/* Unit allocation per tenant — visible after Apply so the split is verifiable */}
+                    {saved && (() => {
+                      const acTenants = tenants.filter(t => t.room_id === room.id && t.is_active && t.package_tier === "space_food_ac");
+                      const rows = acTenants.map(t => ({
+                        name: t.full_name,
+                        units: Number(payments.find(p => p.tenant_id === t.id && p.for_month === selectedMonth)?.ac_units_consumed ?? 0),
+                        charge: Number(payments.find(p => p.tenant_id === t.id && p.for_month === selectedMonth)?.ac_charge ?? 0),
+                      })).filter(r => r.units > 0);
+                      if (rows.length === 0) return null;
+                      return (
+                        <div className="border-t border-white/5 pt-2.5 space-y-1">
+                          <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-semibold">Allocated per tenant</p>
+                          {rows.map(r => (
+                            <div key={r.name} className="flex items-center gap-2 text-xs">
+                              <span className="text-muted-foreground flex-1 truncate">{r.name}</span>
+                              <span className="tabular-nums text-foreground">{r.units} units</span>
+                              <span className="text-muted-foreground/40">·</span>
+                              <span className="tabular-nums text-emerald-400">{formatCurrency(r.charge)}</span>
+                            </div>
+                          ))}
+                          <div className="flex items-center gap-2 text-xs pt-0.5 border-t border-white/5 mt-1">
+                            <span className="text-muted-foreground flex-1">Total</span>
+                            <span className="tabular-nums text-foreground font-medium">{rows.reduce((s, r) => s + r.units, 0)} units</span>
+                            <span className="text-muted-foreground/40">·</span>
+                            <span className="tabular-nums text-emerald-400 font-medium">{formatCurrency(rows.reduce((s, r) => s + r.charge, 0))}</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
             </div>
             <p className="text-xs text-muted-foreground pt-1">
-              After applying, switch to <span className="text-foreground font-medium">Monthly View</span> and filter by room to verify the split.
+              Mid-month joiner readings are the <span className="text-foreground">meter value when they joined</span>, not their units consumed. The split is shown under each room after Apply.
             </p>
           </div>
         </TabsContent>
