@@ -267,7 +267,7 @@ export interface Payment {
 
 export interface CheckoutPaymentSettlement {
   paymentId: string;
-  action: "pay" | "waive" | "leave";
+  action: "pay" | "waive";
   paymentDate?: string;
   paymentMethod?: PaymentMethod;
 }
@@ -276,7 +276,7 @@ export interface CheckoutInput {
   tenantId: string;
   checkoutDate: string;
   paymentSettlement?: CheckoutPaymentSettlement;
-  depositDisposition?: "refund" | "deduct" | "forfeit";
+  notes?: string;
 }
 
 export interface Complaint {

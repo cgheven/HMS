@@ -4,7 +4,7 @@ import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, History,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
-  FileSpreadsheet, FileText, ExternalLink, Banknote, Shield,
+  FileSpreadsheet, FileText, ExternalLink, Banknote,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -193,10 +193,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; ac_charge: number; ac_units_consumed: number | null } | null>(null);
   const [checkoutPaymentLoading, setCheckoutPaymentLoading] = useState(false);
   const [checkoutPaymentError, setCheckoutPaymentError] = useState<string | null>(null);
-  const [checkoutPayAction, setCheckoutPayAction] = useState<"pay" | "waive" | "leave">("pay");
+  const [checkoutPayAction, setCheckoutPayAction] = useState<"pay" | "waive">("pay");
   const [checkoutPayDate, setCheckoutPayDate] = useState(formatDateInput(new Date()));
   const [checkoutPayMethod, setCheckoutPayMethod] = useState<string>("cash");
-  const [depositDisposition, setDepositDisposition] = useState<"refund" | "deduct" | "forfeit">("refund");
+  const [checkoutNotes, setCheckoutNotes] = useState("");
   const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
   const [shareReceipt, setShareReceipt] = useState<{ name: string; phone: string | null; token: string } | null>(null);
   const [form, setForm] = useState(emptyForm);
@@ -481,7 +481,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutPayAction("pay");
     setCheckoutPayDate(formatDateInput(new Date()));
     setCheckoutPayMethod("cash");
-    setDepositDisposition("refund");
+    setCheckoutNotes("");
     setCheckoutSubmitting(false);
   }
 
@@ -493,7 +493,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutPayDate(today);
     setCheckoutPayAction("pay");
     setCheckoutPayMethod("cash");
-    setDepositDisposition("refund");
     setCheckoutPendingPayment(null);
     setCheckoutPaymentError(null);
     setCheckoutPaymentLoading(true);
@@ -546,7 +545,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               : {}),
           }
         : undefined,
-      depositDisposition,
+      ...(checkoutNotes.trim() ? { notes: checkoutNotes.trim() } : {}),
     };
 
     const result = await checkoutTenantAction(input);
@@ -1515,259 +1514,143 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             )}
 
-            {!checkoutPaymentLoading && !checkoutPaymentError && checkoutPendingPayment && (
+            {/* Settlement — outstanding + deposit in one combined section */}
+            {!checkoutPaymentLoading && !checkoutPaymentError && (checkoutPendingPayment || (checkingOut?.security_deposit ?? 0) > 0) && (
               <div className="space-y-2.5">
-                <div className="flex items-center gap-1.5">
-                  <Banknote className="w-3.5 h-3.5 text-amber" />
-                  <p className="text-sm font-medium">Outstanding Balance</p>
+                {/* Context line */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                  {checkoutPendingPayment && (
+                    <span>{checkoutPendingPayment.for_month} · <span className="text-foreground font-medium">{formatCurrency(checkoutPendingPayment.amount)} outstanding</span></span>
+                  )}
+                  {(checkingOut?.security_deposit ?? 0) > 0 && (
+                    <span>{formatCurrency(checkingOut!.security_deposit)} deposit held</span>
+                  )}
                 </div>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 -mt-1">
-                  <p className="text-xs text-muted-foreground">{checkoutPendingPayment.for_month} · {formatCurrency(checkoutPendingPayment.amount)}</p>
-                  {checkoutPendingPayment.ac_charge > 0 && (
-                    <p className="text-xs text-muted-foreground/70">
-                      AC: {formatCurrency(checkoutPendingPayment.ac_charge)}
-                      {checkoutPendingPayment.ac_units_consumed != null && checkoutPendingPayment.ac_units_consumed > 0 && (
-                        <span className="ml-1 opacity-75">· {checkoutPendingPayment.ac_units_consumed} units</span>
+
+                {/* Outstanding options */}
+                {checkoutPendingPayment && (
+                  <>
+                    <div
+                      onClick={() => setCheckoutPayAction("pay")}
+                      className={cn(
+                        "border rounded-xl p-3 cursor-pointer transition-all",
+                        checkoutPayAction === "pay" ? "border-amber/50 bg-amber/5" : "border-sidebar-border hover:border-sidebar-border/60"
                       )}
-                    </p>
-                  )}
-                </div>
-
-                {/* Pay option */}
-                <div
-                  onClick={() => setCheckoutPayAction("pay")}
-                  className={cn(
-                    "border rounded-xl p-3 cursor-pointer transition-all",
-                    checkoutPayAction === "pay"
-                      ? "border-amber/50 bg-amber/5"
-                      : "border-sidebar-border hover:border-sidebar-border/60"
-                  )}
-                >
-                  <p className="text-sm font-medium">Collect Now</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Tenant pays before leaving — record date and method</p>
-                  {checkoutPayAction === "pay" && (
-                    <div className="mt-3 grid grid-cols-2 gap-2" onClick={(e) => e.stopPropagation()}>
-                      <div className="space-y-1">
-                        <p className="text-xs text-muted-foreground">Date</p>
-                        <input
-                          type="date"
-                          value={checkoutPayDate}
-                          onChange={(e) => setCheckoutPayDate(e.target.value)}
-                          className="h-8 w-full rounded-md border border-sidebar-border bg-transparent px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-amber/50"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-xs text-muted-foreground">Method</p>
-                        <Select value={checkoutPayMethod} onValueChange={setCheckoutPayMethod}>
-                          <SelectTrigger className="h-8 text-xs">
-                            <SelectValue placeholder="Select method" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="cash">Cash</SelectItem>
-                            <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
-                            <SelectItem value="jazzcash">JazzCash</SelectItem>
-                            <SelectItem value="easypaisa">EasyPaisa</SelectItem>
-                            <SelectItem value="sadapay">SadaPay</SelectItem>
-                            <SelectItem value="other">Other</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
+                    >
+                      <p className="text-sm font-medium">Collect Now</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">Tenant pays before leaving — record date and method</p>
+                      {checkoutPayAction === "pay" && (
+                        <div className="mt-3 grid grid-cols-2 gap-2" onClick={(e) => e.stopPropagation()}>
+                          <div className="space-y-1">
+                            <p className="text-xs text-muted-foreground">Date</p>
+                            <input
+                              type="date"
+                              value={checkoutPayDate}
+                              onChange={(e) => setCheckoutPayDate(e.target.value)}
+                              className="h-8 w-full rounded-md border border-sidebar-border bg-transparent px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-amber/50"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs text-muted-foreground">Method</p>
+                            <Select value={checkoutPayMethod} onValueChange={setCheckoutPayMethod}>
+                              <SelectTrigger className="h-8 text-xs">
+                                <SelectValue placeholder="Select method" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="cash">Cash</SelectItem>
+                                <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+                                <SelectItem value="jazzcash">JazzCash</SelectItem>
+                                <SelectItem value="easypaisa">EasyPaisa</SelectItem>
+                                <SelectItem value="sadapay">SadaPay</SelectItem>
+                                <SelectItem value="other">Other</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
 
-                {/* Waive option */}
-                <div
-                  onClick={() => { setCheckoutPayAction("waive"); setDepositDisposition("refund"); }}
-                  className={cn(
-                    "border rounded-xl p-3 cursor-pointer transition-all",
-                    checkoutPayAction === "waive"
-                      ? "border-amber/50 bg-amber/5"
-                      : "border-sidebar-border hover:border-sidebar-border/60"
-                  )}
-                >
-                  <p className="text-sm font-medium">Forgive the Dues</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Cancel the remaining balance — no money collected</p>
-                </div>
+                    <div
+                      onClick={() => setCheckoutPayAction("waive")}
+                      className={cn(
+                        "border rounded-xl p-3 cursor-pointer transition-all",
+                        checkoutPayAction === "waive" ? "border-amber/50 bg-amber/5" : "border-sidebar-border hover:border-sidebar-border/60"
+                      )}
+                    >
+                      <p className="text-sm font-medium">Forgive the Dues</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">Cancel the remaining balance — no money collected</p>
+                    </div>
 
-                {/* Leave open option */}
-                <div
-                  onClick={() => { setCheckoutPayAction("leave"); setDepositDisposition("refund"); }}
-                  className={cn(
-                    "border rounded-xl p-3 cursor-pointer transition-all",
-                    checkoutPayAction === "leave"
-                      ? "border-sidebar-border/60 bg-white/[0.02]"
-                      : "border-sidebar-border hover:border-sidebar-border/60"
-                  )}
-                >
-                  <p className={cn("text-sm font-medium", checkoutPayAction === "leave" ? "text-muted-foreground" : "")}>Collect Later</p>
-                  <p className="text-xs text-muted-foreground/70 mt-0.5">Keep the balance open — you'll collect it separately</p>
-                </div>
-              </div>
-            )}
-
-            {/* Section 3 — Security Deposit */}
-            {(checkingOut?.security_deposit ?? 0) > 0 && (
-              <div className="space-y-2.5">
-                <div className="flex items-center gap-1.5">
-                  <Shield className="w-3.5 h-3.5 text-violet-400" />
-                  <p className="text-sm font-medium">Security Deposit</p>
-                </div>
-                <p className="text-xs text-muted-foreground -mt-1">{formatCurrency(checkingOut!.security_deposit)} held</p>
-
-                {/* Refund option */}
-                <div
-                  onClick={() => setDepositDisposition("refund")}
-                  className={cn(
-                    "border rounded-xl p-3 cursor-pointer transition-all",
-                    depositDisposition === "refund"
-                      ? "border-emerald-500/50 bg-emerald-500/5"
-                      : "border-sidebar-border hover:border-sidebar-border/60"
-                  )}
-                >
-                  <p className="text-sm font-medium">Refund to tenant</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Return the full deposit amount</p>
-                </div>
-
-                {/* Apply to balance — only when a pending payment exists AND action is "pay" (UX-F5) */}
-                {checkoutPendingPayment && checkoutPayAction === "pay" && (
-                  <div
-                    onClick={() => setDepositDisposition("deduct")}
-                    className={cn(
-                      "border rounded-xl p-3 cursor-pointer transition-all",
-                      depositDisposition === "deduct"
-                        ? "border-amber/50 bg-amber/5"
-                        : "border-sidebar-border hover:border-sidebar-border/60"
-                    )}
-                  >
-                    <p className="text-sm font-medium">Apply to outstanding balance</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">Use deposit to offset rent owed</p>
-                  </div>
+                  </>
                 )}
 
-                {/* Forfeit option */}
-                <div
-                  onClick={() => setDepositDisposition("forfeit")}
-                  className={cn(
-                    "border rounded-xl p-3 cursor-pointer transition-all",
-                    depositDisposition === "forfeit"
-                      ? "border-rose-500/50 bg-rose-500/5"
-                      : "border-sidebar-border hover:border-sidebar-border/60"
-                  )}
-                >
-                  <p className="text-sm font-medium">Forfeit — damage or breach</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Retain deposit as compensation</p>
+                {/* Notes */}
+                <div className="pt-0.5">
+                  <textarea
+                    value={checkoutNotes}
+                    onChange={(e) => setCheckoutNotes(e.target.value)}
+                    placeholder="Notes (optional) — e.g. deposit returned in cash, damage deducted, etc."
+                    rows={2}
+                    className="w-full rounded-md border border-sidebar-border bg-transparent px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/40 resize-none"
+                  />
                 </div>
               </div>
             )}
 
-            {/* Section 4 — Live Summary */}
-            <div className="pt-3 border-t border-sidebar-border/60 space-y-3">
+            {/* Live summary */}
+            <div className="pt-3 border-t border-sidebar-border/60">
               {(() => {
-                const deposit   = checkingOut?.security_deposit ?? 0;
-                const pending   = checkoutPendingPayment?.amount ?? 0;
-                const acCharge  = checkoutPendingPayment?.ac_charge ?? 0;
-                const acUnits   = checkoutPendingPayment?.ac_units_consumed ?? 0;
-                const rentCharge = pending - acCharge;
-
+                const deposit    = checkingOut?.security_deposit ?? 0;
+                const pending    = checkoutPendingPayment?.amount ?? 0;
                 const collecting = pending > 0 && checkoutPayAction === "pay";
-                const netAfterDeposit = collecting && depositDisposition === "deduct" && deposit > 0
-                  ? Math.max(0, pending - deposit)
-                  : null;
-                const depositCoversAll = netAfterDeposit === 0;
+                const applied    = collecting && deposit > 0 ? Math.min(deposit, pending) : 0;
+                const toCollect  = Math.max(0, pending - applied);
+                const depositCoversAll = collecting && applied >= pending;
+
+                if (pending === 0 && deposit === 0) {
+                  return <p className="text-sm text-muted-foreground">No financial transactions to record</p>;
+                }
 
                 return (
-                  <>
-                    {/* Outstanding breakdown */}
+                  <div className="rounded-xl bg-sidebar-accent/30 px-3 py-2.5 space-y-1.5">
                     {pending > 0 && (
-                      <div className="rounded-md bg-sidebar-accent/30 px-3 py-2 space-y-1.5">
-                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Outstanding</p>
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Rent &amp; Food</span>
-                            <span>{formatCurrency(rentCharge)}</span>
-                          </div>
-                          {acCharge > 0 && (
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">
-                                AC Charge{acUnits > 0 ? ` (${acUnits} units)` : ""}
-                              </span>
-                              <span>{formatCurrency(acCharge)}</span>
-                            </div>
-                          )}
-                          <div className="flex justify-between text-sm font-semibold border-t border-sidebar-border/40 pt-1 mt-1">
-                            <span>Total Due</span>
-                            <span>{formatCurrency(pending)}</span>
-                          </div>
-                        </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">
+                          Outstanding{checkoutPayAction === "waive" && <span className="ml-1 text-xs">(waived)</span>}
+                        </span>
+                        <span className={cn(checkoutPayAction !== "pay" ? "text-muted-foreground line-through" : "")}>
+                          {formatCurrency(pending)}
+                        </span>
                       </div>
                     )}
-
-                    {/* Deposit block */}
                     {deposit > 0 && (
-                      <div className="rounded-md bg-sidebar-accent/30 px-3 py-2 space-y-1.5">
-                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Security Deposit</p>
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Held</span>
-                            <span>{formatCurrency(deposit)}</span>
-                          </div>
-                          {depositDisposition === "deduct" && collecting && (
-                            <>
-                              <div className="flex justify-between text-sm text-emerald-400">
-                                <span>Applied to balance</span>
-                                <span>− {formatCurrency(Math.min(deposit, pending))}</span>
-                              </div>
-                              <div className="flex justify-between text-sm font-semibold border-t border-sidebar-border/40 pt-1 mt-1">
-                                <span>Remaining to collect</span>
-                                <span className={depositCoversAll ? "text-emerald-400" : "text-amber"}>
-                                  {depositCoversAll ? "Nil" : formatCurrency(pending - deposit)}
-                                </span>
-                              </div>
-                            </>
-                          )}
-                          {depositDisposition === "refund" && (
-                            <div className="flex justify-between text-sm text-emerald-400 font-medium">
-                              <span>Refund to tenant</span>
-                              <span>{formatCurrency(deposit)}</span>
-                            </div>
-                          )}
-                          {depositDisposition === "forfeit" && (
-                            <div className="flex justify-between text-sm text-muted-foreground">
-                              <span>Forfeited</span>
-                              <span>{formatCurrency(deposit)}</span>
-                            </div>
-                          )}
-                        </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">
+                          Deposit{collecting ? <span className="ml-1 text-xs">(applied)</span> : null}
+                        </span>
+                        <span className={collecting ? "text-emerald-400" : ""}>
+                          {collecting ? `− ${formatCurrency(applied)}` : formatCurrency(deposit)}
+                        </span>
                       </div>
                     )}
-
-                    {/* Final action line */}
-                    <div className="space-y-0.5">
-                      {pending === 0 && deposit === 0 && (
-                        <p className="text-sm text-muted-foreground">No financial transactions to record</p>
-                      )}
-                      {collecting && !depositCoversAll && (
-                        <p className="text-sm font-semibold text-amber">
-                          Collect {formatCurrency(netAfterDeposit ?? pending)} from tenant
-                        </p>
-                      )}
-                      {collecting && depositCoversAll && (
-                        <p className="text-sm font-semibold text-emerald-400">Deposit covers balance — nothing to collect</p>
-                      )}
-                      {pending > 0 && checkoutPayAction === "waive" && (
-                        <p className="text-sm text-muted-foreground">Balance waived — no money collected</p>
-                      )}
-                      {pending > 0 && checkoutPayAction === "leave" && (
-                        <p className="text-sm text-muted-foreground">Balance left open for later settlement</p>
-                      )}
-                      {deposit > 0 && depositDisposition === "refund" && (
-                        <p className="text-sm font-semibold text-emerald-400">
-                          Refund {formatCurrency(deposit)} deposit to tenant
-                        </p>
-                      )}
-                    </div>
-                  </>
+                    <div className="border-t border-sidebar-border/40" />
+                    {depositCoversAll ? (
+                      <div className="flex justify-between text-sm font-semibold">
+                        <span className="text-emerald-400">Deposit covers all dues</span>
+                        <span className="text-emerald-400">—</span>
+                      </div>
+                    ) : collecting ? (
+                      <div className="flex justify-between text-sm font-semibold">
+                        <span className="text-amber">Collect from tenant</span>
+                        <span className="text-amber">{formatCurrency(toCollect)}</span>
+                      </div>
+                    ) : checkoutPayAction === "waive" ? (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Balance waived</span>
+                        <span className="text-muted-foreground">—</span>
+                      </div>
+                    ) : null}
+                  </div>
                 );
               })()}
             </div>
@@ -1822,50 +1705,42 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             const waPhone = shareReceipt.phone?.replace(/\D/g, "");
             const waMsg = encodeURIComponent(`Dear ${shareReceipt.name}, your payment receipt is ready. Please find it here: ${receiptUrl}`);
             return (
-              <div className="space-y-3 py-2">
-                {/* Receipt URL */}
-                <div className="flex items-center gap-2 rounded-md border border-sidebar-border bg-sidebar-accent/30 px-3 py-2">
-                  <span className="flex-1 text-xs text-muted-foreground truncate">{receiptUrl}</span>
-                  <button
-                    onClick={() => { navigator.clipboard.writeText(receiptUrl); toast({ title: "Link copied!" }); }}
-                    className="shrink-0 text-xs font-medium text-amber hover:underline"
-                  >
-                    Copy
-                  </button>
-                </div>
-
-                {/* Action buttons */}
-                <div className="flex flex-col gap-2">
-                  <Button
-                    className="w-full bg-[#25D366] hover:bg-[#1da851] text-white"
-                    onClick={() => {
-                      const url = waPhone
-                        ? `https://wa.me/${waPhone}?text=${waMsg}`
-                        : `https://wa.me/?text=${waMsg}`;
-                      window.open(url, "_blank", "noopener,noreferrer");
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" className="w-4 h-4 mr-2 fill-current" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/>
-                      <path d="M12 0C5.373 0 0 5.373 0 12c0 2.121.554 4.11 1.523 5.84L0 24l6.336-1.492A11.94 11.94 0 0 0 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.818a9.8 9.8 0 0 1-5.003-1.374l-.36-.213-3.76.885.936-3.658-.235-.374A9.817 9.817 0 0 1 2.182 12C2.182 6.57 6.57 2.182 12 2.182c5.43 0 9.818 4.388 9.818 9.818 0 5.43-4.388 9.818-9.818 9.818z"/>
-                    </svg>
-                    Share via WhatsApp
-                  </Button>
+              <div className="flex flex-col gap-2 pt-1">
+                <Button
+                  className="w-full bg-[#25D366] hover:bg-[#1da851] text-white"
+                  onClick={() => {
+                    const url = waPhone
+                      ? `https://wa.me/${waPhone}?text=${waMsg}`
+                      : `https://wa.me/?text=${waMsg}`;
+                    window.open(url, "_blank", "noopener,noreferrer");
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" className="w-4 h-4 mr-2 fill-current" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/>
+                    <path d="M12 0C5.373 0 0 5.373 0 12c0 2.121.554 4.11 1.523 5.84L0 24l6.336-1.492A11.94 11.94 0 0 0 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.818a9.8 9.8 0 0 1-5.003-1.374l-.36-.213-3.76.885.936-3.658-.235-.374A9.817 9.817 0 0 1 2.182 12C2.182 6.57 6.57 2.182 12 2.182c5.43 0 9.818 4.388 9.818 9.818 0 5.43-4.388 9.818-9.818 9.818z"/>
+                  </svg>
+                  Share via WhatsApp
+                </Button>
+                <div className="flex gap-2">
                   <Button
                     variant="outline"
-                    className="w-full"
+                    className="flex-1"
                     onClick={() => window.open(receiptUrl, "_blank", "noopener,noreferrer")}
                   >
                     View Receipt
                   </Button>
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => { navigator.clipboard.writeText(receiptUrl); toast({ title: "Link copied!" }); }}
+                  >
+                    Copy Link
+                  </Button>
                 </div>
+                <Button variant="ghost" className="w-full" onClick={() => setShareReceipt(null)}>Close</Button>
               </div>
             );
           })()}
-
-          <DialogFooter>
-            <Button variant="ghost" className="w-full" onClick={() => setShareReceipt(null)}>Close</Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

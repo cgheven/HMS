@@ -605,18 +605,12 @@ export async function checkoutTenantAction(
       throw new Error("Checkout date cannot be more than 7 days in the future");
     }
 
-    // SEC-F6: Validate depositDisposition enum
-    if (input.depositDisposition !== undefined &&
-        !new Set(["refund", "deduct", "forfeit"]).has(input.depositDisposition)) {
-      throw new Error("Invalid deposit disposition");
-    }
-
     // Step 2: Verify payment belongs to this tenant and hostel (prevents IDOR)
     let paymentAlreadySettled = false;
     let verifiedPayment: { id: string; tenant_id: string; hostel_id: string; status: string; for_month: string } | null = null;
     if (input.paymentSettlement) {
       // SEC-F4: Runtime action validation — TypeScript enums are erased at runtime
-      if (!new Set(["pay", "waive", "leave"]).has(input.paymentSettlement.action as string)) {
+      if (!new Set(["pay", "waive"]).has(input.paymentSettlement.action as string)) {
         throw new Error("Invalid payment action");
       }
 
@@ -646,7 +640,7 @@ export async function checkoutTenantAction(
 
     // Step 3: Settle payment FIRST (before deactivating tenant — EC-4 safety)
     // Skip if already in the target state (SEC-F2 idempotent retry path)
-    if (input.paymentSettlement && input.paymentSettlement.action !== "leave" && !paymentAlreadySettled) {
+    if (input.paymentSettlement && !paymentAlreadySettled) {
       if (input.paymentSettlement.action === "pay") {
         const { error: payUpdateErr } = await adminDb
           .from("hms_payments")
@@ -655,6 +649,7 @@ export async function checkoutTenantAction(
             payment_date: input.paymentSettlement.paymentDate ?? new Date().toISOString().split("T")[0],
             payment_method: (input.paymentSettlement.paymentMethod ?? null) as PaymentMethod | null,
             receipt_number: genReceiptNumber(tenant.full_name, verifiedPayment?.for_month ?? ""),
+            ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
             updated_at: new Date().toISOString(),
           })
           .eq("id", input.paymentSettlement.paymentId)
@@ -667,6 +662,7 @@ export async function checkoutTenantAction(
           .from("hms_payments")
           .update({
             status: "waived" as PaymentStatus,
+            ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
             updated_at: new Date().toISOString(),
           })
           .eq("id", input.paymentSettlement.paymentId)
@@ -692,7 +688,7 @@ export async function checkoutTenantAction(
     if (checkoutErr) {
       // EC-4: Payment was settled but tenant deactivation failed.
       // The payment is now paid/waived, so a retry will skip that step (SEC-F2).
-      if (input.paymentSettlement && input.paymentSettlement.action !== "leave") {
+      if (input.paymentSettlement) {
         // SEC-F5: sanitize — omit raw DB error; the retry message is actionable enough
         throw new Error(
           `The payment was recorded successfully, but tenant checkout failed. ` +

@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   CreditCard, CheckCircle2, Clock, AlertTriangle, Wallet,
-  TrendingUp, Banknote, RefreshCw, Zap, Loader2, FileText,
+  TrendingUp, Banknote, Zap, Loader2, FileText, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
-import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
+import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import {
@@ -95,13 +95,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     ac_units_consumed: "0",
   });
   const [saving, setSaving] = useState(false);
-  const [syncing, setSyncing] = useState(false);
   const [sendingWa, setSendingWa] = useState<string | null>(null); // paymentId
   const [generatingReceipt, setGeneratingReceipt] = useState<string | null>(null); // paymentId
   const [postPaymentWa, setPostPaymentWa] = useState<Payment | null>(null);
   const [acUnits, setAcUnits] = useState<Record<string, string>>({});
   const [applyingAC, setApplyingAC] = useState<string | null>(null);
   const [roomFilter, setRoomFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "paid" | "unpaid">("all");
   // joinUnits keyed by `${tenantId}_${month}` so values don't bleed across months
   const [joinUnits, setJoinUnits] = useState<Record<string, string>>({});
   const [savingJoin, setSavingJoin] = useState<string | null>(null);
@@ -134,14 +134,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
   // All payment mutations go through Server Actions — not the browser Supabase client
   const syncMonth = useCallback(async (month: string) => {
-    setSyncing(true);
     const result = await syncMonthAction(month);
     if (result.error) {
       toast({ title: "Failed to sync payments", description: result.error, variant: "destructive" });
     } else if (result.payments) {
       setPayments(result.payments);
     }
-    setSyncing(false);
   }, []);
 
   // Auto-sync on mount
@@ -166,6 +164,17 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     setSelectedMonth(month);
     await syncMonth(month);
   }
+
+  function stepMonth(dir: -1 | 1) {
+    const [y, m] = selectedMonth.split("-").map(Number);
+    const d = new Date(y, m - 1 + dir, 1);
+    handleMonthChange(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+
+  const displayMonth = (() => {
+    const [y, m] = selectedMonth.split("-").map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString("en-PK", { month: "long", year: "numeric" });
+  })();
 
   function openMarkPaid(p: Payment) {
     const tenantName = p.tenant?.full_name ?? "";
@@ -386,9 +395,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }, [payments, rooms]);
 
   const filteredPayments = useMemo(() => {
-    if (roomFilter === "all") return payments;
-    return payments.filter(p => p.tenant?.room_id === roomFilter);
-  }, [payments, roomFilter]);
+    return payments.filter(p => {
+      if (roomFilter !== "all" && p.tenant?.room_id !== roomFilter) return false;
+      if (statusFilter === "paid") return p.status === "paid";
+      if (statusFilter === "unpaid") return p.status === "pending" || p.status === "overdue";
+      return true;
+    });
+  }, [payments, roomFilter, statusFilter]);
 
   const stats = useMemo(() => {
     const due = payments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
@@ -528,17 +541,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
+      <div>
+        <div className="flex items-center justify-between gap-4">
           <h1 className="text-3xl font-serif font-normal tracking-tight">Payments</h1>
-          <p className="text-muted-foreground text-sm mt-1">Monthly rent collection</p>
+          <div className="flex items-center shrink-0 rounded-lg border border-sidebar-border bg-sidebar-accent/30">
+            <button onClick={() => stepMonth(-1)} className="px-2 py-1.5 text-muted-foreground hover:text-foreground transition-colors">
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            <span className="text-xs font-medium px-1 min-w-[6rem] text-center">{displayMonth}</span>
+            <button onClick={() => stepMonth(1)} className="px-2 py-1.5 text-muted-foreground hover:text-foreground transition-colors">
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Input type="month" value={selectedMonth} onChange={(e) => handleMonthChange(e.target.value)} className="w-auto" />
-          <Button onClick={() => syncMonth(selectedMonth)} disabled={syncing} variant="ghost" size="icon" title="Sync payments">
-            <RefreshCw className={`w-4 h-4 ${syncing ? "animate-spin" : ""}`} />
-          </Button>
-        </div>
+        <p className="text-muted-foreground text-sm mt-1">Monthly rent collection</p>
       </div>
 
       {/* Stats */}
@@ -564,7 +580,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       </div>
 
       {/* Tabs */}
-      <Tabs value={tab} onValueChange={(v) => { setTab(v); if (v === "history") loadHistory(); if (v !== "monthly") setRoomFilter("all"); }}>
+      <Tabs value={tab} onValueChange={(v) => { setTab(v); if (v === "history") loadHistory(); if (v !== "monthly") { setRoomFilter("all"); setStatusFilter("all"); } }}>
         <TabsList>
           <TabsTrigger value="monthly"><Banknote className="w-3.5 h-3.5" /> Monthly View</TabsTrigger>
           <TabsTrigger value="history"><Clock className="w-3.5 h-3.5" /> All History</TabsTrigger>
@@ -583,34 +599,56 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               </div>
             ) : (
               <div className="p-2">
-                {/* Room filter dropdown */}
-                {roomsInMonth.length > 1 && (
-                  <div className="flex items-center gap-2 px-2 pt-1 pb-3">
+                {/* Filters bar */}
+                <div className="flex flex-wrap items-center gap-2 px-2 pt-1 pb-3">
+                  {/* Status chips */}
+                  <div className="flex items-center gap-1">
+                    {(["all", "paid", "unpaid"] as const).map((s) => {
+                      const count = s === "all" ? payments.length
+                        : s === "paid" ? payments.filter(p => p.status === "paid").length
+                        : payments.filter(p => p.status === "pending" || p.status === "overdue").length;
+                      const label = s === "all" ? "All" : s === "paid" ? "Paid" : "Unpaid";
+                      const active = statusFilter === s;
+                      return (
+                        <button
+                          key={s}
+                          onClick={() => setStatusFilter(s)}
+                          className={cn(
+                            "h-7 px-3 rounded-full text-xs font-medium border transition-all",
+                            active && s === "paid"   ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400" :
+                            active && s === "unpaid" ? "bg-amber/15 border-amber/40 text-amber" :
+                            active                   ? "bg-sidebar-accent border-sidebar-border text-foreground" :
+                            "border-transparent text-muted-foreground hover:text-foreground hover:border-sidebar-border"
+                          )}
+                        >
+                          {label} <span className="ml-1 opacity-60">{count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Room filter dropdown */}
+                  {roomsInMonth.length > 1 && (
                     <Select value={roomFilter} onValueChange={setRoomFilter}>
-                      <SelectTrigger className="h-8 w-44 text-xs">
+                      <SelectTrigger className="h-7 w-40 text-xs">
                         <SelectValue placeholder="All Rooms" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">All Rooms ({payments.length})</SelectItem>
-                        {roomsInMonth.map(r => {
-                          const count = payments.filter(p => p.tenant?.room_id === r.id).length;
-                          return (
-                            <SelectItem key={r.id} value={r.id}>
-                              Room {r.room_number} ({count})
-                            </SelectItem>
-                          );
-                        })}
+                        <SelectItem value="all">All Rooms</SelectItem>
+                        {roomsInMonth.map(r => (
+                          <SelectItem key={r.id} value={r.id}>Room {r.room_number}</SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
-                  </div>
-                )}
+                  )}
+                </div>
                 <PaymentTableHeader />
                 <div className="space-y-2 md:space-y-0.5 mt-1">
                   {filteredPayments.map((p) => <PaymentRow key={p.id} p={p} />)}
                 </div>
-                {filteredPayments.length === 0 && roomFilter !== "all" && (
+                {filteredPayments.length === 0 && (roomFilter !== "all" || statusFilter !== "all") && (
                   <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
-                    No payments for this room
+                    No {statusFilter !== "all" ? statusFilter : ""} payments{roomFilter !== "all" ? " for this room" : ""}
                   </div>
                 )}
               </div>
