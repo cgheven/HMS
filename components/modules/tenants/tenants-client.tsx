@@ -38,9 +38,17 @@ const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
   space_only: "Space Only",
   space_food: "Space + 2 Meals",
   space_3meals: "Space + 3 Meals",
-  space_food_ac: "Space + Meals + AC",
+  space_food_ac: "Space + Meals + AC", // legacy — kept for display only, never offered in new forms
   space_meals_cooler: "Space + Meals + Cooler",
 };
+
+// Tiers shown when adding/editing a tenant — space_food_ac intentionally excluded
+const SELECTABLE_TIERS: { tier: PackageTier; label: string }[] = [
+  { tier: "space_only",         label: "Space Only" },
+  { tier: "space_food",         label: "Space + 2 Meals" },
+  { tier: "space_3meals",       label: "Space + 3 Meals" },
+  { tier: "space_meals_cooler", label: "Space + Meals + Cooler" },
+];
 
 function getPkgPrice(prices: Partial<Record<PackageTier, { no_ac: number; ac: number }>>, tier: PackageTier, hasAc: boolean): string {
   const p = prices[tier];
@@ -210,17 +218,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [saving, setSaving] = useState(false);
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null);
   const [pkgPrices, setPkgPrices] = useState<Partial<Record<PackageTier, PackagePrices>>>({});
+  const [configSecurityDeposit, setConfigSecurityDeposit] = useState<number>(0);
 
   useEffect(() => {
     if (!hostelId) return;
     const supabase = createClient();
     supabase.from("hms_package_configs")
-      .select("package_prices")
+      .select("package_prices, security_deposit")
       .eq("hostel_id", hostelId)
       .maybeSingle()
       .then(({ data }) => {
         if (data?.package_prices) {
           setPkgPrices(data.package_prices as Partial<Record<PackageTier, PackagePrices>>);
+        }
+        if (data?.security_deposit) {
+          setConfigSecurityDeposit(Number(data.security_deposit));
         }
       });
   }, [hostelId]);
@@ -352,7 +364,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
   function openAdd() {
     setEditing(null);
-    setForm(emptyForm);
+    setForm({ ...emptyForm, security_deposit: configSecurityDeposit > 0 ? String(configSecurityDeposit) : "" });
     setEditingDocs([]);
     setDialogOpen(true);
   }
@@ -1334,9 +1346,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             )}
 
+            {/* Personal info */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5 sm:col-span-2"><Label>Full Name *</Label><Input placeholder="Ahmed Khan" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} /></div>
-              <div className="space-y-1.5"><Label>Phone</Label><Input placeholder="+92 300 0000000" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Phone *</Label><Input placeholder="+92 300 0000000" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>CNIC</Label><Input placeholder="00000-0000000-0" value={form.cnic} onChange={(e) => setForm({ ...form, cnic: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Email</Label><Input type="email" placeholder="tenant@email.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Type</Label>
@@ -1349,29 +1362,84 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-1.5 sm:col-span-2"><Label>Package Tier</Label>
-                <Select value={form.package_tier} onValueChange={(v) => {
-                  const tier = v as PackageTier;
-                  const room = form.room_id ? rooms.find((r) => r.id === form.room_id) : null;
-                  const suggested = room ? getPkgPrice(pkgPrices, tier, room.has_ac) : "";
-                  setForm({ ...form, package_tier: tier, monthly_rent: suggested || form.monthly_rent });
-                }}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {(Object.entries(PACKAGE_TIER_LABELS) as [PackageTier, string][]).map(([k, label]) => {
-                      const p = pkgPrices[k];
-                      const hasPrice = p && (p.no_ac > 0 || p.ac > 0);
-                      return (
-                        <SelectItem key={k} value={k}>
-                          <span>{label}</span>
-                          {hasPrice && <span className="ml-1.5 text-xs text-muted-foreground">Rs. {(p.no_ac || p.ac).toLocaleString()}</span>}
-                        </SelectItem>
-                      );
-                    })}
-                  </SelectContent>
-                </Select>
-              </div>
             </div>
+
+            {/* Room + Bed — must come before Package Tier so AC status is known */}
+            {!form.is_waiting && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5"><Label>Room *</Label>
+                  <Select value={form.room_id} onValueChange={(v) => {
+                    const room = rooms.find((r) => r.id === v);
+                    const pkgSuggested = room ? getPkgPrice(pkgPrices, form.package_tier, room.has_ac) : "";
+                    const fallback = room?.monthly_rent?.toString() ?? "";
+                    const deposit = !form.security_deposit && configSecurityDeposit > 0 ? String(configSecurityDeposit) : form.security_deposit;
+                    setForm({ ...form, room_id: v, monthly_rent: pkgSuggested || fallback || form.monthly_rent, security_deposit: deposit });
+                  }}>
+                    <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
+                    <SelectContent>
+                      {availableRooms.map((r) => (
+                        <SelectItem key={r.id} value={r.id}>
+                          Room {r.room_number}{r.has_ac ? " · AC" : ""} · {r.capacity - r.occupied} free
+                        </SelectItem>
+                      ))}
+                      {editing && editing.room_id && !availableRooms.find(r => r.id === editing.room_id) && (
+                        <SelectItem value={editing.room_id}>Current room (keep)</SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5"><Label>Bed Number</Label><Input placeholder="A1" value={form.bed_number} onChange={(e) => setForm({ ...form, bed_number: e.target.value })} /></div>
+              </div>
+            )}
+
+            {/* Package Tier — filtered by room's AC status */}
+            {(() => {
+              const selectedRoom = form.room_id ? rooms.find((r) => r.id === form.room_id) : null;
+              const visibleTiers = SELECTABLE_TIERS.filter((t) => {
+                // For waiting list (no room), show all; for a room, filter by AC
+                if (!selectedRoom) return true;
+                const p = pkgPrices[t.tier];
+                if (!p) return true; // no price config — still show, admin can override rent
+                return selectedRoom.has_ac ? p.ac > 0 : p.no_ac > 0;
+              });
+              return (
+                <div className="space-y-1.5">
+                  <Label>Package Tier *</Label>
+                  <Select
+                    value={form.package_tier}
+                    disabled={!form.is_waiting && !form.room_id}
+                    onValueChange={(v) => {
+                      const tier = v as PackageTier;
+                      const suggested = selectedRoom ? getPkgPrice(pkgPrices, tier, selectedRoom.has_ac) : "";
+                      setForm({ ...form, package_tier: tier, monthly_rent: suggested || form.monthly_rent });
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={!form.is_waiting && !form.room_id ? "Select a room first" : "Select package"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {visibleTiers.map(({ tier, label }) => {
+                        const p = pkgPrices[tier];
+                        const price = selectedRoom && p
+                          ? (selectedRoom.has_ac ? p.ac : p.no_ac)
+                          : null;
+                        return (
+                          <SelectItem key={tier} value={tier}>
+                            <span>{label}</span>
+                            {price != null && price > 0 && (
+                              <span className="ml-1.5 text-xs text-muted-foreground">Rs. {price.toLocaleString()}</span>
+                            )}
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+                  {!form.is_waiting && !form.room_id && (
+                    <p className="text-xs text-muted-foreground/50">Select a room first to see available packages</p>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Billing type toggle */}
             <div className="flex gap-2">
@@ -1418,31 +1486,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </>
             )}
 
-            {!form.is_waiting && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5"><Label>Room</Label>
-                  <Select value={form.room_id} onValueChange={(v) => {
-                    const room = rooms.find((r) => r.id === v);
-                    const pkgSuggested = room ? getPkgPrice(pkgPrices, form.package_tier, room.has_ac) : "";
-                    const fallback = room?.monthly_rent?.toString() ?? "";
-                    setForm({ ...form, room_id: v, monthly_rent: form.monthly_rent || pkgSuggested || fallback });
-                  }}>
-                    <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
-                    <SelectContent>
-                      {availableRooms.map((r) => (
-                        <SelectItem key={r.id} value={r.id}>
-                          Room {r.room_number} · {r.capacity - r.occupied} free · {formatCurrency(r.monthly_rent)}/mo
-                        </SelectItem>
-                      ))}
-                      {editing && editing.room_id && !availableRooms.find(r => r.id === editing.room_id) && (
-                        <SelectItem value={editing.room_id}>Current room (keep)</SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5"><Label>Bed Number</Label><Input placeholder="A1" value={form.bed_number} onChange={(e) => setForm({ ...form, bed_number: e.target.value })} /></div>
-                {form.billing_type === "monthly" && <div className="space-y-1.5"><Label>Check-in Date *</Label><Input type="date" value={form.check_in} onChange={(e) => setForm({ ...form, check_in: e.target.value })} /></div>}
-              </div>
+            {/* Check-in date for monthly billing */}
+            {!form.is_waiting && form.billing_type === "monthly" && (
+              <div className="space-y-1.5"><Label>Check-in Date *</Label><Input type="date" value={form.check_in} onChange={(e) => setForm({ ...form, check_in: e.target.value })} /></div>
             )}
 
             <div className="grid grid-cols-2 gap-4">

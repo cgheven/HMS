@@ -15,7 +15,7 @@ import { formatCurrency, capitalize } from "@/lib/utils";
 import type { Room, RoomStatus, SpaceType } from "@/types";
 
 const statusColors: Record<RoomStatus, "success" | "info" | "warning"> = { available: "success", occupied: "info", maintenance: "warning" };
-const emptyRoom = { room_number: "", floor: "", type: "general" as SpaceType, capacity: "1", monthly_rent: "", status: "available" as RoomStatus, has_ac: false, has_cooler: false };
+const emptyRoom = { room_number: "", floor: "", type: "general" as SpaceType, capacity: "1", status: "available" as RoomStatus, has_ac: false, has_cooler: false };
 
 // Fields for each slot — slot 0 = photo_path, slot 1 = photo_path_2, etc.
 const PHOTO_FIELDS = ["photo_path", "photo_path_2", "photo_path_3", "photo_path_4", "photo_path_5"] as const;
@@ -76,7 +76,7 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
 
   function openEdit(room: Room) {
     setEditing(room);
-    setForm({ room_number: room.room_number, floor: room.floor?.toString() ?? "", type: room.type, capacity: room.capacity.toString(), monthly_rent: room.monthly_rent.toString(), status: room.status, has_ac: room.has_ac ?? false, has_cooler: room.has_cooler ?? false });
+    setForm({ room_number: room.room_number, floor: room.floor?.toString() ?? "", type: room.type, capacity: room.capacity.toString(), status: room.status, has_ac: room.has_ac ?? false, has_cooler: room.has_cooler ?? false });
     setPhotos(roomToSlots(room));
     setDialogOpen(true);
   }
@@ -117,7 +117,6 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
       floor: form.floor ? parseInt(form.floor) : null,
       type: form.type,
       capacity: parseInt(form.capacity) || 1,
-      monthly_rent: parseFloat(form.monthly_rent) || 0,
       status: form.status,
       has_ac: form.has_ac,
       has_cooler: form.has_cooler,
@@ -332,10 +331,7 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
               <div className="space-y-1.5"><Label>Type</Label><Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v as SpaceType })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="student">Student</SelectItem><SelectItem value="professional">Professional</SelectItem><SelectItem value="general">General</SelectItem></SelectContent></Select></div>
               <div className="space-y-1.5"><Label>Status</Label><Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v as RoomStatus })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="available">Available</SelectItem><SelectItem value="occupied">Occupied</SelectItem><SelectItem value="maintenance">Maintenance</SelectItem></SelectContent></Select></div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5"><Label>Capacity</Label><Input type="number" min="1" value={form.capacity} onChange={(e) => setForm({ ...form, capacity: e.target.value })} /></div>
-              <div className="space-y-1.5"><Label>Monthly Rent (PKR)</Label><Input type="number" value={form.monthly_rent} onChange={(e) => setForm({ ...form, monthly_rent: e.target.value })} /></div>
-            </div>
+            <div className="space-y-1.5"><Label>Capacity</Label><Input type="number" min="1" value={form.capacity} onChange={(e) => setForm({ ...form, capacity: e.target.value })} /></div>
             <div className="space-y-2">
               <Label>Amenities</Label>
               <div className="flex gap-3">
