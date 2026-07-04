@@ -513,17 +513,18 @@ export async function applyRoomACUnitsAction(
     // ── Get package config for per-unit rate ────────────────────
     const { data: pkgConfig } = await supabase
       .from("hms_package_configs")
-      .select("ac_per_unit_rate")
+      .select("ac_per_unit_rate, food_monthly_rate")
       .eq("hostel_id", hostelId)
       .single();
     const perUnitRate = Number(pkgConfig?.ac_per_unit_rate ?? 0);
     if (perUnitRate <= 0) throw new Error("AC per-unit rate is not configured. Set it in Settings → Packages.");
+    const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
 
     // ── Find active AC-package tenants in this room ───────────────
     // Space Only / food-only tenants are excluded — they don't have AC in their plan
     const { data: allTenants } = await supabase
       .from("hms_tenants")
-      .select("id, check_in, package_tier")
+      .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out")
       .eq("hostel_id", hostelId)
       .eq("room_id", roomId)
       .eq("is_active", true);
@@ -555,11 +556,11 @@ export async function applyRoomACUnitsAction(
     let tenantBilling: { id: string; tenantUnits: number; charge: number }[];
 
     if (joinReadings.length === 0) {
-      // ── Equal split: last tenant absorbs rounding remainder ──
+      // ── Equal split: units are integers, last tenant absorbs remainder ──
       const baseCharge = n > 1 ? Math.floor(totalCharge / n) : totalCharge;
       const lastCharge = totalCharge - baseCharge * (n - 1);
-      const baseUnits = n > 1 ? Math.round((units / n) * 100) / 100 : units;
-      const lastUnits = Math.round((units - baseUnits * (n - 1)) * 100) / 100;
+      const baseUnits = n > 1 ? Math.floor(units / n) : units;
+      const lastUnits = units - baseUnits * (n - 1);
       tenantBilling = eligible.map((t, idx) => ({
         id: t.id,
         tenantUnits: idx === n - 1 ? lastUnits : baseUnits,
@@ -598,18 +599,62 @@ export async function applyRoomACUnitsAction(
       if (units === 0) {
         tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
       } else {
+        // Round accumulated units to integers; last tenant absorbs any unit remainder
         const rows = eligible.map(t => {
           const tu = accumulated.get(t.id) ?? 0;
           return {
             id: t.id,
-            tenantUnits: Math.round(tu * 100) / 100,
+            tenantUnits: Math.round(tu),
             charge: Math.max(0, Math.round((tu / units) * totalCharge)),
           };
         });
         const sumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.charge, 0);
         if (rows.length > 0) rows[rows.length - 1].charge = Math.max(0, totalCharge - sumExceptLast);
+        // Ensure unit total exactly matches input (last tenant absorbs integer remainder)
+        const unitSumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
+        if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, units - unitSumExceptLast);
         tenantBilling = rows;
       }
+    }
+
+    // ── Auto-create missing payment rows so Apply never requires a manual sync ──
+    const { data: existingPayRows } = await adminDb
+      .from("hms_payments")
+      .select("tenant_id")
+      .eq("hostel_id", hostelId)
+      .eq("for_month", forMonth)
+      .in("tenant_id", eligible.map(t => t.id));
+
+    const existingTenantIds = new Set((existingPayRows ?? []).map(r => r.tenant_id));
+    const missingTenants = eligible.filter(t => !existingTenantIds.has(t.id));
+
+    if (missingTenants.length > 0) {
+      const newRows = missingTenants.map(t => {
+        const tier = (t.package_tier ?? "space_only") as PackageTier;
+        const baseRent = calcBaseRentServer(
+          {
+            billing_type: (t as { billing_type: string }).billing_type ?? "monthly",
+            monthly_rent: (t as { monthly_rent: number }).monthly_rent ?? 0,
+            daily_rate: (t as { daily_rate: number }).daily_rate ?? 0,
+            check_in: t.check_in,
+            check_out: (t as { check_out: string | null }).check_out ?? null,
+          },
+          forMonth
+        );
+        const foodCharge = AC_TIERS.has(tier) ? foodRate : 0;
+        return {
+          hostel_id: hostelId,
+          tenant_id: t.id,
+          for_month: forMonth,
+          amount: baseRent + foodCharge,
+          status: "pending" as PaymentStatus,
+          payment_package_tier: tier,
+          food_charge: foodCharge,
+          ac_units_consumed: 0,
+          ac_charge: 0,
+        };
+      });
+      await adminDb.from("hms_payments").insert(newRows);
     }
 
     // ── Update each eligible tenant's payment (admin client for writes) ──
@@ -629,7 +674,11 @@ export async function applyRoomACUnitsAction(
       )
     );
 
-    // ── Verify all payment rows were found — guard against missing rows ──
+    // ── Surface any DB error from the updates ──
+    const firstError = updateResults.find(r => r.error)?.error;
+    if (firstError) throw new Error(`AC billing DB error: ${firstError.message} (code: ${firstError.code})`);
+
+    // ── Verify all rows were found ──
     const updatedCount = updateResults.reduce((sum, r) => sum + (r.data?.length ?? 0), 0);
     if (updatedCount < eligible.length) {
       throw new Error(

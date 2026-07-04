@@ -106,11 +106,19 @@ export function generateReceiptPDF(
     const approxWidth = content.length * size * 0.46;
     add(Math.max(ML, CX - approxWidth / 2), content, size, bold);
   }
+  // Helvetica AFM widths (units/1000) for accurate right-alignment without overflow.
+  const HV: Record<string, number> = {
+    ' ':278,'-':333,'.':278,',':278,':':278,'/':278,'(':333,')':333,
+    '0':556,'1':556,'2':556,'3':556,'4':556,'5':556,'6':556,'7':556,'8':556,'9':556,
+    'A':667,'B':667,'C':667,'D':722,'E':611,'F':611,'G':722,'H':722,'I':278,'J':500,'K':667,'L':556,'M':722,'N':722,'O':778,'P':611,'Q':778,'R':667,'S':556,'T':611,'U':722,'V':667,'W':944,'X':667,'Y':611,'Z':611,
+    'a':556,'b':556,'c':500,'d':556,'e':556,'f':278,'g':556,'h':556,'i':222,'j':222,'k':500,'l':222,'m':833,'n':556,'o':556,'p':556,'q':556,'r':333,'s':500,'t':278,'u':556,'v':500,'w':722,'x':500,'y':500,'z':500,
+  };
+  function tw(str: string, size: number): number {
+    return str.split("").reduce((s, c) => s + (HV[c] ?? 556), 0) / 1000 * size;
+  }
   function addKv(key: string, val: string, bold = false): void {
     add(ML, key, 8, bold);
-    // 0.58 multiplier keeps long values from overflowing the right margin
-    const approxWidth = val.length * 8 * 0.58;
-    add(Math.max(ML + 70, MR - approxWidth), val, 8, bold);
+    add(Math.max(ML + 70, MR - tw(val, 8) - 2), val, 8, bold);
   }
   // Draws a thin solid rule from ML to MR — guaranteed to span the full content width.
   function addDash(): void {
@@ -126,12 +134,10 @@ export function generateReceiptPDF(
   addCenter("PAYMENT RECEIPT", 9, true); nl(10);
   addDash(); nl(10);
 
-  // Receipt # on two lines so a long ID (e.g. HMS-202607-SK-8040) never overflows
-  add(ML, "Receipt #", 8, false); nl(11);
-  add(ML + 4, payment.receipt_number ?? "N/A", 7, false); nl(13);
+  addKv("Receipt #", payment.receipt_number ?? "N/A"); nl(12);
   addKv("Date", fmtDate(payment.payment_date)); nl(12);
   addKv("Period", fmtMonth(payment.for_month)); nl(12);
-  addKv("Method", methodLabel(payment.payment_method)); nl(12);
+  addKv("Method", (payment.payment_method ?? "—").toUpperCase()); nl(12);
   addDash(); nl(10);
 
   add(ML, "Tenant:", 8, true); nl(12);
@@ -168,10 +174,30 @@ export function generateReceiptPDF(
   addKv("TOTAL PAID", pk(total), true); nl(15);
   addDash(); nl(10);
 
-  add(ML, "In Words:", 7, true); nl(10);
   const wordsStr = amountInWords(total);
-  for (let i = 0; i < wordsStr.length; i += 36) {
-    add(ML, wordsStr.slice(i, i + 36), 7, false); nl(9);
+  // Render "In Words: <value>" on one line; wrap remainder if it overflows page width
+  const wordsLabel = "In Words: ";
+  const maxLineWidth = MR - ML - 2;
+  const labelW = tw(wordsLabel, 7);
+  const wordTokens = wordsStr.split(" ");
+  let firstLine = "";
+  let rest: string[] = [];
+  for (let i = 0; i < wordTokens.length; i++) {
+    const candidate = firstLine ? `${firstLine} ${wordTokens[i]}` : wordTokens[i];
+    if (tw(candidate, 7) <= maxLineWidth - labelW) { firstLine = candidate; }
+    else { rest = wordTokens.slice(i); break; }
+  }
+  add(ML, wordsLabel, 7, true);
+  add(ML + labelW, firstLine, 7, false); nl(9);
+  for (const chunk of rest) {
+    // wrap remaining words with same indent as value start
+    let line = "";
+    for (const w of chunk.split(" ")) {
+      const c = line ? `${line} ${w}` : w;
+      if (tw(c, 7) <= maxLineWidth - labelW) { line = c; }
+      else { add(ML + labelW, line, 7, false); nl(9); line = w; }
+    }
+    if (line) { add(ML + labelW, line, 7, false); nl(9); }
   }
   nl(4); addDash(); nl(10);
 

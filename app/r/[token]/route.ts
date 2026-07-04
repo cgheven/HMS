@@ -61,6 +61,17 @@ export async function GET(
     return new NextResponse("Receipt data unavailable.", { status: 404 });
   }
 
+  // Self-heal: generate + persist receipt_number on first view if it was never set.
+  if (!payment.receipt_number) {
+    const tenantRaw = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
+    const tenantName = (tenantRaw as { full_name?: string })?.full_name ?? "";
+    const initials = tenantName.split(" ").map((w: string) => w[0] ?? "").join("").toUpperCase().slice(0, 2);
+    const rand = Math.floor(Math.random() * 900 + 100);
+    const generated = `HMS-${payment.for_month.replace("-", "")}-${initials}-${rand}`;
+    await supabase.from("hms_payments").update({ receipt_number: generated }).eq("id", payment.id);
+    payment.receipt_number = generated;
+  }
+
   const tenant = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
   const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null } | null;
 

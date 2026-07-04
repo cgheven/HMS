@@ -265,6 +265,20 @@ export interface Payment {
   tenant?: { full_name: string; room_id: string | null; phone?: string | null } | null;
 }
 
+export interface CheckoutPaymentSettlement {
+  paymentId: string;
+  action: "pay" | "waive" | "leave";
+  paymentDate?: string;
+  paymentMethod?: PaymentMethod;
+}
+
+export interface CheckoutInput {
+  tenantId: string;
+  checkoutDate: string;
+  paymentSettlement?: CheckoutPaymentSettlement;
+  depositDisposition?: "refund" | "deduct" | "forfeit";
+}
+
 export interface Complaint {
   id: string;
   hostel_id: string;

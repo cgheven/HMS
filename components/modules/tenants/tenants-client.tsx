@@ -4,7 +4,7 @@ import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, History,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
-  FileSpreadsheet, FileText, ExternalLink,
+  FileSpreadsheet, FileText, ExternalLink, Banknote, Shield,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -12,17 +12,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
-import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink } from "@/app/actions/tenants";
 
 interface Props {
   hostelId: string | null;
@@ -55,6 +55,129 @@ const emptyForm = {
   photo_url: "" as string,
 };
 
+// ---------------------------------------------------------------------------
+// TenantRow — module scope so React preserves identity across parent re-renders
+// (UX-F1: defining inside render causes unmount/remount on every parent state change)
+// ---------------------------------------------------------------------------
+
+interface TenantRowProps {
+  t: Tenant;
+  showCheckout?: boolean;
+  showActivate?: boolean;
+  roomMap: Record<string, Room>;
+  onTimeline: (t: Tenant) => void;
+  onCheckout: (t: Tenant) => void;
+  onActivate: (t: Tenant) => void;
+  onEdit: (t: Tenant) => void;
+  onDelete: (t: Tenant) => void;
+}
+
+function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, onTimeline, onCheckout, onActivate, onEdit, onDelete }: TenantRowProps) {
+  const room = t.room_id ? roomMap[t.room_id] : null;
+  const initials = t.full_name[0].toUpperCase();
+  return (
+    <div className="flex items-center gap-3 px-3 py-3.5 sm:px-4 sm:py-3 rounded-xl hover:bg-white/[0.03] transition-colors">
+      <button
+        type="button"
+        onClick={() => onTimeline(t)}
+        className="w-9 h-9 rounded-full shrink-0 overflow-hidden border border-amber/20 bg-amber/10 flex items-center justify-center hover:opacity-80 transition-opacity"
+      >
+        {t.photo_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={t.photo_url} alt={t.full_name} className="w-full h-full object-cover" />
+        ) : (
+          <span className="text-sm font-semibold text-amber">{initials}</span>
+        )}
+      </button>
+
+      <button
+        type="button"
+        onClick={() => onTimeline(t)}
+        className="flex-1 min-w-0 text-left"
+      >
+        <div className="flex items-center gap-1.5 min-w-0">
+          <p className="text-sm font-medium text-foreground truncate">{t.full_name}</p>
+          <Badge variant="secondary" className="text-xs capitalize shrink-0">{t.type}</Badge>
+          {t.billing_type === "daily" && <Badge variant="warning" className="text-xs shrink-0">Daily</Badge>}
+        </div>
+        <div className="flex flex-wrap gap-x-2 gap-y-0 mt-0.5 items-center">
+          {room && (
+            <span className="text-xs text-muted-foreground whitespace-nowrap">
+              Rm {room.room_number}{t.bed_number ? ` · ${t.bed_number}` : ""}
+            </span>
+          )}
+          {t.phone && (
+            <span className="text-xs text-muted-foreground whitespace-nowrap flex items-center gap-0.5">
+              <Phone className="w-2.5 h-2.5 shrink-0" />{t.phone}
+            </span>
+          )}
+          {t.check_in && (
+            <span className="text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
+              In: {formatDate(t.check_in)}
+            </span>
+          )}
+          {t.check_out && (
+            <span className="text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
+              Out: {formatDate(t.check_out)}
+            </span>
+          )}
+          {(t.documents?.length ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-0.5 text-xs text-emerald-400 whitespace-nowrap">
+              <ShieldCheck className="w-3 h-3" />{t.documents.length}
+            </span>
+          )}
+        </div>
+      </button>
+
+      <div className="text-right shrink-0 hidden md:block">
+        {t.billing_type === "daily"
+          ? <p className="text-sm font-semibold text-foreground">{formatCurrency(t.daily_rate)}<span className="text-xs text-muted-foreground font-normal">/day</span></p>
+          : <p className="text-sm font-semibold text-foreground">{formatCurrency(t.monthly_rent)}<span className="text-xs text-muted-foreground font-normal">/mo</span></p>
+        }
+        {t.security_deposit > 0 && <p className="text-xs text-muted-foreground">Dep: {formatCurrency(t.security_deposit)}</p>}
+      </div>
+
+      <div className="flex items-center gap-0.5 shrink-0">
+        {showActivate && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 px-2 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 border border-emerald-500/20"
+            onClick={() => onActivate(t)}
+            title="Activate Tenant"
+          >
+            <UserCheck className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden sm:inline text-xs ml-1.5">Activate</span>
+          </Button>
+        )}
+        {showCheckout && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 px-2 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 border border-rose-500/20"
+            onClick={() => onCheckout(t)}
+            title="Check Out"
+          >
+            <LogOut className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden sm:inline text-xs ml-1.5">Check Out</span>
+          </Button>
+        )}
+        <Button variant="ghost" size="icon" className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground" title="History" onClick={() => onTimeline(t)}>
+          <History className="w-3.5 h-3.5" />
+        </Button>
+        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEdit(t)}>
+          <Edit2 className="w-3.5 h-3.5" />
+        </Button>
+        <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => onDelete(t)}>
+          <Trash2 className="w-3.5 h-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
 export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug }: Props) {
   const [active, setActive] = useState(initialActive);
   const [waiting, setWaiting] = useState(initialWaiting);
@@ -64,10 +187,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("active");
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [checkoutDialogOpen, setCheckoutDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Tenant | null>(null);
   const [checkingOut, setCheckingOut] = useState<Tenant | null>(null);
   const [checkoutDate, setCheckoutDate] = useState(formatDateInput(new Date()));
+  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; ac_charge: number; ac_units_consumed: number | null } | null>(null);
+  const [checkoutPaymentLoading, setCheckoutPaymentLoading] = useState(false);
+  const [checkoutPaymentError, setCheckoutPaymentError] = useState<string | null>(null);
+  const [checkoutPayAction, setCheckoutPayAction] = useState<"pay" | "waive" | "leave">("pay");
+  const [checkoutPayDate, setCheckoutPayDate] = useState(formatDateInput(new Date()));
+  const [checkoutPayMethod, setCheckoutPayMethod] = useState<string>("cash");
+  const [depositDisposition, setDepositDisposition] = useState<"refund" | "deduct" | "forfeit">("refund");
+  const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
+  const [shareReceipt, setShareReceipt] = useState<{ name: string; phone: string | null; token: string } | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null);
@@ -91,6 +222,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [editingDocs, setEditingDocs] = useState<TenantDocument[]>([]);
   const [typeFilter, setTypeFilter] = useState<"all" | "student" | "professional" | "general">("all");
   const [depositFilter, setDepositFilter] = useState(false);
+  const [roomFilter, setRoomFilter] = useState<string>("all"); // room_id or "all"
   const [exportLoading, setExportLoading] = useState<"excel" | "pdf" | null>(null);
 
   // Rooms with remaining capacity
@@ -340,34 +472,110 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setSaving(false);
   }
 
-  async function handleCheckout() {
-    if (!checkingOut) return;
-    setSaving(true);
+  function resetCheckoutState() {
+    setCheckingOut(null);
+    setCheckoutDate(formatDateInput(new Date()));
+    setCheckoutPendingPayment(null);
+    setCheckoutPaymentLoading(false);
+    setCheckoutPaymentError(null);
+    setCheckoutPayAction("pay");
+    setCheckoutPayDate(formatDateInput(new Date()));
+    setCheckoutPayMethod("cash");
+    setDepositDisposition("refund");
+    setCheckoutSubmitting(false);
+  }
+
+  // Bundles all checkout-dialog setup so TenantRow (module scope) can call a single callback
+  function openCheckout(t: Tenant) {
+    const today = formatDateInput(new Date());
+    setCheckingOut(t);
+    setCheckoutDate(today);
+    setCheckoutPayDate(today);
+    setCheckoutPayAction("pay");
+    setCheckoutPayMethod("cash");
+    setDepositDisposition("refund");
+    setCheckoutPendingPayment(null);
+    setCheckoutPaymentError(null);
+    setCheckoutPaymentLoading(true);
+    fetchCheckoutPayment(t.id);
+  }
+
+  async function fetchCheckoutPayment(tenantId: string) {
     const supabase = createClient();
-    const { error } = await supabase.from("hms_tenants").update({
-      check_out: checkoutDate, is_active: false, is_waiting: false,
-    }).eq("id", checkingOut.id);
+    const { data, error } = await supabase
+      .from("hms_payments")
+      .select("id, for_month, amount, late_fee, ac_charge, ac_units_consumed")
+      .eq("tenant_id", tenantId)
+      .eq("hostel_id", hostelId ?? "")
+      .in("status", ["pending", "overdue"])
+      .order("for_month", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-      setSaving(false);
+      setCheckoutPaymentError(error.message);
+    } else if (data) {
+      // UX-F10: only surface a payment section when there is a real amount to collect
+      const amount = Number(data.amount) + Number(data.late_fee ?? 0);
+      if (amount > 0) {
+        setCheckoutPendingPayment({
+          id: data.id,
+          for_month: data.for_month,
+          amount,
+          ac_charge: Number(data.ac_charge ?? 0),
+          ac_units_consumed: data.ac_units_consumed != null ? Number(data.ac_units_consumed) : null,
+        });
+      }
+    }
+    setCheckoutPaymentLoading(false);
+  }
+
+  async function handleCheckout() {
+    if (!checkingOut) return;
+    setCheckoutSubmitting(true);
+
+    const input: CheckoutInput = {
+      tenantId: checkingOut.id,
+      checkoutDate,
+      paymentSettlement: checkoutPendingPayment
+        ? {
+            paymentId: checkoutPendingPayment.id,
+            action: checkoutPayAction,
+            ...(checkoutPayAction === "pay"
+              ? { paymentDate: checkoutPayDate, paymentMethod: checkoutPayMethod as PaymentMethod }
+              : {}),
+          }
+        : undefined,
+      depositDisposition,
+    };
+
+    const result = await checkoutTenantAction(input);
+
+    if (!result.success) {
+      toast({ title: "Checkout failed", description: result.error, variant: "destructive" });
+      setCheckoutSubmitting(false);
       return;
     }
 
-    // Decrement room occupancy
-    if (checkingOut.room_id) {
-      const room = rooms.find((r) => r.id === checkingOut.room_id);
-      if (room) {
-        const newOcc = Math.max(0, room.occupied - 1);
-        await supabase.from("hms_rooms").update({ occupied: newOcc, status: newOcc < room.capacity ? "available" : "occupied" }).eq("id", checkingOut.room_id);
+    const name = checkingOut.full_name;
+    const phone = checkingOut.phone;
+    const collectedPaymentId = checkoutPayAction === "pay" ? checkoutPendingPayment?.id : null;
+    setActive((prev) => prev.filter((t) => t.id !== checkingOut.id));
+    resetCheckoutState();
+
+    // If payment was collected, generate receipt link and open share dialog
+    if (collectedPaymentId) {
+      const linkResult = await createInvoiceLink(collectedPaymentId);
+      if (linkResult.token) {
+        setShareReceipt({ name, phone, token: linkResult.token });
+      } else {
+        toast({ title: `${name} checked out`, description: "Payment collected." });
       }
+    } else {
+      toast({ title: `${name} has been checked out successfully.` });
     }
 
-    toast({ title: "Tenant checked out" });
-    setCheckoutDialogOpen(false);
-    setCheckingOut(null);
-    await reload();
-    setSaving(false);
+    reload(); // refresh room occupancy counts in background
   }
 
   async function handleDelete(t: Tenant) {
@@ -388,6 +596,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   function filterList(list: Tenant[]) {
     let result = typeFilter !== "all" ? list.filter((t) => t.type === typeFilter) : list;
     if (depositFilter) result = result.filter((t) => Number(t.security_deposit) > 0);
+    if (roomFilter !== "all") result = result.filter((t) => t.room_id === roomFilter);
     if (search) {
       const q = search.toLowerCase();
       result = result.filter((t) =>
@@ -494,114 +703,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     vacantRooms: rooms.filter((r) => r.status === "available").length,
   };
 
-  function TenantRow({ t, showCheckout = false, showActivate = false }: { t: Tenant; showCheckout?: boolean; showActivate?: boolean }) {
-    const room = t.room_id ? roomMap[t.room_id] : null;
-    const initials = t.full_name[0].toUpperCase();
-    return (
-      <div className="flex items-center gap-3 px-3 py-3.5 sm:px-4 sm:py-3 rounded-xl hover:bg-white/[0.03] transition-colors">
-        {/* Avatar — tapping it opens the timeline on mobile */}
-        <button
-          type="button"
-          onClick={() => setTimelineTenant(t)}
-          className="w-9 h-9 rounded-full shrink-0 overflow-hidden border border-amber/20 bg-amber/10 flex items-center justify-center hover:opacity-80 transition-opacity"
-        >
-          {t.photo_url ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={t.photo_url} alt={t.full_name} className="w-full h-full object-cover" />
-          ) : (
-            <span className="text-sm font-semibold text-amber">{initials}</span>
-          )}
-        </button>
-
-        {/* Info */}
-        <button
-          type="button"
-          onClick={() => setTimelineTenant(t)}
-          className="flex-1 min-w-0 text-left"
-        >
-          <div className="flex items-center gap-1.5 min-w-0">
-            <p className="text-sm font-medium text-foreground truncate">{t.full_name}</p>
-            <Badge variant="secondary" className="text-xs capitalize shrink-0">{t.type}</Badge>
-            {t.billing_type === "daily" && <Badge variant="warning" className="text-xs shrink-0">Daily</Badge>}
-          </div>
-          <div className="flex flex-wrap gap-x-2 gap-y-0 mt-0.5 items-center">
-            {room && (
-              <span className="text-xs text-muted-foreground whitespace-nowrap">
-                Rm {room.room_number}{t.bed_number ? ` · ${t.bed_number}` : ""}
-              </span>
-            )}
-            {t.phone && (
-              <span className="text-xs text-muted-foreground whitespace-nowrap flex items-center gap-0.5">
-                <Phone className="w-2.5 h-2.5 shrink-0" />{t.phone}
-              </span>
-            )}
-            {t.check_in && (
-              <span className="text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
-                In: {formatDate(t.check_in)}
-              </span>
-            )}
-            {t.check_out && (
-              <span className="text-xs text-muted-foreground whitespace-nowrap hidden sm:inline">
-                Out: {formatDate(t.check_out)}
-              </span>
-            )}
-            {(t.documents?.length ?? 0) > 0 && (
-              <span className="inline-flex items-center gap-0.5 text-xs text-emerald-400 whitespace-nowrap">
-                <ShieldCheck className="w-3 h-3" />{t.documents.length}
-              </span>
-            )}
-          </div>
-        </button>
-
-        {/* Rent — only on md+ */}
-        <div className="text-right shrink-0 hidden md:block">
-          {t.billing_type === "daily"
-            ? <p className="text-sm font-semibold text-foreground">{formatCurrency(t.daily_rate)}<span className="text-xs text-muted-foreground font-normal">/day</span></p>
-            : <p className="text-sm font-semibold text-foreground">{formatCurrency(t.monthly_rent)}<span className="text-xs text-muted-foreground font-normal">/mo</span></p>
-          }
-          {t.security_deposit > 0 && <p className="text-xs text-muted-foreground">Dep: {formatCurrency(t.security_deposit)}</p>}
-        </div>
-
-        {/* Actions — History hidden on mobile (avatar tap opens timeline) */}
-        <div className="flex items-center gap-0.5 shrink-0">
-          {showActivate && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 px-2 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 border border-emerald-500/20"
-              onClick={() => openEdit(t, true)}
-              title="Activate Tenant"
-            >
-              <UserCheck className="w-3.5 h-3.5 shrink-0" />
-              <span className="hidden sm:inline text-xs ml-1.5">Activate</span>
-            </Button>
-          )}
-          {showCheckout && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 px-2 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 border border-rose-500/20"
-              onClick={() => { setCheckingOut(t); setCheckoutDate(formatDateInput(new Date())); setCheckoutDialogOpen(true); }}
-              title="Check Out"
-            >
-              <LogOut className="w-3.5 h-3.5 shrink-0" />
-              <span className="hidden sm:inline text-xs ml-1.5">Check Out</span>
-            </Button>
-          )}
-          <Button variant="ghost" size="icon" className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground" title="History" onClick={() => setTimelineTenant(t)}>
-            <History className="w-3.5 h-3.5" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(t)}>
-            <Edit2 className="w-3.5 h-3.5" />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteTenant(t)}>
-            <Trash2 className="w-3.5 h-3.5" />
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
@@ -704,6 +805,45 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               ({[...active, ...waiting, ...checkedOut].filter((t) => Number(t.security_deposit) > 0).length})
             </span>
           </button>
+
+          {/* Room filter — dropdown */}
+          {(() => {
+            const allTenants = [...active, ...waiting, ...checkedOut];
+            const occupiedRooms = rooms
+              .filter((r) => allTenants.some((t) => t.room_id === r.id))
+              .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
+            if (occupiedRooms.length === 0) return null;
+            return (
+              <>
+                <span className="w-px h-4 bg-sidebar-border mx-0.5 shrink-0" />
+                <Select value={roomFilter} onValueChange={setRoomFilter}>
+                  <SelectTrigger
+                    className={cn(
+                      "h-7 text-xs border rounded-full px-3 gap-1.5 w-auto min-w-[110px] shrink-0",
+                      roomFilter !== "all"
+                        ? "border-blue-500/30 bg-blue-500/10 text-blue-400"
+                        : "border-sidebar-border text-muted-foreground"
+                    )}
+                  >
+                    <BedDouble className="w-3 h-3 shrink-0" />
+                    <SelectValue placeholder="All Rooms" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Rooms</SelectItem>
+                    {occupiedRooms.map((r) => {
+                      const count = allTenants.filter((t) => t.room_id === r.id).length;
+                      return (
+                        <SelectItem key={r.id} value={r.id}>
+                          Room {r.room_number}
+                          <span className="ml-1 opacity-50 tabular-nums">({count})</span>
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+              </>
+            );
+          })()}
         </div>
       </div>
 
@@ -749,7 +889,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             ) : (
               <div className="divide-y divide-sidebar-border/50">
-                {filterList(active).map((t) => <TenantRow key={t.id} t={t} showCheckout />)}
+                {filterList(active).map((t) => (
+                <TenantRow
+                  key={t.id} t={t} showCheckout
+                  roomMap={roomMap}
+                  onTimeline={setTimelineTenant}
+                  onCheckout={openCheckout}
+                  onActivate={(tenant) => openEdit(tenant, true)}
+                  onEdit={openEdit}
+                  onDelete={setDeleteTenant}
+                />
+              ))}
               </div>
             )}
           </div>
@@ -764,7 +914,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             ) : (
               <div className="divide-y divide-sidebar-border/50">
-                {filterList(waiting).map((t) => <TenantRow key={t.id} t={t} showActivate />)}
+                {filterList(waiting).map((t) => (
+                <TenantRow
+                  key={t.id} t={t} showActivate
+                  roomMap={roomMap}
+                  onTimeline={setTimelineTenant}
+                  onCheckout={openCheckout}
+                  onActivate={(tenant) => openEdit(tenant, true)}
+                  onEdit={openEdit}
+                  onDelete={setDeleteTenant}
+                />
+              ))}
               </div>
             )}
           </div>
@@ -779,7 +939,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             ) : (
               <div className="divide-y divide-sidebar-border/50">
-                {filterList(checkedOut).map((t) => <TenantRow key={t.id} t={t} />)}
+                {filterList(checkedOut).map((t) => (
+                <TenantRow
+                  key={t.id} t={t}
+                  roomMap={roomMap}
+                  onTimeline={setTimelineTenant}
+                  onCheckout={openCheckout}
+                  onActivate={(tenant) => openEdit(tenant, true)}
+                  onEdit={openEdit}
+                  onDelete={setDeleteTenant}
+                />
+              ))}
               </div>
             )}
           </div>
@@ -1287,25 +1457,338 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       </Dialog>
 
       {/* Checkout Dialog */}
-      <Dialog open={checkoutDialogOpen} onOpenChange={setCheckoutDialogOpen}>
-        <DialogContent className="sm:max-w-sm">
+      <Dialog open={!!checkingOut} onOpenChange={(open) => { if (!open) resetCheckoutState(); }}>
+        <DialogContent className="sm:max-w-[480px] max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Check Out Tenant</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <LogOut className="w-4 h-4 text-rose-400" />
+              Check Out
+            </DialogTitle>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-sm text-muted-foreground">{checkingOut?.full_name}</span>
+              {checkingOut?.room_id && roomMap[checkingOut.room_id] && (
+                <Badge variant="outline" className="text-xs border-amber/30 text-amber">
+                  Rm {roomMap[checkingOut.room_id].room_number}
+                </Badge>
+              )}
+            </div>
           </DialogHeader>
-          <div className="py-2 space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Checking out <span className="font-medium text-foreground">{checkingOut?.full_name}</span>.
-              This will free their room slot.
-            </p>
+
+          {/* UX-F6: disable all options (not footer) while submission is in flight */}
+          <div className={cn("space-y-5 py-1", checkoutSubmitting && "pointer-events-none opacity-50")}>
+            {/* Section 1 — Departure Date */}
             <div className="space-y-1.5">
-              <Label>Check-out Date</Label>
-              <Input type="date" value={checkoutDate} onChange={(e) => setCheckoutDate(e.target.value)} />
+              {/* UX-F7: link label to input with id/htmlFor */}
+              <Label htmlFor="checkout-date">Departure Date</Label>
+              <input
+                id="checkout-date"
+                type="date"
+                value={checkoutDate}
+                onChange={(e) => setCheckoutDate(e.target.value)}
+                className="h-9 w-full rounded-lg border border-sidebar-border bg-transparent px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-amber/50"
+              />
+            </div>
+
+            {/* Section 2 — Outstanding Payment */}
+            {checkoutPaymentLoading && (
+              <div className="space-y-2">
+                <div className="h-4 w-40 rounded-md bg-white/5 animate-pulse" />
+                <div className="h-28 rounded-xl bg-white/5 animate-pulse" />
+              </div>
+            )}
+
+            {!checkoutPaymentLoading && checkoutPaymentError && (
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-500/20 bg-rose-500/5 p-3">
+                <p className="text-sm text-rose-400">Could not load payment data. Retry to continue.</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0 border-rose-500/30 text-rose-400 hover:bg-rose-500/10"
+                  onClick={() => {
+                    setCheckoutPaymentError(null);
+                    setCheckoutPaymentLoading(true);
+                    if (checkingOut) fetchCheckoutPayment(checkingOut.id);
+                  }}
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
+
+            {!checkoutPaymentLoading && !checkoutPaymentError && checkoutPendingPayment && (
+              <div className="space-y-2.5">
+                <div className="flex items-center gap-1.5">
+                  <Banknote className="w-3.5 h-3.5 text-amber" />
+                  <p className="text-sm font-medium">Outstanding Balance</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 -mt-1">
+                  <p className="text-xs text-muted-foreground">{checkoutPendingPayment.for_month} · {formatCurrency(checkoutPendingPayment.amount)}</p>
+                  {checkoutPendingPayment.ac_charge > 0 && (
+                    <p className="text-xs text-muted-foreground/70">
+                      AC: {formatCurrency(checkoutPendingPayment.ac_charge)}
+                      {checkoutPendingPayment.ac_units_consumed != null && checkoutPendingPayment.ac_units_consumed > 0 && (
+                        <span className="ml-1 opacity-75">· {checkoutPendingPayment.ac_units_consumed} units</span>
+                      )}
+                    </p>
+                  )}
+                </div>
+
+                {/* Pay option */}
+                <div
+                  onClick={() => setCheckoutPayAction("pay")}
+                  className={cn(
+                    "border rounded-xl p-3 cursor-pointer transition-all",
+                    checkoutPayAction === "pay"
+                      ? "border-amber/50 bg-amber/5"
+                      : "border-sidebar-border hover:border-sidebar-border/60"
+                  )}
+                >
+                  <p className="text-sm font-medium">Collect Now</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Tenant pays before leaving — record date and method</p>
+                  {checkoutPayAction === "pay" && (
+                    <div className="mt-3 grid grid-cols-2 gap-2" onClick={(e) => e.stopPropagation()}>
+                      <div className="space-y-1">
+                        <p className="text-xs text-muted-foreground">Date</p>
+                        <input
+                          type="date"
+                          value={checkoutPayDate}
+                          onChange={(e) => setCheckoutPayDate(e.target.value)}
+                          className="h-8 w-full rounded-md border border-sidebar-border bg-transparent px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-amber/50"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-xs text-muted-foreground">Method</p>
+                        <Select value={checkoutPayMethod} onValueChange={setCheckoutPayMethod}>
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue placeholder="Select method" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="cash">Cash</SelectItem>
+                            <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+                            <SelectItem value="jazzcash">JazzCash</SelectItem>
+                            <SelectItem value="easypaisa">EasyPaisa</SelectItem>
+                            <SelectItem value="sadapay">SadaPay</SelectItem>
+                            <SelectItem value="other">Other</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Waive option */}
+                <div
+                  onClick={() => { setCheckoutPayAction("waive"); setDepositDisposition("refund"); }}
+                  className={cn(
+                    "border rounded-xl p-3 cursor-pointer transition-all",
+                    checkoutPayAction === "waive"
+                      ? "border-amber/50 bg-amber/5"
+                      : "border-sidebar-border hover:border-sidebar-border/60"
+                  )}
+                >
+                  <p className="text-sm font-medium">Forgive the Dues</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Cancel the remaining balance — no money collected</p>
+                </div>
+
+                {/* Leave open option */}
+                <div
+                  onClick={() => { setCheckoutPayAction("leave"); setDepositDisposition("refund"); }}
+                  className={cn(
+                    "border rounded-xl p-3 cursor-pointer transition-all",
+                    checkoutPayAction === "leave"
+                      ? "border-sidebar-border/60 bg-white/[0.02]"
+                      : "border-sidebar-border hover:border-sidebar-border/60"
+                  )}
+                >
+                  <p className={cn("text-sm font-medium", checkoutPayAction === "leave" ? "text-muted-foreground" : "")}>Collect Later</p>
+                  <p className="text-xs text-muted-foreground/70 mt-0.5">Keep the balance open — you'll collect it separately</p>
+                </div>
+              </div>
+            )}
+
+            {/* Section 3 — Security Deposit */}
+            {(checkingOut?.security_deposit ?? 0) > 0 && (
+              <div className="space-y-2.5">
+                <div className="flex items-center gap-1.5">
+                  <Shield className="w-3.5 h-3.5 text-violet-400" />
+                  <p className="text-sm font-medium">Security Deposit</p>
+                </div>
+                <p className="text-xs text-muted-foreground -mt-1">{formatCurrency(checkingOut!.security_deposit)} held</p>
+
+                {/* Refund option */}
+                <div
+                  onClick={() => setDepositDisposition("refund")}
+                  className={cn(
+                    "border rounded-xl p-3 cursor-pointer transition-all",
+                    depositDisposition === "refund"
+                      ? "border-emerald-500/50 bg-emerald-500/5"
+                      : "border-sidebar-border hover:border-sidebar-border/60"
+                  )}
+                >
+                  <p className="text-sm font-medium">Refund to tenant</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Return the full deposit amount</p>
+                </div>
+
+                {/* Apply to balance — only when a pending payment exists AND action is "pay" (UX-F5) */}
+                {checkoutPendingPayment && checkoutPayAction === "pay" && (
+                  <div
+                    onClick={() => setDepositDisposition("deduct")}
+                    className={cn(
+                      "border rounded-xl p-3 cursor-pointer transition-all",
+                      depositDisposition === "deduct"
+                        ? "border-amber/50 bg-amber/5"
+                        : "border-sidebar-border hover:border-sidebar-border/60"
+                    )}
+                  >
+                    <p className="text-sm font-medium">Apply to outstanding balance</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Use deposit to offset rent owed</p>
+                  </div>
+                )}
+
+                {/* Forfeit option */}
+                <div
+                  onClick={() => setDepositDisposition("forfeit")}
+                  className={cn(
+                    "border rounded-xl p-3 cursor-pointer transition-all",
+                    depositDisposition === "forfeit"
+                      ? "border-rose-500/50 bg-rose-500/5"
+                      : "border-sidebar-border hover:border-sidebar-border/60"
+                  )}
+                >
+                  <p className="text-sm font-medium">Forfeit — damage or breach</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Retain deposit as compensation</p>
+                </div>
+              </div>
+            )}
+
+            {/* Section 4 — Live Summary */}
+            <div className="pt-3 border-t border-sidebar-border/60 space-y-3">
+              {(() => {
+                const deposit   = checkingOut?.security_deposit ?? 0;
+                const pending   = checkoutPendingPayment?.amount ?? 0;
+                const acCharge  = checkoutPendingPayment?.ac_charge ?? 0;
+                const acUnits   = checkoutPendingPayment?.ac_units_consumed ?? 0;
+                const rentCharge = pending - acCharge;
+
+                const collecting = pending > 0 && checkoutPayAction === "pay";
+                const netAfterDeposit = collecting && depositDisposition === "deduct" && deposit > 0
+                  ? Math.max(0, pending - deposit)
+                  : null;
+                const depositCoversAll = netAfterDeposit === 0;
+
+                return (
+                  <>
+                    {/* Outstanding breakdown */}
+                    {pending > 0 && (
+                      <div className="rounded-md bg-sidebar-accent/30 px-3 py-2 space-y-1.5">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Outstanding</p>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Rent &amp; Food</span>
+                            <span>{formatCurrency(rentCharge)}</span>
+                          </div>
+                          {acCharge > 0 && (
+                            <div className="flex justify-between text-sm">
+                              <span className="text-muted-foreground">
+                                AC Charge{acUnits > 0 ? ` (${acUnits} units)` : ""}
+                              </span>
+                              <span>{formatCurrency(acCharge)}</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between text-sm font-semibold border-t border-sidebar-border/40 pt-1 mt-1">
+                            <span>Total Due</span>
+                            <span>{formatCurrency(pending)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Deposit block */}
+                    {deposit > 0 && (
+                      <div className="rounded-md bg-sidebar-accent/30 px-3 py-2 space-y-1.5">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Security Deposit</p>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Held</span>
+                            <span>{formatCurrency(deposit)}</span>
+                          </div>
+                          {depositDisposition === "deduct" && collecting && (
+                            <>
+                              <div className="flex justify-between text-sm text-emerald-400">
+                                <span>Applied to balance</span>
+                                <span>− {formatCurrency(Math.min(deposit, pending))}</span>
+                              </div>
+                              <div className="flex justify-between text-sm font-semibold border-t border-sidebar-border/40 pt-1 mt-1">
+                                <span>Remaining to collect</span>
+                                <span className={depositCoversAll ? "text-emerald-400" : "text-amber"}>
+                                  {depositCoversAll ? "Nil" : formatCurrency(pending - deposit)}
+                                </span>
+                              </div>
+                            </>
+                          )}
+                          {depositDisposition === "refund" && (
+                            <div className="flex justify-between text-sm text-emerald-400 font-medium">
+                              <span>Refund to tenant</span>
+                              <span>{formatCurrency(deposit)}</span>
+                            </div>
+                          )}
+                          {depositDisposition === "forfeit" && (
+                            <div className="flex justify-between text-sm text-muted-foreground">
+                              <span>Forfeited</span>
+                              <span>{formatCurrency(deposit)}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Final action line */}
+                    <div className="space-y-0.5">
+                      {pending === 0 && deposit === 0 && (
+                        <p className="text-sm text-muted-foreground">No financial transactions to record</p>
+                      )}
+                      {collecting && !depositCoversAll && (
+                        <p className="text-sm font-semibold text-amber">
+                          Collect {formatCurrency(netAfterDeposit ?? pending)} from tenant
+                        </p>
+                      )}
+                      {collecting && depositCoversAll && (
+                        <p className="text-sm font-semibold text-emerald-400">Deposit covers balance — nothing to collect</p>
+                      )}
+                      {pending > 0 && checkoutPayAction === "waive" && (
+                        <p className="text-sm text-muted-foreground">Balance waived — no money collected</p>
+                      )}
+                      {pending > 0 && checkoutPayAction === "leave" && (
+                        <p className="text-sm text-muted-foreground">Balance left open for later settlement</p>
+                      )}
+                      {deposit > 0 && depositDisposition === "refund" && (
+                        <p className="text-sm font-semibold text-emerald-400">
+                          Refund {formatCurrency(deposit)} deposit to tenant
+                        </p>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCheckoutDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleCheckout} disabled={saving} className="bg-rose-500 hover:bg-rose-600 text-white">
-              {saving ? "Processing…" : "Confirm Check Out"}
+            <Button variant="ghost" onClick={resetCheckoutState} disabled={checkoutSubmitting}>Cancel</Button>
+            <Button
+              onClick={handleCheckout}
+              disabled={
+                checkoutSubmitting ||
+                !checkoutDate ||
+                checkoutPaymentLoading ||
+                !!checkoutPaymentError ||
+                (checkoutPayAction === "pay" && !checkoutPayMethod)
+              }
+              className="gap-2 bg-rose-500 hover:bg-rose-600 text-white"
+            >
+              {checkoutSubmitting
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Processing…</>
+                : <><LogOut className="w-4 h-4" /> Confirm Check Out</>}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1320,6 +1803,71 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           onClose={() => setTimelineTenant(null)}
         />
       )}
+
+      {/* Receipt Share Dialog — shown after successful checkout */}
+      <Dialog open={!!shareReceipt} onOpenChange={(open) => { if (!open) setShareReceipt(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+              Checkout Complete
+            </DialogTitle>
+            <DialogDescription>
+              {shareReceipt?.name} has been checked out. Share the receipt below.
+            </DialogDescription>
+          </DialogHeader>
+
+          {shareReceipt && (() => {
+            const receiptUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/r/${shareReceipt.token}`;
+            const waPhone = shareReceipt.phone?.replace(/\D/g, "");
+            const waMsg = encodeURIComponent(`Dear ${shareReceipt.name}, your payment receipt is ready. Please find it here: ${receiptUrl}`);
+            return (
+              <div className="space-y-3 py-2">
+                {/* Receipt URL */}
+                <div className="flex items-center gap-2 rounded-md border border-sidebar-border bg-sidebar-accent/30 px-3 py-2">
+                  <span className="flex-1 text-xs text-muted-foreground truncate">{receiptUrl}</span>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(receiptUrl); toast({ title: "Link copied!" }); }}
+                    className="shrink-0 text-xs font-medium text-amber hover:underline"
+                  >
+                    Copy
+                  </button>
+                </div>
+
+                {/* Action buttons */}
+                <div className="flex flex-col gap-2">
+                  <Button
+                    className="w-full bg-[#25D366] hover:bg-[#1da851] text-white"
+                    onClick={() => {
+                      const url = waPhone
+                        ? `https://wa.me/${waPhone}?text=${waMsg}`
+                        : `https://wa.me/?text=${waMsg}`;
+                      window.open(url, "_blank", "noopener,noreferrer");
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" className="w-4 h-4 mr-2 fill-current" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/>
+                      <path d="M12 0C5.373 0 0 5.373 0 12c0 2.121.554 4.11 1.523 5.84L0 24l6.336-1.492A11.94 11.94 0 0 0 12 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.818a9.8 9.8 0 0 1-5.003-1.374l-.36-.213-3.76.885.936-3.658-.235-.374A9.817 9.817 0 0 1 2.182 12C2.182 6.57 6.57 2.182 12 2.182c5.43 0 9.818 4.388 9.818 9.818 0 5.43-4.388 9.818-9.818 9.818z"/>
+                    </svg>
+                    Share via WhatsApp
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => window.open(receiptUrl, "_blank", "noopener,noreferrer")}
+                  >
+                    View Receipt
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+
+          <DialogFooter>
+            <Button variant="ghost" className="w-full" onClick={() => setShareReceipt(null)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

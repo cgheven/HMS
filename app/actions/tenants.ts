@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrAbove } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
-import type { Payment, PackageTier, PaymentMethod, TenantDocument, DocumentType } from "@/types";
+import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -556,6 +556,179 @@ export async function backfillTenantPaymentsAction(
     revalidatePath("/payments");
     return { success: true, monthsCreated: pastMonths.length };
   } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// checkoutTenantAction
+// Handles the full checkout flow: settle payment → deactivate tenant → decrement room.
+// Write order is intentional for EC-4 safety: payment first so that if tenant
+// deactivation fails, the operator gets a clear error and retry is safe (the
+// payment is already settled and won't be double-processed on retry).
+// ---------------------------------------------------------------------------
+
+export async function checkoutTenantAction(
+  input: CheckoutInput
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await requireOwnerOrAbove();
+    const hostelId = await resolveHostelId();
+    const adminDb = createAdminClient();
+
+    // Step 1: Fetch and verify tenant belongs to this hostel and is still active
+    const { data: tenant, error: tenantErr } = await adminDb
+      .from("hms_tenants")
+      .select("id, full_name, hostel_id, room_id, is_active, check_in")
+      .eq("id", input.tenantId)
+      .eq("hostel_id", hostelId)
+      .single();
+
+    if (tenantErr || !tenant) throw new Error("Tenant not found or access denied");
+    if (!tenant.is_active) throw new Error("Tenant is already checked out");
+
+    // SEC-F1: Validate checkoutDate server-side
+    if (!input.checkoutDate || !/^\d{4}-\d{2}-\d{2}$/.test(input.checkoutDate)) {
+      throw new Error("Invalid checkout date format");
+    }
+    const checkoutDateObj = new Date(input.checkoutDate + "T00:00:00");
+    if (isNaN(checkoutDateObj.getTime())) {
+      throw new Error("Invalid checkout date");
+    }
+    const checkinStr = tenant.check_in as string | null;
+    if (checkinStr && input.checkoutDate < checkinStr.slice(0, 10)) {
+      throw new Error("Checkout date cannot be before the tenant's check-in date");
+    }
+    const maxFuture = new Date();
+    maxFuture.setDate(maxFuture.getDate() + 7);
+    if (checkoutDateObj > maxFuture) {
+      throw new Error("Checkout date cannot be more than 7 days in the future");
+    }
+
+    // SEC-F6: Validate depositDisposition enum
+    if (input.depositDisposition !== undefined &&
+        !new Set(["refund", "deduct", "forfeit"]).has(input.depositDisposition)) {
+      throw new Error("Invalid deposit disposition");
+    }
+
+    // Step 2: Verify payment belongs to this tenant and hostel (prevents IDOR)
+    let paymentAlreadySettled = false;
+    let verifiedPayment: { id: string; tenant_id: string; hostel_id: string; status: string; for_month: string } | null = null;
+    if (input.paymentSettlement) {
+      // SEC-F4: Runtime action validation — TypeScript enums are erased at runtime
+      if (!new Set(["pay", "waive", "leave"]).has(input.paymentSettlement.action as string)) {
+        throw new Error("Invalid payment action");
+      }
+
+      const { data: payment, error: payErr } = await adminDb
+        .from("hms_payments")
+        .select("id, tenant_id, hostel_id, status, for_month")
+        .eq("id", input.paymentSettlement.paymentId)
+        .eq("tenant_id", input.tenantId)
+        .eq("hostel_id", hostelId)
+        .single();
+
+      if (payErr || !payment) throw new Error("Payment not found or access denied");
+      verifiedPayment = payment;
+
+      // SEC-F2: EC-4 idempotent retry — if payment is already in the target state, skip the
+      // update rather than throwing. This makes the action safe to retry in-place when tenant
+      // deactivation failed after payment was already recorded.
+      const { action } = input.paymentSettlement;
+      paymentAlreadySettled =
+        (action === "pay" && payment.status === "paid") ||
+        (action === "waive" && payment.status === "waived");
+
+      if (!paymentAlreadySettled && !["pending", "overdue"].includes(payment.status)) {
+        throw new Error("Payment has already been settled");
+      }
+    }
+
+    // Step 3: Settle payment FIRST (before deactivating tenant — EC-4 safety)
+    // Skip if already in the target state (SEC-F2 idempotent retry path)
+    if (input.paymentSettlement && input.paymentSettlement.action !== "leave" && !paymentAlreadySettled) {
+      if (input.paymentSettlement.action === "pay") {
+        const { error: payUpdateErr } = await adminDb
+          .from("hms_payments")
+          .update({
+            status: "paid" as PaymentStatus,
+            payment_date: input.paymentSettlement.paymentDate ?? new Date().toISOString().split("T")[0],
+            payment_method: (input.paymentSettlement.paymentMethod ?? null) as PaymentMethod | null,
+            receipt_number: genReceiptNumber(tenant.full_name, verifiedPayment?.for_month ?? ""),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", input.paymentSettlement.paymentId)
+          .eq("hostel_id", hostelId);
+
+        // SEC-F5: sanitize — do not propagate raw DB error strings to client
+        if (payUpdateErr) throw new Error("Failed to record payment. Please try again.");
+      } else if (input.paymentSettlement.action === "waive") {
+        const { error: waiveErr } = await adminDb
+          .from("hms_payments")
+          .update({
+            status: "waived" as PaymentStatus,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", input.paymentSettlement.paymentId)
+          .eq("hostel_id", hostelId);
+
+        // SEC-F5: sanitize — do not propagate raw DB error strings to client
+        if (waiveErr) throw new Error("Failed to waive payment. Please try again.");
+      }
+    }
+
+    // Step 4: Deactivate tenant (clear bed assignment, mark inactive)
+    const { error: checkoutErr } = await adminDb
+      .from("hms_tenants")
+      .update({
+        check_out: input.checkoutDate,
+        is_active: false,
+        is_waiting: false,
+        bed_number: null,
+      })
+      .eq("id", input.tenantId)
+      .eq("hostel_id", hostelId);
+
+    if (checkoutErr) {
+      // EC-4: Payment was settled but tenant deactivation failed.
+      // The payment is now paid/waived, so a retry will skip that step (SEC-F2).
+      if (input.paymentSettlement && input.paymentSettlement.action !== "leave") {
+        // SEC-F5: sanitize — omit raw DB error; the retry message is actionable enough
+        throw new Error(
+          `The payment was recorded successfully, but tenant checkout failed. ` +
+          `The tenant is still active. Retry the checkout — the payment has already been saved and will not be re-processed.`
+        );
+      }
+      // SEC-F5: sanitize — do not expose DB internals
+      throw new Error("Tenant checkout failed. Please try again.");
+    }
+
+    // Step 5: Atomically decrement room occupancy — non-fatal, best-effort
+    // UX-F2 + SEC-F3: replaced read-compute-write with a single atomic RPC to eliminate
+    // the race window for concurrent checkouts and carry the full ownership chain.
+    // Requires DB function:
+    //   CREATE OR REPLACE FUNCTION decrement_room_occupancy(p_room_id uuid, p_hostel_id uuid)
+    //   RETURNS void LANGUAGE sql SECURITY DEFINER AS $$
+    //     UPDATE hms_rooms
+    //     SET occupied = GREATEST(occupied - 1, 0),
+    //         status = CASE WHEN GREATEST(occupied - 1, 0) < capacity THEN 'available' ELSE 'occupied' END
+    //     WHERE id = p_room_id AND hostel_id = p_hostel_id;
+    //   $$;
+    if (tenant.room_id) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (adminDb as any).rpc("decrement_room_occupancy", {
+        p_room_id: tenant.room_id,
+        p_hostel_id: hostelId,
+      });
+      // Non-fatal — Supabase returns error in result object, not thrown; ignored intentionally
+    }
+
+    revalidatePath("/tenants");
+    revalidatePath("/payments");
+    revalidatePath("/dashboard");
+
+    return { success: true };
+  } catch (err: unknown) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
