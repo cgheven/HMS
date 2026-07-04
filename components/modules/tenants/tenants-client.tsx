@@ -1,5 +1,5 @@
 "use client";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, History,
@@ -17,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
-import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
 import { DocumentManager } from "./document-manager";
@@ -41,6 +41,13 @@ const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
   space_food_ac: "Space + Meals + AC",
   space_meals_cooler: "Space + Meals + Cooler",
 };
+
+function getPkgPrice(prices: Partial<Record<PackageTier, { no_ac: number; ac: number }>>, tier: PackageTier, hasAc: boolean): string {
+  const p = prices[tier];
+  if (!p) return "";
+  const val = hasAc ? p.ac : p.no_ac;
+  return val > 0 ? String(val) : "";
+}
 
 const emptyForm = {
   full_name: "", phone: "", email: "", cnic: "",
@@ -202,6 +209,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null);
+  const [pkgPrices, setPkgPrices] = useState<Partial<Record<PackageTier, PackagePrices>>>({});
+
+  useEffect(() => {
+    if (!hostelId) return;
+    const supabase = createClient();
+    supabase.from("hms_package_configs")
+      .select("package_prices")
+      .eq("hostel_id", hostelId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data?.package_prices) {
+          setPkgPrices(data.package_prices as Partial<Record<PackageTier, PackagePrices>>);
+        }
+      });
+  }, [hostelId]);
   const [timelineTenant, setTimelineTenant] = useState<Tenant | null>(null);
   const [appActionLoading, setAppActionLoading] = useState<string | null>(null);
   const [approvingApp, setApprovingApp] = useState<TenantApplication | null>(null);
@@ -1328,12 +1350,24 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </Select>
               </div>
               <div className="space-y-1.5 sm:col-span-2"><Label>Package Tier</Label>
-                <Select value={form.package_tier} onValueChange={(v) => setForm({ ...form, package_tier: v as PackageTier })}>
+                <Select value={form.package_tier} onValueChange={(v) => {
+                  const tier = v as PackageTier;
+                  const room = form.room_id ? rooms.find((r) => r.id === form.room_id) : null;
+                  const suggested = room ? getPkgPrice(pkgPrices, tier, room.has_ac) : "";
+                  setForm({ ...form, package_tier: tier, monthly_rent: suggested || form.monthly_rent });
+                }}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {(Object.entries(PACKAGE_TIER_LABELS) as [PackageTier, string][]).map(([k, label]) => (
-                      <SelectItem key={k} value={k}>{label}</SelectItem>
-                    ))}
+                    {(Object.entries(PACKAGE_TIER_LABELS) as [PackageTier, string][]).map(([k, label]) => {
+                      const p = pkgPrices[k];
+                      const hasPrice = p && (p.no_ac > 0 || p.ac > 0);
+                      return (
+                        <SelectItem key={k} value={k}>
+                          <span>{label}</span>
+                          {hasPrice && <span className="ml-1.5 text-xs text-muted-foreground">Rs. {(p.no_ac || p.ac).toLocaleString()}</span>}
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
               </div>
@@ -1387,7 +1421,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {!form.is_waiting && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5"><Label>Room</Label>
-                  <Select value={form.room_id} onValueChange={(v) => setForm({ ...form, room_id: v, monthly_rent: form.monthly_rent || (rooms.find(r => r.id === v)?.monthly_rent?.toString() ?? "") })}>
+                  <Select value={form.room_id} onValueChange={(v) => {
+                    const room = rooms.find((r) => r.id === v);
+                    const pkgSuggested = room ? getPkgPrice(pkgPrices, form.package_tier, room.has_ac) : "";
+                    const fallback = room?.monthly_rent?.toString() ?? "";
+                    setForm({ ...form, room_id: v, monthly_rent: form.monthly_rent || pkgSuggested || fallback });
+                  }}>
                     <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
                     <SelectContent>
                       {availableRooms.map((r) => (

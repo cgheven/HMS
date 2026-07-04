@@ -4,14 +4,14 @@ import Link from "next/link";
 import {
   ArrowLeft, MapPin, ExternalLink, BedDouble, Zap, Wifi,
   Utensils, Shield, ChevronLeft, ChevronRight, Clock, Loader2, X,
-  Wind, Thermometer, Users, CheckCircle2,
+  Wind, Thermometer, Users, CheckCircle2, Banknote,
 } from "lucide-react";
 import { joinWaitlist, submitApplication } from "@/app/actions/public";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { formatCurrency } from "@/lib/utils";
-import type { PublicHostelDetail, PublicRoom, FoodItem, MealType, SpaceType, PackageConfig } from "@/types";
+import type { PublicHostelDetail, PublicRoom, FoodItem, MealType, SpaceType, PackageConfig, PackageTier } from "@/types";
 
 // ── WhatsApp icon ─────────────────────────────────────────────────────────────
 
@@ -73,35 +73,58 @@ interface PackageOption {
 }
 
 function buildPackageOptions(room: PublicRoom, config: PackageConfig | null): PackageOption[] {
-  // Prefer explicit rates; fall back to legacy per-meal rate for records not yet re-saved
-  const bdRate     = config ? (config.food_bd_rate     > 0 ? config.food_bd_rate     : config.food_monthly_rate * 2) : 0;
-  const meals3Rate = config ? (config.food_3meals_rate  > 0 ? config.food_3meals_rate  : config.food_monthly_rate * 3) : 0;
-  return [
+  const pkgPrices = config?.package_prices ?? {};
+
+  function pkgPrice(tier: PackageTier): number | null {
+    const p = pkgPrices[tier];
+    if (p) {
+      const val = room.has_ac ? p.ac : p.no_ac;
+      if (val > 0) return val;
+    }
+    return null;
+  }
+
+  const spaceOnlyPrice = pkgPrice("space_only") ?? room.monthly_rent;
+
+  const options: PackageOption[] = [
     {
       tier: "space_only",
       label: "Space Only",
       subtitle: "Bed + room facilities",
-      price: room.monthly_rent,
+      price: spaceOnlyPrice,
       extra: null,
       disabled: false,
     },
     {
       tier: "space_food",
-      label: "Space + Breakfast + Dinner",
-      subtitle: "Bed + breakfast & dinner daily",
-      price: room.monthly_rent + bdRate,
-      extra: config && bdRate > 0 ? `Food: +${formatCurrency(bdRate)}/mo` : null,
-      disabled: !config || bdRate === 0,
+      label: "Space + Breakfast & Dinner",
+      subtitle: "Bed + 2 meals daily",
+      price: pkgPrice("space_food") ?? 0,
+      extra: null,
+      disabled: !pkgPrice("space_food"),
     },
     {
       tier: "space_3meals",
-      label: "Space + Breakfast + Lunch + Dinner",
-      subtitle: "Bed + all 3 meals daily",
-      price: room.monthly_rent + meals3Rate,
-      extra: config && meals3Rate > 0 ? `Food: +${formatCurrency(meals3Rate)}/mo` : null,
-      disabled: !config || meals3Rate === 0,
+      label: "Space + 3 Meals",
+      subtitle: "Bed + breakfast, lunch & dinner",
+      price: pkgPrice("space_3meals") ?? 0,
+      extra: null,
+      disabled: !pkgPrice("space_3meals"),
     },
   ];
+
+  if (room.has_cooler) {
+    options.push({
+      tier: "space_meals_cooler",
+      label: "Space + Meals + Cooler",
+      subtitle: "Bed + meals + cooler included",
+      price: pkgPrice("space_meals_cooler") ?? 0,
+      extra: null,
+      disabled: !pkgPrice("space_meals_cooler"),
+    });
+  }
+
+  return options;
 }
 
 // ── Registration modal ────────────────────────────────────────────────────────
@@ -302,7 +325,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
   const packages = buildPackageOptions(room, hostel.package_config);
   const selected = packages.find((p) => p.tier === selectedTier) ?? packages[0];
 
-  const SECURITY_DEPOSIT = 10000;
+  const SECURITY_DEPOSIT = hostel.package_config?.security_deposit ?? 0;
 
   const contactPhone = hostel.whatsapp || hostel.phone;
 
@@ -822,6 +845,101 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
   );
 }
 
+// ── Package pricing section ───────────────────────────────────────────────────
+
+const PUBLIC_PRICING_TIERS: { tier: PackageTier; label: string; subtitle: string }[] = [
+  { tier: "space_only",         label: "Space Only",                 subtitle: "Bed + room facilities"       },
+  { tier: "space_food",         label: "Space + Breakfast & Dinner", subtitle: "Bed + 2 meals daily"         },
+  { tier: "space_3meals",       label: "Space + 3 Meals",            subtitle: "Breakfast, lunch & dinner"   },
+  { tier: "space_meals_cooler", label: "Space + Meals + Cooler",     subtitle: "Bed + meals + cooler"        },
+];
+
+function PackagePricingSection({
+  config,
+  hasAcRooms,
+  hasNonAcRooms,
+}: {
+  config: PackageConfig;
+  hasAcRooms: boolean;
+  hasNonAcRooms: boolean;
+}) {
+  const prices = config.package_prices ?? {};
+  const rows = PUBLIC_PRICING_TIERS.filter((t) => {
+    const p = prices[t.tier];
+    if (!p) return false;
+    return (hasNonAcRooms && p.no_ac > 0) || (hasAcRooms && p.ac > 0);
+  });
+  if (!rows.length) return null;
+
+  const colClass =
+    hasNonAcRooms && hasAcRooms
+      ? "grid-cols-[1fr_auto_auto]"
+      : "grid-cols-[1fr_auto]";
+
+  return (
+    <section>
+      <div className="flex items-center gap-2 mb-3">
+        <Banknote className="w-4 h-4 text-amber" />
+        <h2 className="font-semibold text-sm">Monthly Pricing</h2>
+      </div>
+      <div className="rounded-xl border border-white/[0.08] bg-[#111113] overflow-hidden">
+        {/* Header */}
+        <div className={`grid ${colClass} gap-px bg-white/[0.05]`}>
+          <div className="bg-[#111113] px-4 py-2">
+            <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Package</span>
+          </div>
+          {hasNonAcRooms && (
+            <div className="bg-[#111113] px-4 py-2 text-center min-w-[90px]">
+              <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Standard</span>
+            </div>
+          )}
+          {hasAcRooms && (
+            <div className="bg-[#111113] px-4 py-2 text-center min-w-[90px]">
+              <span className="text-[10px] font-semibold text-blue-400/60 uppercase tracking-widest">AC Room</span>
+            </div>
+          )}
+        </div>
+        {/* Rows */}
+        {rows.map((t, i) => {
+          const p = prices[t.tier]!;
+          return (
+            <div
+              key={t.tier}
+              className={`grid ${colClass} gap-px bg-white/[0.04] ${i !== 0 ? "border-t border-white/[0.05]" : ""}`}
+            >
+              <div className="bg-[#111113] px-4 py-3">
+                <p className="text-sm font-medium leading-tight">{t.label}</p>
+                <p className="text-[11px] text-muted-foreground/50 mt-0.5">{t.subtitle}</p>
+              </div>
+              {hasNonAcRooms && (
+                <div className="bg-[#111113] px-4 py-3 flex items-center justify-end min-w-[90px]">
+                  {p.no_ac > 0
+                    ? <span className="text-sm font-semibold text-amber tabular-nums">{formatCurrency(p.no_ac)}</span>
+                    : <span className="text-xs text-muted-foreground/30">—</span>}
+                </div>
+              )}
+              {hasAcRooms && (
+                <div className="bg-[#111113] px-4 py-3 flex items-center justify-end min-w-[90px]">
+                  {p.ac > 0
+                    ? <span className="text-sm font-semibold text-blue-400 tabular-nums">{formatCurrency(p.ac)}</span>
+                    : <span className="text-xs text-muted-foreground/30">—</span>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {/* AC note */}
+        {hasAcRooms && config.ac_per_unit_rate > 0 && (
+          <div className="border-t border-white/[0.05] px-4 py-2.5 flex items-center gap-2">
+            <Wind className="w-3 h-3 text-blue-400/60 shrink-0" />
+            <span className="text-[11px] text-blue-400/70">AC rooms billed additionally at {formatCurrency(config.ac_per_unit_rate)}/unit consumed</span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 // ── Sticky band ───────────────────────────────────────────────────────────────
 
 interface StickyBandProps {
@@ -988,6 +1106,14 @@ export function HostelDetailClient({ hostel }: { hostel: PublicHostelDetail }) {
 
         {/* Rooms */}
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-10">
+
+          {hostel.package_config && (
+            <PackagePricingSection
+              config={hostel.package_config}
+              hasAcRooms={hostel.rooms.some((r) => r.has_ac)}
+              hasNonAcRooms={hostel.rooms.some((r) => !r.has_ac)}
+            />
+          )}
 
           {availableRooms.length > 0 && (
             <section>

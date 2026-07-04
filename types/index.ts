@@ -463,6 +463,11 @@ export interface AuditLog {
   created_at: string;
 }
 
+export interface PackagePrices {
+  no_ac: number;
+  ac: number;
+}
+
 export interface PackageConfig {
   id: string;
   hostel_id: string;
@@ -470,6 +475,8 @@ export interface PackageConfig {
   food_bd_rate: number;
   food_3meals_rate: number;
   ac_per_unit_rate: number;
+  security_deposit: number;
+  package_prices: Partial<Record<PackageTier, PackagePrices>>;
   created_at: string;
   updated_at: string;
 }

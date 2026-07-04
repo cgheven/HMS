@@ -18,22 +18,36 @@ ALTER TABLE hms_room_ac_join_readings ENABLE ROW LEVEL SECURITY;
 
 -- Mirror the same RLS pattern from 045_ac_billing_fixes.sql:
 -- owners + active partners can read; only owners can write.
-CREATE POLICY "members_read_ac_join_readings"
-  ON hms_room_ac_join_readings
-  FOR SELECT
-  USING (
-    hostel_id IN (
-      SELECT id        FROM hms_hostels     WHERE owner_id    = auth.uid()
-      UNION ALL
-      SELECT hostel_id FROM hms_partnerships WHERE partner_id = auth.uid() AND is_active = true
-    )
-  );
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE tablename = 'hms_room_ac_join_readings' AND policyname = 'members_read_ac_join_readings'
+  ) THEN
+    CREATE POLICY "members_read_ac_join_readings"
+      ON hms_room_ac_join_readings
+      FOR SELECT
+      USING (
+        hostel_id IN (
+          SELECT id        FROM hms_hostels     WHERE owner_id    = auth.uid()
+          UNION ALL
+          SELECT hostel_id FROM hms_partnerships WHERE partner_id = auth.uid() AND is_active = true
+        )
+      );
+  END IF;
+END $$;
 
-CREATE POLICY "owners_write_ac_join_readings"
-  ON hms_room_ac_join_readings
-  FOR ALL
-  USING    (hostel_id IN (SELECT id FROM hms_hostels WHERE owner_id = auth.uid()))
-  WITH CHECK (hostel_id IN (SELECT id FROM hms_hostels WHERE owner_id = auth.uid()));
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE tablename = 'hms_room_ac_join_readings' AND policyname = 'owners_write_ac_join_readings'
+  ) THEN
+    CREATE POLICY "owners_write_ac_join_readings"
+      ON hms_room_ac_join_readings
+      FOR ALL
+      USING    (hostel_id IN (SELECT id FROM hms_hostels WHERE owner_id = auth.uid()))
+      WITH CHECK (hostel_id IN (SELECT id FROM hms_hostels WHERE owner_id = auth.uid()));
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_ac_join_readings_room_month
   ON hms_room_ac_join_readings (room_id, for_month);

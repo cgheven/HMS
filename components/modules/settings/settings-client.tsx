@@ -13,7 +13,7 @@ import { toast } from "@/hooks/use-toast";
 import { getOwnedHostels, switchActiveHostel, renameBranch } from "@/app/actions/branches";
 import { listPartners, createPartner, removePartner } from "@/app/actions/partners";
 import type { PartnerRow } from "@/app/actions/partners";
-import type { HostelType, Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount } from "@/types";
+import type { HostelType, Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier } from "@/types";
 import { DEFAULT_FORM_CONFIG } from "@/types";
 import { savePaymentRecoverySettings } from "@/app/actions/settings";
 import { DEFAULT_REMINDER_TEMPLATE, formatAccounts, buildReminderMessage } from "@/lib/whatsapp-reminder";
@@ -29,6 +29,26 @@ const ALL_AMENITIES = [
   "WiFi", "AC", "Generator / UPS", "Meals Included", "Laundry",
   "Parking", "CCTV", "Hot Water", "Study Room", "Attached Bath", "Security Guard", "Cupboard",
 ];
+
+type PkgPriceEntry = { no_ac: string; ac: string };
+type PkgPriceForm = Record<PackageTier, PkgPriceEntry>;
+
+const PACKAGE_TIER_CONFIGS: { tier: PackageTier; label: string; desc: string; hasAcVariant: boolean }[] = [
+  { tier: "space_only",          label: "Space Only",                  desc: "No meals",                  hasAcVariant: true  },
+  { tier: "space_food",          label: "Space + Breakfast & Dinner",  desc: "2 meals / day",             hasAcVariant: true  },
+  { tier: "space_3meals",        label: "Space + 3 Meals",             desc: "Breakfast, lunch & dinner", hasAcVariant: true  },
+  { tier: "space_meals_cooler",  label: "Space + Meals + Cooler",      desc: "Meals + cooler",            hasAcVariant: false },
+];
+
+function emptyPriceForm(): PkgPriceForm {
+  return {
+    space_only:         { no_ac: "", ac: "" },
+    space_food:         { no_ac: "", ac: "" },
+    space_3meals:       { no_ac: "", ac: "" },
+    space_food_ac:      { no_ac: "", ac: "" }, // kept for DB compatibility; not shown in UI
+    space_meals_cooler: { no_ac: "", ac: "" },
+  };
+}
 
 export function SettingsClient() {
   const { profile, hostel } = useHostelContext();
@@ -78,7 +98,9 @@ export function SettingsClient() {
   const [uploadingCover, setUploadingCover] = useState(false);
   const coverInputRef = useRef<HTMLInputElement>(null);
 
-  const [packageForm, setPackageForm] = useState({ food_bd_rate: "", food_3meals_rate: "", ac_per_unit_rate: "" });
+  const [packageForm, setPackageForm] = useState<{ ac_per_unit_rate: string; security_deposit: string; prices: PkgPriceForm }>({
+    ac_per_unit_rate: "", security_deposit: "", prices: emptyPriceForm(),
+  });
   const [savingPackage, setSavingPackage] = useState(false);
   const [packageLoaded, setPackageLoaded] = useState(false);
 
@@ -143,17 +165,25 @@ export function SettingsClient() {
     const supabase = createClient();
     const { data } = await supabase
       .from("hms_package_configs")
-      .select("food_monthly_rate, food_bd_rate, food_3meals_rate, ac_per_unit_rate")
+      .select("ac_per_unit_rate, security_deposit, package_prices")
       .eq("hostel_id", id)
       .maybeSingle();
     if (data) {
-      // If explicit rates are set use them; otherwise fall back to legacy per-meal * multiplier
-      const bdRate     = data.food_bd_rate     > 0 ? data.food_bd_rate     : (data.food_monthly_rate ?? 0) * 2;
-      const meals3Rate = data.food_3meals_rate  > 0 ? data.food_3meals_rate  : (data.food_monthly_rate ?? 0) * 3;
+      const saved = (data.package_prices ?? {}) as Partial<Record<PackageTier, { no_ac: number; ac: number }>>;
+      const prices = emptyPriceForm();
+      for (const cfg of PACKAGE_TIER_CONFIGS) {
+        const s = saved[cfg.tier];
+        if (s) {
+          prices[cfg.tier] = {
+            no_ac: s.no_ac > 0 ? String(s.no_ac) : "",
+            ac:    s.ac    > 0 ? String(s.ac)    : "",
+          };
+        }
+      }
       setPackageForm({
-        food_bd_rate:     bdRate.toString(),
-        food_3meals_rate: meals3Rate.toString(),
         ac_per_unit_rate: data.ac_per_unit_rate?.toString() ?? "0",
+        security_deposit: data.security_deposit > 0 ? String(data.security_deposit) : "",
+        prices,
       });
     }
     setPackageLoaded(true);
@@ -409,17 +439,22 @@ export function SettingsClient() {
     if (!hostelId) return;
     setSavingPackage(true);
     const supabase = createClient();
+    const pkgPrices: Partial<Record<PackageTier, { no_ac: number; ac: number }>> = {};
+    for (const cfg of PACKAGE_TIER_CONFIGS) {
+      pkgPrices[cfg.tier] = {
+        no_ac: parseFloat(packageForm.prices[cfg.tier].no_ac) || 0,
+        ac:    parseFloat(packageForm.prices[cfg.tier].ac)    || 0,
+      };
+    }
     const { error } = await supabase
       .from("hms_package_configs")
       .upsert(
         {
-          hostel_id: hostelId,
-          food_bd_rate:     parseFloat(packageForm.food_bd_rate)     || 0,
-          food_3meals_rate: parseFloat(packageForm.food_3meals_rate) || 0,
-          // Keep food_monthly_rate in sync — the billing trigger reads this column
-          food_monthly_rate: parseFloat(packageForm.food_bd_rate) || 0,
+          hostel_id:        hostelId,
           ac_per_unit_rate: parseFloat(packageForm.ac_per_unit_rate) || 0,
-          updated_at: new Date().toISOString(),
+          security_deposit: parseFloat(packageForm.security_deposit) || 0,
+          package_prices:   pkgPrices,
+          updated_at:       new Date().toISOString(),
         },
         { onConflict: "hostel_id" }
       );
@@ -866,83 +901,96 @@ export function SettingsClient() {
             <CardTitle className="text-base">Package Pricing</CardTitle>
           </div>
           <CardDescription>
-            Controls what tenants see on the public hostel page when selecting a package. Room base rent is set per-room in Spaces.
+            Set the monthly rent for each package. Selecting a package when adding a tenant will auto-fill the rent. Food charges are added on top automatically.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={savePackageConfig} className="space-y-5">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="space-y-1.5">
-                <Label>Breakfast + Dinner / month (Rs.)</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  step="1"
-                  placeholder="e.g. 8000"
-                  value={packageForm.food_bd_rate}
-                  onChange={(e) => setPackageForm({ ...packageForm, food_bd_rate: e.target.value })}
-                  disabled={!packageLoaded}
-                />
-                <p className="text-xs text-muted-foreground">Added on top of room rent for this package</p>
+          <form onSubmit={savePackageConfig} className="space-y-6">
+
+            {/* Per-package price table */}
+            <div className="rounded-lg border border-border overflow-hidden">
+              {/* Header row */}
+              <div className="grid grid-cols-[1fr_100px_100px] gap-px bg-border">
+                <div className="bg-card px-3 py-2">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Package</span>
+                </div>
+                <div className="bg-card px-2 py-2 text-center">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Standard</span>
+                </div>
+                <div className="bg-card px-2 py-2 text-center">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">AC Room</span>
+                </div>
               </div>
+              {/* Package rows */}
+              {PACKAGE_TIER_CONFIGS.map((cfg) => (
+                <div key={cfg.tier} className="grid grid-cols-[1fr_100px_100px] gap-px bg-border">
+                  <div className="bg-card px-3 py-2.5">
+                    <p className="text-sm font-medium leading-tight">{cfg.label}</p>
+                    <p className="text-xs text-muted-foreground">{cfg.desc}</p>
+                  </div>
+                  <div className="bg-card px-2 py-2 flex items-center">
+                    <Input
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="0"
+                      value={packageForm.prices[cfg.tier].no_ac}
+                      onChange={(e) => setPackageForm({
+                        ...packageForm,
+                        prices: { ...packageForm.prices, [cfg.tier]: { ...packageForm.prices[cfg.tier], no_ac: e.target.value } },
+                      })}
+                      disabled={!packageLoaded}
+                      className="h-7 text-xs text-center px-1"
+                    />
+                  </div>
+                  <div className="bg-card px-2 py-2 flex items-center">
+                    {cfg.hasAcVariant ? (
+                      <Input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="0"
+                        value={packageForm.prices[cfg.tier].ac}
+                        onChange={(e) => setPackageForm({
+                          ...packageForm,
+                          prices: { ...packageForm.prices, [cfg.tier]: { ...packageForm.prices[cfg.tier], ac: e.target.value } },
+                        })}
+                        disabled={!packageLoaded}
+                        className="h-7 text-xs text-center px-1"
+                      />
+                    ) : (
+                      <span className="text-xs text-muted-foreground w-full text-center">metered</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* AC rate + Security Deposit */}
+            <div className="flex flex-wrap gap-6">
               <div className="space-y-1.5">
-                <Label>Breakfast + Lunch + Dinner / month (Rs.)</Label>
+                <Label className="text-xs">AC Per Unit Rate (Rs. / unit consumed)</Label>
                 <Input
-                  type="number"
-                  min="0"
-                  step="1"
-                  placeholder="e.g. 12000"
-                  value={packageForm.food_3meals_rate}
-                  onChange={(e) => setPackageForm({ ...packageForm, food_3meals_rate: e.target.value })}
-                  disabled={!packageLoaded}
-                />
-                <p className="text-xs text-muted-foreground">Added on top of room rent for this package</p>
-              </div>
-              <div className="space-y-1.5">
-                <Label>AC Per-Unit Rate (Rs. / unit consumed)</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  placeholder="e.g. 80"
+                  type="number" min="0" step="0.01" placeholder="e.g. 80"
                   value={packageForm.ac_per_unit_rate}
                   onChange={(e) => setPackageForm({ ...packageForm, ac_per_unit_rate: e.target.value })}
                   disabled={!packageLoaded}
+                  className="max-w-[180px]"
                 />
-                <p className="text-xs text-muted-foreground">Billed separately based on units consumed each month</p>
+                <p className="text-xs text-muted-foreground">Billed on top of the monthly rate for AC rooms.</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Security Deposit (Rs.)</Label>
+                <Input
+                  type="number" min="0" step="1" placeholder="e.g. 10000"
+                  value={packageForm.security_deposit}
+                  onChange={(e) => setPackageForm({ ...packageForm, security_deposit: e.target.value })}
+                  disabled={!packageLoaded}
+                  className="max-w-[180px]"
+                />
+                <p className="text-xs text-muted-foreground">Shown as upfront cost on the public hostel page.</p>
               </div>
             </div>
-
-            {/* Live preview */}
-            {packageLoaded && (parseFloat(packageForm.food_bd_rate) > 0 || parseFloat(packageForm.food_3meals_rate) > 0) && (
-              <div className="rounded-xl border border-border bg-muted/40 p-4">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">What tenants will see (room rent + food add-on)</p>
-                <div className="space-y-1.5 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Space Only</span>
-                    <span className="font-medium">Room rent only</span>
-                  </div>
-                  {parseFloat(packageForm.food_bd_rate) > 0 && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Space + Breakfast + Dinner</span>
-                      <span className="font-medium">Room rent + Rs. {parseFloat(packageForm.food_bd_rate).toLocaleString()}</span>
-                    </div>
-                  )}
-                  {parseFloat(packageForm.food_3meals_rate) > 0 && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Space + Breakfast + Lunch + Dinner</span>
-                      <span className="font-medium">Room rent + Rs. {parseFloat(packageForm.food_3meals_rate).toLocaleString()}</span>
-                    </div>
-                  )}
-                  {parseFloat(packageForm.ac_per_unit_rate) > 0 && (
-                    <div className="flex justify-between pt-1.5 border-t border-border mt-1.5">
-                      <span className="text-muted-foreground">AC (billed separately)</span>
-                      <span className="font-medium">Rs. {parseFloat(packageForm.ac_per_unit_rate)} / unit</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
 
             <Button type="submit" disabled={savingPackage || !packageLoaded} className="gap-2">
               {savingPackage ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}

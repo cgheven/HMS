@@ -139,7 +139,7 @@ export async function getPublicHostel(slug: string): Promise<{ hostel?: PublicHo
         .order("sort_order"),
       admin
         .from("hms_package_configs")
-        .select("id,hostel_id,food_monthly_rate,food_bd_rate,food_3meals_rate,ac_per_unit_rate,created_at,updated_at")
+        .select("id,hostel_id,food_monthly_rate,food_bd_rate,food_3meals_rate,ac_per_unit_rate,security_deposit,package_prices,created_at,updated_at")
         .eq("hostel_id", hostelId)
         .maybeSingle(),
     ]);
