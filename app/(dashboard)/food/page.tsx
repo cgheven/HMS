@@ -1,9 +1,9 @@
 import { getFoodItems } from "@/lib/data";
 import { FoodClient } from "@/components/modules/food/food-client";
-import { formatDateInput } from "@/lib/utils";
 
 export default async function FoodPage() {
-  const today = formatDateInput(new Date());
-  const { hostelId, items } = await getFoodItems(today);
-  return <FoodClient key={hostelId ?? ''} hostelId={hostelId} initialItems={items} initialDate={today} />;
+  const now = new Date();
+  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const { hostelId, items } = await getFoodItems(month);
+  return <FoodClient key={hostelId ?? ''} hostelId={hostelId} initialItems={items} initialMonth={month} />;
 }

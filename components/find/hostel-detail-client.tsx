@@ -935,6 +935,16 @@ function PackagePricingSection({
             <span className="text-[11px] text-blue-400/70">AC rooms billed additionally at {formatCurrency(config.ac_per_unit_rate)}/unit consumed</span>
           </div>
         )}
+        {/* Security deposit */}
+        {config.security_deposit > 0 && (
+          <div className="border-t border-white/[0.05] px-4 py-2.5 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Banknote className="w-3 h-3 text-amber/60 shrink-0" />
+              <span className="text-[11px] text-muted-foreground/60">Security Deposit (one-time, refundable)</span>
+            </div>
+            <span className="text-[11px] font-semibold text-amber tabular-nums">{formatCurrency(config.security_deposit)}</span>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1177,13 +1187,17 @@ export function HostelDetailClient({ hostel }: { hostel: PublicHostelDetail }) {
           {/* ── Details tab ── */}
           {activeTab === "details" && (
             <>
-              {hostel.package_config && (
-                <PackagePricingSection
-                  config={hostel.package_config}
-                  hasAcRooms={hostel.rooms.some((r) => r.has_ac)}
-                  hasNonAcRooms={hostel.rooms.some((r) => !r.has_ac)}
-                />
-              )}
+              {hostel.package_config && (() => {
+                const prices = hostel.package_config.package_prices ?? {};
+                const vals = Object.values(prices);
+                return (
+                  <PackagePricingSection
+                    config={hostel.package_config}
+                    hasAcRooms={vals.some((p) => p.ac > 0)}
+                    hasNonAcRooms={vals.some((p) => p.no_ac > 0)}
+                  />
+                );
+              })()}
 
               {hostel.food_menu.length > 0 && (
                 <FoodMenuSection items={hostel.food_menu} closedOnSundays={hostel.food_closed_on_sundays} />

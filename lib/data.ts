@@ -381,11 +381,16 @@ export async function getKitchenExpenses(monthFilter: string) {
   return { hostelId, items: (data as KitchenExpense[]) ?? [] };
 }
 
-export async function getFoodItems(date: string) {
+export async function getFoodItems(month: string) {
   const ctx = await getAuthContext();
   if (!ctx?.hostelId) return { hostelId: null, items: [] };
   const { supabase, hostelId } = ctx;
-  const { data } = await supabase.from("hms_food_items").select("*").eq("hostel_id", hostelId).eq("date", date).order("meal_type");
+  const [y, m] = month.split("-").map(Number);
+  const end = new Date(y, m, 0).toISOString().slice(0, 10);
+  const { data } = await supabase
+    .from("hms_food_items").select("*").eq("hostel_id", hostelId)
+    .gte("date", `${month}-01`).lte("date", end)
+    .order("date").order("meal_type").order("sort_order");
   return { hostelId, items: (data as FoodItem[]) ?? [] };
 }
 
