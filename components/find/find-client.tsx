@@ -1,5 +1,6 @@
 "use client";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Search, MapPin, ExternalLink, Home, ArrowRight,
@@ -115,10 +116,15 @@ function WaitlistModal({ hostel, onClose }: { hostel: PublicHostel; onClose: () 
 
 function HostelCard({ h }: { h: PublicHostel }) {
   const [waitlistOpen, setWaitlistOpen] = useState(false);
+  const router = useRouter();
   const typeCfg = h.hostel_type ? TYPE_CONFIG[h.hostel_type] : null;
   const gradient = typeCfg ?? DEFAULT_GRADIENT;
   const isFull = h.available_beds === 0;
   const detailHref = h.slug ? `/find/${h.slug}` : null;
+
+  useEffect(() => {
+    if (detailHref) router.prefetch(detailHref);
+  }, [detailHref, router]);
   // SECURITY: reject javascript: URIs — only allow https:// links
   const safeMapsUrl = h.maps_url?.match(/^https?:\/\//i) ? h.maps_url : null;
 
@@ -126,7 +132,10 @@ function HostelCard({ h }: { h: PublicHostel }) {
     <>
       {waitlistOpen && <WaitlistModal hostel={h} onClose={() => setWaitlistOpen(false)} />}
 
-      <article className="group flex flex-col rounded-2xl border border-white/[0.07] bg-[#111113] hover:border-amber/30 transition-all duration-300 overflow-hidden">
+      <article
+        onClick={() => detailHref && router.push(detailHref)}
+        className={`group flex flex-col rounded-2xl border border-white/[0.07] bg-[#111113] hover:border-amber/30 transition-all duration-300 overflow-hidden${detailHref ? " cursor-pointer" : ""}`}
+      >
 
         {/* Visual header — cover photo or gradient fallback */}
         <div
@@ -258,7 +267,7 @@ function HostelCard({ h }: { h: PublicHostel }) {
             <div className="flex-1" />
           )}
           <button
-            onClick={() => setWaitlistOpen(true)}
+            onClick={(e) => { e.stopPropagation(); setWaitlistOpen(true); }}
             className={`flex items-center justify-center gap-1.5 h-10 rounded-xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.07] text-muted-foreground hover:text-foreground text-sm font-medium transition-colors ${detailHref ? "px-4" : "flex-1"}`}
           >
             <Clock className="w-3.5 h-3.5 shrink-0" />

@@ -982,6 +982,7 @@ function StickyBand({ hostel, onWaitlist }: StickyBandProps) {
 export function HostelDetailClient({ hostel }: { hostel: PublicHostelDetail }) {
   const [waitlistOpen, setWaitlistOpen] = useState(false);
   const [showBand, setShowBand]         = useState(false);
+  const [activeTab, setActiveTab]       = useState<"rooms" | "details">("rooms");
   const infoRef                         = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1104,54 +1105,97 @@ export function HostelDetailClient({ hostel }: { hostel: PublicHostelDetail }) {
           </div>
         </div>
 
-        {/* Rooms */}
+        {/* Tab strip */}
+        {(hostel.package_config || hostel.food_menu.length > 0) && (
+          <div className="border-b border-white/[0.06] bg-[#0D0D0F]">
+            <div className="max-w-5xl mx-auto px-4 sm:px-6 flex">
+              {(["rooms", "details"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`flex items-center gap-2 px-1 py-3 mr-6 text-sm font-medium border-b-2 transition-colors capitalize ${
+                    activeTab === tab
+                      ? "border-amber text-foreground"
+                      : "border-transparent text-muted-foreground/50 hover:text-muted-foreground"
+                  }`}
+                >
+                  {tab === "rooms" ? "Rooms" : "Packages & Menu"}
+                  {tab === "rooms" && hostel.rooms.length > 0 && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full tabular-nums ${activeTab === "rooms" ? "bg-amber/15 text-amber" : "bg-white/[0.06] text-muted-foreground/40"}`}>
+                      {hostel.rooms.length}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Tab content */}
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-10">
 
-          {hostel.package_config && (
-            <PackagePricingSection
-              config={hostel.package_config}
-              hasAcRooms={hostel.rooms.some((r) => r.has_ac)}
-              hasNonAcRooms={hostel.rooms.some((r) => !r.has_ac)}
-            />
+          {/* ── Rooms tab ── */}
+          {activeTab === "rooms" && (
+            <>
+              {availableRooms.length > 0 && (
+                <section>
+                  <div className="flex items-center gap-2 mb-4">
+                    <BedDouble className="w-4 h-4 text-emerald-400" />
+                    <h2 className="font-semibold text-sm">Available Rooms <span className="text-muted-foreground/50 font-normal">({availableRooms.length})</span></h2>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                    {availableRooms.map((room) => (
+                      <RoomCard key={room.id} room={room} hostel={hostel} />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {fullRooms.length > 0 && (
+                <section>
+                  <div className="flex items-center gap-2 mb-4">
+                    <BedDouble className="w-4 h-4 text-muted-foreground/40" />
+                    <h2 className="font-semibold text-sm text-muted-foreground/60">Occupied Rooms <span className="font-normal">({fullRooms.length})</span></h2>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                    {fullRooms.map((room) => (
+                      <RoomCard key={room.id} room={room} hostel={hostel} />
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {hostel.rooms.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-16 gap-3 text-center rounded-2xl border border-white/[0.05] bg-[#111113]">
+                  <BedDouble className="w-8 h-8 text-muted-foreground/20" />
+                  <p className="text-sm text-muted-foreground/50">Room details not listed yet.</p>
+                </div>
+              )}
+            </>
           )}
 
-          {availableRooms.length > 0 && (
-            <section>
-              <div className="flex items-center gap-2 mb-4">
-                <BedDouble className="w-4 h-4 text-emerald-400" />
-                <h2 className="font-semibold text-sm">Available Rooms <span className="text-muted-foreground/50 font-normal">({availableRooms.length})</span></h2>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                {availableRooms.map((room) => (
-                  <RoomCard key={room.id} room={room} hostel={hostel} />
-                ))}
-              </div>
-            </section>
-          )}
+          {/* ── Details tab ── */}
+          {activeTab === "details" && (
+            <>
+              {hostel.package_config && (
+                <PackagePricingSection
+                  config={hostel.package_config}
+                  hasAcRooms={hostel.rooms.some((r) => r.has_ac)}
+                  hasNonAcRooms={hostel.rooms.some((r) => !r.has_ac)}
+                />
+              )}
 
-          {fullRooms.length > 0 && (
-            <section>
-              <div className="flex items-center gap-2 mb-4">
-                <BedDouble className="w-4 h-4 text-muted-foreground/40" />
-                <h2 className="font-semibold text-sm text-muted-foreground/60">Occupied Rooms <span className="font-normal">({fullRooms.length})</span></h2>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                {fullRooms.map((room) => (
-                  <RoomCard key={room.id} room={room} hostel={hostel} />
-                ))}
-              </div>
-            </section>
-          )}
+              {hostel.food_menu.length > 0 && (
+                <FoodMenuSection items={hostel.food_menu} closedOnSundays={hostel.food_closed_on_sundays} />
+              )}
 
-          {hostel.rooms.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-16 gap-3 text-center rounded-2xl border border-white/[0.05] bg-[#111113]">
-              <BedDouble className="w-8 h-8 text-muted-foreground/20" />
-              <p className="text-sm text-muted-foreground/50">Room details not listed yet.</p>
-            </div>
-          )}
-
-          {hostel.food_menu.length > 0 && (
-            <FoodMenuSection items={hostel.food_menu} closedOnSundays={hostel.food_closed_on_sundays} />
+              {!hostel.package_config && hostel.food_menu.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-16 gap-3 text-center rounded-2xl border border-white/[0.05] bg-[#111113]">
+                  <Banknote className="w-8 h-8 text-muted-foreground/20" />
+                  <p className="text-sm text-muted-foreground/50">Pricing details not listed yet.</p>
+                </div>
+              )}
+            </>
           )}
         </div>
 
