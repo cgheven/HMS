@@ -142,12 +142,8 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }
   }, []);
 
-  // Auto-sync on mount
-  useEffect(() => {
-    syncMonth(initialMonth).catch((err) => {
-      toast({ title: "Failed to load payments", description: err?.message, variant: "destructive" });
-    });
-  }, []);
+  // No auto-sync on mount — server already called getPaymentsPageData(defaultMonth)
+  // and passed fresh data as initialPayments. syncMonth is called only on user actions.
 
   async function loadHistory() {
     if (historyLoaded) return;

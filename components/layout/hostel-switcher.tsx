@@ -1,69 +1,57 @@
 "use client";
 import { useState, useEffect, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import { Building2, ChevronDown, Check, Loader2, Home } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { getOwnedHostels, switchActiveHostel } from "@/app/actions/branches";
-import { toast } from "@/hooks/use-toast";
+import { switchActiveHostel } from "@/app/actions/branches";
 import type { Hostel } from "@/types";
 
-type OwnedHostel = Hostel & { is_primary: boolean };
+type OwnedHostel = Hostel & { is_primary?: boolean };
 
 interface Props {
   activeHostel: Hostel | null;
+  hostels: OwnedHostel[];
 }
 
-export function HostelSwitcher({ activeHostel }: Props) {
-  const router = useRouter();
+export function HostelSwitcher({ activeHostel, hostels }: Props) {
   const [isPending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
-  const [hostels, setHostels] = useState<OwnedHostel[]>([]);
-  const [loadingHostels, setLoadingHostels] = useState(false);
-  const [switching, setSwitching] = useState<string | null>(null);
-  // Optimistic name shown immediately on click, before server refresh completes
   const [optimisticName, setOptimisticName] = useState<string | null>(null);
-
-  useEffect(() => {
-    let mounted = true;
-    setLoadingHostels(true);
-    getOwnedHostels().then(({ hostels: list, error }) => {
-      if (!mounted) return;
-      if (error) console.warn("[HostelSwitcher] fetch error:", error);
-      setHostels(list);
-      setLoadingHostels(false);
-    });
-    return () => { mounted = false; };
-  }, []);
 
   const multiHostel = hostels.length > 1;
 
-  async function handleSwitch(hostelId: string) {
+  function handleSwitch(hostelId: string) {
     if (hostelId === activeHostel?.id) {
       setOpen(false);
       return;
     }
     const target = hostels.find((h) => h.id === hostelId);
-    // Show new name immediately — feels instant to the user
     setOptimisticName(target?.name ?? null);
     setOpen(false);
-    setSwitching(hostelId);
-    const result = await switchActiveHostel(hostelId);
-    setSwitching(null);
-    if (result.error) {
-      setOptimisticName(null);
-      toast({ title: "Could not switch branch", description: result.error, variant: "destructive" });
-      return;
-    }
-    startTransition(() => { router.refresh(); });
+    // React 19 async transition: isPending=true from click until reload starts.
+    // window.location.reload() is used instead of router.refresh() because the
+    // Next.js 15 client-side router cache races with the Set-Cookie header from
+    // the Server Action response — the RSC request fires before the browser
+    // applies the new hms_active_hostel cookie, so router.refresh() sees the old
+    // hostel. window.location.reload() is a browser-level navigation that always
+    // sends the fully-committed cookie jar. A new tab exhibits the same behaviour
+    // (works correctly), confirming that a fresh request with the new cookie is
+    // the reliable path.
+    startTransition(async () => {
+      const result = await switchActiveHostel(hostelId);
+      if (result.error) {
+        setOptimisticName(null);
+        return;
+      }
+      window.location.reload();
+    });
   }
 
-  // Clear optimistic name once the server refresh delivers the real activeHostel
   useEffect(() => {
     setOptimisticName(null);
   }, [activeHostel?.id]);
 
   // Single-hostel: just show the name, no switcher needed
-  if (!multiHostel && !loadingHostels) {
+  if (!multiHostel) {
     return (
       <div className="flex items-center gap-2 min-w-0">
         <div className="flex items-center justify-center w-6 h-6 rounded-md bg-amber/10 border border-amber/20 shrink-0">
@@ -79,22 +67,18 @@ export function HostelSwitcher({ activeHostel }: Props) {
   return (
     <div className="relative flex items-center gap-2 min-w-0">
       <div className="flex items-center justify-center w-6 h-6 rounded-md bg-amber/10 border border-amber/20 shrink-0">
-        {multiHostel ? (
-          <Building2 className="w-3.5 h-3.5 text-amber" />
-        ) : (
-          <Home className="w-3.5 h-3.5 text-amber" />
-        )}
+        <Building2 className="w-3.5 h-3.5 text-amber" />
       </div>
 
       <button
         onClick={() => setOpen((p) => !p)}
         className="flex items-center gap-1.5 font-semibold text-sm text-foreground hover:text-amber transition-colors"
-        disabled={loadingHostels || isPending}
+        disabled={isPending}
       >
         <span className="truncate max-w-[220px]">
-          {optimisticName ?? (loadingHostels ? "Loading…" : (activeHostel?.name ?? "My Hostel"))}
+          {optimisticName ?? activeHostel?.name ?? "My Hostel"}
         </span>
-        {loadingHostels || isPending ? (
+        {isPending ? (
           <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin shrink-0" />
         ) : (
           <ChevronDown
@@ -118,12 +102,11 @@ export function HostelSwitcher({ activeHostel }: Props) {
             <div className="p-1 max-h-64 overflow-y-auto scrollbar-thin">
               {hostels.map((h) => {
                 const isActive = h.id === activeHostel?.id;
-                const isSwitching = switching === h.id;
                 return (
                   <button
                     key={h.id}
                     onClick={() => handleSwitch(h.id)}
-                    disabled={isSwitching}
+                    disabled={isPending}
                     className={cn(
                       "w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg text-sm transition-colors text-left",
                       isActive
@@ -144,9 +127,7 @@ export function HostelSwitcher({ activeHostel }: Props) {
                         <p className="text-xs opacity-60 truncate">{h.city}</p>
                       )}
                     </div>
-                    {isSwitching ? (
-                      <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
-                    ) : isActive ? (
+                    {isActive ? (
                       <Check className="w-3.5 h-3.5 shrink-0" />
                     ) : null}
                   </button>

@@ -186,12 +186,14 @@ export async function listPartners(
       .select("id, full_name, phone")
       .in("id", partnerIds);
 
-    // Fetch emails from auth
+    // Fetch emails from auth in parallel — avoids O(N × auth-latency) serial loop
     const emailMap = new Map<string, string>();
-    for (const pid of partnerIds) {
-      const { data: authUser } = await admin.auth.admin.getUserById(pid);
-      if (authUser?.user) emailMap.set(pid, authUser.user.email ?? "");
-    }
+    await Promise.all(
+      partnerIds.map(async (pid) => {
+        const { data: authUser } = await admin.auth.admin.getUserById(pid);
+        if (authUser?.user) emailMap.set(pid, authUser.user.email ?? "");
+      })
+    );
 
     const profileMap = new Map(
       (profiles ?? []).map((p) => [p.id, p])

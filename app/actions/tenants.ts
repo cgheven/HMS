@@ -314,27 +314,28 @@ export async function getTenantTimeline(
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
-    // Fetch tenant (verify ownership via hostel_id)
-    const { data: tenant, error: tenantErr } = await supabase
-      .from("hms_tenants")
-      .select("id, full_name, check_in, check_out, is_active, created_at")
-      .eq("id", tenantId)
-      .eq("hostel_id", hostelId)
-      .single();
+    const [tenantRes, paymentsRes] = await Promise.all([
+      supabase
+        .from("hms_tenants")
+        .select("id, full_name, check_in, check_out, is_active, created_at")
+        .eq("id", tenantId)
+        .eq("hostel_id", hostelId)
+        .single(),
+      supabase
+        .from("hms_payments")
+        .select(
+          "id, for_month, amount, late_fee, payment_method, payment_date, status, food_charge, ac_charge, payment_package_tier, created_at"
+        )
+        .eq("tenant_id", tenantId)
+        .eq("hostel_id", hostelId)
+        .order("created_at", { ascending: false }),
+    ]);
 
-    if (tenantErr || !tenant) throw new Error("Tenant not found or access denied");
+    if (tenantRes.error || !tenantRes.data) throw new Error("Tenant not found or access denied");
+    if (paymentsRes.error) throw new Error(paymentsRes.error.message);
 
-    // Fetch all payments for this tenant
-    const { data: payments, error: paymentsErr } = await supabase
-      .from("hms_payments")
-      .select(
-        "id, for_month, amount, late_fee, payment_method, payment_date, status, food_charge, ac_charge, payment_package_tier, created_at"
-      )
-      .eq("tenant_id", tenantId)
-      .eq("hostel_id", hostelId)
-      .order("created_at", { ascending: false });
-
-    if (paymentsErr) throw new Error(paymentsErr.message);
+    const tenant = tenantRes.data;
+    const payments = paymentsRes.data;
 
     const events: TimelineEvent[] = [];
 

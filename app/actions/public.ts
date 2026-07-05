@@ -1,5 +1,6 @@
 "use server";
 
+import { cache } from "react";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWaitlistEmail } from "@/lib/email";
 import type { PublicHostel, PublicHostelDetail, PublicRoom, FoodItem } from "@/types";
@@ -98,7 +99,7 @@ export async function getPublicHostels(): Promise<{ hostels?: PublicHostel[]; er
   }
 }
 
-export async function getPublicHostel(slug: string): Promise<{ hostel?: PublicHostelDetail; error?: string }> {
+export const getPublicHostel = cache(async function getPublicHostel(slug: string): Promise<{ hostel?: PublicHostelDetail; error?: string }> {
   try {
     const admin = createAdminClient();
 
@@ -162,7 +163,7 @@ export async function getPublicHostel(slug: string): Promise<{ hostel?: PublicHo
   } catch {
     return { error: "Something went wrong. Please try again." };
   }
-}
+});
 
 export async function joinWaitlist(
   hostelId: string,

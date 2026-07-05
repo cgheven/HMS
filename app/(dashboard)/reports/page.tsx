@@ -24,6 +24,7 @@ export default async function ReportsPage() {
 
   return (
     <ReportsClient
+      key={ctx.hostelId}
       hostelId={ctx.hostelId}
       initialData={data}
       initialFrom={from}

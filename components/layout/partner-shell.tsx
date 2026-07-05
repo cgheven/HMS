@@ -31,7 +31,7 @@ function PartnerSidebar({
   async function handleSignOut() {
     const supabase = createClient();
     await supabase.auth.signOut();
-    router.push("/partner/login");
+    window.location.href = "/partner/login";
   }
 
   return (

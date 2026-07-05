@@ -30,6 +30,7 @@ export default async function TenantsPage() {
 
   return (
     <TenantsClient
+      key={data.hostelId ?? ''}
       {...data}
       applications={applications}
       hostelSlug={hostelSlug}

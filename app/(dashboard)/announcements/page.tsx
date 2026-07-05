@@ -3,5 +3,5 @@ import { AnnouncementsClient } from "@/components/modules/announcements/announce
 
 export default async function AnnouncementsPage() {
   const data = await getAnnouncements();
-  return <AnnouncementsClient {...data} />;
+  return <AnnouncementsClient key={data.hostelId ?? ''} {...data} />;
 }

@@ -166,7 +166,6 @@ export async function getReportData(
     salariesRes,
     tenantsRes,
     roomsRes,
-    newTenantsRes,
   ] = await Promise.all([
     admin
       .from("hms_payments")
@@ -200,12 +199,6 @@ export async function getReportData(
       .from("hms_rooms")
       .select("id, room_number, type, capacity, occupied, status")
       .eq("hostel_id", hostelId),
-    admin
-      .from("hms_tenants")
-      .select("id")
-      .eq("hostel_id", hostelId)
-      .gte("check_in", fullStart)
-      .lte("check_in", fullEnd),
   ]);
 
   type PaymentRow = {
@@ -230,6 +223,9 @@ export async function getReportData(
   const salaries = salariesRes.data ?? [];
   const tenants = tenantsRes.data ?? [];
   const rooms = roomsRes.data ?? [];
+  const newTenants = tenants.filter(
+    (t) => t.check_in >= fullStart && t.check_in <= fullEnd
+  ).length;
 
   // Total revenue & pending
   const paidPayments = payments.filter((p) => p.status === "paid");
@@ -409,7 +405,7 @@ export async function getReportData(
       totalRevenue,
       pendingCollections,
       occupancyRate,
-      newTenants: newTenantsRes.data?.length ?? 0,
+      newTenants,
       revenueByMonth,
       topTenants,
       overduePayments,

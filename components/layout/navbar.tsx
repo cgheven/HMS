@@ -23,7 +23,7 @@ interface NavbarProps {
   setActiveHostel: (id: string) => void;
 }
 
-export function Navbar({ onMenuClick, profile, hostel }: NavbarProps) {
+export function Navbar({ onMenuClick, profile, hostel, hostels }: NavbarProps) {
   const router = useRouter();
   const [signingOut, setSigningOut] = useState(false);
   const [dropOpen, setDropOpen] = useState(false);
@@ -63,7 +63,7 @@ export function Navbar({ onMenuClick, profile, hostel }: NavbarProps) {
       </button>
 
       {/* Hostel switcher */}
-      <HostelSwitcher activeHostel={hostel} />
+      <HostelSwitcher activeHostel={hostel} hostels={hostels} />
 
       {/* Admin quick-access */}
       {isAdmin && (

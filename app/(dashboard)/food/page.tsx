@@ -5,5 +5,5 @@ import { formatDateInput } from "@/lib/utils";
 export default async function FoodPage() {
   const today = formatDateInput(new Date());
   const { hostelId, items } = await getFoodItems(today);
-  return <FoodClient hostelId={hostelId} initialItems={items} initialDate={today} />;
+  return <FoodClient key={hostelId ?? ''} hostelId={hostelId} initialItems={items} initialDate={today} />;
 }

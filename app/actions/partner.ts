@@ -170,7 +170,7 @@ export async function getPartnerTenants(): Promise<{
     const { data, error } = await admin
       .from("hms_tenants")
       .select(
-        "id, full_name, phone, type, room_id, bed_number, check_in, monthly_rent, billing_type, package_tier, is_active"
+        "id, full_name, phone, type, room_id, bed_number, check_in, monthly_rent, billing_type, package_tier, is_active, room:hms_rooms(room_number)"
       )
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
@@ -178,27 +178,12 @@ export async function getPartnerTenants(): Promise<{
 
     if (error) throw error;
 
-    // Fetch rooms for room numbers
-    const roomIds = [
-      ...new Set((data ?? []).map((t: any) => t.room_id).filter(Boolean)),
-    ];
-    let roomMap: Record<string, string> = {};
-    if (roomIds.length > 0) {
-      const { data: rooms } = await admin
-        .from("hms_rooms")
-        .select("id, room_number")
-        .in("id", roomIds);
-      roomMap = Object.fromEntries(
-        (rooms ?? []).map((r) => [r.id, r.room_number])
-      );
-    }
-
     const tenants: PartnerTenant[] = (data ?? []).map((t: any) => ({
       id: t.id,
       full_name: t.full_name,
       phone: t.phone,
       type: t.type,
-      room_number: t.room_id ? (roomMap[t.room_id] ?? null) : null,
+      room_number: (t.room as { room_number: string } | null)?.room_number ?? null,
       bed_number: t.bed_number,
       check_in: t.check_in,
       monthly_rent: Number(t.monthly_rent),

@@ -41,7 +41,8 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/onboarding") ||
     pathname.startsWith("/join/") ||
     pathname.startsWith("/r/") ||
-    pathname.startsWith("/partner/login");
+    pathname.startsWith("/partner/login") ||
+    pathname.startsWith("/pricing");
 
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();

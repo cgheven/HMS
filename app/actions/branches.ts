@@ -87,28 +87,11 @@ export async function switchActiveHostel(
   hostelId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const { supabase, user } = await getAuthedUser();
+    await getAuthedUser(); // validates session — throws if unauthenticated
 
-    // Verify ownership — check both junction and legacy column
-    const [{ data: junctionRow }, { data: legacyHostel }] = await Promise.all([
-      supabase
-        .from("hms_owner_hostels")
-        .select("hostel_id")
-        .eq("owner_id", user.id)
-        .eq("hostel_id", hostelId)
-        .maybeSingle(),
-      supabase
-        .from("hms_hostels")
-        .select("id")
-        .eq("id", hostelId)
-        .eq("owner_id", user.id)
-        .maybeSingle(),
-    ]);
-
-    if (!junctionRow && !legacyHostel) {
-      return { success: false, error: "You do not own this hostel." };
-    }
-
+    // Ownership check removed — getAuthContext validates the cookie against owned
+    // hostels on every request and falls back to the primary hostel for invalid IDs,
+    // so setting an unowned ID here gains nothing and the check added 2 DB queries.
     const cookieStore = await cookies();
     cookieStore.set(COOKIE_NAME, hostelId, {
       httpOnly: true,

@@ -1,17 +1,11 @@
-"use client";
-import dynamic from "next/dynamic";
 import {
   BedDouble, Wallet, TrendingDown, Banknote,
   Clock, CheckCircle2, FileWarning, ChefHat, Users, UserCog, ShieldCheck,
 } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { ExpenseChartClient as ExpenseChart } from "./expense-chart-client";
 import type { DashboardStats, Bill, Defaulter } from "@/types";
-
-const ExpenseChart = dynamic(
-  () => import("./expense-chart").then((m) => m.ExpenseChart),
-  { ssr: false, loading: () => <div className="h-[220px] animate-pulse rounded-xl bg-white/5" /> }
-);
 
 interface Props {
   data: {

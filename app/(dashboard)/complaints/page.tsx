@@ -3,5 +3,5 @@ import { ComplaintsClient } from "@/components/modules/complaints/complaints-cli
 
 export default async function ComplaintsPage() {
   const data = await getComplaints();
-  return <ComplaintsClient {...data} />;
+  return <ComplaintsClient key={data.hostelId ?? ''} {...data} />;
 }
