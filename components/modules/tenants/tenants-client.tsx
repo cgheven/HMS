@@ -17,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
-import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
 import { DocumentManager } from "./document-manager";
@@ -32,6 +32,7 @@ interface Props {
   rooms: Room[];
   applications?: TenantApplication[];
   hostelSlug?: string | null;
+  waitlistEntries?: WaitlistEntry[];
 }
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
@@ -193,12 +194,13 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, onT
 
 // ---------------------------------------------------------------------------
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, waitlistEntries: initialWaitlistEntries = [] }: Props) {
   const [active, setActive] = useState(initialActive);
   const [waiting, setWaiting] = useState(initialWaiting);
   const [checkedOut, setCheckedOut] = useState(initialCheckedOut);
   const [rooms, setRooms] = useState(initialRooms);
   const [applications, setApplications] = useState<TenantApplication[]>(initialApplications);
+  const [waitlistEntries, setWaitlistEntries] = useState<WaitlistEntry[]>(initialWaitlistEntries);
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("active");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -732,7 +734,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
   const stats = {
     active: active.length,
-    waiting: waiting.length,
+    waiting: waiting.length + waitlistEntries.length,
     vacantRooms: rooms.filter((r) => r.status === "available").length,
   };
 
@@ -892,7 +894,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             <TabsTrigger value="waiting" className="shrink-0 gap-1.5 whitespace-nowrap">
               <Clock className="w-3.5 h-3.5 shrink-0" />
               <span>Waiting</span>
-              <span className="text-muted-foreground">({waiting.length})</span>
+              <span className="text-muted-foreground">({waiting.length + waitlistEntries.length})</span>
             </TabsTrigger>
             <TabsTrigger value="checkedout" className="shrink-0 gap-1.5 whitespace-nowrap">
               <Users className="w-3.5 h-3.5 shrink-0" />
@@ -939,25 +941,94 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         </TabsContent>
 
         <TabsContent value="waiting">
-          <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
-            {filterList(waiting).length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground">
-                <Clock className="w-10 h-10 opacity-20" />
-                <p className="text-sm">{search ? "No tenants match" : "Waiting list is empty"}</p>
+          <div className="space-y-4">
+            {/* Pre-booked tenants (is_waiting: true) */}
+            <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
+              {filterList(waiting).length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
+                  <Clock className="w-8 h-8 opacity-20" />
+                  <p className="text-sm">{search ? "No tenants match" : "No pre-booked tenants"}</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-sidebar-border/50">
+                  {filterList(waiting).map((t) => (
+                    <TenantRow
+                      key={t.id} t={t} showActivate
+                      roomMap={roomMap}
+                      onTimeline={setTimelineTenant}
+                      onCheckout={openCheckout}
+                      onActivate={(tenant) => openEdit(tenant, true)}
+                      onEdit={openEdit}
+                      onDelete={setDeleteTenant}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Public waitlist (joined via /find page) */}
+            {(waitlistEntries.length > 0 || search) && (
+              <div className="rounded-2xl border border-amber/20 bg-card overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-2.5 border-b border-amber/10 bg-amber/[0.04]">
+                  <Clock className="w-3.5 h-3.5 text-amber/70 shrink-0" />
+                  <span className="text-xs font-semibold text-amber/80">Public Waitlist</span>
+                  <span className="text-xs text-muted-foreground/50">· joined via /find page</span>
+                  <span className="ml-auto text-xs text-amber/60 tabular-nums">{waitlistEntries.length}</span>
+                </div>
+                {waitlistEntries.filter((e) => {
+                  if (!search) return true;
+                  const q = search.toLowerCase();
+                  return e.name.toLowerCase().includes(q) || e.phone.includes(q);
+                }).length === 0 ? (
+                  <div className="flex items-center justify-center py-10 text-sm text-muted-foreground/50">
+                    {search ? "No entries match" : "Public waitlist is empty"}
+                  </div>
+                ) : (
+                  <div className="divide-y divide-sidebar-border/40">
+                    {waitlistEntries
+                      .filter((e) => {
+                        if (!search) return true;
+                        const q = search.toLowerCase();
+                        return e.name.toLowerCase().includes(q) || e.phone.includes(q);
+                      })
+                      .map((entry) => (
+                        <div key={entry.id} className="flex items-center gap-3 px-4 py-3">
+                          <div className="w-8 h-8 rounded-full bg-amber/10 border border-amber/20 flex items-center justify-center shrink-0">
+                            <span className="text-xs font-bold text-amber">{entry.name.charAt(0).toUpperCase()}</span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">{entry.name}</p>
+                            <p className="text-xs text-muted-foreground flex items-center gap-1">
+                              <Phone className="w-3 h-3" /> {entry.phone}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="text-xs text-muted-foreground/50">
+                              {new Date(entry.created_at).toLocaleDateString("en-PK", { day: "numeric", month: "short", year: "numeric" })}
+                            </p>
+                          </div>
+                          <button
+                            onClick={async () => {
+                              const supabase = createClient();
+                              const { error } = await supabase.from("hms_waitlist").delete().eq("id", entry.id);
+                              if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
+                              else setWaitlistEntries((prev) => prev.filter((e) => e.id !== entry.id));
+                            }}
+                            className="p-1.5 rounded-lg text-muted-foreground/30 hover:text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0"
+                            title="Remove from waitlist"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="divide-y divide-sidebar-border/50">
-                {filterList(waiting).map((t) => (
-                <TenantRow
-                  key={t.id} t={t} showActivate
-                  roomMap={roomMap}
-                  onTimeline={setTimelineTenant}
-                  onCheckout={openCheckout}
-                  onActivate={(tenant) => openEdit(tenant, true)}
-                  onEdit={openEdit}
-                  onDelete={setDeleteTenant}
-                />
-              ))}
+            )}
+            {waitlistEntries.length === 0 && waiting.length === 0 && !search && (
+              <div className="rounded-2xl border border-sidebar-border bg-card flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground">
+                <Clock className="w-10 h-10 opacity-20" />
+                <p className="text-sm">Waiting list is empty</p>
               </div>
             )}
           </div>

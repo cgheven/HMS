@@ -548,3 +548,11 @@ export interface TenantApplication {
   reviewed_at: string | null;
   reviewed_by: string | null;
 }
+
+export interface WaitlistEntry {
+  id: string;
+  hostel_id: string;
+  name: string;
+  phone: string;
+  created_at: string;
+}
