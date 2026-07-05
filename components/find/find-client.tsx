@@ -49,22 +49,28 @@ function WhatsAppIcon({ cls = "w-3.5 h-3.5" }: { cls?: string }) {
 // ── Waitlist modal ────────────────────────────────────────────────────────────
 
 function WaitlistModal({ hostel, onClose }: { hostel: PublicHostel; onClose: () => void }) {
-  const [name, setName]   = useState("");
-  const [phone, setPhone] = useState("");
+  const [name, setName]     = useState("");
+  const [phone, setPhone]   = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [done, setDone]   = useState(false);
+  const [done, setDone]     = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
+    setErrorMsg(null);
     const { error } = await joinWaitlist(hostel.id, name, phone);
     setSubmitting(false);
-    if (!error) setDone(true);
+    if (error) {
+      setErrorMsg(error);
+    } else {
+      setDone(true);
+    }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={(e) => { e.stopPropagation(); onClose(); }} />
       <div className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-[#111113] shadow-2xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.06]">
           <div>
@@ -100,6 +106,11 @@ function WaitlistModal({ hostel, onClose }: { hostel: PublicHostel; onClose: () 
                 <Label>WhatsApp / Phone *</Label>
                 <Input placeholder="03xx xxxxxxx" value={phone} onChange={(e) => setPhone(e.target.value)} required />
               </div>
+              {errorMsg && (
+                <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">
+                  {errorMsg}
+                </p>
+              )}
               <Button type="submit" disabled={submitting} className="w-full gap-2">
                 {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Clock className="w-4 h-4" />}
                 {submitting ? "Joining…" : "Join Waitlist"}
