@@ -482,6 +482,7 @@ export async function applyRoomACUnitsAction(
   perTenantCharge?: number;
   skippedFirstMonth?: number;
   proRatedCount?: number;
+  unassignedUnits?: number;
 }> {
   try {
     // ── Auth & ownership guard ──────────────────────────────────
@@ -544,14 +545,17 @@ export async function applyRoomACUnitsAction(
       .eq("hostel_id", hostelId)
       .order("units_at_join", { ascending: true });
 
-    // Ignore any reading for a tenant who joined on or before the 1st — they are full-month tenants.
-    const joinReadings = (joinReadingsRaw ?? []).filter(r => {
-      const tenant = eligible.find(t => t.id === r.tenant_id);
-      return tenant ? tenant.check_in > `${forMonth}-01` : false;
-    }) as { tenant_id: string; units_at_join: number }[];
+    // Use join readings for ALL eligible tenants regardless of join date.
+    // A tenant on the 1st with units_at_join=0 produces equal split (the duplicate 0 is deduplicated by
+    // the Set, leaving one segment [0,total] where they are present for the full range).
+    // A tenant on the 1st with units_at_join=10 correctly assigns those 10 units to whoever came first.
+    const joinReadings = (joinReadingsRaw ?? []).filter(r =>
+      eligible.some(t => t.id === r.tenant_id)
+    ) as { tenant_id: string; units_at_join: number }[];
     const n = eligible.length;
     const totalCharge = Math.round(units * perUnitRate);
     let proRatedCount = 0;
+    let unassignedUnits = 0;
 
     let tenantBilling: { id: string; tenantUnits: number; charge: number }[];
 
@@ -599,21 +603,26 @@ export async function applyRoomACUnitsAction(
       if (units === 0) {
         tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
       } else {
-        // Round accumulated units to integers; last tenant absorbs any unit remainder
-        const rows = eligible.map(t => {
-          const tu = accumulated.get(t.id) ?? 0;
-          return {
-            id: t.id,
-            tenantUnits: Math.round(tu),
-            charge: Math.max(0, Math.round((tu / units) * totalCharge)),
-          };
-        });
-        const sumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.charge, 0);
-        if (rows.length > 0) rows[rows.length - 1].charge = Math.max(0, totalCharge - sumExceptLast);
-        // Ensure unit total exactly matches input (last tenant absorbs integer remainder)
-        const unitSumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
-        if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, units - unitSumExceptLast);
-        tenantBilling = rows;
+        const assignedUnits = [...accumulated.values()].reduce((s, v) => s + v, 0);
+        unassignedUnits = Math.max(0, Math.round(units - assignedUnits));
+        const assignedCharge = assignedUnits > 0 ? Math.round(assignedUnits * perUnitRate) : 0;
+        if (assignedUnits === 0) {
+          tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
+        } else {
+          const rows = eligible.map(t => {
+            const tu = accumulated.get(t.id) ?? 0;
+            return {
+              id: t.id,
+              tenantUnits: Math.round(tu),
+              charge: Math.max(0, Math.round((tu / assignedUnits) * assignedCharge)),
+            };
+          });
+          const sumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.charge, 0);
+          if (rows.length > 0) rows[rows.length - 1].charge = Math.max(0, assignedCharge - sumExceptLast);
+          const unitSumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
+          if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, Math.round(assignedUnits) - unitSumExceptLast);
+          tenantBilling = rows;
+        }
       }
     }
 
@@ -715,6 +724,7 @@ export async function applyRoomACUnitsAction(
       perTenantCharge: first?.charge ?? 0,
       skippedFirstMonth: 0,
       proRatedCount,
+      unassignedUnits,
     };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };

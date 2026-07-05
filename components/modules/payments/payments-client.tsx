@@ -366,7 +366,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           description: cleared
             ? "AC charges removed for all tenants in this room."
             : result.proRatedCount && result.proRatedCount > 0
-              ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${result.proRatedCount} with segment billing`
+              ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${result.proRatedCount} with segment billing${result.unassignedUnits ? ` · ${result.unassignedUnits} units unassigned (pre-occupancy, hostel absorbs)` : ""}`
               : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${result.perTenantUnits} units each · Rs ${result.perTenantCharge?.toLocaleString()} each`,
         });
         await syncMonth(selectedMonth);
@@ -704,7 +704,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 const acTenantCount = tenants.filter(t => t.room_id === room.id && t.is_active && t.package_tier === "space_food_ac").length;
                 const totalTenants = tenants.filter(t => t.room_id === room.id && t.is_active).length;
                 const midMonthJoiners = tenants.filter(
-                  t => t.room_id === room.id && t.is_active && t.package_tier === "space_food_ac" && t.check_in > `${selectedMonth}-01`
+                  t => t.room_id === room.id && t.is_active && t.package_tier === "space_food_ac" && t.check_in.startsWith(selectedMonth)
                 );
                 return (
                   <div key={room.id} className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 space-y-3">
@@ -812,6 +812,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         charge: Number(payments.find(p => p.tenant_id === t.id && p.for_month === selectedMonth)?.ac_charge ?? 0),
                       })).filter(r => r.units > 0);
                       if (rows.length === 0) return null;
+                      const assignedUnits = rows.reduce((s, r) => s + r.units, 0);
+                      const assignedCharge = rows.reduce((s, r) => s + r.charge, 0);
+                      const unassignedUnits = Math.max(0, saved.total_units - assignedUnits);
+                      const unassignedCharge = Math.round(unassignedUnits * saved.per_unit_rate);
+                      const totalCharge = Math.round(saved.total_units * saved.per_unit_rate);
                       return (
                         <div className="border-t border-white/5 pt-2.5 space-y-1">
                           <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-semibold">Allocated per tenant</p>
@@ -823,11 +828,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               <span className="tabular-nums text-emerald-400">{formatCurrency(r.charge)}</span>
                             </div>
                           ))}
+                          {unassignedUnits > 0 && (
+                            <div className="flex items-center gap-2 text-xs">
+                              <span className="text-amber/70 flex-1 truncate">Unassigned (pre-occupancy) · hostel absorbs</span>
+                              <span className="tabular-nums text-amber/70">{unassignedUnits} units</span>
+                              <span className="text-muted-foreground/40">·</span>
+                              <span className="tabular-nums text-amber/70">{formatCurrency(unassignedCharge)}</span>
+                            </div>
+                          )}
                           <div className="flex items-center gap-2 text-xs pt-0.5 border-t border-white/5 mt-1">
-                            <span className="text-muted-foreground flex-1">Total</span>
-                            <span className="tabular-nums text-foreground font-medium">{rows.reduce((s, r) => s + r.units, 0)} units</span>
+                            <span className="text-muted-foreground flex-1">{unassignedUnits > 0 ? "Total entered" : "Total"}</span>
+                            <span className="tabular-nums text-foreground font-medium">{saved.total_units} units</span>
                             <span className="text-muted-foreground/40">·</span>
-                            <span className="tabular-nums text-emerald-400 font-medium">{formatCurrency(rows.reduce((s, r) => s + r.charge, 0))}</span>
+                            <span className="tabular-nums text-emerald-400 font-medium">{formatCurrency(unassignedUnits > 0 ? totalCharge : assignedCharge)}</span>
                           </div>
                         </div>
                       );
