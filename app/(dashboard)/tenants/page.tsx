@@ -41,6 +41,7 @@ export default async function TenantsPage() {
       {...data}
       applications={applications}
       hostelSlug={hostelSlug}
+      hostelName={ctx?.hostel?.name}
       waitlistEntries={waitlistEntries}
     />
   );
