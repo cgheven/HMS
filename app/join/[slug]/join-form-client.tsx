@@ -28,9 +28,10 @@ const ROOM_PREFS = [
 
 interface Props {
   hostel: Hostel;
+  availableTiers: PackageTier[];
 }
 
-export function JoinFormClient({ hostel }: Props) {
+export function JoinFormClient({ hostel, availableTiers }: Props) {
   const cfg = { ...DEFAULT_FORM_CONFIG, ...(hostel.form_config as FormConfig | null ?? {}) };
   const show = (key: keyof typeof cfg) => cfg[key]?.enabled !== false;
   const req  = (key: keyof typeof cfg) => cfg[key]?.required === true;
@@ -40,7 +41,7 @@ export function JoinFormClient({ hostel }: Props) {
     phone: "",
     email: "",
     cnic: "",
-    package_tier: "space_only" as PackageTier,
+    package_tier: (availableTiers[0] ?? "space_only") as PackageTier,
     room_preference: "no_preference",
     move_in_date: "",
     notes: "",
@@ -418,8 +419,8 @@ export function JoinFormClient({ hostel }: Props) {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {(Object.entries(PACKAGE_LABELS) as [PackageTier, string][]).map(([k, label]) => (
-                        <SelectItem key={k} value={k}>{label}</SelectItem>
+                      {availableTiers.map((tier) => (
+                        <SelectItem key={tier} value={tier}>{PACKAGE_LABELS[tier]}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
