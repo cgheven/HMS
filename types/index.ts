@@ -556,3 +556,25 @@ export interface WaitlistEntry {
   phone: string;
   created_at: string;
 }
+
+export type StaffPermission = "add_members" | "collect_payments" | "add_expenses"
+
+export interface Manager {
+  id: string
+  owner_id: string
+  supabase_user_id: string | null
+  name: string
+  phone: string
+  has_login: boolean
+  created_at: string
+  updated_at?: string
+  permissions?: StaffPermission[]
+  hostels?: { id: string; name: string }[]
+}
+
+export interface ManagerContext {
+  manager: Manager
+  permissions: Set<StaffPermission>
+  hostels: { id: string; name: string }[]
+  activeHostel: { id: string; name: string } | null
+}

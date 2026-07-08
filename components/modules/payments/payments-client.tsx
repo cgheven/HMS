@@ -377,12 +377,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }
   }
 
-  // Show all AC rooms — tenant tier filtering happens at billing time, not here
+  // Rooms with AC hardware OR an active space_food_ac tenant (either signal means AC billing applies)
   const acRooms = useMemo(() => {
+    const acTierRoomIds = new Set(tenants.filter(t => t.is_active && t.package_tier === "space_food_ac").map(t => t.room_id).filter(Boolean));
     return rooms
-      .filter(r => r.has_ac)
+      .filter(r => r.has_ac || acTierRoomIds.has(r.id))
       .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
-  }, [rooms]);
+  }, [rooms, tenants]);
 
   // Rooms that have at least one payment this month — for the Room filter
   const roomsInMonth = useMemo(() => {

@@ -6,7 +6,7 @@ import {
   LayoutDashboard, BedDouble, Users, CreditCard, Receipt,
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
   MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2, Globe,
-  ClipboardList,
+  ClipboardList, ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
@@ -29,6 +29,7 @@ const navGroups = [
       { href: "/food",          label: "Food List",     icon: UtensilsCrossed },
       { href: "/bills",         label: "Bills",         icon: FileText },
       { href: "/staff",         label: "Staff",         icon: UserCog },
+      { href: "/managers",      label: "Managers",      icon: ShieldCheck },
       { href: "/complaints",    label: "Complaints",    icon: MessageSquareWarning },
       { href: "/announcements", label: "Announcements", icon: Megaphone },
     ],
