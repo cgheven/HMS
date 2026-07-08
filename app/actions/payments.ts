@@ -493,7 +493,7 @@ export async function applyRoomACUnitsAction(
     // ── Input validation — use canonical MONTH_RE (rejects 2024-00, 2024-13) ──
     if (!roomId || !UUID_RE.test(roomId)) throw new Error("Invalid room ID");
     if (!forMonth || !MONTH_RE.test(forMonth)) throw new Error("Invalid month format");
-    const units = Number(totalUnits);
+    const units = Math.round(Number(totalUnits));
     if (!Number.isFinite(units) || units < 0 || units > 99_999)
       throw new Error("Total units must be between 0 and 99,999");
 
@@ -780,7 +780,7 @@ export async function saveACJoinReadingAction(
           room_id: roomId,
           for_month: forMonth,
           tenant_id: tenantId,
-          units_at_join: unitsAtJoin,
+          units_at_join: Math.round(unitsAtJoin),
           updated_at: new Date().toISOString(),
         },
         { onConflict: "room_id,for_month,tenant_id" }

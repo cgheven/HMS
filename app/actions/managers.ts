@@ -297,7 +297,7 @@ export async function applyRoomACUnitsAsManager(
 
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(forMonth)) return { error: "Invalid month." }
 
-    const units = Number(totalUnits)
+    const units = Math.round(Number(totalUnits))
     if (!Number.isFinite(units) || units < 0 || units > 99_999) {
       return { error: "Total units must be between 0 and 99,999." }
     }
@@ -433,7 +433,7 @@ export async function saveACJoinReadingAsManager(
     const admin = createAdminClient()
 
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(forMonth)) return { error: "Invalid month." }
-    const units = Number(unitsAtJoin)
+    const units = Math.round(Number(unitsAtJoin))
     if (!Number.isFinite(units) || units < 0 || units > 99_999) return { error: "Units must be 0–99,999." }
 
     const { data: room } = await admin
