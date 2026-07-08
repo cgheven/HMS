@@ -859,11 +859,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
       {/* Mark Paid Dialog */}
       <Dialog open={!!markDialog} onOpenChange={(o) => !o && setMarkDialog(null)}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent className="sm:max-w-sm flex flex-col max-h-[90vh]">
           <DialogHeader>
             <DialogTitle>Record Payment</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 py-2">
+          <div className="space-y-4 py-2 overflow-y-auto flex-1 min-h-0 pr-1">
             <div className="rounded-lg bg-white/5 px-3 py-2.5 space-y-1.5">
               {/* Tenant + month inline */}
               <div className="flex items-center justify-between gap-2">
