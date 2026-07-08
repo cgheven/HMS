@@ -354,6 +354,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setApproveSaving(false);
   }
 
+  function formatCnic(raw: string): string {
+    const digits = raw.replace(/\D/g, "").slice(0, 13);
+    if (digits.length <= 5) return digits;
+    if (digits.length <= 12) return `${digits.slice(0, 5)}-${digits.slice(5)}`;
+    return `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
+  }
+
   function copyJoinLink() {
     if (!hostelSlug) {
       toast({ title: "No form link yet", description: "Contact support to set up your hostel slug.", variant: "destructive" });
@@ -405,6 +412,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   async function handleSave() {
     if (!hostelId || !form.full_name) return;
     if (!form.is_waiting && !form.check_in) return;
+    if (form.cnic && !/^\d{5}-\d{7}-\d$/.test(form.cnic)) {
+      toast({ title: "Invalid CNIC", description: "Format must be XXXXX-XXXXXXX-X (13 digits)", variant: "destructive" });
+      return;
+    }
     setSaving(true);
     const supabase = createClient();
 
@@ -1423,7 +1434,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5 sm:col-span-2"><Label>Full Name *</Label><Input placeholder="Ahmed Khan" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Phone *</Label><Input placeholder="+92 300 0000000" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
-              <div className="space-y-1.5"><Label>CNIC</Label><Input placeholder="00000-0000000-0" value={form.cnic} onChange={(e) => setForm({ ...form, cnic: e.target.value })} /></div>
+              <div className="space-y-1.5">
+                <Label>CNIC</Label>
+                <Input
+                  placeholder="44102-7891219-1"
+                  value={form.cnic}
+                  onChange={(e) => setForm({ ...form, cnic: formatCnic(e.target.value) })}
+                  maxLength={15}
+                />
+                {form.cnic && !/^\d{5}-\d{7}-\d$/.test(form.cnic) && (
+                  <p className="text-xs text-rose-400">Format: XXXXX-XXXXXXX-X</p>
+                )}
+              </div>
               <div className="space-y-1.5"><Label>Email</Label><Input type="email" placeholder="tenant@email.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Type</Label>
                 <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v as SpaceType })}>
