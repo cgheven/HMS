@@ -103,8 +103,8 @@ export function generateReceiptPDF(
     cmds.push({ kind: "text", x, y: yTop, content, size, bold });
   }
   function addCenter(content: string, size: number, bold: boolean): void {
-    const approxWidth = content.length * size * 0.46;
-    add(Math.max(ML, CX - approxWidth / 2), content, size, bold);
+    const textW = tw(content, size);
+    add(Math.max(ML, CX - textW / 2), content, size, bold);
   }
   // Helvetica AFM widths (units/1000) for accurate right-alignment without overflow.
   const HV: Record<string, number> = {
@@ -127,7 +127,23 @@ export function generateReceiptPDF(
   function nl(n = 11): void { yTop += n; }
 
   // ─── Content ────────────────────────────────────────────────────────
-  addCenter(hostel.name, 12, true); nl(15);
+  // Hostel name: word-wrap if too wide for a single line at size 12
+  {
+    const maxNameW = MR - ML - 2;
+    const nameWords = hostel.name.split(" ");
+    const nameLines: string[] = [];
+    let nameLine = "";
+    for (const word of nameWords) {
+      const candidate = nameLine ? `${nameLine} ${word}` : word;
+      if (tw(candidate, 12) <= maxNameW) { nameLine = candidate; }
+      else { if (nameLine) nameLines.push(nameLine); nameLine = word; }
+    }
+    if (nameLine) nameLines.push(nameLine);
+    for (let i = 0; i < nameLines.length; i++) {
+      addCenter(nameLines[i], 12, true);
+      nl(i < nameLines.length - 1 ? 14 : 15);
+    }
+  }
   if (hostel.address) { addCenter(hostel.address, 7, false); nl(10); }
   if (hostel.phone) { addCenter(`Tel: ${hostel.phone}`, 7, false); nl(10); }
   nl(3); addDash(); nl(10);

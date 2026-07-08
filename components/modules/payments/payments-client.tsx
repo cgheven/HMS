@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   CreditCard, CheckCircle2, Clock, AlertTriangle, Wallet,
-  TrendingUp, Banknote, Zap, Loader2, FileText, ChevronLeft, ChevronRight,
+  TrendingUp, Banknote, Zap, Loader2, FileText, ChevronLeft, ChevronRight, Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -102,6 +102,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [applyingAC, setApplyingAC] = useState<string | null>(null);
   const [roomFilter, setRoomFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "paid" | "unpaid">("all");
+  const [search, setSearch] = useState("");
   // joinUnits keyed by `${tenantId}_${month}` so values don't bleed across months
   const [joinUnits, setJoinUnits] = useState<Record<string, string>>({});
   const [savingJoin, setSavingJoin] = useState<string | null>(null);
@@ -392,13 +393,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }, [payments, rooms]);
 
   const filteredPayments = useMemo(() => {
+    const q = search.trim().toLowerCase();
     return payments.filter(p => {
+      if (q && !p.tenant?.full_name?.toLowerCase().includes(q)) return false;
       if (roomFilter !== "all" && p.tenant?.room_id !== roomFilter) return false;
       if (statusFilter === "paid") return p.status === "paid";
       if (statusFilter === "unpaid") return p.status === "pending" || p.status === "overdue";
       return true;
     });
-  }, [payments, roomFilter, statusFilter]);
+  }, [payments, roomFilter, statusFilter, search]);
 
   const stats = useMemo(() => {
     const due = payments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
@@ -577,7 +580,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       </div>
 
       {/* Tabs */}
-      <Tabs value={tab} onValueChange={(v) => { setTab(v); if (v === "history") loadHistory(); if (v !== "monthly") { setRoomFilter("all"); setStatusFilter("all"); } }}>
+      <Tabs value={tab} onValueChange={(v) => { setTab(v); if (v === "history") loadHistory(); if (v !== "monthly") { setRoomFilter("all"); setStatusFilter("all"); setSearch(""); } }}>
         <TabsList>
           <TabsTrigger value="monthly"><Banknote className="w-3.5 h-3.5" /> Monthly View</TabsTrigger>
           <TabsTrigger value="history"><Clock className="w-3.5 h-3.5" /> All History</TabsTrigger>
@@ -638,14 +641,27 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       </SelectContent>
                     </Select>
                   )}
+
+                  {/* Name search */}
+                  <div className="relative ml-auto">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
+                    <Input
+                      placeholder="Search by name…"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      className="h-7 pl-7 text-xs w-40 sm:w-48"
+                    />
+                  </div>
                 </div>
                 <PaymentTableHeader />
                 <div className="space-y-2 md:space-y-0.5 mt-1">
                   {filteredPayments.map((p) => <PaymentRow key={p.id} p={p} />)}
                 </div>
-                {filteredPayments.length === 0 && (roomFilter !== "all" || statusFilter !== "all") && (
+                {filteredPayments.length === 0 && (search || roomFilter !== "all" || statusFilter !== "all") && (
                   <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
-                    No {statusFilter !== "all" ? statusFilter : ""} payments{roomFilter !== "all" ? " for this room" : ""}
+                    {search
+                      ? `No results for "${search}"`
+                      : `No ${statusFilter !== "all" ? statusFilter : ""} payments${roomFilter !== "all" ? " for this room" : ""}`}
                   </div>
                 )}
               </div>
