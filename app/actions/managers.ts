@@ -327,7 +327,7 @@ export async function applyRoomACUnitsAsManager(
       return { error: "AC per-unit rate is not configured. Ask the owner to set it in Settings → Packages." }
     }
 
-    // Find active AC-package tenants in this room
+    // Find active space_food_ac tenants in this room
     const { data: allTenants } = await admin
       .from("hms_tenants")
       .select("id")

@@ -466,7 +466,7 @@ function calcBaseRentServer(
 // updates their payment records for the given month.
 // ---------------------------------------------------------------------------
 
-// Only tenants on the AC package (space_food_ac) are billed — Space Only tenants are excluded
+// Only space_food_ac tenants are billed for room-level AC usage
 const AC_TIERS = new Set<string>(["space_food_ac"]);
 
 export async function applyRoomACUnitsAction(
@@ -522,7 +522,6 @@ export async function applyRoomACUnitsAction(
     const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
 
     // ── Find active AC-package tenants in this room ───────────────
-    // Space Only / food-only tenants are excluded — they don't have AC in their plan
     const { data: allTenants } = await supabase
       .from("hms_tenants")
       .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out")
@@ -530,11 +529,9 @@ export async function applyRoomACUnitsAction(
       .eq("room_id", roomId)
       .eq("is_active", true);
 
-    const acTenants = (allTenants ?? []).filter(t => AC_TIERS.has(t.package_tier ?? ""));
-    if (acTenants.length === 0)
+    const eligible = (allTenants ?? []).filter(t => AC_TIERS.has(t.package_tier ?? ""));
+    if (eligible.length === 0)
       throw new Error("No tenants with AC package found in this room. Assign the Space + AC plan to a tenant first.");
-
-    const eligible = acTenants;
 
     // ── Fetch join readings for segment billing ──────────────────
     const { data: joinReadingsRaw } = await adminDb
@@ -650,7 +647,7 @@ export async function applyRoomACUnitsAction(
           },
           forMonth
         );
-        const foodCharge = AC_TIERS.has(tier) ? foodRate : 0;
+        const foodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
         return {
           hostel_id: hostelId,
           tenant_id: t.id,
