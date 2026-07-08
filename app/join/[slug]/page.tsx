@@ -25,9 +25,12 @@ export default async function JoinPage({ params }: Props) {
     .eq("hostel_id", hostel.id)
     .maybeSingle();
 
-  const packagePrices = pkgConfig?.package_prices as Partial<Record<PackageTier, unknown>> | null;
-  const availableTiers: PackageTier[] = packagePrices && Object.keys(packagePrices).length > 0
-    ? (Object.keys(packagePrices) as PackageTier[])
+  const packagePrices = pkgConfig?.package_prices as Record<string, unknown> | null;
+  const tierKeys = packagePrices
+    ? Object.keys(packagePrices).filter((k) => k !== "_custom") as PackageTier[]
+    : [];
+  const availableTiers: PackageTier[] = tierKeys.length > 0
+    ? tierKeys
     : ["space_only", "space_food", "space_3meals", "space_food_ac", "space_meals_cooler"];
 
   return <JoinFormClient hostel={hostel as Hostel} availableTiers={availableTiers} />;

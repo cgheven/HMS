@@ -101,6 +101,7 @@ export function SettingsClient() {
   const [packageForm, setPackageForm] = useState<{ ac_per_unit_rate: string; security_deposit: string; prices: PkgPriceForm }>({
     ac_per_unit_rate: "", security_deposit: "", prices: emptyPriceForm(),
   });
+  const [customRows, setCustomRows] = useState<Array<{ id: string; name: string; no_ac: string; ac: string }>>([]);
   const [savingPackage, setSavingPackage] = useState(false);
   const [packageLoaded, setPackageLoaded] = useState(false);
 
@@ -169,10 +170,10 @@ export function SettingsClient() {
       .eq("hostel_id", id)
       .maybeSingle();
     if (data) {
-      const saved = (data.package_prices ?? {}) as Partial<Record<PackageTier, { no_ac: number; ac: number }>>;
+      const raw = (data.package_prices ?? {}) as Record<string, unknown>;
       const prices = emptyPriceForm();
       for (const cfg of PACKAGE_TIER_CONFIGS) {
-        const s = saved[cfg.tier];
+        const s = raw[cfg.tier] as { no_ac: number; ac: number } | undefined;
         if (s) {
           prices[cfg.tier] = {
             no_ac: s.no_ac > 0 ? String(s.no_ac) : "",
@@ -185,6 +186,13 @@ export function SettingsClient() {
         security_deposit: data.security_deposit > 0 ? String(data.security_deposit) : "",
         prices,
       });
+      const customData = (raw._custom ?? []) as Array<{ id: string; name: string; no_ac: number; ac: number }>;
+      setCustomRows(customData.map((c) => ({
+        id: c.id || crypto.randomUUID(),
+        name: c.name ?? "",
+        no_ac: c.no_ac > 0 ? String(c.no_ac) : "",
+        ac: c.ac > 0 ? String(c.ac) : "",
+      })));
     }
     setPackageLoaded(true);
   }
@@ -439,12 +447,21 @@ export function SettingsClient() {
     if (!hostelId) return;
     setSavingPackage(true);
     const supabase = createClient();
-    const pkgPrices: Partial<Record<PackageTier, { no_ac: number; ac: number }>> = {};
+    const dbPayload: Record<string, unknown> = {};
     for (const cfg of PACKAGE_TIER_CONFIGS) {
-      pkgPrices[cfg.tier] = {
+      dbPayload[cfg.tier] = {
         no_ac: parseFloat(packageForm.prices[cfg.tier].no_ac) || 0,
         ac:    parseFloat(packageForm.prices[cfg.tier].ac)    || 0,
       };
+    }
+    const validCustom = customRows.filter((c) => c.name.trim());
+    if (validCustom.length > 0) {
+      dbPayload._custom = validCustom.map((c) => ({
+        id: c.id,
+        name: c.name.trim(),
+        no_ac: parseFloat(c.no_ac) || 0,
+        ac: parseFloat(c.ac) || 0,
+      }));
     }
     const { error } = await supabase
       .from("hms_package_configs")
@@ -453,7 +470,7 @@ export function SettingsClient() {
           hostel_id:        hostelId,
           ac_per_unit_rate: parseFloat(packageForm.ac_per_unit_rate) || 0,
           security_deposit: parseFloat(packageForm.security_deposit) || 0,
-          package_prices:   pkgPrices,
+          package_prices:   dbPayload,
           updated_at:       new Date().toISOString(),
         },
         { onConflict: "hostel_id" }
@@ -910,7 +927,7 @@ export function SettingsClient() {
             {/* Per-package price table */}
             <div className="rounded-lg border border-border overflow-hidden">
               {/* Header row */}
-              <div className="grid grid-cols-[1fr_100px_100px] gap-px bg-border">
+              <div className="grid grid-cols-[1fr_100px_100px_32px] gap-px bg-border">
                 <div className="bg-card px-3 py-2">
                   <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Package</span>
                 </div>
@@ -920,10 +937,11 @@ export function SettingsClient() {
                 <div className="bg-card px-2 py-2 text-center">
                   <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">AC Room</span>
                 </div>
+                <div className="bg-card" />
               </div>
-              {/* Package rows */}
+              {/* Predefined package rows */}
               {PACKAGE_TIER_CONFIGS.map((cfg) => (
-                <div key={cfg.tier} className="grid grid-cols-[1fr_100px_100px] gap-px bg-border">
+                <div key={cfg.tier} className="grid grid-cols-[1fr_100px_100px_32px] gap-px bg-border">
                   <div className="bg-card px-3 py-2.5">
                     <p className="text-sm font-medium leading-tight">{cfg.label}</p>
                     <p className="text-xs text-muted-foreground">{cfg.desc}</p>
@@ -962,8 +980,58 @@ export function SettingsClient() {
                       <span className="text-xs text-muted-foreground w-full text-center">metered</span>
                     )}
                   </div>
+                  <div className="bg-card" />
                 </div>
               ))}
+              {/* Custom package rows */}
+              {customRows.map((row) => (
+                <div key={row.id} className="grid grid-cols-[1fr_100px_100px_32px] gap-px bg-border">
+                  <div className="bg-card px-2 py-2 flex items-center">
+                    <Input
+                      placeholder="Package name"
+                      value={row.name}
+                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, name: e.target.value } : r))}
+                      className="h-7 text-xs px-2"
+                    />
+                  </div>
+                  <div className="bg-card px-2 py-2 flex items-center">
+                    <Input
+                      type="number" min="0" step="1" placeholder="0"
+                      value={row.no_ac}
+                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, no_ac: e.target.value } : r))}
+                      className="h-7 text-xs text-center px-1"
+                    />
+                  </div>
+                  <div className="bg-card px-2 py-2 flex items-center">
+                    <Input
+                      type="number" min="0" step="1" placeholder="0"
+                      value={row.ac}
+                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, ac: e.target.value } : r))}
+                      className="h-7 text-xs text-center px-1"
+                    />
+                  </div>
+                  <div className="bg-card flex items-center justify-center">
+                    <button
+                      type="button"
+                      onClick={() => setCustomRows((prev) => prev.filter((r) => r.id !== row.id))}
+                      className="text-muted-foreground hover:text-rose-400 transition-colors p-1"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {/* Add Package button */}
+              <div className="bg-card border-t border-border">
+                <button
+                  type="button"
+                  onClick={() => setCustomRows((prev) => [...prev, { id: crypto.randomUUID(), name: "", no_ac: "", ac: "" }])}
+                  disabled={!packageLoaded}
+                  className="flex items-center gap-1.5 w-full px-3 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-white/[0.02] transition-colors disabled:opacity-40"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add Package
+                </button>
+              </div>
             </div>
 
             {/* AC rate + Security Deposit */}
