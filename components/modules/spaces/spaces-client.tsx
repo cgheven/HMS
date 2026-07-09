@@ -40,6 +40,7 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
   const [rooms, setRooms] = useState<Room[]>(initialRooms);
   const [filtered, setFiltered] = useState<Room[]>(initialRooms);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | RoomStatus>("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Room | null>(null);
   const [form, setForm] = useState(emptyRoom);
@@ -57,8 +58,12 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
 
   useEffect(() => {
     const q = search.toLowerCase();
-    setFiltered(rooms.filter((r) => r.room_number.toLowerCase().includes(q) || r.type.includes(q) || r.status.includes(q)));
-  }, [search, rooms]);
+    setFiltered(rooms.filter((r) => {
+      if (statusFilter !== "all" && r.status !== statusFilter) return false;
+      if (!q) return true;
+      return r.room_number.toLowerCase().includes(q) || r.type.includes(q);
+    }));
+  }, [search, statusFilter, rooms]);
 
   async function reload() {
     if (!hostelId) return;
@@ -209,13 +214,40 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
         ))}
       </div>
 
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-        <Input placeholder="Search rooms..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative max-w-sm w-full">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input placeholder="Search rooms..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {(["all", "available", "occupied"] as const).map((s) => {
+            const counts: Record<string, number> = { all: rooms.length, available: stats.available, occupied: stats.occupied };
+            const labels: Record<string, string> = { all: "All", available: "Available", occupied: "Occupied" };
+            const active = statusFilter === s;
+            return (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setStatusFilter(s)}
+                className={`h-9 px-3.5 rounded-lg text-sm font-medium border transition-colors whitespace-nowrap ${
+                  active
+                    ? s === "available"
+                      ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                      : s === "occupied"
+                      ? "bg-amber/15 text-amber border-amber/30"
+                      : "bg-white/10 text-foreground border-sidebar-border"
+                    : "border-sidebar-border text-muted-foreground hover:text-foreground hover:border-sidebar-border/80"
+                }`}
+              >
+                {labels[s]} <span className="ml-1 opacity-60">{counts[s]}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {filtered.length === 0 ? (
-        <Card><CardContent className="flex flex-col items-center justify-center py-16 text-muted-foreground"><BedDouble className="w-10 h-10 mb-3 opacity-30" /><p className="font-medium">{search ? "No rooms match" : "No rooms yet"}</p></CardContent></Card>
+        <Card><CardContent className="flex flex-col items-center justify-center py-16 text-muted-foreground"><BedDouble className="w-10 h-10 mb-3 opacity-30" /><p className="font-medium">{search || statusFilter !== "all" ? "No rooms match" : "No rooms yet"}</p></CardContent></Card>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filtered.map((room) => {
