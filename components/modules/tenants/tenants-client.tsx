@@ -22,7 +22,7 @@ import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction } from "@/app/actions/tenants";
 
 interface Props {
   hostelId: string | null;
@@ -51,6 +51,31 @@ const SELECTABLE_TIERS: { tier: PackageTier; label: string }[] = [
   { tier: "space_3meals",       label: "Space + 3 Meals" },
   { tier: "space_meals_cooler", label: "Space + Meals + Cooler" },
 ];
+
+// Segment-based AC charge calculation — mirrors the month-end billing algorithm.
+// priorCheckoutUnits: units_consumed values of tenants who already checked out this month.
+// Each is a boundary at which the tenant count dropped by 1.
+function computeACSegmentCharge(
+  units: number,
+  priorCheckoutUnits: number[],
+  totalStart: number,
+  rate: number,
+): number {
+  if (units <= 0 || totalStart <= 0 || rate <= 0) return 0;
+  const boundaries = [
+    0,
+    ...priorCheckoutUnits.filter(u => u > 0 && u < units).sort((a, b) => a - b),
+    units,
+  ];
+  let share = 0;
+  for (let i = 0; i < boundaries.length - 1; i++) {
+    const segStart = boundaries[i];
+    const checkoutsBefore = priorCheckoutUnits.filter(u => u <= segStart).length;
+    const tenants = totalStart - checkoutsBefore;
+    if (tenants > 0) share += (boundaries[i + 1] - segStart) / tenants;
+  }
+  return Math.round(share * rate);
+}
 
 function getPkgPrice(prices: Partial<Record<PackageTier, { no_ac: number; ac: number }>>, tier: PackageTier, hasAc: boolean): string {
   const p = prices[tier];
@@ -216,6 +241,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [checkoutPayMethod, setCheckoutPayMethod] = useState<string>("cash");
   const [checkoutNotes, setCheckoutNotes] = useState("");
   const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
+  const [checkoutACReading, setCheckoutACReading] = useState("");
+  const [checkoutACOpeningReading, setCheckoutACOpeningReading] = useState("");
+  const [checkoutACContext, setCheckoutACContext] = useState<{
+    prevMonthReading: number | null;
+    prevMonthUnits: number | null;
+    perUnitRate: number;
+    activeTenantCount: number;
+    priorCheckoutUnits: number[];
+  } | null>(null);
+  const [checkoutACContextLoading, setCheckoutACContextLoading] = useState(false);
   const [shareReceipt, setShareReceipt] = useState<{ name: string; phone: string | null; token: string } | null>(null);
   const [shareLinkDialog, setShareLinkDialog] = useState(false);
   const [shareLinkPhone, setShareLinkPhone] = useState("");
@@ -533,6 +568,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutPayMethod("cash");
     setCheckoutNotes("");
     setCheckoutSubmitting(false);
+    setCheckoutACReading("");
+    setCheckoutACOpeningReading("");
+    setCheckoutACContext(null);
+    setCheckoutACContextLoading(false);
   }
 
   // Bundles all checkout-dialog setup so TenantRow (module scope) can call a single callback
@@ -546,7 +585,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutPendingPayment(null);
     setCheckoutPaymentError(null);
     setCheckoutPaymentLoading(true);
+    setCheckoutACReading("");
+    setCheckoutACOpeningReading("");
+    setCheckoutACContext(null);
     fetchCheckoutPayment(t.id);
+
+    // Load AC context if the room has AC
+    const room = t.room_id ? roomMap[t.room_id] : null;
+    if (room?.has_ac) {
+      setCheckoutACContextLoading(true);
+      const month = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
+      getACCheckoutContextAction(t.room_id!, month).then((ctx) => {
+        if (!ctx.error) setCheckoutACContext(ctx);
+        setCheckoutACContextLoading(false);
+      });
+    }
   }
 
   async function fetchCheckoutPayment(tenantId: string) {
@@ -583,6 +636,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     if (!checkingOut) return;
     setCheckoutSubmitting(true);
 
+    const acReadingNum = checkoutACReading.trim() !== "" ? Number(checkoutACReading) : undefined;
     const input: CheckoutInput = {
       tenantId: checkingOut.id,
       checkoutDate,
@@ -596,6 +650,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           }
         : undefined,
       ...(checkoutNotes.trim() ? { notes: checkoutNotes.trim() } : {}),
+      ...(acReadingNum !== undefined && Number.isFinite(acReadingNum) ? { acCheckoutReading: acReadingNum } : {}),
+      ...(checkoutACContext?.prevMonthReading == null && checkoutACOpeningReading.trim() !== ""
+        ? { acOpeningReading: Number(checkoutACOpeningReading) }
+        : {}),
     };
 
     const result = await checkoutTenantAction(input);
@@ -611,6 +669,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const collectedPaymentId = checkoutPayAction === "pay" ? checkoutPendingPayment?.id : null;
     setActive((prev) => prev.filter((t) => t.id !== checkingOut.id));
     resetCheckoutState();
+
+    // Surface AC billing warning if the checkpoint record could not be stored
+    if (result.warning) {
+      toast({ title: "Warning", description: result.warning, variant: "destructive" });
+    }
 
     // If payment was collected, generate receipt link and open share dialog
     if (collectedPaymentId) {
@@ -1668,7 +1731,77 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               />
             </div>
 
-            {/* Section 2 — Outstanding Payment */}
+            {/* Section 2 — AC Meter Reading (only for AC rooms) */}
+            {checkingOut?.room_id && roomMap[checkingOut.room_id]?.has_ac && (
+              <div className="space-y-2">
+                <Label htmlFor="checkout-ac-reading" className="flex items-center gap-1.5">
+                  AC Meter Reading at Departure
+                  <span className="text-xs text-muted-foreground font-normal">(optional, for accurate billing)</span>
+                </Label>
+
+                {checkoutACContextLoading ? (
+                  <div className="h-9 w-full rounded-lg bg-white/5 animate-pulse" />
+                ) : (
+                  <>
+                    {checkoutACContext?.prevMonthReading != null ? (
+                      <p className="text-xs text-muted-foreground">
+                        Previous month ended at:{" "}
+                        <span className="text-foreground font-medium">{checkoutACContext.prevMonthReading.toLocaleString()}</span>
+                        {checkoutACContext.prevMonthUnits != null && (
+                          <span className="ml-2 text-muted-foreground/70">({checkoutACContext.prevMonthUnits.toLocaleString()} units consumed)</span>
+                        )}
+                      </p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <p className="text-xs text-amber/80">No previous month record found — enter the meter reading at the start of this month</p>
+                        <input
+                          type="number"
+                          min="0"
+                          max="999999"
+                          value={checkoutACOpeningReading}
+                          onChange={(e) => setCheckoutACOpeningReading(e.target.value)}
+                          placeholder="Opening reading (month start)"
+                          className="h-9 w-full rounded-lg border border-amber/30 bg-transparent px-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50"
+                        />
+                      </div>
+                    )}
+                    <input
+                      id="checkout-ac-reading"
+                      type="number"
+                      min="0"
+                      max="999999"
+                      value={checkoutACReading}
+                      onChange={(e) => setCheckoutACReading(e.target.value)}
+                      placeholder={checkoutACContext?.prevMonthReading != null ? `> ${checkoutACContext.prevMonthReading.toLocaleString()}` : "Current meter reading at departure"}
+                      className="h-9 w-full rounded-lg border border-sidebar-border bg-transparent px-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50"
+                    />
+                    {(() => {
+                      const reading = Number(checkoutACReading);
+                      const prevFromRecord = checkoutACContext?.prevMonthReading;
+                      const prevFromOpening = checkoutACOpeningReading.trim() !== "" ? Number(checkoutACOpeningReading) : null;
+                      const prev = prevFromRecord ?? prevFromOpening ?? 0;
+                      const rate = checkoutACContext?.perUnitRate ?? 0;
+                      const count = checkoutACContext?.activeTenantCount ?? 0;
+                      const priorUnits = checkoutACContext?.priorCheckoutUnits ?? [];
+                      if (!checkoutACReading || !Number.isFinite(reading) || reading <= prev || rate <= 0 || count <= 0) return null;
+                      const units = reading - prev;
+                      const charge = computeACSegmentCharge(units, priorUnits, count, rate);
+                      return (
+                        <p className="text-xs text-emerald-400">
+                          {units.toLocaleString()} units ÷ {count} tenant{count > 1 ? "s" : ""} × PKR {rate.toLocaleString()}/unit = est.{" "}
+                          <span className="font-medium">PKR {charge.toLocaleString()}</span>
+                        </p>
+                      );
+                    })()}
+                    {!checkoutACReading && (
+                      <p className="text-xs text-amber/70">Skipping this will over-bill remaining tenants at month-end</p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Section 3 — Outstanding Payment */}
             {checkoutPaymentLoading && (
               <div className="space-y-2">
                 <div className="h-4 w-40 rounded-md bg-white/5 animate-pulse" />
@@ -1780,8 +1913,22 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {/* Live summary */}
             <div className="pt-3 border-t border-sidebar-border/60">
               {(() => {
-                const deposit    = checkingOut?.security_deposit ?? 0;
-                const pending    = checkoutPendingPayment?.amount ?? 0;
+                const deposit = checkingOut?.security_deposit ?? 0;
+                const basePending = checkoutPendingPayment?.amount ?? 0;
+
+                // Estimated AC charge from current meter reading inputs
+                const acReading = checkoutACReading.trim() !== "" ? Number(checkoutACReading) : NaN;
+                const acPrev = checkoutACContext?.prevMonthReading
+                  ?? (checkoutACOpeningReading.trim() !== "" ? Number(checkoutACOpeningReading) : null)
+                  ?? 0;
+                const acRate = checkoutACContext?.perUnitRate ?? 0;
+                const acCount = checkoutACContext?.activeTenantCount ?? 0;
+                const roomHasAC = !!(checkingOut?.room_id && roomMap[checkingOut.room_id]?.has_ac);
+                const estimatedACCharge = (
+                  roomHasAC && Number.isFinite(acReading) && acReading > acPrev && acRate > 0 && acCount > 0
+                ) ? computeACSegmentCharge(acReading - acPrev, checkoutACContext?.priorCheckoutUnits ?? [], acCount, acRate) : 0;
+
+                const pending = basePending + estimatedACCharge;
                 const collecting = pending > 0 && checkoutPayAction === "pay";
                 const applied    = collecting && deposit > 0 ? Math.min(deposit, pending) : 0;
                 const toCollect  = Math.max(0, pending - applied);
@@ -1793,13 +1940,23 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
                 return (
                   <div className="rounded-xl bg-sidebar-accent/30 px-3 py-2.5 space-y-1.5">
-                    {pending > 0 && (
+                    {basePending > 0 && (
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">
                           Outstanding{checkoutPayAction === "waive" && <span className="ml-1 text-xs">(waived)</span>}
                         </span>
                         <span className={cn(checkoutPayAction !== "pay" ? "text-muted-foreground line-through" : "")}>
-                          {formatCurrency(pending)}
+                          {formatCurrency(basePending)}
+                        </span>
+                      </div>
+                    )}
+                    {estimatedACCharge > 0 && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">
+                          AC charge (est.){checkoutPayAction === "waive" && <span className="ml-1 text-xs">(waived)</span>}
+                        </span>
+                        <span className={cn(checkoutPayAction !== "pay" ? "text-muted-foreground line-through" : "")}>
+                          {formatCurrency(estimatedACCharge)}
                         </span>
                       </div>
                     )}

@@ -66,13 +66,12 @@ export default async function PortalPaymentsPage() {
       .eq("hostel_id", hostelId)
       .eq("for_month", month) as unknown as Promise<{ data: ACReading[] | null }>,
 
-    // AC-package tenant data for mid-month joiner detection + per-tenant breakdown
+    // All active tenants — every occupant of an AC room shares the bill
     admin
       .from("hms_tenants")
       .select("id, full_name, room_id, package_tier, check_in")
       .eq("hostel_id", hostelId)
-      .eq("is_active", true)
-      .eq("package_tier", "space_food_ac") as unknown as Promise<{ data: ACTenant[] | null }>,
+      .eq("is_active", true) as unknown as Promise<{ data: ACTenant[] | null }>,
 
     admin
       .from("hms_room_ac_join_readings")
@@ -102,10 +101,8 @@ export default async function PortalPaymentsPage() {
     acCharge: Number(p.ac_charge ?? 0),
   }))
 
-  // Rooms with AC hardware OR an active space_food_ac tenant (either signal means AC billing applies)
-  const acTenantRoomIds = new Set((acTenants ?? []).map((t) => t.room_id).filter(Boolean))
   const acRooms = (rooms ?? [])
-    .filter((r) => r.has_ac || acTenantRoomIds.has(r.id))
+    .filter((r) => r.has_ac)
     .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }))
     .map((r) => ({ id: r.id, room_number: r.room_number }))
 

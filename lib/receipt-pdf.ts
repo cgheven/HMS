@@ -13,6 +13,7 @@ interface ReceiptPayment {
   ac_units_consumed?: number | null;
   ac_per_unit_rate?: number;
   security_deposit?: number;
+  is_checkout?: boolean;
   payment_method?: string | null;
   payment_date?: string | null;
   payment_package_tier?: string | null;
@@ -167,13 +168,17 @@ export function generateReceiptPDF(
   addKv("Monthly Rent", pk(Math.max(0, monthlyRent))); nl(12);
   if ((payment.ac_charge ?? 0) > 0) {
     addKv("AC Charges", pk(payment.ac_charge!)); nl(11);
-    const acUnits = Number(payment.ac_units_consumed ?? 0);
-    if (acUnits > 0) {
-      // Use provided rate, or back-calculate from charge ÷ units
-      const rate = (payment.ac_per_unit_rate && payment.ac_per_unit_rate > 0)
-        ? payment.ac_per_unit_rate
-        : Math.round(payment.ac_charge! / acUnits);
-      add(ML + 4, `${acUnits} units x Rs. ${rate}/unit`, 6, false); nl(9);
+    const realRate = payment.ac_per_unit_rate && payment.ac_per_unit_rate > 0 ? payment.ac_per_unit_rate : 0;
+    const storedUnits = Number(payment.ac_units_consumed ?? 0);
+    if (realRate > 0) {
+      // Derive units from charge ÷ real rate so the sub-line is always consistent
+      // with the actual rate, regardless of what was stored in ac_units_consumed.
+      const displayUnits = Math.round(payment.ac_charge! / realRate);
+      add(ML + 4, `${displayUnits} units x Rs. ${realRate}/unit`, 6, false); nl(9);
+    } else if (storedUnits > 0) {
+      // Fallback: back-calculate rate from stored units (regular monthly pay path)
+      const rate = Math.round(payment.ac_charge! / storedUnits);
+      add(ML + 4, `${storedUnits} units x Rs. ${rate}/unit`, 6, false); nl(9);
     } else {
       nl(1);
     }
@@ -182,19 +187,24 @@ export function generateReceiptPDF(
   if ((payment.late_fee ?? 0) > 0)       { addKv("Late Fee", pk(payment.late_fee!)); nl(12); }
   if ((payment.security_deposit ?? 0) > 0) {
     addKv("Security Deposit", pk(payment.security_deposit!)); nl(12);
-    add(ML, "(refundable on checkout)", 6, false); nl(10);
+    const depositNote = payment.is_checkout ? "(to be refunded on checkout)" : "(refundable on checkout)";
+    add(ML, depositNote, 6, false); nl(10);
   }
   nl(2); addDash(); nl(10);
 
-  const total = payment.amount + (payment.late_fee ?? 0) + (payment.security_deposit ?? 0);
+  // Security deposit is excluded from total on checkout receipts — it was collected at move-in,
+  // not as part of this payment.
+  const total = payment.amount + (payment.late_fee ?? 0) + (payment.is_checkout ? 0 : (payment.security_deposit ?? 0));
   addKv("TOTAL PAID", pk(total), true); nl(15);
   addDash(); nl(10);
 
   const wordsStr = amountInWords(total);
-  // Render "In Words: <value>" on one line; wrap remainder if it overflows page width
-  const wordsLabel = "In Words: ";
+  // Render "In Words: <value>" on one line; wrap remainder if it overflows page width.
+  // Use explicit gap rather than trailing space — PDF renderers often discard trailing
+  // whitespace in text strings, making the space invisible despite correct positioning.
+  const wordsLabel = "In Words:";
   const maxLineWidth = MR - ML - 2;
-  const labelW = tw(wordsLabel, 7);
+  const labelW = tw(wordsLabel, 7) + 4; // 4pt explicit gap after colon
   const wordTokens = wordsStr.split(" ");
   let firstLine = "";
   let rest: string[] = [];

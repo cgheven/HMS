@@ -341,19 +341,47 @@ export async function applyRoomACUnitsAsManager(
 
     const units = reading - prevReading
 
-    // Find active space_food_ac tenants in this room
-    const { data: allTenants } = await admin
-      .from("hms_tenants")
-      .select("id")
-      .eq("hostel_id", hostelId)
-      .eq("room_id", roomId)
-      .eq("is_active", true)
-      .eq("package_tier", "space_food_ac")
+    // Fetch active tenants and checkout readings in parallel
+    const [{ data: allTenants }, { data: checkoutReadingsRaw }] = await Promise.all([
+      admin
+        .from("hms_tenants")
+        .select("id")
+        .eq("hostel_id", hostelId)
+        .eq("room_id", roomId)
+        .eq("is_active", true),
+      admin
+        .from("hms_room_ac_checkout_readings")
+        .select("meter_reading, tenant_count_at_checkout")
+        .eq("room_id", roomId)
+        .eq("for_month", currentMonth)
+        .eq("hostel_id", hostelId)
+        .order("meter_reading", { ascending: true }),
+    ])
 
     const eligible = allTenants ?? []
     if (eligible.length === 0) {
-      return { error: "No tenants with AC package in this room." }
+      return { error: "No active tenants found in this room." }
     }
+
+    const rawCheckoutReadings = checkoutReadingsRaw ?? []
+    const conflictingCheckout = rawCheckoutReadings.find(
+      (cr) => Math.round(Number(cr.meter_reading)) >= reading
+    )
+    if (conflictingCheckout) {
+      return {
+        error:
+          `Month-end reading (${reading}) must be greater than all checkout readings. ` +
+          `Found a checkout reading of ${Math.round(Number(conflictingCheckout.meter_reading))} — ` +
+          `please verify the meter reading is correct.`,
+      }
+    }
+
+    const checkoutSegments = rawCheckoutReadings
+      .map((cr) => ({
+        unitsOffset: Math.max(0, Math.round(Number(cr.meter_reading) - prevReading)),
+        tenantCount: Number(cr.tenant_count_at_checkout),
+      }))
+      .filter((cr) => cr.unitsOffset > 0 && cr.unitsOffset < units)
 
     const { data: existingRows } = await admin
       .from("hms_payments")
@@ -379,17 +407,46 @@ export async function applyRoomACUnitsAsManager(
     }
 
     const n = eligible.length
-    const totalCharge = Math.round(units * perUnitRate)
-    const baseUnits  = n > 1 ? Math.floor(units / n)       : units
-    const lastUnits  = units - baseUnits * (n - 1)
-    const baseCharge = n > 1 ? Math.floor(totalCharge / n) : totalCharge
-    const lastCharge = totalCharge - baseCharge * (n - 1)
+    let billing: { id: string; tenantUnits: number; charge: number }[]
 
-    const billing = eligible.map((t, idx) => ({
-      id: t.id,
-      tenantUnits: idx === n - 1 ? lastUnits  : baseUnits,
-      charge:      idx === n - 1 ? lastCharge : baseCharge,
-    }))
+    if (checkoutSegments.length > 0) {
+      // Period-based billing: departed tenants already paid their share.
+      // Compute each active tenant's proportional units across all periods.
+      const boundaries = [0, ...checkoutSegments.map((cr) => cr.unitsOffset), units]
+      let perTenantFractionalUnits = 0
+
+      for (let i = 0; i < boundaries.length - 1; i++) {
+        const segUnits = boundaries[i + 1] - boundaries[i]
+        if (segUnits <= 0) continue
+        const count = i < checkoutSegments.length ? checkoutSegments[i].tenantCount : eligible.length
+        if (count > 0) perTenantFractionalUnits += segUnits / count
+      }
+
+      const activeTotalUnits = Math.round(perTenantFractionalUnits * n)
+      const activeTotalCharge = Math.round(perTenantFractionalUnits * n * perUnitRate)
+      const baseUnits = n > 1 ? Math.floor(activeTotalUnits / n) : activeTotalUnits
+      const lastUnits = activeTotalUnits - baseUnits * (n - 1)
+      const baseCharge = n > 1 ? Math.floor(activeTotalCharge / n) : activeTotalCharge
+      const lastCharge = activeTotalCharge - baseCharge * (n - 1)
+
+      billing = eligible.map((t, idx) => ({
+        id: t.id,
+        tenantUnits: idx === n - 1 ? lastUnits : baseUnits,
+        charge: idx === n - 1 ? lastCharge : baseCharge,
+      }))
+    } else {
+      const totalCharge = Math.round(units * perUnitRate)
+      const baseUnits  = n > 1 ? Math.floor(units / n)       : units
+      const lastUnits  = units - baseUnits * (n - 1)
+      const baseCharge = n > 1 ? Math.floor(totalCharge / n) : totalCharge
+      const lastCharge = totalCharge - baseCharge * (n - 1)
+
+      billing = eligible.map((t, idx) => ({
+        id: t.id,
+        tenantUnits: idx === n - 1 ? lastUnits  : baseUnits,
+        charge:      idx === n - 1 ? lastCharge : baseCharge,
+      }))
+    }
 
     // Update each tenant's payment row for this month
     const updateResults = await Promise.all(

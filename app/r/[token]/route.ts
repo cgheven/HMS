@@ -37,16 +37,17 @@ export async function GET(
     return new NextResponse("This receipt link has expired.", { status: 410 });
   }
 
-  // Fetch payment + tenant + hostel in parallel
+  // Fetch payment + tenant + hostel + AC rate in parallel
   const [
     { data: payment, error: pErr },
     { data: hostel, error: hErr },
+    { data: pkgConfig },
   ] = await Promise.all([
     supabase
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, late_fee, food_charge, ac_charge, ac_units_consumed, payment_method, payment_date, receipt_number, payment_package_tier, tenant:hms_tenants(full_name, phone, security_deposit, check_in)"
+        "id, for_month, amount, late_fee, food_charge, ac_charge, ac_units_consumed, payment_method, payment_date, receipt_number, payment_package_tier, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out)"
       )
       .eq("id", link.payment_id)
       .single(),
@@ -55,6 +56,11 @@ export async function GET(
       .select("name, address, phone")
       .eq("id", link.hostel_id)
       .single(),
+    supabase
+      .from("hms_package_configs")
+      .select("ac_per_unit_rate")
+      .eq("hostel_id", link.hostel_id)
+      .maybeSingle(),
   ]);
 
   if (pErr || !payment || hErr || !hostel) {
@@ -73,11 +79,14 @@ export async function GET(
   }
 
   const tenant = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
-  const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null } | null;
+  const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null; check_out?: string | null } | null;
 
-  // Include security deposit only on the first month's receipt (move-in month)
   const checkInMonth = tenantTyped?.check_in?.slice(0, 7);
-  const securityDeposit = checkInMonth === payment.for_month ? Number(tenantTyped?.security_deposit ?? 0) : 0;
+  const checkOutMonth = tenantTyped?.check_out?.slice(0, 7);
+  // Show security deposit on move-in month (tenant pays it) AND checkout month (to be refunded).
+  const isFirstMonth = checkInMonth === payment.for_month;
+  const isCheckout = !!checkOutMonth && checkOutMonth === payment.for_month;
+  const securityDeposit = (isFirstMonth || isCheckout) ? Number(tenantTyped?.security_deposit ?? 0) : 0;
 
   const pdfBytes = generateReceiptPDF(
     {
@@ -88,7 +97,9 @@ export async function GET(
       food_charge: Number(payment.food_charge ?? 0),
       ac_charge: Number(payment.ac_charge ?? 0),
       ac_units_consumed: payment.ac_units_consumed ? Number(payment.ac_units_consumed) : null,
+      ac_per_unit_rate: pkgConfig?.ac_per_unit_rate ? Number(pkgConfig.ac_per_unit_rate) : undefined,
       security_deposit: securityDeposit,
+      is_checkout: isCheckout,
       payment_method: payment.payment_method,
       payment_date: payment.payment_date,
       payment_package_tier: payment.payment_package_tier,

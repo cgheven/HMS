@@ -562,6 +562,83 @@ export async function backfillTenantPaymentsAction(
 }
 
 // ---------------------------------------------------------------------------
+// getACCheckoutContextAction
+// Returns the data needed to compute and preview the partial AC charge at checkout.
+// Called by the checkout dialog when the tenant is in an AC room.
+// ---------------------------------------------------------------------------
+
+export async function getACCheckoutContextAction(
+  roomId: string,
+  checkoutMonth: string,
+): Promise<{
+  prevMonthReading: number | null;
+  prevMonthUnits: number | null;
+  perUnitRate: number;
+  activeTenantCount: number;
+  priorCheckoutUnits: number[];
+  error?: string;
+}> {
+  try {
+    await requireOwnerOrAbove();
+    const hostelId = await resolveHostelId();
+    const adminDb = createAdminClient();
+
+    const [y, m] = checkoutMonth.split("-").map(Number);
+    const prevDate = new Date(y, m - 2, 1);
+    const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
+
+    const [{ data: prevRecord }, { data: config }, { data: tenants }, { data: priorCheckouts }] = await Promise.all([
+      adminDb
+        .from("hms_room_ac_readings")
+        .select("meter_reading, total_units")
+        .eq("room_id", roomId)
+        .eq("hostel_id", hostelId)
+        .eq("for_month", prevMonth)
+        .maybeSingle(),
+      adminDb
+        .from("hms_package_configs")
+        .select("ac_per_unit_rate")
+        .eq("hostel_id", hostelId)
+        .maybeSingle(),
+      adminDb
+        .from("hms_tenants")
+        .select("id")
+        .eq("hostel_id", hostelId)
+        .eq("room_id", roomId)
+        .eq("is_active", true),
+      // Fetch prior checkout unit offsets for segment-based preview calculation.
+      // Each value is (checkout_meter_reading - prev_month_reading), matching
+      // the same boundary format used by the month-end AC billing algorithm.
+      adminDb
+        .from("hms_room_ac_checkout_readings")
+        .select("units_consumed")
+        .eq("room_id", roomId)
+        .eq("hostel_id", hostelId)
+        .eq("for_month", checkoutMonth),
+    ]);
+
+    const priorCheckoutUnits = (priorCheckouts ?? []).map(r => Number(r.units_consumed));
+
+    return {
+      prevMonthReading: prevRecord?.meter_reading != null ? Number(prevRecord.meter_reading) : null,
+      prevMonthUnits: prevRecord?.total_units != null ? Number(prevRecord.total_units) : null,
+      perUnitRate: Number(config?.ac_per_unit_rate ?? 0),
+      activeTenantCount: (tenants ?? []).length + priorCheckoutUnits.length,
+      priorCheckoutUnits,
+    };
+  } catch (err: unknown) {
+    return {
+      prevMonthReading: null,
+      prevMonthUnits: null,
+      perUnitRate: 0,
+      activeTenantCount: 0,
+      priorCheckoutUnits: [],
+      error: err instanceof Error ? err.message : "Failed to load AC context",
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // checkoutTenantAction
 // Handles the full checkout flow: settle payment → deactivate tenant → decrement room.
 // Write order is intentional for EC-4 safety: payment first so that if tenant
@@ -571,7 +648,7 @@ export async function backfillTenantPaymentsAction(
 
 export async function checkoutTenantAction(
   input: CheckoutInput
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; warning?: string }> {
   try {
     await requireOwnerOrAbove();
     const hostelId = await resolveHostelId();
@@ -608,7 +685,7 @@ export async function checkoutTenantAction(
 
     // Step 2: Verify payment belongs to this tenant and hostel (prevents IDOR)
     let paymentAlreadySettled = false;
-    let verifiedPayment: { id: string; tenant_id: string; hostel_id: string; status: string; for_month: string } | null = null;
+    let verifiedPayment: { id: string; tenant_id: string; hostel_id: string; status: string; for_month: string; amount: number | null } | null = null;
     if (input.paymentSettlement) {
       // SEC-F4: Runtime action validation — TypeScript enums are erased at runtime
       if (!new Set(["pay", "waive"]).has(input.paymentSettlement.action as string)) {
@@ -617,7 +694,7 @@ export async function checkoutTenantAction(
 
       const { data: payment, error: payErr } = await adminDb
         .from("hms_payments")
-        .select("id, tenant_id, hostel_id, status, for_month")
+        .select("id, tenant_id, hostel_id, status, for_month, amount")
         .eq("id", input.paymentSettlement.paymentId)
         .eq("tenant_id", input.tenantId)
         .eq("hostel_id", hostelId)
@@ -639,6 +716,107 @@ export async function checkoutTenantAction(
       }
     }
 
+    // Step 3a: AC checkout billing — compute partial AC charge if meter reading provided.
+    // Runs before payment settlement so the charge is included in the payment being settled.
+    let acCheckoutRecord: {
+      units_consumed: number;
+      tenant_count: number;
+      ac_charge: number;
+      prevReading: number;
+      tenant_unit_share: number;
+    } | null = null;
+
+    if (input.acCheckoutReading !== undefined && tenant.room_id) {
+      const checkoutMonth = input.checkoutDate.substring(0, 7);
+      const [cy, cm] = checkoutMonth.split("-").map(Number);
+      const prevDate = new Date(cy, cm - 2, 1);
+      const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
+
+      const [{ data: prevRecord }, { data: pkgConfig }, { data: roomInfo }, { data: activeTenantsInRoom }, { data: priorCheckoutsData }] = await Promise.all([
+        adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+        adminDb.from("hms_package_configs").select("ac_per_unit_rate").eq("hostel_id", hostelId).maybeSingle(),
+        adminDb.from("hms_rooms").select("has_ac").eq("id", tenant.room_id).eq("hostel_id", hostelId).single(),
+        adminDb.from("hms_tenants").select("id").eq("hostel_id", hostelId).eq("room_id", tenant.room_id).eq("is_active", true),
+        // Fetch prior checkout unit offsets (reading - prevMonthReading) so we can use them
+        // as segment boundaries — same format as the month-end billing algorithm.
+        adminDb.from("hms_room_ac_checkout_readings").select("units_consumed").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth),
+      ]);
+
+      if (roomInfo?.has_ac) {
+        const prevReading = prevRecord?.meter_reading != null
+          ? Math.round(Number(prevRecord.meter_reading))
+          : (input.acOpeningReading != null ? Math.round(Number(input.acOpeningReading)) : 0);
+        const reading = Math.round(Number(input.acCheckoutReading));
+        const perUnitRate = Number(pkgConfig?.ac_per_unit_rate ?? 0);
+
+        // Prior unit offsets: each value = (prior_checkout_reading - prevMonthReading).
+        // Used as segment boundaries so this tenant is only charged for units consumed
+        // while they were present, not re-charged for periods already billed to prior checkouts.
+        const priorUnitsOffsets = (priorCheckoutsData ?? []).map(r => Number(r.units_consumed));
+        const totalStart = (activeTenantsInRoom ?? []).length + priorUnitsOffsets.length;
+
+        if (!Number.isFinite(reading) || reading < 0 || reading > 999_999) {
+          throw new Error("AC meter reading must be between 0 and 999,999");
+        }
+        if (reading < prevReading) {
+          throw new Error(`AC meter reading (${reading}) cannot be less than previous month's reading (${prevReading})`);
+        }
+        if (perUnitRate > 0 && totalStart > 0) {
+          const units = reading - prevReading;
+
+          // Segment-based share calculation — mirrors the month-end billing algorithm.
+          // Prior checkout offsets create boundaries within [0, units]. Each segment is
+          // divided only among tenants who were still present during that segment.
+          const boundaries = [
+            0,
+            ...priorUnitsOffsets.filter(u => u > 0 && u < units).sort((a, b) => a - b),
+            units,
+          ];
+          let tenantUnitShare = 0;
+          for (let i = 0; i < boundaries.length - 1; i++) {
+            const segStart = boundaries[i];
+            const segEnd = boundaries[i + 1];
+            const checkoutsBeforeSeg = priorUnitsOffsets.filter(u => u <= segStart).length;
+            const tenantsInSeg = totalStart - checkoutsBeforeSeg;
+            if (tenantsInSeg > 0) tenantUnitShare += (segEnd - segStart) / tenantsInSeg;
+          }
+
+          const ac_charge = Math.round(tenantUnitShare * perUnitRate);
+          // units_consumed = total room units — stored as billing breakpoint for month-end algorithm.
+          acCheckoutRecord = { units_consumed: units, tenant_count: totalStart, ac_charge, prevReading, tenant_unit_share: tenantUnitShare };
+
+          const tenantUnits = Math.round(tenantUnitShare);
+
+          if (!input.paymentSettlement) {
+            // No settlement selected — find any pending payment for this month and update it.
+            // We fetch first to get the current amount so we can add the AC charge to it.
+            const { data: pendingPayment } = await adminDb
+              .from("hms_payments")
+              .select("id, amount")
+              .eq("tenant_id", input.tenantId)
+              .eq("hostel_id", hostelId)
+              .eq("for_month", checkoutMonth)
+              .in("status", ["pending", "overdue"])
+              .maybeSingle();
+            if (pendingPayment) {
+              await adminDb.from("hms_payments")
+                .update({
+                  ac_units_consumed: tenantUnits,
+                  ac_charge,
+                  amount: Number(pendingPayment.amount ?? 0) + ac_charge,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("id", pendingPayment.id);
+            }
+            // Non-fatal if no pending payment exists for this month
+          }
+          // When settlement IS provided, AC fields are merged into the Step 3 settlement
+          // update below — targeting the exact payment ID avoids the for_month mismatch
+          // that occurs when the pending payment's for_month differs from checkoutMonth.
+        }
+      }
+    }
+
     // Step 3: Settle payment FIRST (before deactivating tenant — EC-4 safety)
     // Skip if already in the target state (SEC-F2 idempotent retry path)
     if (input.paymentSettlement && !paymentAlreadySettled) {
@@ -650,6 +828,16 @@ export async function checkoutTenantAction(
             payment_date: input.paymentSettlement.paymentDate ?? new Date().toISOString().split("T")[0],
             payment_method: (input.paymentSettlement.paymentMethod ?? null) as PaymentMethod | null,
             receipt_number: genReceiptNumber(tenant.full_name, verifiedPayment?.for_month ?? ""),
+            // Merge AC fields here so the correct payment row is always targeted by ID,
+            // not by for_month (which can differ from checkoutMonth for pre-generated payments).
+            // Store the tenant's share of units (not total room units) so the receipt shows
+            // "X units × Rs. rate/unit" correctly rather than the full room consumption.
+            ...(acCheckoutRecord ? {
+              ac_units_consumed: Math.round(acCheckoutRecord.tenant_unit_share),
+              ac_charge: acCheckoutRecord.ac_charge,
+              // Add AC charge to base amount so PDF formula (monthlyRent = amount - ac_charge) stays correct
+              amount: Number(verifiedPayment!.amount ?? 0) + acCheckoutRecord.ac_charge,
+            } : {}),
             ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
             updated_at: new Date().toISOString(),
           })
@@ -663,6 +851,10 @@ export async function checkoutTenantAction(
           .from("hms_payments")
           .update({
             status: "waived" as PaymentStatus,
+            ...(acCheckoutRecord ? {
+              ac_units_consumed: Math.round(acCheckoutRecord.tenant_unit_share),
+              ac_charge: acCheckoutRecord.ac_charge,
+            } : {}),
             ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
             updated_at: new Date().toISOString(),
           })
@@ -700,6 +892,37 @@ export async function checkoutTenantAction(
       throw new Error("Tenant checkout failed. Please try again.");
     }
 
+    // Step 4b: Persist AC checkout reading record — stored AFTER tenant deactivation
+    // so it only exists if the checkout actually completed.
+    let acReadingWarning: string | undefined;
+    if (acCheckoutRecord && tenant.room_id) {
+      const checkoutMonth = input.checkoutDate.substring(0, 7);
+      const { error: acReadingErr } = await adminDb
+        .from("hms_room_ac_checkout_readings")
+        .upsert(
+          {
+            hostel_id: hostelId,
+            room_id: tenant.room_id,
+            tenant_id: input.tenantId,
+            for_month: checkoutMonth,
+            meter_reading: input.acCheckoutReading!,
+            units_consumed: acCheckoutRecord.units_consumed,
+            tenant_count_at_checkout: acCheckoutRecord.tenant_count,
+            ac_charge: acCheckoutRecord.ac_charge,
+            checkout_date: input.checkoutDate,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "room_id,tenant_id,for_month" }
+        );
+      if (acReadingErr) {
+        // Checkout is complete but the billing breakpoint could not be stored.
+        // Month-end billing for remaining tenants may be inaccurate without it.
+        acReadingWarning =
+          "Checkout complete, but the AC billing breakpoint could not be saved. " +
+          "Month-end billing for remaining tenants may be slightly inaccurate. Contact support.";
+      }
+    }
+
     // Step 5: Atomically decrement room occupancy — non-fatal, best-effort
     // UX-F2 + SEC-F3: replaced read-compute-write with a single atomic RPC to eliminate
     // the race window for concurrent checkouts and carry the full ownership chain.
@@ -724,7 +947,7 @@ export async function checkoutTenantAction(
     revalidatePath("/payments");
     revalidatePath("/dashboard");
 
-    return { success: true };
+    return { success: true, ...(acReadingWarning ? { warning: acReadingWarning } : {}) };
   } catch (err: unknown) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }

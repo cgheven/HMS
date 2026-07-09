@@ -422,7 +422,7 @@ export async function markPaymentOverdueAction(
 // loadHistoryAction
 // ---------------------------------------------------------------------------
 
-export async function loadHistoryAction(): Promise<{ payments?: Payment[]; error?: string }> {
+export async function loadHistoryAction(forMonth: string): Promise<{ payments?: Payment[]; error?: string }> {
   try {
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
@@ -431,9 +431,8 @@ export async function loadHistoryAction(): Promise<{ payments?: Payment[]; error
       .from("hms_payments")
       .select("*, tenant:hms_tenants(full_name, room_id, phone)")
       .eq("hostel_id", hostelId)
-      .order("for_month", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(200);
+      .eq("for_month", forMonth)
+      .order("created_at", { ascending: false });
 
     if (error) throw new Error(error.message);
     return { payments: (data ?? []) as Payment[] };
@@ -476,8 +475,7 @@ function calcBaseRentServer(
 // updates their payment records for the given month.
 // ---------------------------------------------------------------------------
 
-// Only space_food_ac tenants are billed for room-level AC usage
-const AC_TIERS = new Set<string>(["space_food_ac"]);
+// All active tenants in an AC room share the electricity bill
 
 export async function applyRoomACUnitsAction(
   roomId: string,
@@ -545,7 +543,7 @@ export async function applyRoomACUnitsAction(
 
     const units = reading - prevReading;
 
-    // ── Find active AC-package tenants in this room ───────────────
+    // ── Find all active tenants in this room ─────────────────────
     const { data: allTenants } = await supabase
       .from("hms_tenants")
       .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out")
@@ -553,18 +551,27 @@ export async function applyRoomACUnitsAction(
       .eq("room_id", roomId)
       .eq("is_active", true);
 
-    const eligible = (allTenants ?? []).filter(t => AC_TIERS.has(t.package_tier ?? ""));
+    const eligible = allTenants ?? [];
     if (eligible.length === 0)
-      throw new Error("No tenants with AC package found in this room. Assign the Space + AC plan to a tenant first.");
+      throw new Error("No active tenants found in this room.");
 
-    // ── Fetch join readings for segment billing ──────────────────
-    const { data: joinReadingsRaw } = await adminDb
-      .from("hms_room_ac_join_readings")
-      .select("tenant_id, units_at_join")
-      .eq("room_id", roomId)
-      .eq("for_month", forMonth)
-      .eq("hostel_id", hostelId)
-      .order("units_at_join", { ascending: true });
+    // ── Fetch join readings and checkout readings in parallel for segment billing ──
+    const [{ data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
+      adminDb
+        .from("hms_room_ac_join_readings")
+        .select("tenant_id, units_at_join")
+        .eq("room_id", roomId)
+        .eq("for_month", forMonth)
+        .eq("hostel_id", hostelId)
+        .order("units_at_join", { ascending: true }),
+      adminDb
+        .from("hms_room_ac_checkout_readings")
+        .select("meter_reading, tenant_count_at_checkout")
+        .eq("room_id", roomId)
+        .eq("for_month", forMonth)
+        .eq("hostel_id", hostelId)
+        .order("meter_reading", { ascending: true }),
+    ]);
 
     // Use join readings for ALL eligible tenants regardless of join date.
     // A tenant on the 1st with units_at_join=0 produces equal split (the duplicate 0 is deduplicated by
@@ -573,6 +580,30 @@ export async function applyRoomACUnitsAction(
     const joinReadings = (joinReadingsRaw ?? []).filter(r =>
       eligible.some(t => t.id === r.tenant_id)
     ) as { tenant_id: string; units_at_join: number }[];
+
+    // Checkout segments: departed tenants who paid at checkout — their tenure is now breakpoints.
+    // Sorted by meter_reading ascending = chronological departure order.
+    const rawCheckoutReadings = (checkoutReadingsRaw ?? []);
+
+    // Validate: month-end reading must exceed all checkout readings
+    const conflictingCheckout = rawCheckoutReadings.find(
+      cr => Math.round(Number(cr.meter_reading)) >= reading
+    );
+    if (conflictingCheckout) {
+      throw new Error(
+        `Month-end reading (${reading}) must be greater than all checkout readings. ` +
+        `Found a checkout reading of ${Math.round(Number(conflictingCheckout.meter_reading))} — ` +
+        `please verify the meter reading is correct.`
+      );
+    }
+
+    const checkoutSegments = rawCheckoutReadings
+      .map(cr => ({
+        unitsOffset: Math.max(0, Math.round(Number(cr.meter_reading) - prevReading)),
+        tenantCount: Number(cr.tenant_count_at_checkout),
+      }))
+      .filter(cr => cr.unitsOffset > 0 && cr.unitsOffset < units);
+
     const n = eligible.length;
     const totalCharge = Math.round(units * perUnitRate);
     let proRatedCount = 0;
@@ -580,7 +611,65 @@ export async function applyRoomACUnitsAction(
 
     let tenantBilling: { id: string; tenantUnits: number; charge: number }[];
 
-    if (joinReadings.length === 0) {
+    if (checkoutSegments.length > 0) {
+      // ── Period + join-aware billing: merges departure checkpoints and mid-month join
+      // readings into a single event timeline. Departed tenants already paid their share at
+      // checkout; this path computes each remaining active tenant's proportional units.
+      //
+      // For each segment [from, to]:
+      //   activePresent  = eligible tenants whose join point ≤ from (or no join reading)
+      //   departedPresent = departed tenants with unitsOffset ≥ to (still in room for whole segment)
+      //   totalCount     = activePresent.length + departedPresent
+      //   each activePresent tenant accumulates segUnits / totalCount
+      const boundarySet = new Set<number>([
+        0,
+        ...checkoutSegments.map(cr => cr.unitsOffset),
+        ...joinReadings.map(r => Math.min(Number(r.units_at_join), units)).filter(x => x > 0),
+        units,
+      ]);
+      const boundaries = Array.from(boundarySet).sort((a, b) => a - b);
+
+      const accumulated = new Map<string, number>(eligible.map(t => [t.id, 0]));
+
+      for (let i = 0; i < boundaries.length - 1; i++) {
+        const from = boundaries[i];
+        const to = boundaries[i + 1];
+        const segUnits = to - from;
+        if (segUnits <= 0) continue;
+
+        const presentActive = eligible.filter(t => {
+          const jr = joinReadings.find(jr => jr.tenant_id === t.id);
+          return !jr || Number(jr.units_at_join) <= from;
+        });
+        const departedPresent = checkoutSegments.filter(cs => cs.unitsOffset >= to).length;
+        const totalCount = presentActive.length + departedPresent;
+
+        if (totalCount > 0) {
+          const share = segUnits / totalCount;
+          for (const t of presentActive) accumulated.set(t.id, (accumulated.get(t.id) ?? 0) + share);
+        }
+      }
+
+      if (units === 0) {
+        tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
+      } else {
+        const totalAccumulated = [...accumulated.values()].reduce((s, v) => s + v, 0);
+        const totalActiveCharge = Math.round(totalAccumulated * perUnitRate);
+        const rows = eligible.map(t => {
+          const tu = accumulated.get(t.id) ?? 0;
+          return {
+            id: t.id,
+            tenantUnits: Math.round(tu),
+            charge: totalAccumulated > 0 ? Math.max(0, Math.round((tu / totalAccumulated) * totalActiveCharge)) : 0,
+          };
+        });
+        const sumChargesExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.charge, 0);
+        if (rows.length > 0) rows[rows.length - 1].charge = Math.max(0, totalActiveCharge - sumChargesExceptLast);
+        const sumUnitsExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
+        if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, Math.round(totalAccumulated) - sumUnitsExceptLast);
+        tenantBilling = rows;
+      }
+    } else if (joinReadings.length === 0) {
       // ── Equal split: units are integers, last tenant absorbs remainder ──
       const baseCharge = n > 1 ? Math.floor(totalCharge / n) : totalCharge;
       const lastCharge = totalCharge - baseCharge * (n - 1);
@@ -802,7 +891,6 @@ export async function saveACJoinReadingAction(
     if (!tenant) throw new Error("Tenant not found or access denied");
     if (!tenant.is_active) throw new Error("Tenant is not active");
     if (tenant.room_id !== roomId) throw new Error("Tenant is not in this room");
-    if (tenant.package_tier !== "space_food_ac") throw new Error("Tenant does not have the AC package");
 
     // Derive relative units from cumulative meter readings
     const prevReading = prevRecord?.meter_reading != null

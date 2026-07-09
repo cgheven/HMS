@@ -109,6 +109,8 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [savingJoin, setSavingJoin] = useState<string | null>(null);
   // acOpeningReadings: per-room opening reading input, shown only when no previous month record exists
   const [acOpeningReadings, setAcOpeningReadings] = useState<Record<string, string>>({});
+  const [historyRoomFilter, setHistoryRoomFilter] = useState("all");
+  const [acRoomFilter, setAcRoomFilter] = useState("all");
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
 
@@ -156,9 +158,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // No auto-sync on mount — server already called getPaymentsPageData(defaultMonth)
   // and passed fresh data as initialPayments. syncMonth is called only on user actions.
 
-  async function loadHistory() {
-    if (historyLoaded) return;
-    const result = await loadHistoryAction();
+  async function loadHistory(month: string) {
+    setHistoryLoaded(false);
+    const result = await loadHistoryAction(month);
     if (result.error) {
       toast({ title: "Failed to load history", description: result.error, variant: "destructive" });
       return;
@@ -169,7 +171,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
   async function handleMonthChange(month: string) {
     setSelectedMonth(month);
+    setHistoryRoomFilter("all");
     await syncMonth(month);
+    if (tab === "history") await loadHistory(month);
   }
 
   function stepMonth(dir: -1 | 1) {
@@ -395,39 +399,59 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }
   }
 
-  // Rooms with AC hardware OR an active space_food_ac tenant (either signal means AC billing applies)
   const acRooms = useMemo(() => {
-    const acTierRoomIds = new Set(tenants.filter(t => t.is_active && t.package_tier === "space_food_ac").map(t => t.room_id).filter(Boolean));
     return rooms
-      .filter(r => r.has_ac || acTierRoomIds.has(r.id))
+      .filter(r => r.has_ac)
       .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
-  }, [rooms, tenants]);
+  }, [rooms]);
+
+  // Only include payments for currently active tenants. Checked-out tenants have
+  // is_active=false so they're absent from the `tenants` prop — their payment rows
+  // (which may still be pending after checkout) should not appear in the monthly view.
+  const activeTenantIds = useMemo(() => new Set(tenants.map(t => t.id)), [tenants]);
+  const activePayments = useMemo(() => payments.filter(p => activeTenantIds.has(p.tenant_id)), [payments, activeTenantIds]);
 
   // Rooms that have at least one payment this month — for the Room filter
   const roomsInMonth = useMemo(() => {
-    const ids = new Set(payments.map(p => p.tenant?.room_id).filter(Boolean));
+    const ids = new Set(activePayments.map(p => p.tenant?.room_id).filter(Boolean));
     return rooms.filter(r => ids.has(r.id)).sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
-  }, [payments, rooms]);
+  }, [activePayments, rooms]);
+
+  // Rooms that appear in the full history — for the History tab room filter
+  const roomsInHistory = useMemo(() => {
+    const ids = new Set(allHistory.map(p => p.tenant?.room_id).filter(Boolean));
+    return rooms.filter(r => ids.has(r.id)).sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
+  }, [allHistory, rooms]);
+
+  const filteredHistory = useMemo(() => {
+    if (historyRoomFilter === "all") return allHistory;
+    return allHistory.filter(p => p.tenant?.room_id === historyRoomFilter);
+  }, [allHistory, historyRoomFilter]);
+
+  const filteredAcRooms = useMemo(() => {
+    if (acRoomFilter === "all") return acRooms;
+    return acRooms.filter(r => r.id === acRoomFilter);
+  }, [acRooms, acRoomFilter]);
 
   const filteredPayments = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return payments.filter(p => {
+    return activePayments.filter(p => {
       if (q && !p.tenant?.full_name?.toLowerCase().includes(q)) return false;
       if (roomFilter !== "all" && p.tenant?.room_id !== roomFilter) return false;
       if (statusFilter === "paid") return p.status === "paid";
       if (statusFilter === "unpaid") return p.status === "pending" || p.status === "overdue";
       return true;
     });
-  }, [payments, roomFilter, statusFilter, search]);
+  }, [activePayments, roomFilter, statusFilter, search]);
 
   const stats = useMemo(() => {
-    const due = payments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
-    const collected = payments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
-    const pending = payments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.amount)), 0);
-    const acCollected = payments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
-    const acPending = payments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
+    const due = activePayments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
+    const collected = activePayments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
+    const pending = activePayments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.amount)), 0);
+    const acCollected = activePayments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
+    const acPending = activePayments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
     return { due, collected, pending, acCollected, acPending };
-  }, [payments]);
+  }, [activePayments]);
 
   const TIER_LABEL: Record<string, string> = {
     space_only: "Space Only",
@@ -608,7 +632,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       })()}
 
       {/* Tabs */}
-      <Tabs value={tab} onValueChange={(v) => { setTab(v); if (v === "history") loadHistory(); if (v !== "monthly") { setRoomFilter("all"); setStatusFilter("all"); setSearch(""); } }}>
+      <Tabs value={tab} onValueChange={(v) => { setTab(v); if (v === "history") loadHistory(selectedMonth); if (v !== "monthly") { setRoomFilter("all"); setStatusFilter("all"); setSearch(""); } }}>
         <TabsList>
           <TabsTrigger value="monthly"><Banknote className="w-3.5 h-3.5" /> Monthly View</TabsTrigger>
           <TabsTrigger value="history"><Clock className="w-3.5 h-3.5" /> All History</TabsTrigger>
@@ -619,7 +643,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
         <TabsContent value="monthly">
           <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
-            {payments.length === 0 ? (
+            {activePayments.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground">
                 <CreditCard className="w-10 h-10 opacity-20" />
                 <p className="text-sm">No payment records for this month</p>
@@ -632,9 +656,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   {/* Status chips */}
                   <div className="flex items-center gap-1">
                     {(["all", "paid", "unpaid"] as const).map((s) => {
-                      const count = s === "all" ? payments.length
-                        : s === "paid" ? payments.filter(p => p.status === "paid").length
-                        : payments.filter(p => p.status === "pending" || p.status === "overdue").length;
+                      const count = s === "all" ? activePayments.length
+                        : s === "paid" ? activePayments.filter(p => p.status === "paid").length
+                        : activePayments.filter(p => p.status === "pending" || p.status === "overdue").length;
                       const label = s === "all" ? "All" : s === "paid" ? "Paid" : "Unpaid";
                       const active = statusFilter === s;
                       return (
@@ -704,33 +728,55 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             ) : allHistory.length === 0 ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">No payment history yet</div>
             ) : (
-              <div className="p-2 space-y-1">
-                {allHistory.map((p) => (
-                  <div key={p.id} className="flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-white/[0.03]">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground">{p.tenant?.full_name ?? "—"}</p>
-                      <p className="text-xs text-muted-foreground">{p.for_month}</p>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className="text-sm font-semibold">{formatCurrency(p.amount)}</p>
-                      <p className={`text-xs ${statusConfig[p.status].color}`}>{statusConfig[p.status].label}</p>
-                    </div>
-                    {p.status === "paid" && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
-                        title="View Receipt"
-                        disabled={generatingReceipt === p.id}
-                        onClick={() => openReceipt(p.id)}
-                      >
-                        {generatingReceipt === p.id
-                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          : <FileText className="w-3.5 h-3.5" />}
-                      </Button>
-                    )}
+              <div className="p-2">
+                {roomsInHistory.length > 1 && (
+                  <div className="flex items-center gap-2 px-2 pt-1 pb-3">
+                    <Select value={historyRoomFilter} onValueChange={setHistoryRoomFilter}>
+                      <SelectTrigger className="h-7 w-40 text-xs">
+                        <SelectValue placeholder="All Rooms" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Rooms</SelectItem>
+                        {roomsInHistory.map(r => (
+                          <SelectItem key={r.id} value={r.id}>Room {r.room_number}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
-                ))}
+                )}
+                <div className="space-y-1">
+                  {filteredHistory.map((p) => (
+                    <div key={p.id} className="flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-white/[0.03]">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-foreground">{p.tenant?.full_name ?? "—"}</p>
+                        <p className="text-xs text-muted-foreground">{p.for_month}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-sm font-semibold">{formatCurrency(p.amount)}</p>
+                        <p className={`text-xs ${statusConfig[p.status].color}`}>{statusConfig[p.status].label}</p>
+                      </div>
+                      {p.status === "paid" && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                          title="View Receipt"
+                          disabled={generatingReceipt === p.id}
+                          onClick={() => openReceipt(p.id)}
+                        >
+                          {generatingReceipt === p.id
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <FileText className="w-3.5 h-3.5" />}
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                  {filteredHistory.length === 0 && (
+                    <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
+                      No payments for this room
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -738,18 +784,33 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
         <TabsContent value="ac">
           <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 flex-wrap mb-1">
               <Zap className="w-4 h-4 text-amber" />
               <h3 className="text-sm font-semibold">AC Billing</h3>
               <span className="text-xs text-muted-foreground">— enter total units consumed per room for {selectedMonth}</span>
+              {acRooms.length > 1 && (
+                <div className="ml-auto">
+                  <Select value={acRoomFilter} onValueChange={setAcRoomFilter}>
+                    <SelectTrigger className="h-7 w-40 text-xs">
+                      <SelectValue placeholder="All Rooms" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Rooms</SelectItem>
+                      {acRooms.map(r => (
+                        <SelectItem key={r.id} value={r.id}>Room {r.room_number}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
             <div className="space-y-2">
-              {acRooms.map(room => {
+              {filteredAcRooms.map(room => {
                 const saved = acReadings.find(r => r.room_id === room.id);
-                const acTenantCount = tenants.filter(t => t.room_id === room.id && t.is_active && t.package_tier === "space_food_ac").length;
-                const totalTenants = tenants.filter(t => t.room_id === room.id && t.is_active).length;
+                const acTenantCount = tenants.filter(t => t.room_id === room.id && t.is_active).length;
+                const totalTenants = acTenantCount;
                 const midMonthJoiners = tenants.filter(
-                  t => t.room_id === room.id && t.is_active && t.package_tier === "space_food_ac" && t.check_in.startsWith(selectedMonth)
+                  t => t.room_id === room.id && t.is_active && t.check_in.startsWith(selectedMonth)
                 );
                 const prevMonthReading = prevMonthACReadings.find(r => r.room_id === room.id)?.meter_reading ?? null;
                 const hasPrevReading = prevMonthReading != null;
@@ -891,7 +952,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
                     {/* Unit allocation per tenant — visible after Apply so the split is verifiable */}
                     {saved && (() => {
-                      const acTenants = tenants.filter(t => t.room_id === room.id && t.is_active && t.package_tier === "space_food_ac");
+                      const acTenants = tenants.filter(t => t.room_id === room.id && t.is_active);
                       const rows = acTenants.map(t => ({
                         name: t.full_name,
                         units: Number(payments.find(p => p.tenant_id === t.id && p.for_month === selectedMonth)?.ac_units_consumed ?? 0),

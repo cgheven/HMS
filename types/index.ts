@@ -278,6 +278,23 @@ export interface CheckoutInput {
   checkoutDate: string;
   paymentSettlement?: CheckoutPaymentSettlement;
   notes?: string;
+  acCheckoutReading?: number;
+  acOpeningReading?: number;
+}
+
+export interface ACCheckoutReading {
+  id: string;
+  hostel_id: string;
+  room_id: string;
+  tenant_id: string;
+  for_month: string;
+  meter_reading: number;
+  units_consumed: number;
+  tenant_count_at_checkout: number;
+  ac_charge: number;
+  checkout_date: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Complaint {
