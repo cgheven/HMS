@@ -33,7 +33,7 @@ interface PortalPaymentRow {
 }
 
 interface ACRoom      { id: string; room_number: string }
-interface ACReading   { room_id: string; total_units: number; per_unit_rate: number; tenant_count: number }
+interface ACReading   { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }
 interface ACJoinRead  { room_id: string; tenant_id: string; units_at_join: number; for_month: string }
 interface ACTenant    { id: string; full_name: string; room_id: string | null; package_tier: string | null; check_in: string }
 
@@ -46,6 +46,7 @@ interface PortalPaymentsProps {
   acReadings: ACReading[]
   acJoinReadings: ACJoinRead[]
   acTenants: ACTenant[]
+  prevMonthACReadings?: { room_id: string; meter_reading: number | null }[]
 }
 
 const METHOD_LABELS: Record<string, string> = {
@@ -207,6 +208,7 @@ function ACBillingSection({
   acTenants,
   payments,
   month,
+  prevMonthACReadings = [],
 }: {
   acRooms: ACRoom[]
   acReadings: ACReading[]
@@ -214,28 +216,34 @@ function ACBillingSection({
   acTenants: ACTenant[]
   payments: PortalPaymentRow[]
   month: string
+  prevMonthACReadings?: { room_id: string; meter_reading: number | null }[]
 }) {
-  const [units, setUnits]         = useState<Record<string, string>>({})
-  const [applying, setApplying]   = useState<string | null>(null)
-  const [joinUnits, setJoinUnits] = useState<Record<string, string>>({})
+  const [units, setUnits]           = useState<Record<string, string>>({})
+  const [applying, setApplying]     = useState<string | null>(null)
+  const [joinUnits, setJoinUnits]   = useState<Record<string, string>>({})
   const [savingJoin, setSavingJoin] = useState<string | null>(null)
+  const [openingReadings, setOpeningReadings] = useState<Record<string, string>>({})
 
   if (acRooms.length === 0) return null
 
   async function handleApply(roomId: string) {
-    const val = Number(units[roomId] ?? "")
-    if (!Number.isFinite(val) || val < 0) return
+    const meterReading = Number(units[roomId] ?? "")
+    if (!Number.isFinite(meterReading) || meterReading < 0) return
+    const prevReading = prevMonthACReadings.find(r => r.room_id === roomId)?.meter_reading
+    const openingReading = prevReading == null ? (openingReadings[roomId] ? parseFloat(openingReadings[roomId]) : undefined) : undefined
+
     setApplying(roomId)
-    const result = await applyRoomACUnitsAsManager(roomId, month, val)
+    const result = await applyRoomACUnitsAsManager(roomId, month, meterReading, openingReading)
     setApplying(null)
     if (result.error) {
       toast({ title: "AC Billing Error", description: result.error, variant: "destructive" })
     } else {
+      const derivedUnits = result.derivedUnits ?? 0
       toast({
-        title: val === 0 ? "AC charge cleared" : "AC units applied",
-        description: val === 0
+        title: derivedUnits === 0 ? "AC charge cleared" : "AC units applied",
+        description: derivedUnits === 0
           ? "AC charges removed for all tenants in this room."
-          : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${result.perTenantUnits} units each · Rs. ${result.perTenantCharge?.toLocaleString()} each`,
+          : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · Rs. ${result.perTenantCharge?.toLocaleString()} each`,
       })
     }
   }
@@ -244,8 +252,11 @@ function ACBillingSection({
     const key = `${tenantId}_${month}`
     const val = parseFloat(joinUnits[key] ?? "")
     if (!Number.isFinite(val) || val < 0) return
+    const prevReading = prevMonthACReadings.find(r => r.room_id === roomId)?.meter_reading
+    const openingReading = prevReading == null ? (openingReadings[roomId] ? parseFloat(openingReadings[roomId]) : undefined) : undefined
+
     setSavingJoin(tenantId)
-    const result = await saveACJoinReadingAsManager(roomId, month, tenantId, val)
+    const result = await saveACJoinReadingAsManager(roomId, month, tenantId, val, openingReading)
     setSavingJoin(null)
     if (result.error) {
       toast({ title: "Error", description: result.error, variant: "destructive" })
@@ -265,6 +276,14 @@ function ACBillingSection({
           const saved           = acReadings.find((r) => r.room_id === room.id)
           const midMonthJoiners = acTenants.filter((t) => t.room_id === room.id && t.check_in.startsWith(month))
           const tenantsInRoom   = acTenants.filter((t) => t.room_id === room.id)
+          const prevMonthReading = prevMonthACReadings.find((r) => r.room_id === room.id)?.meter_reading ?? null
+          const hasPrevReading   = prevMonthReading != null
+          const currentInput     = units[room.id] ?? ""
+          const openingInput     = openingReadings[room.id] ?? ""
+          const baseline         = hasPrevReading ? prevMonthReading : (openingInput ? Number(openingInput) : null)
+          const consumptionPreview = currentInput && baseline != null && Number.isFinite(Number(currentInput))
+            ? Math.max(0, Number(currentInput) - baseline)
+            : null
 
           // Per-tenant breakdown rows (only when AC units have been allocated)
           const breakdownRows = tenantsInRoom
@@ -276,40 +295,64 @@ function ACBillingSection({
 
           return (
             <div key={room.id} className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 space-y-3">
-              {/* Room header + units input */}
-              <div className="flex items-center gap-3">
+              {/* Room header + meter reading input */}
+              <div className="flex items-start gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium">Room {room.room_number}</p>
                   {saved ? (
                     <p className="text-xs text-emerald-400 mt-0.5">
-                      {saved.total_units} units saved · Rs. {saved.per_unit_rate}/unit · {saved.tenant_count} tenant{saved.tenant_count === 1 ? "" : "s"} billed
+                      Reading: {saved.meter_reading ?? "—"} · {saved.total_units} units consumed · Rs. {saved.per_unit_rate}/unit · {saved.tenant_count} tenant{saved.tenant_count === 1 ? "" : "s"} billed
                     </p>
                   ) : (
                     <p className="text-xs text-muted-foreground/50 mt-0.5">No reading for this month yet</p>
                   )}
+                  {hasPrevReading ? (
+                    <p className="text-[10px] text-muted-foreground/50 mt-0.5">Previous month ended at {prevMonthReading}</p>
+                  ) : (
+                    <p className="text-[10px] text-amber/60 mt-0.5">First reading — enter opening value if needed</p>
+                  )}
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <Input
-                    type="number"
-                    min={0}
-                    max={99999}
-                    placeholder="Units"
-                    value={units[room.id] ?? ""}
-                    onChange={(e) => setUnits((prev) => ({ ...prev, [room.id]: e.target.value }))}
-                    className="w-28 h-9 text-sm text-center"
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
-                    disabled={applying === room.id || !units[room.id] || units[room.id] === ""}
-                    onClick={() => handleApply(room.id)}
-                  >
-                    {applying === room.id
-                      ? <Loader2 className="w-3 h-3 animate-spin" />
-                      : <Zap className="w-3 h-3" />}
-                    Apply
-                  </Button>
+                <div className="flex flex-col items-end gap-1.5 shrink-0">
+                  {!hasPrevReading && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-muted-foreground/60 whitespace-nowrap">Opening:</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={999999}
+                        placeholder="0"
+                        value={openingInput}
+                        onChange={(e) => setOpeningReadings((prev) => ({ ...prev, [room.id]: e.target.value }))}
+                        className="w-20 h-7 text-xs text-center"
+                      />
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      min={0}
+                      max={999999}
+                      placeholder="Reading"
+                      value={currentInput}
+                      onChange={(e) => setUnits((prev) => ({ ...prev, [room.id]: e.target.value }))}
+                      className="w-28 h-9 text-sm text-center"
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
+                      disabled={applying === room.id || !currentInput}
+                      onClick={() => handleApply(room.id)}
+                    >
+                      {applying === room.id
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : <Zap className="w-3 h-3" />}
+                      Apply
+                    </Button>
+                  </div>
+                  {consumptionPreview != null && (
+                    <p className="text-[10px] text-amber/70">{consumptionPreview} units consumed</p>
+                  )}
                 </div>
               </div>
 
@@ -325,15 +368,24 @@ function ACBillingSection({
                     const already = acJoinReadings.find((r) => r.tenant_id === tenant.id && r.for_month === month)
                     const edited  = joinUnits[key] !== undefined
                     const isSaved = !!already && !edited
+                    const joinInput = joinUnits[key] ?? ""
+                    const joinRelative = joinInput && baseline != null && Number.isFinite(Number(joinInput))
+                      ? Math.max(0, Number(joinInput) - baseline)
+                      : null
                     return (
                       <div key={tenant.id} className="flex items-center gap-2">
-                        <p className="flex-1 min-w-0 text-xs text-muted-foreground truncate">{tenant.full_name}</p>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-muted-foreground truncate">{tenant.full_name}</p>
+                          {joinRelative != null && (
+                            <p className="text-[10px] text-amber/60">{joinRelative} units from month start</p>
+                          )}
+                        </div>
                         <Input
                           type="number"
                           min={0}
-                          max={99999}
-                          placeholder={already ? String(already.units_at_join) : "Units at join"}
-                          value={joinUnits[key] ?? ""}
+                          max={999999}
+                          placeholder="Reading"
+                          value={joinInput}
                           onChange={(e) => setJoinUnits((prev) => ({ ...prev, [key]: e.target.value }))}
                           className="w-32 h-8 text-xs text-center"
                         />
@@ -398,6 +450,7 @@ export function PortalPayments({
   acReadings,
   acJoinReadings,
   acTenants,
+  prevMonthACReadings = [],
 }: PortalPaymentsProps) {
   const [payments, setPayments]       = useState<PortalPaymentRow[]>(initial)
   const [activeModal, setActiveModal] = useState<PortalPaymentRow | null>(null)
@@ -500,6 +553,7 @@ export function PortalPayments({
               acTenants={acTenants}
               payments={payments}
               month={month}
+              prevMonthACReadings={prevMonthACReadings}
             />
           </TabsContent>
         )}

@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   CreditCard, CheckCircle2, Clock, AlertTriangle, Wallet,
-  TrendingUp, Banknote, Zap, Loader2, FileText, ChevronLeft, ChevronRight, Search,
+  Banknote, Zap, Loader2, FileText, ChevronLeft, ChevronRight, Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,8 +52,9 @@ interface Props {
   packageConfig: PackageConfig | null;
   paymentMethods?: PaymentMethodAccount[];
   reminderTemplate?: string | null;
-  acReadings?: { room_id: string; total_units: number; per_unit_rate: number; tenant_count: number }[];
+  acReadings?: { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[];
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
+  prevMonthACReadings?: { room_id: string; meter_reading: number | null; total_units: number }[];
 }
 
 const methodLabels: Record<PaymentMethod, string> = {
@@ -78,7 +79,7 @@ function genReceipt(tenantName: string, month: string) {
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, acReadings = [], acJoinReadings = [] }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, acReadings = [], acJoinReadings = [], prevMonthACReadings = [] }: Props) {
   const router = useRouter();
   const [selectedMonth, setSelectedMonth] = useState(initialMonth);
   const [payments, setPayments] = useState<Payment[]>(initialPayments);
@@ -103,35 +104,44 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [roomFilter, setRoomFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "paid" | "unpaid">("all");
   const [search, setSearch] = useState("");
-  // joinUnits keyed by `${tenantId}_${month}` so values don't bleed across months
+  // joinUnits keyed by `${tenantId}_${month}` — stores the absolute meter reading at join time
   const [joinUnits, setJoinUnits] = useState<Record<string, string>>({});
   const [savingJoin, setSavingJoin] = useState<string | null>(null);
+  // acOpeningReadings: per-room opening reading input, shown only when no previous month record exists
+  const [acOpeningReadings, setAcOpeningReadings] = useState<Record<string, string>>({});
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
 
-  // Pre-populate AC units from saved readings on mount / when acReadings changes
+  // Pre-populate the meter reading input from saved readings on mount / when acReadings changes
   useEffect(() => {
     if (acReadings.length > 0) {
       setAcUnits(prev => {
         const next = { ...prev };
-        acReadings.forEach(r => { if (!next[r.room_id]) next[r.room_id] = String(r.total_units); });
+        acReadings.forEach(r => {
+          if (!next[r.room_id] && r.meter_reading != null) {
+            next[r.room_id] = String(Math.round(r.meter_reading));
+          }
+        });
         return next;
       });
     }
   }, [acReadings]);
 
-  // Pre-populate join reading inputs from server-fetched values
+  // Pre-populate join reading inputs — reconstruct absolute meter reading from relative + prev month
   useEffect(() => {
     if (acJoinReadings.length === 0) return;
     setJoinUnits(prev => {
       const next = { ...prev };
       acJoinReadings.forEach(r => {
         const k = `${r.tenant_id}_${r.for_month}`;
-        if (!(k in next)) next[k] = String(r.units_at_join);
+        if (!(k in next)) {
+          const prevReading = prevMonthACReadings.find(pr => pr.room_id === r.room_id)?.meter_reading ?? 0;
+          next[k] = String(Math.round(Number(prevReading) + r.units_at_join));
+        }
       });
       return next;
     });
-  }, [acJoinReadings]);
+  }, [acJoinReadings, prevMonthACReadings]);
 
   // All payment mutations go through Server Actions — not the browser Supabase client
   const syncMonth = useCallback(async (month: string) => {
@@ -335,12 +345,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     const raw = joinUnits[key] ?? "";
     const value = parseFloat(raw);
     if (!Number.isFinite(value) || value < 0) {
-      toast({ title: "Invalid units", description: "Enter a non-negative number.", variant: "destructive" });
+      toast({ title: "Invalid reading", description: "Enter a non-negative meter reading.", variant: "destructive" });
       return;
     }
+    const prevReading = prevMonthACReadings.find(r => r.room_id === roomId)?.meter_reading;
+    const openingReading = prevReading == null ? (acOpeningReadings[roomId] ? parseFloat(acOpeningReadings[roomId]) : undefined) : undefined;
+
     setSavingJoin(tenantId);
     try {
-      const result = await saveACJoinReadingAction(roomId, selectedMonth, tenantId, value);
+      const result = await saveACJoinReadingAction(roomId, selectedMonth, tenantId, value, openingReading);
       if (!result.success) {
         toast({ title: "Error saving join reading", description: result.error, variant: "destructive" });
       } else {
@@ -353,25 +366,29 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }
 
   async function applyACUnits(roomId: string) {
-    const units = Number(acUnits[roomId] ?? "");
-    if (!Number.isFinite(units) || units < 0) return;
+    const meterReading = Number(acUnits[roomId] ?? "");
+    if (!Number.isFinite(meterReading) || meterReading < 0) return;
+    const prevReading = prevMonthACReadings.find(r => r.room_id === roomId)?.meter_reading;
+    const openingReading = prevReading == null ? (acOpeningReadings[roomId] ? parseFloat(acOpeningReadings[roomId]) : undefined) : undefined;
+
     setApplyingAC(roomId);
     try {
-      const result = await applyRoomACUnitsAction(roomId, selectedMonth, units);
+      const result = await applyRoomACUnitsAction(roomId, selectedMonth, meterReading, openingReading);
       if (!result.success) {
         toast({ title: "AC Billing Error", description: result.error, variant: "destructive" });
       } else {
-        const cleared = units === 0;
+        const derivedUnits = result.derivedUnits ?? 0;
+        const cleared = derivedUnits === 0;
         toast({
           title: cleared ? "AC charge cleared" : "AC units applied",
           description: cleared
             ? "AC charges removed for all tenants in this room."
             : result.proRatedCount && result.proRatedCount > 0
-              ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${result.proRatedCount} with segment billing${result.unassignedUnits ? ` · ${result.unassignedUnits} units unassigned (pre-occupancy, hostel absorbs)` : ""}`
-              : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${result.perTenantUnits} units each · Rs ${result.perTenantCharge?.toLocaleString()} each`,
+              ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · ${result.proRatedCount} with segment billing${result.unassignedUnits ? ` · ${result.unassignedUnits} units unassigned` : ""}`
+              : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · ${result.perTenantUnits} units each · Rs ${result.perTenantCharge?.toLocaleString()} each`,
         });
         await syncMonth(selectedMonth);
-        router.refresh(); // refresh server props so acReadings badge updates
+        router.refresh();
       }
     } finally {
       setApplyingAC(null);
@@ -407,7 +424,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     const due = payments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
     const collected = payments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
     const pending = payments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.amount)), 0);
-    return { due, collected, pending, rate: due > 0 ? Math.round((collected / due) * 100) : 0 };
+    const acCollected = payments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
+    const acPending = payments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
+    return { due, collected, pending, acCollected, acPending };
   }, [payments]);
 
   const TIER_LABEL: Record<string, string> = {
@@ -558,26 +577,35 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        {[
-          { label: "Total Due",       value: formatCurrency(stats.due),       icon: CreditCard, color: "text-foreground",   bg: "bg-white/5 border border-white/10" },
-          { label: "Collected",       value: formatCurrency(stats.collected),  icon: Wallet,     color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20" },
-          { label: "Pending",         value: formatCurrency(stats.pending),    icon: Clock,      color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
-          { label: "Collection Rate", value: `${stats.rate}%`,                 icon: TrendingUp, color: "text-blue-400",   bg: "bg-blue-500/10 border border-blue-500/20" },
-        ].map(({ label, value, icon: Icon, color, bg }) => (
-          <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5">
-            <div className="flex items-start gap-3">
-              <div className={`flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl ${bg} shrink-0 mt-0.5`}>
-                <Icon className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${color}`} />
+      {(() => {
+        const hasAc = (stats.acCollected + stats.acPending) > 0;
+        const cards = [
+          { label: "Total Due",       value: formatCurrency(stats.due),        icon: CreditCard, color: "text-foreground",   bg: "bg-white/5 border border-white/10" },
+          { label: "Collected",       value: formatCurrency(stats.collected),   icon: Wallet,     color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20" },
+          { label: "Pending",         value: formatCurrency(stats.pending),     icon: Clock,      color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
+          ...(hasAc ? [
+            { label: "AC Collected",  value: formatCurrency(stats.acCollected), icon: Zap,        color: "text-cyan-400",    bg: "bg-cyan-500/10 border border-cyan-500/20" },
+            { label: "AC Pending",    value: formatCurrency(stats.acPending),   icon: Zap,        color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
+          ] : []),
+        ];
+        return (
+          <div className={`grid gap-3 sm:gap-4 ${hasAc ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-1 sm:grid-cols-3"}`}>
+            {cards.map(({ label, value, icon: Icon, color, bg }) => (
+              <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5">
+                <div className="flex items-start gap-3">
+                  <div className={`flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl ${bg} shrink-0 mt-0.5`}>
+                    <Icon className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${color}`} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wide leading-tight">{label}</p>
+                    <p className={`text-base sm:text-xl font-bold leading-none mt-1.5 ${color}`}>{value}</p>
+                  </div>
+                </div>
               </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wide leading-tight">{label}</p>
-                <p className={`text-base sm:text-xl font-bold leading-none mt-1.5 ${color}`}>{value}</p>
-              </div>
-            </div>
+            ))}
           </div>
-        ))}
-      </div>
+        );
+      })()}
 
       {/* Tabs */}
       <Tabs value={tab} onValueChange={(v) => { setTab(v); if (v === "history") loadHistory(); if (v !== "monthly") { setRoomFilter("all"); setStatusFilter("all"); setSearch(""); } }}>
@@ -723,10 +751,18 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 const midMonthJoiners = tenants.filter(
                   t => t.room_id === room.id && t.is_active && t.package_tier === "space_food_ac" && t.check_in.startsWith(selectedMonth)
                 );
+                const prevMonthReading = prevMonthACReadings.find(r => r.room_id === room.id)?.meter_reading ?? null;
+                const hasPrevReading = prevMonthReading != null;
+                const currentInput = acUnits[room.id] ?? "";
+                const openingInput = acOpeningReadings[room.id] ?? "";
+                const baseline = hasPrevReading ? prevMonthReading : (openingInput ? Number(openingInput) : null);
+                const consumptionPreview = currentInput && baseline != null && Number.isFinite(Number(currentInput))
+                  ? Math.max(0, Number(currentInput) - baseline)
+                  : null;
                 return (
                   <div key={room.id} className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 space-y-3">
-                    {/* Room header + total-units row */}
-                    <div className="flex items-center gap-3">
+                    {/* Room header + meter reading row */}
+                    <div className="flex items-start gap-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-medium">Room {room.room_number}</span>
@@ -740,33 +776,58 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         </div>
                         {saved ? (
                           <p className="text-xs text-emerald-400 mt-0.5">
-                            {saved.total_units} units saved · Rs {saved.per_unit_rate}/unit · {saved.tenant_count} tenants billed
+                            Reading: {saved.meter_reading ?? "—"} · {saved.total_units} units consumed · Rs {saved.per_unit_rate}/unit · {saved.tenant_count} tenants billed
                           </p>
                         ) : (
                           <p className="text-xs text-muted-foreground/50 mt-0.5">No reading for this month yet</p>
                         )}
+                        {hasPrevReading ? (
+                          <p className="text-[10px] text-muted-foreground/50 mt-0.5">Previous month ended at {prevMonthReading}</p>
+                        ) : (
+                          <p className="text-[10px] text-amber/60 mt-0.5">First reading — enter opening value below if needed</p>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <Input
-                          type="number"
-                          min={0}
-                          max={99999}
-                          placeholder="Units"
-                          value={acUnits[room.id] ?? ""}
-                          onChange={e => setAcUnits(prev => ({ ...prev, [room.id]: e.target.value }))}
-                          disabled={acTenantCount === 0}
-                          className="w-28 h-9 text-sm text-center disabled:opacity-40"
-                        />
-                        <Button
-                          size="sm"
-                          className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
-                          variant="ghost"
-                          disabled={applyingAC === room.id || acUnits[room.id] === undefined || acUnits[room.id] === "" || acTenantCount === 0}
-                          onClick={() => applyACUnits(room.id)}
-                        >
-                          {applyingAC === room.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-                          Apply
-                        </Button>
+                      <div className="flex flex-col items-end gap-1.5 shrink-0">
+                        {!hasPrevReading && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-muted-foreground/60 whitespace-nowrap">Opening:</span>
+                            <Input
+                              type="number"
+                              min={0}
+                              max={999999}
+                              placeholder="0"
+                              value={openingInput}
+                              onChange={e => setAcOpeningReadings(prev => ({ ...prev, [room.id]: e.target.value }))}
+                              disabled={acTenantCount === 0}
+                              className="w-20 h-7 text-xs text-center disabled:opacity-40"
+                            />
+                          </div>
+                        )}
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            min={0}
+                            max={999999}
+                            placeholder="Reading"
+                            value={currentInput}
+                            onChange={e => setAcUnits(prev => ({ ...prev, [room.id]: e.target.value }))}
+                            disabled={acTenantCount === 0}
+                            className="w-28 h-9 text-sm text-center disabled:opacity-40"
+                          />
+                          <Button
+                            size="sm"
+                            className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
+                            variant="ghost"
+                            disabled={applyingAC === room.id || !currentInput || acTenantCount === 0}
+                            onClick={() => applyACUnits(room.id)}
+                          >
+                            {applyingAC === room.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                            Apply
+                          </Button>
+                        </div>
+                        {consumptionPreview != null && (
+                          <p className="text-[10px] text-amber/70">{consumptionPreview} units consumed</p>
+                        )}
                       </div>
                     </div>
 
@@ -784,17 +845,25 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           const savedJoin = acJoinReadings.find(
                             r => r.room_id === room.id && r.tenant_id === tenant.id && r.for_month === selectedMonth
                           );
-                          const inputVal = joinUnits[joinKey] ?? (savedJoin ? String(savedJoin.units_at_join) : "");
+                          const inputVal = joinUnits[joinKey] ?? "";
                           const isSaved = !!savedJoin && joinUnits[joinKey] === undefined;
+                          const joinRelative = inputVal && baseline != null && Number.isFinite(Number(inputVal))
+                            ? Math.max(0, Number(inputVal) - baseline)
+                            : null;
                           return (
                             <div key={tenant.id} className="flex items-center gap-3">
-                              <span className="text-xs text-muted-foreground flex-1 min-w-0 truncate">{tenant.full_name}</span>
+                              <div className="flex-1 min-w-0">
+                                <span className="text-xs text-muted-foreground truncate block">{tenant.full_name}</span>
+                                {joinRelative != null && (
+                                  <span className="text-[10px] text-amber/60">{joinRelative} units from month start</span>
+                                )}
+                              </div>
                               <div className="flex items-center gap-2 shrink-0">
                                 <Input
                                   type="number"
                                   min={0}
-                                  max={99999}
-                                  placeholder="Units"
+                                  max={999999}
+                                  placeholder="Reading"
                                   value={inputVal}
                                   onChange={e => setJoinUnits(prev => ({ ...prev, [joinKey]: e.target.value }))}
                                   className="w-28 h-9 text-sm text-center"
@@ -867,7 +936,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               })}
             </div>
             <p className="text-xs text-muted-foreground pt-1">
-              Mid-month joiner readings are the <span className="text-foreground">meter value when they joined</span>, not their units consumed. The split is shown under each room after Apply.
+              Enter the <span className="text-foreground">current meter reading</span> (cumulative) — consumption is auto-derived from last month&apos;s reading. Mid-month joiners get the meter reading at the time they joined.
             </p>
           </div>
         </TabsContent>

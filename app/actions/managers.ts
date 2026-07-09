@@ -8,6 +8,12 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { requireManagerPermission } from "@/lib/manager-auth"
 import type { Manager, StaffPermission } from "@/types"
 
+function getPrevMonth(forMonth: string): string {
+  const [y, m] = forMonth.split("-").map(Number);
+  const d = new Date(y, m - 2, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
 async function resolveOwnerId(): Promise<string> {
   const ctx = await getAuthContext()
   if (!ctx?.user) throw new Error("Unauthorized")
@@ -288,8 +294,9 @@ export async function deleteManager(
 export async function applyRoomACUnitsAsManager(
   roomId: string,
   forMonth: string,
-  totalUnits: number,
-): Promise<{ error: string | null; eligibleCount?: number; perTenantUnits?: number; perTenantCharge?: number }> {
+  meterReading: number,
+  openingReading?: number,
+): Promise<{ error: string | null; eligibleCount?: number; perTenantUnits?: number; perTenantCharge?: number; derivedUnits?: number; prevMonthReading?: number; currentReading?: number }> {
   try {
     const ctx = await requireManagerPermission("collect_payments")
     const hostelId = ctx.activeHostel.id
@@ -297,35 +304,42 @@ export async function applyRoomACUnitsAsManager(
 
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(forMonth)) return { error: "Invalid month." }
 
-    const units = Math.round(Number(totalUnits))
-    if (!Number.isFinite(units) || units < 0 || units > 99_999) {
-      return { error: "Total units must be between 0 and 99,999." }
+    const reading = Math.round(Number(meterReading))
+    if (!Number.isFinite(reading) || reading < 0 || reading > 999_999) {
+      return { error: "Meter reading must be between 0 and 999,999." }
+    }
+    if (openingReading !== undefined) {
+      const or = Math.round(Number(openingReading))
+      if (!Number.isFinite(or) || or < 0 || or > 999_999) return { error: "Opening reading must be between 0 and 999,999." }
     }
 
     const currentMonth = forMonth
+    const prevMonthStr = getPrevMonth(forMonth)
 
-    // Verify room belongs to this hostel and has AC
-    const { data: room } = await admin
-      .from("hms_rooms")
-      .select("id, has_ac")
-      .eq("id", roomId)
-      .eq("hostel_id", hostelId)
-      .single()
+    // Verify room, get config, and fetch previous month reading in parallel
+    const [{ data: room }, { data: config }, { data: prevRecord }] = await Promise.all([
+      admin.from("hms_rooms").select("id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
+      admin.from("hms_package_configs").select("ac_per_unit_rate").eq("hostel_id", hostelId).maybeSingle(),
+      admin.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+    ])
 
     if (!room) return { error: "Room not found." }
     if (!room.has_ac) return { error: "This room does not have AC." }
-
-    // Get AC rate from package config
-    const { data: config } = await admin
-      .from("hms_package_configs")
-      .select("ac_per_unit_rate")
-      .eq("hostel_id", hostelId)
-      .maybeSingle()
 
     const perUnitRate = Number(config?.ac_per_unit_rate ?? 0)
     if (perUnitRate <= 0) {
       return { error: "AC per-unit rate is not configured. Ask the owner to set it in Settings → Packages." }
     }
+
+    // Derive consumption from cumulative meter readings
+    const prevReading = prevRecord?.meter_reading != null
+      ? Math.round(Number(prevRecord.meter_reading))
+      : (openingReading != null ? Math.round(Number(openingReading)) : 0)
+
+    if (reading < prevReading)
+      return { error: `Meter reading (${reading}) cannot be less than previous month's reading (${prevReading}).` }
+
+    const units = reading - prevReading
 
     // Find active space_food_ac tenants in this room
     const { data: allTenants } = await admin
@@ -401,6 +415,7 @@ export async function applyRoomACUnitsAsManager(
           room_id: roomId,
           for_month: currentMonth,
           total_units: units,
+          meter_reading: reading,
           per_unit_rate: perUnitRate,
           tenant_count: eligible.length,
           updated_at: new Date().toISOString(),
@@ -415,6 +430,9 @@ export async function applyRoomACUnitsAsManager(
       eligibleCount: n,
       perTenantUnits: first?.tenantUnits ?? 0,
       perTenantCharge: first?.charge ?? 0,
+      derivedUnits: units,
+      prevMonthReading: prevReading,
+      currentReading: reading,
     }
   } catch (err: unknown) {
     return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
@@ -425,7 +443,8 @@ export async function saveACJoinReadingAsManager(
   roomId: string,
   forMonth: string,
   tenantId: string,
-  unitsAtJoin: number,
+  joinMeterReading: number,
+  openingReading?: number,
 ): Promise<{ error: string | null }> {
   try {
     const ctx = await requireManagerPermission("collect_payments")
@@ -433,25 +452,33 @@ export async function saveACJoinReadingAsManager(
     const admin = createAdminClient()
 
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(forMonth)) return { error: "Invalid month." }
-    const units = Math.round(Number(unitsAtJoin))
-    if (!Number.isFinite(units) || units < 0 || units > 99_999) return { error: "Units must be 0–99,999." }
 
-    const { data: room } = await admin
-      .from("hms_rooms")
-      .select("id")
-      .eq("id", roomId)
-      .eq("hostel_id", hostelId)
-      .single()
+    const joinReading = Math.round(Number(joinMeterReading))
+    if (!Number.isFinite(joinReading) || joinReading < 0 || joinReading > 999_999)
+      return { error: "Join meter reading must be between 0 and 999,999." }
+    if (openingReading !== undefined) {
+      const or = Math.round(Number(openingReading))
+      if (!Number.isFinite(or) || or < 0 || or > 999_999) return { error: "Opening reading must be between 0 and 999,999." }
+    }
+
+    const prevMonthStr = getPrevMonth(forMonth)
+    const [{ data: room }, { data: tenant }, { data: prevRecord }] = await Promise.all([
+      admin.from("hms_rooms").select("id").eq("id", roomId).eq("hostel_id", hostelId).single(),
+      admin.from("hms_tenants").select("id").eq("id", tenantId).eq("hostel_id", hostelId).eq("room_id", roomId).single(),
+      admin.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+    ])
+
     if (!room) return { error: "Room not found." }
-
-    const { data: tenant } = await admin
-      .from("hms_tenants")
-      .select("id")
-      .eq("id", tenantId)
-      .eq("hostel_id", hostelId)
-      .eq("room_id", roomId)
-      .single()
     if (!tenant) return { error: "Tenant not found in this room." }
+
+    const prevReading = prevRecord?.meter_reading != null
+      ? Math.round(Number(prevRecord.meter_reading))
+      : (openingReading != null ? Math.round(Number(openingReading)) : 0)
+
+    if (joinReading < prevReading)
+      return { error: `Join meter reading (${joinReading}) cannot be less than previous month's reading (${prevReading}).` }
+
+    const relativeUnitsAtJoin = joinReading - prevReading
 
     const { error } = await admin
       .from("hms_room_ac_join_readings")
@@ -461,7 +488,7 @@ export async function saveACJoinReadingAsManager(
           room_id: roomId,
           for_month: forMonth,
           tenant_id: tenantId,
-          units_at_join: units,
+          units_at_join: relativeUnitsAtJoin,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "room_id,for_month,tenant_id" }

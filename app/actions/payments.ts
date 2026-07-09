@@ -51,6 +51,16 @@ function assertNonNegativeFinite(v: number, field: string, max = MAX_LATE_FEE) {
 }
 
 // ---------------------------------------------------------------------------
+// Internal helper: compute previous month string (e.g. "2026-06" → "2026-05")
+// ---------------------------------------------------------------------------
+
+function getPrevMonth(forMonth: string): string {
+  const [y, m] = forMonth.split("-").map(Number);
+  const d = new Date(y, m - 2, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// ---------------------------------------------------------------------------
 // Internal helper: resolve the authenticated user's hostel_id from the DB.
 // Never trusts a client-supplied hostel_id.
 // ---------------------------------------------------------------------------
@@ -472,7 +482,8 @@ const AC_TIERS = new Set<string>(["space_food_ac"]);
 export async function applyRoomACUnitsAction(
   roomId: string,
   forMonth: string,
-  totalUnits: number
+  meterReading: number,
+  openingReading?: number
 ): Promise<{
   success: boolean;
   error?: string;
@@ -483,6 +494,9 @@ export async function applyRoomACUnitsAction(
   skippedFirstMonth?: number;
   proRatedCount?: number;
   unassignedUnits?: number;
+  derivedUnits?: number;
+  prevMonthReading?: number;
+  currentReading?: number;
 }> {
   try {
     // ── Auth & ownership guard ──────────────────────────────────
@@ -490,36 +504,46 @@ export async function applyRoomACUnitsAction(
     if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
     const { hostelId } = ctx;
 
-    // ── Input validation — use canonical MONTH_RE (rejects 2024-00, 2024-13) ──
+    // ── Input validation ──────────────────────────────────────
     if (!roomId || !UUID_RE.test(roomId)) throw new Error("Invalid room ID");
     if (!forMonth || !MONTH_RE.test(forMonth)) throw new Error("Invalid month format");
-    const units = Math.round(Number(totalUnits));
-    if (!Number.isFinite(units) || units < 0 || units > 99_999)
-      throw new Error("Total units must be between 0 and 99,999");
+    const reading = Math.round(Number(meterReading));
+    if (!Number.isFinite(reading) || reading < 0 || reading > 999_999)
+      throw new Error("Meter reading must be between 0 and 999,999");
+    if (openingReading !== undefined) {
+      const or = Math.round(Number(openingReading));
+      if (!Number.isFinite(or) || or < 0 || or > 999_999)
+        throw new Error("Opening reading must be between 0 and 999,999");
+    }
 
     // ── Scoped client for reads (RLS provides defense-in-depth) ──
     const supabase = await createClient();
     const adminDb = createAdminClient();
 
-    // ── Verify room belongs to this hostel ──────────────────────
-    const { data: room } = await supabase
-      .from("hms_rooms")
-      .select("id, hostel_id, has_ac")
-      .eq("id", roomId)
-      .eq("hostel_id", hostelId)
-      .single();
+    // ── Verify room + fetch package config + prev month reading in parallel ──
+    const prevMonthStr = getPrevMonth(forMonth);
+    const [{ data: room }, { data: pkgConfig }, { data: prevRecord }] = await Promise.all([
+      supabase.from("hms_rooms").select("id, hostel_id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
+      supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate").eq("hostel_id", hostelId).single(),
+      supabase.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+    ]);
+
     if (!room) throw new Error("Room not found or access denied");
     if (!room.has_ac) throw new Error("This room does not have AC");
 
-    // ── Get package config for per-unit rate ────────────────────
-    const { data: pkgConfig } = await supabase
-      .from("hms_package_configs")
-      .select("ac_per_unit_rate, food_monthly_rate")
-      .eq("hostel_id", hostelId)
-      .single();
     const perUnitRate = Number(pkgConfig?.ac_per_unit_rate ?? 0);
     if (perUnitRate <= 0) throw new Error("AC per-unit rate is not configured. Set it in Settings → Packages.");
     const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
+
+    // ── Derive consumption from cumulative meter readings ─────────
+    const prevReading = prevRecord?.meter_reading != null
+      ? Math.round(Number(prevRecord.meter_reading))
+      : (openingReading != null ? Math.round(Number(openingReading)) : 0);
+
+    if (reading < prevReading)
+      throw new Error(`Meter reading (${reading}) cannot be less than previous month's reading (${prevReading}). Previous month ended at ${prevReading}.`);
+
+    const units = reading - prevReading;
 
     // ── Find active AC-package tenants in this room ───────────────
     const { data: allTenants } = await supabase
@@ -702,6 +726,7 @@ export async function applyRoomACUnitsAction(
           room_id: roomId,
           for_month: forMonth,
           total_units: units,
+          meter_reading: reading,
           per_unit_rate: perUnitRate,
           tenant_count: eligible.length,
           updated_at: new Date().toISOString(),
@@ -722,6 +747,9 @@ export async function applyRoomACUnitsAction(
       skippedFirstMonth: 0,
       proRatedCount,
       unassignedUnits,
+      derivedUnits: units,
+      prevMonthReading: prevReading,
+      currentReading: reading,
     };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -738,7 +766,8 @@ export async function saveACJoinReadingAction(
   roomId: string,
   forMonth: string,
   tenantId: string,
-  unitsAtJoin: number
+  joinMeterReading: number,
+  openingReading?: number
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const ctx = await getAuthContext();
@@ -748,29 +777,42 @@ export async function saveACJoinReadingAction(
     if (!roomId || !UUID_RE.test(roomId)) throw new Error("Invalid room ID");
     if (!forMonth || !MONTH_RE.test(forMonth)) throw new Error("Invalid month format");
     if (!tenantId || !UUID_RE.test(tenantId)) throw new Error("Invalid tenant ID");
-    assertNonNegativeFinite(unitsAtJoin, "units_at_join", 99_999);
+
+    const joinReading = Math.round(Number(joinMeterReading));
+    if (!Number.isFinite(joinReading) || joinReading < 0 || joinReading > 999_999)
+      throw new Error("Join meter reading must be between 0 and 999,999");
+    if (openingReading !== undefined) {
+      const or = Math.round(Number(openingReading));
+      if (!Number.isFinite(or) || or < 0 || or > 999_999)
+        throw new Error("Opening reading must be between 0 and 999,999");
+    }
 
     const supabase = await createClient();
     const adminDb = createAdminClient();
 
-    const { data: room } = await supabase
-      .from("hms_rooms")
-      .select("id")
-      .eq("id", roomId)
-      .eq("hostel_id", hostelId)
-      .single();
-    if (!room) throw new Error("Room not found or access denied");
+    // Fetch room, tenant, and prev month reading in parallel
+    const prevMonthStr = getPrevMonth(forMonth);
+    const [{ data: room }, { data: tenant }, { data: prevRecord }] = await Promise.all([
+      supabase.from("hms_rooms").select("id").eq("id", roomId).eq("hostel_id", hostelId).single(),
+      supabase.from("hms_tenants").select("id, package_tier, room_id, is_active").eq("id", tenantId).eq("hostel_id", hostelId).single(),
+      adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+    ]);
 
-    const { data: tenant } = await supabase
-      .from("hms_tenants")
-      .select("id, package_tier, room_id, is_active")
-      .eq("id", tenantId)
-      .eq("hostel_id", hostelId)
-      .single();
+    if (!room) throw new Error("Room not found or access denied");
     if (!tenant) throw new Error("Tenant not found or access denied");
     if (!tenant.is_active) throw new Error("Tenant is not active");
     if (tenant.room_id !== roomId) throw new Error("Tenant is not in this room");
     if (tenant.package_tier !== "space_food_ac") throw new Error("Tenant does not have the AC package");
+
+    // Derive relative units from cumulative meter readings
+    const prevReading = prevRecord?.meter_reading != null
+      ? Math.round(Number(prevRecord.meter_reading))
+      : (openingReading != null ? Math.round(Number(openingReading)) : 0);
+
+    if (joinReading < prevReading)
+      throw new Error(`Join meter reading (${joinReading}) cannot be less than previous month's reading (${prevReading})`);
+
+    const relativeUnitsAtJoin = joinReading - prevReading;
 
     const { error } = await adminDb
       .from("hms_room_ac_join_readings")
@@ -780,7 +822,7 @@ export async function saveACJoinReadingAction(
           room_id: roomId,
           for_month: forMonth,
           tenant_id: tenantId,
-          units_at_join: Math.round(unitsAtJoin),
+          units_at_join: relativeUnitsAtJoin,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "room_id,for_month,tenant_id" }

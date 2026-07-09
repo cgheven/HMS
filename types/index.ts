@@ -88,6 +88,7 @@ export interface RoomACReading {
   room_id: string;
   for_month: string;
   total_units: number;
+  meter_reading?: number | null;
   per_unit_rate: number;
   tenant_count: number;
   created_at: string;

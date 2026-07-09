@@ -9,6 +9,10 @@ export default async function PortalPaymentsPage() {
   const now = new Date()
   const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
 
+  const [y, m] = month.split("-").map(Number)
+  const prevDate = new Date(y, m - 2, 1)
+  const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`
+
   const admin = createAdminClient()
 
   type RawPayment = {
@@ -23,9 +27,10 @@ export default async function PortalPaymentsPage() {
     tenant: { full_name: string; room_id: string | null; package_tier: string | null } | null
   }
   type RoomRow     = { id: string; room_number: string; has_ac: boolean | null }
-  type ACReading   = { room_id: string; total_units: number; per_unit_rate: number; tenant_count: number }
+  type ACReading   = { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }
   type ACTenant    = { id: string; full_name: string; room_id: string | null; package_tier: string | null; check_in: string }
   type ACJoinRead  = { room_id: string; tenant_id: string; units_at_join: number; for_month: string }
+  type PrevACRead  = { room_id: string; meter_reading: number | null }
 
   const [
     { data: rawPayments },
@@ -34,6 +39,7 @@ export default async function PortalPaymentsPage() {
     { data: acReadings },
     { data: acTenants },
     { data: acJoinReadings },
+    { data: prevMonthACReadings },
   ] = await Promise.all([
     admin
       .from("hms_payments")
@@ -56,7 +62,7 @@ export default async function PortalPaymentsPage() {
 
     admin
       .from("hms_room_ac_readings")
-      .select("room_id, total_units, per_unit_rate, tenant_count")
+      .select("room_id, total_units, meter_reading, per_unit_rate, tenant_count")
       .eq("hostel_id", hostelId)
       .eq("for_month", month) as unknown as Promise<{ data: ACReading[] | null }>,
 
@@ -72,6 +78,12 @@ export default async function PortalPaymentsPage() {
       .from("hms_room_ac_join_readings")
       .select("room_id, tenant_id, units_at_join, for_month")
       .eq("hostel_id", hostelId) as unknown as Promise<{ data: ACJoinRead[] | null }>,
+
+    admin
+      .from("hms_room_ac_readings")
+      .select("room_id, meter_reading")
+      .eq("hostel_id", hostelId)
+      .eq("for_month", prevMonth) as unknown as Promise<{ data: PrevACRead[] | null }>,
   ])
 
   const roomMap = Object.fromEntries((rooms ?? []).map((r) => [r.id, r.room_number]))
@@ -108,6 +120,7 @@ export default async function PortalPaymentsPage() {
       acReadings={acReadings ?? []}
       acJoinReadings={acJoinReadings ?? []}
       acTenants={acTenants ?? []}
+      prevMonthACReadings={prevMonthACReadings ?? []}
     />
   )
 }
