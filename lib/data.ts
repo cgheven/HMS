@@ -366,7 +366,7 @@ export async function getExpenses(monthFilter: string) {
   const [year, month] = monthFilter.split("-");
   const start = `${year}-${month}-01`;
   const end = formatDateInput(new Date(parseInt(year), parseInt(month), 0));
-  const { data } = await supabase.from("hms_expenses").select("*").eq("hostel_id", hostelId).gte("date", start).lte("date", end).order("date", { ascending: false });
+  const { data } = await supabase.from("hms_expenses").select("*").eq("hostel_id", hostelId).gte("date", start).lte("date", end).order("date", { ascending: false }).order("created_at", { ascending: false });
   return { hostelId, expenses: (data as Expense[]) ?? [] };
 }
 

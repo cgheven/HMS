@@ -1,6 +1,7 @@
 "use client";
 import { useState, useMemo } from "react";
-import { Plus, Receipt, Search, Edit2, Trash2, TrendingDown, Filter } from "lucide-react";
+import { Plus, Receipt, Search, Edit2, Trash2, TrendingDown, Filter, Download, X } from "lucide-react";
+import * as XLSX from "xlsx";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent } from "@/components/ui/card";
@@ -70,6 +71,8 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
   const [expenses, setExpenses] = useState<Expense[]>(initialExpenses);
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [monthFilter, setMonthFilter] = useState(defaultMonth);
   const [loadingMonth, setLoadingMonth] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -80,10 +83,12 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
 
   const filtered = useMemo(() => {
     let list = expenses;
+    if (customFrom) list = list.filter((e) => e.date >= customFrom);
+    if (customTo) list = list.filter((e) => e.date <= customTo);
     if (search) list = list.filter((e) => e.title.toLowerCase().includes(search.toLowerCase()));
     if (filterCat !== "all") list = list.filter((e) => e.category === filterCat);
     return list;
-  }, [search, filterCat, expenses]);
+  }, [search, filterCat, customFrom, customTo, expenses]);
 
   async function loadMonth(month: string) {
     if (!hostelId) return;
@@ -97,7 +102,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
     const [year, m] = month.split("-");
     const start = `${year}-${m}-01`;
     const end = formatDateInput(new Date(parseInt(year), parseInt(m), 0));
-    const { data, error } = await supabase.from("hms_expenses").select("*").eq("hostel_id", hostelId).gte("date", start).lte("date", end).order("date", { ascending: false });
+    const { data, error } = await supabase.from("hms_expenses").select("*").eq("hostel_id", hostelId).gte("date", start).lte("date", end).order("date", { ascending: false }).order("created_at", { ascending: false });
     if (error) toast({ title: "Failed to load", description: error.message, variant: "destructive" });
     else {
       const rows = (data as Expense[]) ?? [];
@@ -138,18 +143,37 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
     else { toast({ title: "Deleted" }); reload(); }
   }
 
+  function exportToExcel() {
+    const rows = filtered.map((e) => ({
+      Date: e.date,
+      Title: e.title,
+      Category: e.category,
+      "Amount (PKR)": e.amount,
+      Notes: e.notes ?? "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = [{ wch: 12 }, { wch: 30 }, { wch: 14 }, { wch: 14 }, { wch: 30 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Expenses");
+    const label = customFrom ? `${customFrom}_to_${customTo || customFrom}` : monthFilter;
+    XLSX.writeFile(wb, `expenses-${label}.xlsx`);
+  }
+
   const total = useMemo(() => filtered.reduce((s, e) => s + Number(e.amount), 0), [filtered]);
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div><h1 className="text-3xl font-serif font-normal tracking-tight">Expenses</h1><p className="text-muted-foreground text-sm mt-1">Track hostel expenditures</p></div>
-        <Button onClick={() => { setEditing(null); setForm(emptyForm); setDialogOpen(true); }} className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" /> Add Expense</Button>
+        <div className="flex gap-2 w-full sm:w-auto">
+          <Button variant="outline" onClick={exportToExcel} disabled={filtered.length === 0} className="gap-2 flex-1 sm:flex-none"><Download className="w-4 h-4" /> Export Excel</Button>
+          <Button onClick={() => { setEditing(null); setForm(emptyForm); setDialogOpen(true); }} className="gap-2 flex-1 sm:flex-none"><Plus className="w-4 h-4" /> Add Expense</Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {[
-          { label: "Total This Month", value: formatCurrency(total), icon: TrendingDown, color: "text-rose-400", bg: "bg-rose-500/10 border border-rose-500/20" },
+          { label: customFrom ? "Total (Range)" : "Total This Month", value: formatCurrency(total), icon: TrendingDown, color: "text-rose-400", bg: "bg-rose-500/10 border border-rose-500/20" },
           { label: "Total Entries", value: filtered.length, icon: Receipt, color: "text-blue-400", bg: "bg-blue-500/10 border border-blue-500/20" },
           { label: "Average", value: filtered.length ? formatCurrency(total / filtered.length) : "—", icon: Filter, color: "text-purple-400", bg: "bg-purple-500/10 border border-purple-500/20" },
         ].map(({ label, value, icon: Icon, color, bg }) => (
@@ -177,10 +201,26 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
         </div>
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative flex-1 max-w-sm"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input placeholder="Search..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" /></div>
-        <Input type="month" value={monthFilter} onChange={(e) => { setMonthFilter(e.target.value); loadMonth(e.target.value); }} className="w-auto" />
-        <Select value={filterCat} onValueChange={setFilterCat}><SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All Categories</SelectItem>{categories.map((c) => <SelectItem key={c} value={c} className="capitalize">{c}</SelectItem>)}</SelectContent></Select>
+      <div className="space-y-3">
+        {/* Row 1: search + month + category */}
+        <div className="flex flex-col sm:flex-row gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-[180px] max-w-sm"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input placeholder="Search..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" /></div>
+          <Input type="month" value={monthFilter} onChange={(e) => { setMonthFilter(e.target.value); setCustomFrom(""); setCustomTo(""); loadMonth(e.target.value); }} className="w-auto" />
+          <Select value={filterCat} onValueChange={setFilterCat}><SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All Categories</SelectItem>{categories.map((c) => <SelectItem key={c} value={c} className="capitalize">{c}</SelectItem>)}</SelectContent></Select>
+        </div>
+
+        {/* Row 2: date range */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground">Date range:</span>
+          <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-8 text-xs w-36" />
+          <span className="text-xs text-muted-foreground">to</span>
+          <Input type="date" value={customTo} min={customFrom} onChange={(e) => setCustomTo(e.target.value)} className="h-8 text-xs w-36" />
+          {(customFrom || customTo) && (
+            <button type="button" onClick={() => { setCustomFrom(""); setCustomTo(""); }} className="text-muted-foreground hover:text-foreground transition-colors">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
       <Card>
