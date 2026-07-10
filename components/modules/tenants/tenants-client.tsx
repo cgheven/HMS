@@ -396,19 +396,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     return `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
   }
 
-  function copyJoinLink() {
-    if (!hostelSlug) {
-      toast({ title: "No form link yet", description: "Contact support to set up your hostel slug.", variant: "destructive" });
-      return;
-    }
-    const url = `${window.location.origin}/join/${hostelSlug}`;
-    navigator.clipboard.writeText(url).then(() => {
-      toast({ title: "Link copied!", description: url });
-    }).catch(() => {
-      toast({ title: "Could not copy", description: url, variant: "destructive" });
-    });
-  }
-
   function openAdd() {
     setEditing(null);
     setForm({ ...emptyForm, security_deposit: configSecurityDeposit > 0 ? String(configSecurityDeposit) : "" });
@@ -829,7 +816,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             onClick={() => { if (hostelSlug) setShareLinkDialog(true); else toast({ title: "No form link yet", description: "Contact support to set up your hostel slug.", variant: "destructive" }); }}
             className="gap-2 h-9 text-sm flex-1 sm:flex-none"
           >
-            <Link2 className="w-4 h-4" /> Share Form Link
+            <Link2 className="w-4 h-4" /> Share Application Form
           </Button>
           <Button onClick={openAdd} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold flex-1 sm:flex-none">
             <Plus className="w-4 h-4" /> Add Tenant
@@ -1138,11 +1125,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         <TabsContent value="applications">
           <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
             {applications.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground">
+              <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
                 <ClipboardList className="w-10 h-10 opacity-20" />
-                <p className="text-sm">No applications yet</p>
+                <div className="text-center space-y-1">
+                  <p className="text-sm">No applications yet</p>
+                  <p className="text-xs text-muted-foreground/70">Share the application form link so prospective tenants can apply.</p>
+                </div>
                 {hostelSlug && (
-                  <p className="text-xs">Share your join form: <span className="text-amber font-mono">/join/{hostelSlug}</span></p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 mt-1"
+                    onClick={() => setShareLinkDialog(true)}
+                  >
+                    <Link2 className="w-3.5 h-3.5" /> Share Application Form
+                  </Button>
                 )}
               </div>
             ) : (
@@ -2111,23 +2108,25 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
       {/* Share Form Link Dialog */}
       <Dialog open={shareLinkDialog} onOpenChange={(o) => { if (!o) { setShareLinkDialog(false); setShareLinkPhone(""); } }}>
-        <DialogContent className="sm:max-w-sm">
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Share Registration Form</DialogTitle>
+            <DialogTitle>Share Application Form</DialogTitle>
             <DialogDescription>
-              Send the form link to a prospective tenant via WhatsApp, or copy it to share anywhere.
+              Share this link with prospective tenants so they can apply for a room. Send via WhatsApp or copy to share anywhere.
             </DialogDescription>
           </DialogHeader>
           {(() => {
             const formUrl = hostelSlug ? `${typeof window !== "undefined" ? window.location.origin : ""}/join/${hostelSlug}` : "";
             const normPhone = shareLinkPhone.replace(/\D/g, "").replace(/^0/, "92");
-            const waMsg = encodeURIComponent(`Hi! Please fill out this registration form to apply for a room at ${hostelName ?? "our hostel"}:\n${formUrl}`);
-            const waUrl = `https://wa.me/${normPhone}?text=${waMsg}`;
+            const waMsg = encodeURIComponent(`Hi! Please fill out this application form to apply for a room at ${hostelName ?? "our hostel"}:\n${formUrl}`);
+            const waUrl = normPhone.length >= 10
+              ? `https://wa.me/${normPhone}?text=${waMsg}`
+              : `https://wa.me/?text=${waMsg}`;
             return (
               <div className="space-y-4 py-1">
                 {/* Form URL display */}
                 <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-2.5 flex items-center gap-2">
-                  <p className="text-xs text-muted-foreground flex-1 truncate font-mono">{formUrl}</p>
+                  <p className="text-xs text-muted-foreground flex-1 min-w-0 truncate font-mono">{formUrl}</p>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -2139,16 +2138,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </Button>
                 </div>
 
-                {/* Phone input for WhatsApp */}
+                {/* Optional phone for direct WhatsApp */}
                 <div className="space-y-1.5">
-                  <Label>Phone number</Label>
+                  <Label>WhatsApp number <span className="text-muted-foreground font-normal">(optional)</span></Label>
                   <Input
                     type="tel"
                     placeholder="e.g. 03001234567"
                     value={shareLinkPhone}
                     onChange={(e) => setShareLinkPhone(e.target.value)}
                   />
-                  <p className="text-xs text-muted-foreground">Pakistan numbers starting with 03 are normalised automatically.</p>
+                  <p className="text-xs text-muted-foreground">Enter a number to message directly, or leave blank to pick from your contacts.</p>
                 </div>
 
                 {/* Actions */}
@@ -2162,7 +2161,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </Button>
                   <Button
                     className="flex-1 gap-2 bg-[#25D366] hover:bg-[#20ba57] text-white"
-                    disabled={normPhone.length < 10}
                     onClick={() => { window.open(waUrl, "_blank", "noopener,noreferrer"); }}
                   >
                     <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="currentColor">

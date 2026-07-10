@@ -378,7 +378,7 @@ export function SettingsClient() {
     else toast({
       title: listingForm.listing_enabled ? "Listing published" : "Listing hidden",
       description: listingForm.listing_enabled
-        ? "Your hostel is now visible on the public directory. Share Form Link is now active."
+        ? "Your hostel is now visible on the public directory. The application form link is now active."
         : "Your hostel has been removed from the public directory.",
     });
     setSavingListing(false);
@@ -768,10 +768,10 @@ export function SettingsClient() {
         <CardHeader>
           <div className="flex items-center gap-2">
             <FormInput className="w-4 h-4 text-muted-foreground" />
-            <CardTitle className="text-base">Registration Form Fields</CardTitle>
+            <CardTitle className="text-base">Application Form Fields</CardTitle>
           </div>
           <CardDescription>
-            Choose which fields appear on your public tenant registration form. Full Name and WhatsApp are always required.
+            Choose which fields appear on your public tenant application form. Full Name and WhatsApp are always required.
           </CardDescription>
         </CardHeader>
         <CardContent>

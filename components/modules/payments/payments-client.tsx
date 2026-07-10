@@ -973,7 +973,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-semibold">Allocated per tenant</p>
                           {rows.map(r => (
                             <div key={r.name} className="flex items-center gap-2 text-xs">
-                              <span className="text-muted-foreground flex-1 truncate">{r.name}</span>
+                              <span className="text-muted-foreground flex-1 min-w-0 truncate">{r.name}</span>
                               <span className="tabular-nums text-foreground">{r.units} units</span>
                               <span className="text-muted-foreground/40">·</span>
                               <span className="tabular-nums text-emerald-400">{formatCurrency(r.charge)}</span>
@@ -981,7 +981,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           ))}
                           {unassignedUnits > 0 && (
                             <div className="flex items-center gap-2 text-xs">
-                              <span className="text-amber/70 flex-1 truncate">Unassigned (pre-occupancy) · hostel absorbs</span>
+                              <span className="text-amber/70 flex-1 min-w-0 truncate">Unassigned (pre-occupancy) · hostel absorbs</span>
                               <span className="tabular-nums text-amber/70">{unassignedUnits} units</span>
                               <span className="text-muted-foreground/40">·</span>
                               <span className="tabular-nums text-amber/70">{formatCurrency(unassignedCharge)}</span>
