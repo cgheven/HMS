@@ -399,11 +399,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }
   }
 
+  // Only show AC rooms that have at least one currently active tenant.
+  // Rooms where all tenants have checked out are excluded — their mid-month AC was
+  // handled at checkout time and there is nothing left to bill at month end.
   const acRooms = useMemo(() => {
+    const activeRoomIds = new Set(tenants.map(t => t.room_id).filter(Boolean));
     return rooms
-      .filter(r => r.has_ac)
+      .filter(r => r.has_ac && activeRoomIds.has(r.id))
       .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
-  }, [rooms]);
+  }, [rooms, tenants]);
 
   // Only include payments for currently active tenants. Checked-out tenants have
   // is_active=false so they're absent from the `tenants` prop — their payment rows
