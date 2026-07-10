@@ -101,7 +101,7 @@ export function SettingsClient() {
   const [packageForm, setPackageForm] = useState<{ ac_per_unit_rate: string; security_deposit: string; prices: PkgPriceForm }>({
     ac_per_unit_rate: "", security_deposit: "", prices: emptyPriceForm(),
   });
-  const [customRows, setCustomRows] = useState<Array<{ id: string; name: string; no_ac: string; ac: string }>>([]);
+  const [customRows, setCustomRows] = useState<Array<{ id: string; name: string; no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string }>>([]);
   const [savingPackage, setSavingPackage] = useState(false);
   const [packageLoaded, setPackageLoaded] = useState(false);
 
@@ -188,12 +188,17 @@ export function SettingsClient() {
         security_deposit: data.security_deposit > 0 ? String(data.security_deposit) : "",
         prices,
       });
-      const customData = (raw._custom ?? []) as Array<{ id: string; name: string; no_ac: number; ac: number }>;
+      const customData = (raw._custom ?? []) as Array<{
+        id: string; name: string; no_ac: number; ac: number;
+        deposit_no_ac?: number; deposit_ac?: number;
+      }>;
       setCustomRows(customData.map((c) => ({
         id: c.id || crypto.randomUUID(),
         name: c.name ?? "",
         no_ac: c.no_ac > 0 ? String(c.no_ac) : "",
         ac: c.ac > 0 ? String(c.ac) : "",
+        deposit_no_ac: (c.deposit_no_ac ?? 0) > 0 ? String(c.deposit_no_ac) : "",
+        deposit_ac: (c.deposit_ac ?? 0) > 0 ? String(c.deposit_ac) : "",
       })));
     }
     setPackageLoaded(true);
@@ -466,6 +471,8 @@ export function SettingsClient() {
         name: c.name.trim(),
         no_ac: parseFloat(c.no_ac) || 0,
         ac: parseFloat(c.ac) || 0,
+        deposit_no_ac: parseFloat(c.deposit_no_ac) || 0,
+        deposit_ac: parseFloat(c.deposit_ac) || 0,
       }));
     }
     const { error } = await supabase
@@ -1017,7 +1024,7 @@ export function SettingsClient() {
                   <div className="bg-card" />
                 </div>
               ))}
-              {/* Custom package rows — deposit columns not supported for custom tiers */}
+              {/* Custom package rows */}
               {customRows.map((row) => (
                 <div key={row.id} className="grid grid-cols-[1fr_90px_90px_90px_90px_32px] gap-px bg-border">
                   <div className="bg-card px-2 py-2 flex items-center">
@@ -1044,11 +1051,21 @@ export function SettingsClient() {
                       className="h-7 text-xs text-center px-1"
                     />
                   </div>
-                  <div className="bg-card px-2 py-2 flex items-center justify-center">
-                    <span className="text-xs text-muted-foreground">—</span>
+                  <div className="bg-card px-2 py-2 flex items-center">
+                    <Input
+                      type="number" min="0" step="1" placeholder="—"
+                      value={row.deposit_no_ac}
+                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, deposit_no_ac: e.target.value } : r))}
+                      className="h-7 text-xs text-center px-1"
+                    />
                   </div>
-                  <div className="bg-card px-2 py-2 flex items-center justify-center">
-                    <span className="text-xs text-muted-foreground">—</span>
+                  <div className="bg-card px-2 py-2 flex items-center">
+                    <Input
+                      type="number" min="0" step="1" placeholder="—"
+                      value={row.deposit_ac}
+                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, deposit_ac: e.target.value } : r))}
+                      className="h-7 text-xs text-center px-1"
+                    />
                   </div>
                   <div className="bg-card flex items-center justify-center">
                     <button
@@ -1065,7 +1082,7 @@ export function SettingsClient() {
               <div className="bg-card border-t border-border">
                 <button
                   type="button"
-                  onClick={() => setCustomRows((prev) => [...prev, { id: crypto.randomUUID(), name: "", no_ac: "", ac: "" }])}
+                  onClick={() => setCustomRows((prev) => [...prev, { id: crypto.randomUUID(), name: "", no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" }])}
                   disabled={!packageLoaded}
                   className="flex items-center gap-1.5 w-full px-3 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-white/[0.02] transition-colors disabled:opacity-40"
                 >

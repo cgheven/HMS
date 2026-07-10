@@ -84,10 +84,33 @@ function getPkgPrice(prices: Partial<Record<PackageTier, { no_ac: number; ac: nu
   return val > 0 ? String(val) : "";
 }
 
+interface CustomPackage {
+  id: string;
+  name: string;
+  no_ac: number;
+  ac: number;
+  deposit_no_ac: number;
+  deposit_ac: number;
+}
+
+function getCustomPackagePrice(customPackages: CustomPackage[], id: string | null, hasAc: boolean): string {
+  const c = id ? customPackages.find((p) => p.id === id) : undefined;
+  if (!c) return "";
+  const val = hasAc ? c.ac : c.no_ac;
+  return val > 0 ? String(val) : "";
+}
+
+function getCustomPackageDeposit(customPackages: CustomPackage[], id: string | null, hasAc: boolean): number {
+  const c = id ? customPackages.find((p) => p.id === id) : undefined;
+  if (!c) return 0;
+  return hasAc ? c.deposit_ac : c.deposit_no_ac;
+}
+
 const emptyForm = {
   full_name: "", phone: "", email: "", cnic: "",
   type: "general" as SpaceType,
   package_tier: "space_only" as PackageTier,
+  custom_package_id: null as string | null,
   room_id: "", bed_number: "",
   check_in: formatDateInput(new Date()),
   billing_type: "monthly" as "monthly" | "daily",
@@ -258,6 +281,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [saving, setSaving] = useState(false);
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null);
   const [pkgPrices, setPkgPrices] = useState<Partial<Record<PackageTier, PackagePrices>>>({});
+  const [customPackages, setCustomPackages] = useState<CustomPackage[]>([]);
   const [configSecurityDeposit, setConfigSecurityDeposit] = useState<number>(0);
 
   useEffect(() => {
@@ -269,7 +293,22 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       .maybeSingle()
       .then(({ data }) => {
         if (data?.package_prices) {
-          setPkgPrices(data.package_prices as Partial<Record<PackageTier, PackagePrices>>);
+          const raw = data.package_prices as Record<string, unknown>;
+          setPkgPrices(raw as Partial<Record<PackageTier, PackagePrices>>);
+          const custom = (raw._custom ?? []) as Array<{
+            id: string; name: string; no_ac: number; ac: number;
+            deposit_no_ac?: number; deposit_ac?: number;
+          }>;
+          setCustomPackages(custom
+            .filter((c) => c.name)
+            .map((c) => ({
+              id: c.id,
+              name: c.name,
+              no_ac: c.no_ac ?? 0,
+              ac: c.ac ?? 0,
+              deposit_no_ac: c.deposit_no_ac ?? 0,
+              deposit_ac: c.deposit_ac ?? 0,
+            })));
         }
         if (data?.security_deposit) {
           setConfigSecurityDeposit(Number(data.security_deposit));
@@ -413,6 +452,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       cnic: t.cnic ?? "",
       type: t.type,
       package_tier: t.package_tier ?? "space_only",
+      custom_package_id: null,
       room_id: t.room_id ?? "",
       bed_number: t.bed_number ?? "",
       check_in: t.check_in ?? formatDateInput(new Date()),
@@ -1543,11 +1583,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <div className="space-y-1.5"><Label>Room *</Label>
                   <Select value={form.room_id} onValueChange={(v) => {
                     const room = rooms.find((r) => r.id === v);
-                    const pkgSuggested = room ? getPkgPrice(pkgPrices, form.package_tier, room.has_ac) : "";
+                    const pkgSuggested = room
+                      ? (form.custom_package_id
+                          ? getCustomPackagePrice(customPackages, form.custom_package_id, room.has_ac)
+                          : getPkgPrice(pkgPrices, form.package_tier, room.has_ac))
+                      : "";
                     const fallback = room?.monthly_rent?.toString() ?? "";
                     const tierPrices = pkgPrices[form.package_tier];
                     const tierDeposit = room
-                      ? (room.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
+                      ? (form.custom_package_id
+                          ? getCustomPackageDeposit(customPackages, form.custom_package_id, room.has_ac)
+                          : (room.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0)))
                       : 0;
                     const suggestedDeposit = tierDeposit > 0 ? String(tierDeposit) : (configSecurityDeposit > 0 ? String(configSecurityDeposit) : "");
                     const deposit = !form.security_deposit ? suggestedDeposit : form.security_deposit;
@@ -1570,45 +1616,62 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             )}
 
-            {/* Package Tier — filtered by room's AC status */}
+            {/* Package Tier — predefined + custom packages, all always selectable */}
             {(() => {
               const selectedRoom = form.room_id ? rooms.find((r) => r.id === form.room_id) : null;
-              const visibleTiers = SELECTABLE_TIERS.filter((t) => {
-                // For waiting list (no room), show all; for a room, filter by AC
-                if (!selectedRoom) return true;
-                const p = pkgPrices[t.tier];
-                if (!p) return true; // no price config — still show, admin can override rent
-                return selectedRoom.has_ac ? p.ac > 0 : p.no_ac > 0;
-              });
+              const selectValue = form.custom_package_id ? `custom:${form.custom_package_id}` : `tier:${form.package_tier}`;
               return (
                 <div className="space-y-1.5">
                   <Label>Package Tier *</Label>
                   <Select
-                    value={form.package_tier}
+                    value={selectValue}
                     disabled={!form.is_waiting && !form.room_id}
                     onValueChange={(v) => {
-                      const tier = v as PackageTier;
-                      const suggested = selectedRoom ? getPkgPrice(pkgPrices, tier, selectedRoom.has_ac) : "";
-                      const tierPrices = pkgPrices[tier];
-                      const tierDeposit = selectedRoom
-                        ? (selectedRoom.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
-                        : 0;
-                      const suggestedDeposit = tierDeposit > 0 ? String(tierDeposit) : (configSecurityDeposit > 0 ? String(configSecurityDeposit) : "");
-                      setForm({ ...form, package_tier: tier, monthly_rent: suggested || form.monthly_rent, security_deposit: suggestedDeposit || form.security_deposit });
+                      if (v.startsWith("custom:")) {
+                        const id = v.slice("custom:".length);
+                        const custom = customPackages.find((c) => c.id === id);
+                        if (!custom) return;
+                        const suggested = selectedRoom ? getCustomPackagePrice(customPackages, id, selectedRoom.has_ac) : "";
+                        const tierDeposit = selectedRoom ? getCustomPackageDeposit(customPackages, id, selectedRoom.has_ac) : 0;
+                        const suggestedDeposit = tierDeposit > 0 ? String(tierDeposit) : (configSecurityDeposit > 0 ? String(configSecurityDeposit) : "");
+                        // Custom packages always bill as space_only — their price is a flat, all-inclusive
+                        // number the owner set directly, so no separate food charge is added on top.
+                        setForm({ ...form, package_tier: "space_only", custom_package_id: id, monthly_rent: suggested || form.monthly_rent, security_deposit: suggestedDeposit || form.security_deposit });
+                      } else {
+                        const tier = v.slice("tier:".length) as PackageTier;
+                        const suggested = selectedRoom ? getPkgPrice(pkgPrices, tier, selectedRoom.has_ac) : "";
+                        const tierPrices = pkgPrices[tier];
+                        const tierDeposit = selectedRoom
+                          ? (selectedRoom.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
+                          : 0;
+                        const suggestedDeposit = tierDeposit > 0 ? String(tierDeposit) : (configSecurityDeposit > 0 ? String(configSecurityDeposit) : "");
+                        setForm({ ...form, package_tier: tier, custom_package_id: null, monthly_rent: suggested || form.monthly_rent, security_deposit: suggestedDeposit || form.security_deposit });
+                      }
                     }}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder={!form.is_waiting && !form.room_id ? "Select a room first" : "Select package"} />
                     </SelectTrigger>
                     <SelectContent>
-                      {visibleTiers.map(({ tier, label }) => {
+                      {SELECTABLE_TIERS.map(({ tier, label }) => {
                         const p = pkgPrices[tier];
                         const price = selectedRoom && p
                           ? (selectedRoom.has_ac ? p.ac : p.no_ac)
                           : null;
                         return (
-                          <SelectItem key={tier} value={tier}>
+                          <SelectItem key={`tier:${tier}`} value={`tier:${tier}`}>
                             <span>{label}</span>
+                            {price != null && price > 0 && (
+                              <span className="ml-1.5 text-xs text-muted-foreground">Rs. {price.toLocaleString()}</span>
+                            )}
+                          </SelectItem>
+                        );
+                      })}
+                      {customPackages.map((c) => {
+                        const price = selectedRoom ? (selectedRoom.has_ac ? c.ac : c.no_ac) : null;
+                        return (
+                          <SelectItem key={`custom:${c.id}`} value={`custom:${c.id}`}>
+                            <span>{c.name}</span>
                             {price != null && price > 0 && (
                               <span className="ml-1.5 text-xs text-muted-foreground">Rs. {price.toLocaleString()}</span>
                             )}
