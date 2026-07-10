@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import {
   BarChart3, TrendingUp, Users, AlertTriangle, Banknote, BedDouble,
   TrendingDown, Download, FileSpreadsheet, RefreshCw, Zap, Package, CreditCard,
+  Receipt,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
@@ -300,6 +301,7 @@ export function ReportsClient(props: Props) {
             <TabsTrigger value="reconciliation"><CreditCard className="w-3.5 h-3.5" /> Reconciliation</TabsTrigger>
             <TabsTrigger value="occupancy"><BedDouble className="w-3.5 h-3.5" /> Occupancy</TabsTrigger>
             <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> AC Analytics</TabsTrigger>
+            <TabsTrigger value="expenses"><Receipt className="w-3.5 h-3.5" /> Expenses</TabsTrigger>
           </TabsList>
 
           {/* ── OVERVIEW TAB ─────────────────────────────────────────────── */}
@@ -757,6 +759,11 @@ export function ReportsClient(props: Props) {
               </div>
             )}
           </TabsContent>
+
+          {/* ── EXPENSES TAB ─────────────────────────────────────────────── */}
+          <TabsContent value="expenses" className="space-y-6 mt-4">
+            <ExpenseReportTab data={d} period={currentRange.label} />
+          </TabsContent>
         </Tabs>
       )}
     </div>
@@ -957,6 +964,246 @@ function ReconciliationTab({ data: d, period }: { data: ReportData; period: stri
                 <tr className="border-t-2 border-sidebar-border font-semibold">
                   <td colSpan={7} className="pt-2.5 text-xs text-muted-foreground">Total</td>
                   <td className="pt-2.5 text-right text-emerald-400">{formatCurrency(filteredTotal)}</td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Expense report tab ───────────────────────────────────────────────────────
+const SOURCE_COLORS: Record<string, string> = {
+  bill: "#ef4444",
+  salary: "#a855f7",
+  expense: "#3b82f6",
+  kitchen: "#f5a623",
+};
+
+function sourceColor(source: string) {
+  return SOURCE_COLORS[source] ?? "#888";
+}
+
+const SOURCE_LABELS: Record<string, string> = {
+  bill: "Bills",
+  salary: "Staff Salaries",
+  expense: "General Expenses",
+  kitchen: "Kitchen",
+};
+
+function ExpenseReportTab({ data: d, period }: { data: ReportData; period: string }) {
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [exporting, setExporting] = useState<"pdf" | "xlsx" | null>(null);
+
+  const filteredList = useMemo(() => {
+    return d.expenseReport.rows.filter((r) => {
+      if (sourceFilter !== "all" && r.source !== sourceFilter) return false;
+      if (search) {
+        const q = search.toLowerCase();
+        return r.title.toLowerCase().includes(q) || r.category.toLowerCase().includes(q);
+      }
+      return true;
+    });
+  }, [d.expenseReport.rows, sourceFilter, search]);
+
+  const filteredTotal = filteredList.reduce((s, r) => s + r.amount, 0);
+  const activeSourceLabel = sourceFilter === "all" ? "All Sources" : (SOURCE_LABELS[sourceFilter] ?? sourceFilter);
+
+  async function handleExportPDF() {
+    setExporting("pdf");
+    try {
+      const { exportExpenseReportPDF } = await import("@/lib/report-export");
+      await exportExpenseReportPDF(filteredList, d.hostelName, period, activeSourceLabel);
+      toast({ title: "PDF downloaded" });
+    } catch (err) {
+      toast({ title: "Export failed", description: String(err), variant: "destructive" });
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  async function handleExportExcel() {
+    setExporting("xlsx");
+    try {
+      const { exportExpenseReportExcel } = await import("@/lib/report-export");
+      await exportExpenseReportExcel(filteredList, d.hostelName, period, activeSourceLabel);
+      toast({ title: "Excel downloaded" });
+    } catch (err) {
+      toast({ title: "Export failed", description: String(err), variant: "destructive" });
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  if (d.expenseReport.rows.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-2 text-muted-foreground rounded-2xl border border-sidebar-border bg-card">
+        <Receipt className="w-10 h-10 opacity-20" />
+        <p className="text-sm">No expenses recorded in this period</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Summary cards by source */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        <div className="rounded-2xl border border-sidebar-border bg-card p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: sourceColor("bill") }} />
+            <p className="text-xs text-muted-foreground font-medium">Bills</p>
+          </div>
+          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.totalsBySource.bills)}</p>
+          {d.expenseReport.unpaidBillsTotal > 0 && (
+            <p className="text-xs text-rose-400 mt-0.5">{formatCurrency(d.expenseReport.unpaidBillsTotal)} unpaid</p>
+          )}
+        </div>
+        <div className="rounded-2xl border border-sidebar-border bg-card p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: sourceColor("salary") }} />
+            <p className="text-xs text-muted-foreground font-medium">Staff Salaries</p>
+          </div>
+          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.totalsBySource.staff)}</p>
+          {d.expenseReport.pendingSalariesTotal > 0 && (
+            <p className="text-xs text-amber mt-0.5">{formatCurrency(d.expenseReport.pendingSalariesTotal)} pending</p>
+          )}
+        </div>
+        <div className="rounded-2xl border border-sidebar-border bg-card p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: sourceColor("expense") }} />
+            <p className="text-xs text-muted-foreground font-medium">General Expenses</p>
+          </div>
+          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.totalsBySource.expenses)}</p>
+        </div>
+        <div className="rounded-2xl border border-sidebar-border bg-card p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: sourceColor("kitchen") }} />
+            <p className="text-xs text-muted-foreground font-medium">Kitchen</p>
+          </div>
+          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.totalsBySource.kitchen)}</p>
+        </div>
+        <div className="rounded-2xl border border-amber/20 bg-amber/[0.05] p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <Receipt className="w-3 h-3 text-amber shrink-0" />
+            <p className="text-xs text-amber font-medium">Grand Total</p>
+          </div>
+          <p className="text-lg font-bold text-amber">{formatCurrency(d.expenseReport.grandTotal)}</p>
+        </div>
+      </div>
+
+      {/* Itemized list */}
+      <div className="rounded-2xl border border-sidebar-border bg-card p-6">
+        <div className="flex flex-col gap-3 mb-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h2 className="text-sm font-semibold">Expense Line Items</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {filteredList.length} item{filteredList.length !== 1 ? "s" : ""} · {formatCurrency(filteredTotal)}
+                {sourceFilter !== "all" && <span className="ml-1 text-amber">· {activeSourceLabel}</span>}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExportPDF}
+                disabled={!!exporting || filteredList.length === 0}
+                className="gap-1.5 h-8 text-xs"
+              >
+                {exporting === "pdf" ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                PDF
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExportExcel}
+                disabled={!!exporting || filteredList.length === 0}
+                className="gap-1.5 h-8 text-xs"
+              >
+                {exporting === "xlsx" ? <RefreshCw className="w-3 h-3 animate-spin" /> : <FileSpreadsheet className="w-3 h-3" />}
+                Excel
+              </Button>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Select value={sourceFilter} onValueChange={setSourceFilter}>
+              <SelectTrigger className="h-8 text-xs w-44">
+                <SelectValue placeholder="All Sources" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Sources</SelectItem>
+                {Object.entries(SOURCE_LABELS).map(([source, label]) => (
+                  <SelectItem key={source} value={source}>
+                    <span className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full shrink-0 inline-block" style={{ background: sourceColor(source) }} />
+                      {label}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <input
+              type="text"
+              placeholder="Search title, category…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 px-3 text-xs rounded-lg border border-sidebar-border bg-white/5 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-amber/50 w-52"
+            />
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-muted-foreground font-medium border-b border-sidebar-border">
+                <th className="text-left pb-2 pr-3">Date</th>
+                <th className="text-left pb-2 pr-3">Source</th>
+                <th className="text-left pb-2 pr-3">Title</th>
+                <th className="text-left pb-2 pr-3">Category</th>
+                <th className="text-left pb-2 pr-3">Status</th>
+                <th className="text-right pb-2">Amount</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-sidebar-border/50">
+              {filteredList.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="py-8 text-center text-xs text-muted-foreground">No expenses match</td>
+                </tr>
+              ) : (
+                filteredList.map((r) => (
+                  <tr key={`${r.source}-${r.id}`} className="hover:bg-white/[0.02]">
+                    <td className="py-2.5 pr-3 text-xs text-muted-foreground">
+                      {new Date(r.date).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" })}
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <span className="inline-flex items-center gap-1.5 text-xs">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: sourceColor(r.source) }} />
+                        {r.sourceLabel}
+                      </span>
+                    </td>
+                    <td className="py-2.5 pr-3 font-medium">{r.title}</td>
+                    <td className="py-2.5 pr-3 text-muted-foreground">{r.category}</td>
+                    <td className="py-2.5 pr-3">
+                      {r.status ? (
+                        <span className={`text-xs font-medium capitalize ${r.status === "paid" ? "text-emerald-400" : r.status === "overdue" ? "text-rose-400" : "text-amber"}`}>
+                          {r.status}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 text-right font-semibold">{formatCurrency(r.amount)}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+            {filteredList.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-sidebar-border font-semibold">
+                  <td colSpan={5} className="pt-2.5 text-xs text-muted-foreground">Total</td>
+                  <td className="pt-2.5 text-right">{formatCurrency(filteredTotal)}</td>
                 </tr>
               </tfoot>
             )}

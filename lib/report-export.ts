@@ -407,3 +407,113 @@ export async function exportReconciliationExcel(
   const slug = methodLabel === "All Methods" ? "all" : methodLabel.toLowerCase().replace(/\s+/g, "-");
   XLSX.writeFile(wb, `reconciliation-${period}-${slug}.xlsx`);
 }
+
+// ---------------------------------------------------------------------------
+// Expense report exports — bills + staff salaries + general expenses + kitchen
+// ---------------------------------------------------------------------------
+type ExpenseReportRow = ReportData["expenseReport"]["rows"][number];
+
+function capitalizeWord(s: string): string {
+  return s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+export async function exportExpenseReportPDF(
+  rows: ExpenseReportRow[],
+  hostelName: string,
+  period: string,
+  sourceLabel: string
+): Promise<void> {
+  const { default: jsPDF } = await import("jspdf");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { default: autoTable } = await import("jspdf-autotable") as any;
+
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const MARGIN = 14;
+  let y = 16;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.text(hostelName, MARGIN, y); y += 7;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(120, 120, 120);
+  doc.text(`Expense Report · ${period}${sourceLabel !== "All Sources" ? ` · ${sourceLabel}` : ""}   Generated: ${new Date().toLocaleDateString()}`, MARGIN, y); y += 5;
+
+  doc.setDrawColor(200, 200, 200);
+  doc.line(MARGIN, y, 196, y); y += 5;
+  doc.setTextColor(0, 0, 0);
+
+  const total = rows.reduce((s, r) => s + r.amount, 0);
+
+  autoTable(doc, {
+    startY: y,
+    head: [["Date", "Source", "Title", "Category", "Status", "Amount (Rs.)"]],
+    body: rows.map((r) => [
+      fmtDate(r.date),
+      r.sourceLabel,
+      r.title,
+      r.category,
+      r.status ? capitalizeWord(r.status) : "—",
+      r.amount.toLocaleString("en-PK"),
+    ]),
+    foot: [["", "", "", "", "Total", total.toLocaleString("en-PK")]],
+    headStyles: { fillColor: [30, 30, 30], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
+    footStyles: { fillColor: [245, 166, 35], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 8 },
+    bodyStyles: { fontSize: 8 },
+    alternateRowStyles: { fillColor: [248, 248, 248] },
+    margin: { left: MARGIN, right: MARGIN },
+    columnStyles: { 5: { halign: "right" } },
+  });
+
+  const slug = sourceLabel === "All Sources" ? "all" : sourceLabel.toLowerCase().replace(/\s+/g, "-");
+  doc.save(`expense-report-${period}-${slug}.pdf`);
+}
+
+export async function exportExpenseReportExcel(
+  rows: ExpenseReportRow[],
+  hostelName: string,
+  period: string,
+  sourceLabel: string
+): Promise<void> {
+  const XLSX = await import("xlsx");
+
+  const total = rows.reduce((s, r) => s + r.amount, 0);
+
+  const sheetRows = [
+    [`Expense Report — ${hostelName}`],
+    [`Period: ${period}${sourceLabel !== "All Sources" ? ` | Source: ${sourceLabel}` : ""}`],
+    [],
+    ["Date", "Source", "Title", "Category", "Status", "Amount (Rs.)"],
+    ...rows.map((r) => [
+      fmtDate(r.date),
+      r.sourceLabel,
+      r.title,
+      r.category,
+      r.status ? capitalizeWord(r.status) : "",
+      r.amount,
+    ]),
+    [],
+    ["", "", "", "", "Total", total],
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(sheetRows);
+
+  const range = XLSX.utils.decode_range(ws["!ref"] ?? "A1");
+  const colWidths: number[] = [];
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+      if (!cell) continue;
+      const len = String(cell.v ?? "").length;
+      if (!colWidths[C] || colWidths[C] < len) colWidths[C] = len;
+    }
+  }
+  ws["!cols"] = colWidths.map((w) => ({ wch: Math.min(w + 2, 40) }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Expense Report");
+
+  const slug = sourceLabel === "All Sources" ? "all" : sourceLabel.toLowerCase().replace(/\s+/g, "-");
+  XLSX.writeFile(wb, `expense-report-${period}-${slug}.xlsx`);
+}

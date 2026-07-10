@@ -3,6 +3,7 @@ import { requireOwnerOrAbove } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { getAuthContext } from "@/lib/data";
+import { capitalize } from "@/lib/utils";
 
 export interface ReportData {
   hostelId: string;
@@ -106,6 +107,25 @@ export interface ReportData {
     totalAcRevenue: number;
     totalAcTenants: number;
   };
+
+  // Consolidated expense report — bills + staff salaries + general expenses + kitchen
+  expenseReport: {
+    rows: {
+      id: string;
+      source: "bill" | "salary" | "expense" | "kitchen";
+      sourceLabel: string;
+      date: string;
+      title: string;
+      category: string;
+      amount: number;
+      status: string | null;
+      notes: string | null;
+    }[];
+    totalsBySource: { bills: number; staff: number; expenses: number; kitchen: number };
+    grandTotal: number;
+    unpaidBillsTotal: number;
+    pendingSalariesTotal: number;
+  };
 }
 
 export async function getReportData(
@@ -166,6 +186,7 @@ export async function getReportData(
     salariesRes,
     tenantsRes,
     roomsRes,
+    billsRes,
   ] = await Promise.all([
     admin
       .from("hms_payments")
@@ -175,19 +196,19 @@ export async function getReportData(
       .lte("for_month", to),
     admin
       .from("hms_expenses")
-      .select("amount, date")
+      .select("id, title, amount, category, date, notes")
       .eq("hostel_id", hostelId)
       .gte("date", fullStart)
       .lte("date", fullEnd),
     admin
       .from("hms_kitchen_expenses")
-      .select("amount, date")
+      .select("id, title, amount, date, type, notes")
       .eq("hostel_id", hostelId)
       .gte("date", fullStart)
       .lte("date", fullEnd),
     admin
       .from("hms_salary_payments")
-      .select("amount, for_month, status")
+      .select("id, amount, for_month, status, payment_date, notes, employee:hms_employees(full_name, role)")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
@@ -199,6 +220,12 @@ export async function getReportData(
       .from("hms_rooms")
       .select("id, room_number, type, capacity, occupied, status")
       .eq("hostel_id", hostelId),
+    admin
+      .from("hms_bills")
+      .select("id, title, amount, category, due_date, paid_date, status, notes")
+      .eq("hostel_id", hostelId)
+      .gte("due_date", fullStart)
+      .lte("due_date", fullEnd),
   ]);
 
   type PaymentRow = {
@@ -395,6 +422,76 @@ export async function getReportData(
     }))
     .sort((a, b) => b.count - a.count);
 
+  // Consolidated expense report — bills + staff salaries + general expenses + kitchen
+  const bills = billsRes.data ?? [];
+
+  type ExpenseReportRow = ReportData["expenseReport"]["rows"][number];
+
+  const billRows: ExpenseReportRow[] = bills.map((b) => ({
+    id: b.id,
+    source: "bill",
+    sourceLabel: "Bill",
+    date: b.due_date,
+    title: b.title,
+    category: capitalize(b.category),
+    amount: Number(b.amount),
+    status: b.status,
+    notes: b.notes,
+  }));
+
+  const salaryRows: ExpenseReportRow[] = salaries.map((s) => {
+    const empRaw = (s as unknown as { employee: { full_name: string; role: string } | { full_name: string; role: string }[] | null }).employee;
+    const emp = Array.isArray(empRaw) ? empRaw[0] : empRaw;
+    return {
+      id: s.id,
+      source: "salary",
+      sourceLabel: "Staff Salary",
+      date: s.payment_date ?? `${s.for_month}-01`,
+      title: emp?.full_name ?? "Unknown Employee",
+      category: emp?.role ? capitalize(emp.role) : "Staff",
+      amount: Number(s.amount),
+      status: s.status,
+      notes: s.notes,
+    };
+  });
+
+  const expenseRows: ExpenseReportRow[] = expenses.map((e) => ({
+    id: e.id,
+    source: "expense",
+    sourceLabel: "General Expense",
+    date: e.date,
+    title: e.title,
+    category: capitalize(e.category),
+    amount: Number(e.amount),
+    status: null,
+    notes: e.notes,
+  }));
+
+  const kitchenRows: ExpenseReportRow[] = kitchen.map((k) => ({
+    id: k.id,
+    source: "kitchen",
+    sourceLabel: "Kitchen",
+    date: k.date,
+    title: k.title,
+    category: k.type === "monthly_grocery" ? "Monthly Grocery" : "Daily",
+    amount: Number(k.amount),
+    status: null,
+    notes: k.notes,
+  }));
+
+  const expenseReportRows = [...billRows, ...salaryRows, ...expenseRows, ...kitchenRows]
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  const totalsBySource = {
+    bills: billRows.reduce((s, r) => s + r.amount, 0),
+    staff: salaryRows.reduce((s, r) => s + r.amount, 0),
+    expenses: expenseRows.reduce((s, r) => s + r.amount, 0),
+    kitchen: kitchenRows.reduce((s, r) => s + r.amount, 0),
+  };
+  const grandTotal = totalsBySource.bills + totalsBySource.staff + totalsBySource.expenses + totalsBySource.kitchen;
+  const unpaidBillsTotal = billRows.filter((r) => r.status !== "paid").reduce((s, r) => s + r.amount, 0);
+  const pendingSalariesTotal = salaryRows.filter((r) => r.status !== "paid").reduce((s, r) => s + r.amount, 0);
+
   return {
     data: {
       hostelId,
@@ -418,6 +515,13 @@ export async function getReportData(
       planDistribution,
       paymentMethodBreakdown,
       paidPaymentsList,
+      expenseReport: {
+        rows: expenseReportRows,
+        totalsBySource,
+        grandTotal,
+        unpaidBillsTotal,
+        pendingSalariesTotal,
+      },
     },
     error: null,
   };
