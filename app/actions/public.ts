@@ -99,6 +99,63 @@ export async function getPublicHostels(): Promise<{ hostels?: PublicHostel[]; er
   }
 }
 
+// Given any one branch's slug, resolve the business (owner) it belongs to and
+// return every publicly-listed branch under that same owner — so a business
+// gets one shareable page for all its branches, instead of tenants browsing
+// a global directory that also surfaces competitors.
+export const getPublicHostelsByOwner = cache(async function getPublicHostelsByOwner(
+  slug: string
+): Promise<{ ownerName?: string | null; branches?: PublicHostel[]; error?: string }> {
+  try {
+    const admin = createAdminClient();
+
+    const { data: anchor, error: anchorErr } = await admin
+      .from("hms_hostels")
+      .select("owner_id")
+      .eq("slug", slug)
+      .eq("listing_enabled", true)
+      .maybeSingle();
+    if (anchorErr || !anchor) return { error: "Hostel not found" };
+
+    const { data, error } = await admin
+      .from("hms_hostels")
+      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays,cover_image_url")
+      .eq("owner_id", anchor.owner_id)
+      .eq("listing_enabled", true)
+      .order("name");
+    if (error) throw error;
+
+    const hostels = (data ?? []) as (Omit<PublicHostel, "available_beds" | "owner_name">)[];
+    if (hostels.length === 0) return { error: "Hostel not found" };
+
+    const ids = hostels.map((h) => h.id);
+    const [{ data: rooms }, { data: profile }] = await Promise.all([
+      admin
+        .from("hms_rooms")
+        .select("hostel_id, capacity, occupied")
+        .in("hostel_id", ids)
+        .eq("status", "available"),
+      admin.from("hms_profiles").select("full_name").eq("id", anchor.owner_id).maybeSingle(),
+    ]);
+
+    const availMap: Record<string, number> = {};
+    for (const r of rooms ?? []) {
+      availMap[r.hostel_id] = (availMap[r.hostel_id] ?? 0) + Math.max(0, r.capacity - r.occupied);
+    }
+
+    return {
+      ownerName: profile?.full_name ?? null,
+      branches: hostels.map((h) => ({
+        ...h,
+        owner_name: profile?.full_name ?? null,
+        available_beds: availMap[h.id] ?? 0,
+      })),
+    };
+  } catch {
+    return { error: "Something went wrong. Please try again." };
+  }
+});
+
 export const getPublicHostel = cache(async function getPublicHostel(slug: string): Promise<{ hostel?: PublicHostelDetail; error?: string }> {
   try {
     const admin = createAdminClient();

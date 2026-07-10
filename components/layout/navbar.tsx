@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Menu, LogOut, ChevronDown, Shield, Users, Home, Building2, ClipboardList } from "lucide-react";
+import { Menu, LogOut, ChevronDown, Shield, Users, Home, Building2, ClipboardList, Search } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 import { HostelSwitcher } from "@/components/layout/hostel-switcher";
@@ -13,6 +13,7 @@ const ADMIN_LINKS = [
   { href: "/admin/hostels",   label: "Hostels",          icon: Building2 },
   { href: "/admin/prospects", label: "Hostel Pipeline",  icon: Home },
   { href: "/admin/audit",     label: "Audit Log",        icon: ClipboardList },
+  { href: "/admin/directory", label: "Public Directory", icon: Search },
 ];
 
 interface NavbarProps {

@@ -6,7 +6,7 @@ import {
   LayoutDashboard, BedDouble, Users, CreditCard, Receipt,
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
   MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2, Globe,
-  ClipboardList, ShieldCheck,
+  ClipboardList, ShieldCheck, Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
@@ -44,29 +44,40 @@ const navGroups = [
     label: "System",
     items: [
       { href: "/settings", label: "Settings",         icon: Settings },
-      { href: "/find",     label: "Hostel Directory", icon: Globe },
+      { href: "/find",     label: "My Public Page",   icon: Globe, newTab: true },
     ],
   },
 ];
 
-interface NavLinkProps { href: string; label: string; icon: typeof LayoutDashboard; pathname: string; onClose: () => void; }
+interface NavLinkProps { href: string; label: string; icon: typeof LayoutDashboard; pathname: string; onClose: () => void; newTab?: boolean }
 
-const NavLink = memo(function NavLink({ href, label, icon: Icon, pathname, onClose }: NavLinkProps) {
+const NavLink = memo(function NavLink({ href, label, icon: Icon, pathname, onClose, newTab }: NavLinkProps) {
   const active = pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
-  return (
-    <Link
-      href={href}
-      onClick={onClose}
-      className={cn(
-        "relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 group",
-        active ? "bg-amber/10 text-amber" : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
-      )}
-    >
+  const className = cn(
+    "relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 group",
+    active ? "bg-amber/10 text-amber" : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+  );
+  const content = (
+    <>
       {active && (
         <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-amber" />
       )}
       <Icon className={cn("w-4 h-4 shrink-0 transition-colors", active ? "text-amber" : "text-muted-foreground group-hover:text-foreground")} />
       <span>{label}</span>
+    </>
+  );
+
+  if (newTab) {
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer" onClick={onClose} className={className}>
+        {content}
+      </a>
+    );
+  }
+
+  return (
+    <Link href={href} onClick={onClose} className={className}>
+      {content}
     </Link>
   );
 });
@@ -132,6 +143,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                 <NavLink href="/admin/hostels"   label="Hostels"         icon={Building2}    pathname={pathname} onClose={onClose} />
                 <NavLink href="/admin/prospects" label="Hostel Pipeline" icon={Home}         pathname={pathname} onClose={onClose} />
                 <NavLink href="/admin/audit"     label="Audit Log"       icon={ClipboardList} pathname={pathname} onClose={onClose} />
+                <NavLink href="/admin/directory" label="Public Directory" icon={Search}      pathname={pathname} onClose={onClose} />
               </div>
             </div>
           )}

@@ -955,18 +955,21 @@ function PackagePricingSection({
 interface StickyBandProps {
   hostel: PublicHostelDetail;
   onWaitlist: () => void;
+  backHref: string | null;
 }
 
-function StickyBand({ hostel, onWaitlist }: StickyBandProps) {
+function StickyBand({ hostel, onWaitlist, backHref }: StickyBandProps) {
   const contactPhone = hostel.whatsapp || hostel.phone;
   const waGeneral = buildWhatsAppUrl(contactPhone, `Hi! I found ${hostel.name} on HMS Directory. I'd like to enquire about availability.`);
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 h-12 flex items-center justify-between gap-4">
       <div className="flex items-center gap-2.5 min-w-0">
-        <Link href="/find" className="text-muted-foreground hover:text-foreground transition-colors shrink-0">
-          <ArrowLeft className="w-4 h-4" />
-        </Link>
+        {backHref && (
+          <Link href={backHref} className="text-muted-foreground hover:text-foreground transition-colors shrink-0">
+            <ArrowLeft className="w-4 h-4" />
+          </Link>
+        )}
         <span className="font-semibold text-sm truncate">{hostel.name}</span>
         {hostel.available_beds > 0
           ? <span className="shrink-0 text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-400/20 px-2 py-0.5 rounded-full">{hostel.available_beds} free</span>
@@ -989,7 +992,15 @@ function StickyBand({ hostel, onWaitlist }: StickyBandProps) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-export function HostelDetailClient({ hostel }: { hostel: PublicHostelDetail }) {
+export function HostelDetailClient({
+  hostel,
+  backHref = null,
+  backLabel = "Back",
+}: {
+  hostel: PublicHostelDetail;
+  backHref?: string | null;
+  backLabel?: string;
+}) {
   const [waitlistOpen, setWaitlistOpen] = useState(false);
   const [showBand, setShowBand]         = useState(false);
   const [activeTab, setActiveTab]       = useState<"rooms" | "details">("rooms");
@@ -1016,7 +1027,7 @@ export function HostelDetailClient({ hostel }: { hostel: PublicHostelDetail }) {
 
       {/* Sticky band */}
       <div className={`fixed top-0 left-0 right-0 z-30 border-b border-white/[0.08] bg-[#0A0A0B]/95 backdrop-blur-md transition-all duration-300 ${showBand ? "translate-y-0 opacity-100" : "-translate-y-full opacity-0"}`}>
-        <StickyBand hostel={hostel} onWaitlist={() => setWaitlistOpen(true)} />
+        <StickyBand hostel={hostel} onWaitlist={() => setWaitlistOpen(true)} backHref={backHref} />
       </div>
 
       <div className="min-h-screen bg-[#0A0A0B]">
@@ -1025,10 +1036,14 @@ export function HostelDetailClient({ hostel }: { hostel: PublicHostelDetail }) {
         <div ref={infoRef}>
           <nav className="border-b border-white/[0.05] bg-[#0A0A0B]">
             <div className="max-w-5xl mx-auto px-4 sm:px-6 h-11 flex items-center gap-2">
-              <Link href="/find" className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors group text-sm">
-                <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" /> All Hostels
-              </Link>
-              <span className="text-muted-foreground/25 text-xs">/</span>
+              {backHref && (
+                <>
+                  <Link href={backHref} className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors group text-sm">
+                    <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" /> {backLabel}
+                  </Link>
+                  <span className="text-muted-foreground/25 text-xs">/</span>
+                </>
+              )}
               <span className="text-sm text-foreground/70 truncate">{hostel.name}</span>
             </div>
           </nav>

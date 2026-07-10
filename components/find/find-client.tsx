@@ -9,6 +9,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { joinWaitlist } from "@/app/actions/public";
 import type { PublicHostel, HostelType } from "@/types";
 
@@ -125,13 +126,13 @@ function WaitlistModal({ hostel, onClose }: { hostel: PublicHostel; onClose: () 
 
 // ── Hostel card ───────────────────────────────────────────────────────────────
 
-function HostelCard({ h }: { h: PublicHostel }) {
+export function HostelCard({ h, hrefBase = "/find" }: { h: PublicHostel; hrefBase?: string }) {
   const [waitlistOpen, setWaitlistOpen] = useState(false);
   const router = useRouter();
   const typeCfg = h.hostel_type ? TYPE_CONFIG[h.hostel_type] : null;
   const gradient = typeCfg ?? DEFAULT_GRADIENT;
   const isFull = h.available_beds === 0;
-  const detailHref = h.slug ? `/find/${h.slug}` : null;
+  const detailHref = h.slug ? `${hrefBase}/${h.slug}` : null;
 
   useEffect(() => {
     if (detailHref) router.prefetch(detailHref);
@@ -349,23 +350,6 @@ function HostelGrid({ hostels }: { hostels: PublicHostel[] }) {
   );
 }
 
-// ── Filter pill ───────────────────────────────────────────────────────────────
-
-function Pill({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all whitespace-nowrap ${
-        active
-          ? "bg-amber/15 text-amber border-amber/30"
-          : "border-white/[0.08] text-muted-foreground hover:text-foreground hover:border-white/20"
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 const ALL_TYPES: { value: HostelType | "all"; label: string }[] = [
@@ -456,86 +440,48 @@ export function FindClient({ hostels }: { hostels: PublicHostel[] }) {
 
         {/* ── Filter bar ────────────────────────────────────────────────────── */}
         <div className="sticky top-0 z-10 border-b border-white/[0.05] bg-[#0A0A0B]/90 backdrop-blur-md">
-          <div className="max-w-6xl mx-auto">
-
-            {/* Mobile: stacked scrollable rows */}
-            <div className="sm:hidden">
-              {/* Type row */}
-              <div className="flex items-center gap-2 px-4 pt-2.5 pb-1 overflow-x-auto scrollbar-none">
-                <span className="text-[9px] font-bold text-muted-foreground/40 uppercase tracking-widest shrink-0 w-8">Type</span>
-                <div className="flex gap-1 shrink-0">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-semibold text-muted-foreground/40 uppercase tracking-widest shrink-0">Type</span>
+              <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as HostelType | "all")}>
+                <SelectTrigger className="h-8 w-32 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
                   {ALL_TYPES.map((t) => (
-                    <Pill key={t.value} active={typeFilter === t.value} onClick={() => setTypeFilter(t.value)} label={t.label} />
+                    <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
                   ))}
-                </div>
-              </div>
-              {/* City row */}
-              {cities.length > 0 && (
-                <div className="flex items-center gap-2 px-4 py-1 overflow-x-auto scrollbar-none">
-                  <span className="text-[9px] font-bold text-muted-foreground/40 uppercase tracking-widest shrink-0 w-8">City</span>
-                  <div className="flex gap-1 shrink-0">
-                    <Pill active={cityFilter === "all"} onClick={() => { setCityFilter("all"); setAreaFilter("all"); }} label="All" />
-                    {cities.map((c) => <Pill key={c} active={cityFilter === c} onClick={() => { setCityFilter(c); setAreaFilter("all"); }} label={c} />)}
-                  </div>
-                </div>
-              )}
-              {/* Area row */}
-              {areas.length > 0 && (
-                <div className="flex items-center gap-2 px-4 py-1 overflow-x-auto scrollbar-none">
-                  <span className="text-[9px] font-bold text-muted-foreground/40 uppercase tracking-widest shrink-0 w-8">Area</span>
-                  <div className="flex gap-1 shrink-0">
-                    <Pill active={areaFilter === "all"} onClick={() => setAreaFilter("all")} label="All" />
-                    {areas.map((a) => <Pill key={a} active={areaFilter === a} onClick={() => setAreaFilter(a)} label={a} />)}
-                  </div>
-                </div>
-              )}
-              {/* Count */}
-              <div className="px-4 pt-1 pb-2 text-right">
-                <span className="text-[11px] text-muted-foreground/40 tabular-nums">
-                  {filtered.length} {filtered.length === 1 ? "hostel" : "hostels"}
-                </span>
-              </div>
+                </SelectContent>
+              </Select>
             </div>
 
-            {/* Desktop: single inline row */}
-            <div className="hidden sm:flex items-center gap-x-5 gap-y-2 px-6 py-3">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-semibold text-muted-foreground/40 uppercase tracking-widest shrink-0">Type</span>
-                <div className="flex gap-1">
-                  {ALL_TYPES.map((t) => (
-                    <Pill key={t.value} active={typeFilter === t.value} onClick={() => setTypeFilter(t.value)} label={t.label} />
-                  ))}
-                </div>
+            {cities.length > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-semibold text-muted-foreground/40 uppercase tracking-widest shrink-0">City</span>
+                <Select value={cityFilter} onValueChange={(v) => { setCityFilter(v); setAreaFilter("all"); }}>
+                  <SelectTrigger className="h-8 w-40 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All</SelectItem>
+                    {cities.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  </SelectContent>
+                </Select>
               </div>
-              {cities.length > 0 && (
-                <>
-                  <div className="w-px h-4 bg-white/[0.07]" />
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] font-semibold text-muted-foreground/40 uppercase tracking-widest shrink-0">City</span>
-                    <div className="flex gap-1 flex-wrap">
-                      <Pill active={cityFilter === "all"} onClick={() => { setCityFilter("all"); setAreaFilter("all"); }} label="All" />
-                      {cities.map((c) => <Pill key={c} active={cityFilter === c} onClick={() => { setCityFilter(c); setAreaFilter("all"); }} label={c} />)}
-                    </div>
-                  </div>
-                </>
-              )}
-              {areas.length > 0 && (
-                <>
-                  <div className="w-px h-4 bg-white/[0.07]" />
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] font-semibold text-muted-foreground/40 uppercase tracking-widest shrink-0">Area</span>
-                    <div className="flex gap-1 flex-wrap">
-                      <Pill active={areaFilter === "all"} onClick={() => setAreaFilter("all")} label="All" />
-                      {areas.map((a) => <Pill key={a} active={areaFilter === a} onClick={() => setAreaFilter(a)} label={a} />)}
-                    </div>
-                  </div>
-                </>
-              )}
-              <span className="ml-auto text-xs text-muted-foreground/50 shrink-0 tabular-nums">
-                {filtered.length} {filtered.length === 1 ? "hostel" : "hostels"}
-              </span>
-            </div>
+            )}
 
+            {areas.length > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-semibold text-muted-foreground/40 uppercase tracking-widest shrink-0">Area</span>
+                <Select value={areaFilter} onValueChange={setAreaFilter}>
+                  <SelectTrigger className="h-8 w-40 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All</SelectItem>
+                    {areas.map((a) => <SelectItem key={a} value={a}>{a}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            <span className="ml-auto text-xs text-muted-foreground/50 shrink-0 tabular-nums">
+              {filtered.length} {filtered.length === 1 ? "hostel" : "hostels"}
+            </span>
           </div>
         </div>
 

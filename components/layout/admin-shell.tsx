@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Shield, Users, Building2, Home, LayoutDashboard,
-  Menu, X, LogOut, ClipboardList,
+  Menu, X, LogOut, ClipboardList, Search,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
@@ -14,6 +14,7 @@ const adminNav = [
   { href: "/admin/hostels",   label: "Hostels",          icon: Building2 },
   { href: "/admin/prospects", label: "Hostel Pipeline",  icon: Home },
   { href: "/admin/audit",     label: "Audit Log",        icon: ClipboardList },
+  { href: "/admin/directory", label: "Public Directory", icon: Search },
 ];
 
 function AdminSidebar({

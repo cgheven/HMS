@@ -583,9 +583,9 @@ export function SettingsClient() {
             <CardTitle className="text-base">Public Listing</CardTitle>
           </div>
           <CardDescription>
-            List your hostel on the public directory so tenants can discover you for free.{" "}
+            Publish your own page so tenants can view rooms and apply directly — share the link on WhatsApp, Facebook, or anywhere else.{" "}
             <a href="/find" target="_blank" className="inline-flex items-center gap-0.5 text-amber hover:underline">
-              Preview directory <ExternalLink className="w-3 h-3" />
+              Preview my page <ExternalLink className="w-3 h-3" />
             </a>
           </CardDescription>
         </CardHeader>
