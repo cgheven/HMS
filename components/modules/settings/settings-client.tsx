@@ -30,7 +30,7 @@ const ALL_AMENITIES = [
   "Parking", "CCTV", "Hot Water", "Study Room", "Attached Bath", "Security Guard", "Cupboard",
 ];
 
-type PkgPriceEntry = { no_ac: string; ac: string };
+type PkgPriceEntry = { no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string };
 type PkgPriceForm = Record<PackageTier, PkgPriceEntry>;
 
 const PACKAGE_TIER_CONFIGS: { tier: PackageTier; label: string; desc: string; hasAcVariant: boolean }[] = [
@@ -42,11 +42,11 @@ const PACKAGE_TIER_CONFIGS: { tier: PackageTier; label: string; desc: string; ha
 
 function emptyPriceForm(): PkgPriceForm {
   return {
-    space_only:         { no_ac: "", ac: "" },
-    space_food:         { no_ac: "", ac: "" },
-    space_3meals:       { no_ac: "", ac: "" },
-    space_food_ac:      { no_ac: "", ac: "" }, // kept for DB compatibility; not shown in UI
-    space_meals_cooler: { no_ac: "", ac: "" },
+    space_only:         { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" },
+    space_food:         { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" },
+    space_3meals:       { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" },
+    space_food_ac:      { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" }, // kept for DB compatibility; not shown in UI
+    space_meals_cooler: { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" },
   };
 }
 
@@ -173,11 +173,13 @@ export function SettingsClient() {
       const raw = (data.package_prices ?? {}) as Record<string, unknown>;
       const prices = emptyPriceForm();
       for (const cfg of PACKAGE_TIER_CONFIGS) {
-        const s = raw[cfg.tier] as { no_ac: number; ac: number } | undefined;
+        const s = raw[cfg.tier] as { no_ac: number; ac: number; deposit_no_ac?: number; deposit_ac?: number } | undefined;
         if (s) {
           prices[cfg.tier] = {
-            no_ac: s.no_ac > 0 ? String(s.no_ac) : "",
-            ac:    s.ac    > 0 ? String(s.ac)    : "",
+            no_ac:         s.no_ac > 0               ? String(s.no_ac)         : "",
+            ac:            s.ac    > 0               ? String(s.ac)            : "",
+            deposit_no_ac: (s.deposit_no_ac ?? 0) > 0 ? String(s.deposit_no_ac) : "",
+            deposit_ac:    (s.deposit_ac    ?? 0) > 0 ? String(s.deposit_ac)    : "",
           };
         }
       }
@@ -449,9 +451,12 @@ export function SettingsClient() {
     const supabase = createClient();
     const dbPayload: Record<string, unknown> = {};
     for (const cfg of PACKAGE_TIER_CONFIGS) {
+      const p = packageForm.prices[cfg.tier];
       dbPayload[cfg.tier] = {
-        no_ac: parseFloat(packageForm.prices[cfg.tier].no_ac) || 0,
-        ac:    parseFloat(packageForm.prices[cfg.tier].ac)    || 0,
+        no_ac:         parseFloat(p.no_ac)         || 0,
+        ac:            parseFloat(p.ac)            || 0,
+        deposit_no_ac: parseFloat(p.deposit_no_ac) || 0,
+        deposit_ac:    parseFloat(p.deposit_ac)    || 0,
       };
     }
     const validCustom = customRows.filter((c) => c.name.trim());
@@ -927,31 +932,35 @@ export function SettingsClient() {
             {/* Per-package price table */}
             <div className="rounded-lg border border-border overflow-hidden">
               {/* Header row */}
-              <div className="grid grid-cols-[1fr_100px_100px_32px] gap-px bg-border">
+              {/* Header row — two column groups: Monthly Rent | Security Deposit */}
+              <div className="grid grid-cols-[1fr_90px_90px_90px_90px_32px] gap-px bg-border">
                 <div className="bg-card px-3 py-2">
                   <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Package</span>
                 </div>
                 <div className="bg-card px-2 py-2 text-center">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Standard</span>
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Rent (Std)</span>
                 </div>
                 <div className="bg-card px-2 py-2 text-center">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">AC Room</span>
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Rent (AC)</span>
+                </div>
+                <div className="bg-card px-2 py-2 text-center">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (Std)</span>
+                </div>
+                <div className="bg-card px-2 py-2 text-center">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (AC)</span>
                 </div>
                 <div className="bg-card" />
               </div>
               {/* Predefined package rows */}
               {PACKAGE_TIER_CONFIGS.map((cfg) => (
-                <div key={cfg.tier} className="grid grid-cols-[1fr_100px_100px_32px] gap-px bg-border">
+                <div key={cfg.tier} className="grid grid-cols-[1fr_90px_90px_90px_90px_32px] gap-px bg-border">
                   <div className="bg-card px-3 py-2.5">
                     <p className="text-sm font-medium leading-tight">{cfg.label}</p>
                     <p className="text-xs text-muted-foreground">{cfg.desc}</p>
                   </div>
                   <div className="bg-card px-2 py-2 flex items-center">
                     <Input
-                      type="number"
-                      min="0"
-                      step="1"
-                      placeholder="0"
+                      type="number" min="0" step="1" placeholder="0"
                       value={packageForm.prices[cfg.tier].no_ac}
                       onChange={(e) => setPackageForm({
                         ...packageForm,
@@ -964,10 +973,7 @@ export function SettingsClient() {
                   <div className="bg-card px-2 py-2 flex items-center">
                     {cfg.hasAcVariant ? (
                       <Input
-                        type="number"
-                        min="0"
-                        step="1"
-                        placeholder="0"
+                        type="number" min="0" step="1" placeholder="0"
                         value={packageForm.prices[cfg.tier].ac}
                         onChange={(e) => setPackageForm({
                           ...packageForm,
@@ -980,12 +986,40 @@ export function SettingsClient() {
                       <span className="text-xs text-muted-foreground w-full text-center">metered</span>
                     )}
                   </div>
+                  <div className="bg-card px-2 py-2 flex items-center">
+                    <Input
+                      type="number" min="0" step="1" placeholder="—"
+                      value={packageForm.prices[cfg.tier].deposit_no_ac}
+                      onChange={(e) => setPackageForm({
+                        ...packageForm,
+                        prices: { ...packageForm.prices, [cfg.tier]: { ...packageForm.prices[cfg.tier], deposit_no_ac: e.target.value } },
+                      })}
+                      disabled={!packageLoaded}
+                      className="h-7 text-xs text-center px-1"
+                    />
+                  </div>
+                  <div className="bg-card px-2 py-2 flex items-center">
+                    {cfg.hasAcVariant ? (
+                      <Input
+                        type="number" min="0" step="1" placeholder="—"
+                        value={packageForm.prices[cfg.tier].deposit_ac}
+                        onChange={(e) => setPackageForm({
+                          ...packageForm,
+                          prices: { ...packageForm.prices, [cfg.tier]: { ...packageForm.prices[cfg.tier], deposit_ac: e.target.value } },
+                        })}
+                        disabled={!packageLoaded}
+                        className="h-7 text-xs text-center px-1"
+                      />
+                    ) : (
+                      <span className="text-xs text-muted-foreground w-full text-center">—</span>
+                    )}
+                  </div>
                   <div className="bg-card" />
                 </div>
               ))}
-              {/* Custom package rows */}
+              {/* Custom package rows — deposit columns not supported for custom tiers */}
               {customRows.map((row) => (
-                <div key={row.id} className="grid grid-cols-[1fr_100px_100px_32px] gap-px bg-border">
+                <div key={row.id} className="grid grid-cols-[1fr_90px_90px_90px_90px_32px] gap-px bg-border">
                   <div className="bg-card px-2 py-2 flex items-center">
                     <Input
                       placeholder="Package name"
@@ -1009,6 +1043,12 @@ export function SettingsClient() {
                       onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, ac: e.target.value } : r))}
                       className="h-7 text-xs text-center px-1"
                     />
+                  </div>
+                  <div className="bg-card px-2 py-2 flex items-center justify-center">
+                    <span className="text-xs text-muted-foreground">—</span>
+                  </div>
+                  <div className="bg-card px-2 py-2 flex items-center justify-center">
+                    <span className="text-xs text-muted-foreground">—</span>
                   </div>
                   <div className="bg-card flex items-center justify-center">
                     <button
@@ -1048,7 +1088,7 @@ export function SettingsClient() {
                 <p className="text-xs text-muted-foreground">Billed on top of the monthly rate for AC rooms.</p>
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">Security Deposit (Rs.)</Label>
+                <Label className="text-xs">Default Security Deposit (Rs.)</Label>
                 <Input
                   type="number" min="0" step="1" placeholder="e.g. 10000"
                   value={packageForm.security_deposit}
@@ -1056,7 +1096,7 @@ export function SettingsClient() {
                   disabled={!packageLoaded}
                   className="max-w-[180px]"
                 />
-                <p className="text-xs text-muted-foreground">Shown as upfront cost on the public hostel page.</p>
+                <p className="text-xs text-muted-foreground">Fallback when no per-package deposit is set above. Shown on the public hostel page.</p>
               </div>
             </div>
 

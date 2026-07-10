@@ -1316,7 +1316,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </div>
                 <div className="space-y-1.5">
                   <Label>Package Tier</Label>
-                  <Select value={approveForm.package_tier} onValueChange={(v) => setApproveForm({ ...approveForm, package_tier: v })}>
+                  <Select value={approveForm.package_tier} onValueChange={(v) => {
+                    const tier = v as PackageTier;
+                    const approveRoom = approveForm.room_id ? rooms.find((r) => r.id === approveForm.room_id) : null;
+                    const tierPrices = pkgPrices[tier];
+                    const tierDeposit = approveRoom
+                      ? (approveRoom.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
+                      : 0;
+                    const suggestedDeposit = tierDeposit > 0 ? tierDeposit : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
+                    setApproveForm({ ...approveForm, package_tier: tier, security_deposit: suggestedDeposit });
+                  }}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {(Object.entries(PACKAGE_TIER_LABELS) as [PackageTier, string][]).map(([k, label]) => (
@@ -1378,11 +1387,20 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     <Label>Room</Label>
                     <Select
                       value={approveForm.room_id ?? ""}
-                      onValueChange={(v) => setApproveForm({
-                        ...approveForm,
-                        room_id: v || null,
-                        monthly_rent: rooms.find(r => r.id === v)?.monthly_rent ?? approveForm.monthly_rent,
-                      })}
+                      onValueChange={(v) => {
+                        const approveRoom = rooms.find((r) => r.id === v);
+                        const tierPrices = pkgPrices[approveForm.package_tier as PackageTier];
+                        const tierDeposit = approveRoom
+                          ? (approveRoom.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
+                          : 0;
+                        const suggestedDeposit = tierDeposit > 0 ? tierDeposit : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
+                        setApproveForm({
+                          ...approveForm,
+                          room_id: v || null,
+                          monthly_rent: approveRoom?.monthly_rent ?? approveForm.monthly_rent,
+                          security_deposit: suggestedDeposit,
+                        });
+                      }}
                     >
                       <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
                       <SelectContent>
@@ -1530,7 +1548,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     const room = rooms.find((r) => r.id === v);
                     const pkgSuggested = room ? getPkgPrice(pkgPrices, form.package_tier, room.has_ac) : "";
                     const fallback = room?.monthly_rent?.toString() ?? "";
-                    const deposit = !form.security_deposit && configSecurityDeposit > 0 ? String(configSecurityDeposit) : form.security_deposit;
+                    const tierPrices = pkgPrices[form.package_tier];
+                    const tierDeposit = room
+                      ? (room.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
+                      : 0;
+                    const suggestedDeposit = tierDeposit > 0 ? String(tierDeposit) : (configSecurityDeposit > 0 ? String(configSecurityDeposit) : "");
+                    const deposit = !form.security_deposit ? suggestedDeposit : form.security_deposit;
                     setForm({ ...form, room_id: v, monthly_rent: pkgSuggested || fallback || form.monthly_rent, security_deposit: deposit });
                   }}>
                     <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
@@ -1569,7 +1592,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     onValueChange={(v) => {
                       const tier = v as PackageTier;
                       const suggested = selectedRoom ? getPkgPrice(pkgPrices, tier, selectedRoom.has_ac) : "";
-                      setForm({ ...form, package_tier: tier, monthly_rent: suggested || form.monthly_rent });
+                      const tierPrices = pkgPrices[tier];
+                      const tierDeposit = selectedRoom
+                        ? (selectedRoom.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
+                        : 0;
+                      const suggestedDeposit = tierDeposit > 0 ? String(tierDeposit) : (configSecurityDeposit > 0 ? String(configSecurityDeposit) : "");
+                      setForm({ ...form, package_tier: tier, monthly_rent: suggested || form.monthly_rent, security_deposit: suggestedDeposit || form.security_deposit });
                     }}
                   >
                     <SelectTrigger>

@@ -484,6 +484,8 @@ export interface AuditLog {
 export interface PackagePrices {
   no_ac: number;
   ac: number;
+  deposit_no_ac?: number;
+  deposit_ac?: number;
 }
 
 export interface PackageConfig {
