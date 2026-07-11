@@ -192,6 +192,9 @@ export interface ConvertFormData {
   bed_number: string | null;
   is_waiting: boolean;
   notes: string | null;
+  food_breakfast?: boolean;
+  food_lunch?: boolean;
+  food_dinner?: boolean;
 }
 
 export async function convertToTenant(appId: string, extra: ConvertFormData) {
@@ -244,6 +247,9 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     is_active: !extra.is_waiting,
     is_waiting: extra.is_waiting,
     notes: extra.notes || null,
+    food_breakfast: extra.food_breakfast ?? app.food_breakfast ?? false,
+    food_lunch: extra.food_lunch ?? app.food_lunch ?? false,
+    food_dinner: extra.food_dinner ?? app.food_dinner ?? false,
   });
 
   if (tenantError) return { success: false, error: tenantError.message };

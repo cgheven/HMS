@@ -4,13 +4,15 @@ import Link from "next/link";
 import {
   ArrowLeft, MapPin, ExternalLink, BedDouble, Zap, Wifi,
   Utensils, Shield, ChevronLeft, ChevronRight, Clock, Loader2, X,
-  Wind, Thermometer, Users, CheckCircle2, Banknote,
+  Wind, Thermometer, Users, CheckCircle2, Banknote, Check,
 } from "lucide-react";
 import { joinWaitlist, submitApplication } from "@/app/actions/public";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { formatCurrency } from "@/lib/utils";
+import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS } from "@/lib/food-addon";
+import { getSeaterPrice, getSeaterDeposit, SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
 import type { PublicHostelDetail, PublicRoom, FoodItem, MealType, SpaceType, PackageConfig, PackageTier } from "@/types";
 
 // ── WhatsApp icon ─────────────────────────────────────────────────────────────
@@ -84,7 +86,11 @@ function buildPackageOptions(room: PublicRoom, config: PackageConfig | null): Pa
     return null;
   }
 
-  const spaceOnlyPrice = pkgPrice("space_only") ?? room.monthly_rent;
+  // Seater price (by room capacity + AC) takes priority when configured — it's
+  // the most specific, intentional pricing signal. Falls back to the flat
+  // "Space Only" package price, then the room's own manual rent, exactly as
+  // before for hostels that never set seater pricing.
+  const spaceOnlyPrice = getSeaterPrice(room.capacity, room.has_ac, config?.seater_prices) ?? pkgPrice("space_only") ?? room.monthly_rent;
 
   const options: PackageOption[] = [
     {
@@ -136,10 +142,12 @@ interface RegModalProps {
   selectedTier: string;
   selectedLabel: string;
   selectedPrice: number;
+  selectedMeals: { food_breakfast: boolean; food_lunch: boolean; food_dinner: boolean };
+  mealsCharge: number;
   onClose: () => void;
 }
 
-function RegistrationModal({ room, hostelId, hostelName, selectedTier, selectedLabel, selectedPrice, onClose }: RegModalProps) {
+function RegistrationModal({ room, hostelId, hostelName, selectedTier, selectedLabel, selectedPrice, selectedMeals, mealsCharge, onClose }: RegModalProps) {
   const [fullName, setFullName]     = useState("");
   const [phone, setPhone]           = useState("");
   const [email, setEmail]           = useState("");
@@ -163,6 +171,9 @@ function RegistrationModal({ room, hostelId, hostelName, selectedTier, selectedL
       package_tier: selectedTier,
       move_in_date: moveIn || undefined,
       notes: notes || undefined,
+      food_breakfast: selectedMeals.food_breakfast,
+      food_lunch: selectedMeals.food_lunch,
+      food_dinner: selectedMeals.food_dinner,
     });
     setSubmitting(false);
     if (result.error) {
@@ -207,9 +218,15 @@ function RegistrationModal({ room, hostelId, hostelName, selectedTier, selectedL
                   <span className="text-muted-foreground">Package</span>
                   <span className="text-foreground">{selectedLabel}</span>
                 </div>
+                {mealsCharge > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Meals</span>
+                    <span className="text-foreground">{formatCurrency(mealsCharge)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Monthly Rent</span>
-                  <span className="text-amber font-semibold">{formatCurrency(selectedPrice)}/mo</span>
+                  <span className="text-muted-foreground">Monthly Total</span>
+                  <span className="text-amber font-semibold">{formatCurrency(selectedPrice + mealsCharge)}/mo</span>
                 </div>
               </div>
               <Button variant="outline" onClick={onClose} className="w-full mt-2">Close</Button>
@@ -220,9 +237,12 @@ function RegistrationModal({ room, hostelId, hostelName, selectedTier, selectedL
               <div className="rounded-xl border border-amber/20 bg-amber/[0.04] px-4 py-3 flex items-center justify-between">
                 <div>
                   <p className="text-xs text-muted-foreground">Selected Package</p>
-                  <p className="text-sm font-medium text-foreground mt-0.5">{selectedLabel}</p>
+                  <p className="text-sm font-medium text-foreground mt-0.5">
+                    {selectedLabel}
+                    {mealsCharge > 0 && <span className="text-muted-foreground"> + Meals</span>}
+                  </p>
                 </div>
-                <p className="text-amber font-semibold text-sm">{formatCurrency(selectedPrice)}/mo</p>
+                <p className="text-amber font-semibold text-sm">{formatCurrency(selectedPrice + mealsCharge)}/mo</p>
               </div>
 
               {error && (
@@ -318,6 +338,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
   const [photoIdx, setPhotoIdx]   = useState(0);
   const [selectedTier, setSelectedTier] = useState("space_only");
   const [regOpen, setRegOpen]     = useState(false);
+  const [meals, setMeals] = useState({ food_breakfast: false, food_lunch: false, food_dinner: false });
 
   const available = room.capacity - room.occupied;
   const isFull    = room.status === "occupied" || available <= 0;
@@ -325,13 +346,23 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
   const packages = buildPackageOptions(room, hostel.package_config);
   const selected = packages.find((p) => p.tier === selectedTier) ?? packages[0];
 
-  const SECURITY_DEPOSIT = hostel.package_config?.security_deposit ?? 0;
+  // Seater deposit (by room capacity + AC) takes priority when configured,
+  // same precedence as the rent calculation above.
+  const SECURITY_DEPOSIT = getSeaterDeposit(room.capacity, room.has_ac, hostel.package_config?.seater_prices) ?? hostel.package_config?.security_deposit ?? 0;
+
+  const foodRates = hostel.package_config;
+  // Only offer the add-on for packages that don't already bundle food — avoids
+  // double-charging once via the tier's flat rate and again via the add-on.
+  const foodAddonOffered = !!foodRates && hasFoodAddonRates(foodRates) && !FOOD_INCLUSIVE_TIERS.has(selectedTier);
+  const mealsCharge = foodRates ? calcFoodAddonCharge(meals, foodRates) : 0;
 
   const contactPhone = hostel.whatsapp || hostel.phone;
 
+  const mealsLabel = [meals.food_breakfast && "Breakfast", meals.food_lunch && "Lunch", meals.food_dinner && "Dinner"].filter(Boolean).join(" + ");
+
   const waMsg = buildWhatsAppUrl(
     contactPhone,
-    `Hi! I'm interested in Room ${room.room_number} at ${hostel.name}.\nPackage: ${selected.label}\nMonthly: ${formatCurrency(selected.price)}\nDeposit: ${formatCurrency(SECURITY_DEPOSIT)}\n\nPlease let me know next steps.`
+    `Hi! I'm interested in Room ${room.room_number} at ${hostel.name}.\nPackage: ${selected.label}${mealsLabel ? `\nMeals: ${mealsLabel} (+${formatCurrency(mealsCharge)})` : ""}\nMonthly: ${formatCurrency(selected.price + mealsCharge)}\nDeposit: ${formatCurrency(SECURITY_DEPOSIT)}\n\nPlease let me know next steps.`
   );
 
   useEffect(() => {
@@ -354,6 +385,8 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
           selectedTier={selectedTier}
           selectedLabel={selected.label}
           selectedPrice={selected.price}
+          selectedMeals={meals}
+          mealsCharge={mealsCharge}
           onClose={() => setRegOpen(false)}
         />
       )}
@@ -520,7 +553,15 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                     <button
                       key={pkg.tier}
                       disabled={pkg.disabled}
-                      onClick={() => !pkg.disabled && setSelectedTier(pkg.tier)}
+                      onClick={() => {
+                        if (pkg.disabled) return;
+                        setSelectedTier(pkg.tier);
+                        // Clear any add-on meal selection when switching to a package that
+                        // already bundles food — prevents a stale double-charge on submit.
+                        if (FOOD_INCLUSIVE_TIERS.has(pkg.tier)) {
+                          setMeals({ food_breakfast: false, food_lunch: false, food_dinner: false });
+                        }
+                      }}
                       className={`w-full text-left rounded-xl border px-4 py-3.5 transition-all duration-200 ${
                         pkg.disabled
                           ? "opacity-40 cursor-not-allowed border-white/[0.05] bg-white/[0.01]"
@@ -566,19 +607,91 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                 )}
               </div>
 
+              {/* Add Meals — optional, independent of package. Only shown if hostel configured rates. */}
+              {foodAddonOffered && foodRates && (
+                <div>
+                  <p className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-widest mb-2">
+                    Add Meals <span className="normal-case font-normal text-muted-foreground/40">(optional)</span>
+                  </p>
+                  {hasIndividualFoodRates(foodRates) ? (
+                    <>
+                      <div className="rounded-xl border border-white/[0.07] overflow-hidden divide-y divide-white/[0.05]">
+                        {([
+                          { key: "food_breakfast" as const, label: "Breakfast", rate: Number(foodRates.food_breakfast_rate) },
+                          { key: "food_lunch" as const, label: "Lunch", rate: Number(foodRates.food_lunch_rate) },
+                          { key: "food_dinner" as const, label: "Dinner", rate: Number(foodRates.food_dinner_rate) },
+                        ]).filter((m) => m.rate > 0).map((m) => {
+                          const checked = meals[m.key];
+                          return (
+                            <button
+                              key={m.key}
+                              type="button"
+                              onClick={() => setMeals({ ...meals, [m.key]: !checked })}
+                              className={`w-full flex items-center justify-between px-3.5 py-2.5 text-sm transition-colors ${checked ? "bg-amber/[0.06]" : "bg-white/[0.01] hover:bg-white/[0.03]"}`}
+                            >
+                              <span className="flex items-center gap-2.5">
+                                <span className={`w-4 h-4 rounded shrink-0 border-2 flex items-center justify-center ${checked ? "border-amber bg-amber" : "border-white/20"}`}>
+                                  {checked && <Check className="w-3 h-3 text-black" strokeWidth={3} />}
+                                </span>
+                                <span className={checked ? "text-foreground" : "text-muted-foreground"}>{m.label}</span>
+                              </span>
+                              <span className={`text-xs font-medium ${checked ? "text-amber" : "text-muted-foreground/60"}`}>+{formatCurrency(m.rate)}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {meals.food_breakfast && meals.food_lunch && meals.food_dinner
+                        && Number(foodRates.food_all_meals_rate) > 0
+                        && Number(foodRates.food_all_meals_rate) < (Number(foodRates.food_breakfast_rate) + Number(foodRates.food_lunch_rate) + Number(foodRates.food_dinner_rate)) && (
+                        <p className="text-[11px] text-emerald-400 mt-2">
+                          All-3-meals bundle applied: {formatCurrency(Number(foodRates.food_all_meals_rate))}/mo
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    // Bundle-only hostel — no individual meal rates, so offer a single
+                    // combined toggle instead of 3 checkboxes with undefined partial pricing.
+                    (() => {
+                      const checked = meals.food_breakfast && meals.food_lunch && meals.food_dinner;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => setMeals({ food_breakfast: !checked, food_lunch: !checked, food_dinner: !checked })}
+                          className={`w-full flex items-center justify-between px-3.5 py-2.5 text-sm rounded-xl border transition-colors ${checked ? "bg-amber/[0.06] border-amber/30" : "bg-white/[0.01] border-white/[0.07] hover:bg-white/[0.03]"}`}
+                        >
+                          <span className="flex items-center gap-2.5">
+                            <span className={`w-4 h-4 rounded shrink-0 border-2 flex items-center justify-center ${checked ? "border-amber bg-amber" : "border-white/20"}`}>
+                              {checked && <Check className="w-3 h-3 text-black" strokeWidth={3} />}
+                            </span>
+                            <span className={checked ? "text-foreground" : "text-muted-foreground"}>All Meals (Breakfast + Lunch + Dinner)</span>
+                          </span>
+                          <span className={`text-xs font-medium ${checked ? "text-amber" : "text-muted-foreground/60"}`}>+{formatCurrency(Number(foodRates.food_all_meals_rate))}</span>
+                        </button>
+                      );
+                    })()
+                  )}
+                </div>
+              )}
+
               {/* Pricing summary */}
               <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3">
-                  <span className="text-sm text-muted-foreground">Monthly</span>
+                  <span className="text-sm text-muted-foreground">{selected.label}</span>
                   <span className="text-sm font-semibold text-amber">{formatCurrency(selected.price)}</span>
                 </div>
+                {mealsCharge > 0 && (
+                  <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.05]">
+                    <span className="text-sm text-muted-foreground">{mealsLabel}</span>
+                    <span className="text-sm font-semibold text-amber">{formatCurrency(mealsCharge)}</span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.05]">
                   <span className="text-sm text-muted-foreground">Security Deposit</span>
                   <span className="text-sm font-semibold">{formatCurrency(SECURITY_DEPOSIT)}</span>
                 </div>
                 <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.07] bg-white/[0.02]">
                   <span className="text-sm font-semibold">Total Due Today</span>
-                  <span className="text-sm font-bold text-amber">{formatCurrency(selected.price + SECURITY_DEPOSIT)}</span>
+                  <span className="text-sm font-bold text-amber">{formatCurrency(selected.price + mealsCharge + SECURITY_DEPOSIT)}</span>
                 </div>
               </div>
               <p className="text-[11px] text-muted-foreground/40 -mt-3">Monthly rent due on the 1st of each month</p>
@@ -749,6 +862,9 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
   const photos = [room.photo_path, room.photo_path_2, room.photo_path_3, room.photo_path_4, room.photo_path_5].filter(Boolean) as string[];
   const available = room.capacity - room.occupied;
   const isFull = room.status === "occupied" || available <= 0;
+  // Same precedence used inside the detail modal (seater price -> Space Only
+  // package price -> room.monthly_rent), so the card teaser and modal never disagree.
+  const cardPrice = buildPackageOptions(room, hostel.package_config)[0].price;
 
   return (
     <>
@@ -821,7 +937,7 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
           </div>
 
           <div className="flex items-center justify-between text-xs">
-            <span className="font-semibold text-amber">{formatCurrency(room.monthly_rent)}<span className="text-muted-foreground/50 font-normal">/mo</span></span>
+            <span className="font-semibold text-amber">{formatCurrency(cardPrice)}<span className="text-muted-foreground/50 font-normal">/mo</span></span>
             <span className="text-muted-foreground/50">{room.occupied}/{room.capacity} occupied</span>
           </div>
 
@@ -943,6 +1059,101 @@ function PackagePricingSection({
               <span className="text-[11px] text-muted-foreground/60">Security Deposit (one-time, refundable)</span>
             </div>
             <span className="text-[11px] font-semibold text-amber tabular-nums">{formatCurrency(config.security_deposit)}</span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// ── Seater pricing section ──────────────────────────────────────────────────────
+
+function SeaterPricingSection({
+  config,
+  hasAcRooms,
+  hasNonAcRooms,
+}: {
+  config: PackageConfig;
+  hasAcRooms: boolean;
+  hasNonAcRooms: boolean;
+}) {
+  const seaterPrices = config.seater_prices ?? {};
+  const rows = SEATER_CAPACITIES.filter((c) => {
+    const p = seaterPrices[c];
+    if (!p) return false;
+    return (hasNonAcRooms && p.no_ac > 0) || (hasAcRooms && p.ac > 0);
+  });
+  if (!rows.length) return null;
+
+  const colClass =
+    hasNonAcRooms && hasAcRooms
+      ? "grid-cols-[1fr_auto_auto]"
+      : "grid-cols-[1fr_auto]";
+
+  return (
+    <section>
+      <div className="flex items-center gap-2 mb-3">
+        <Banknote className="w-4 h-4 text-amber" />
+        <h2 className="font-semibold text-sm">Monthly Pricing</h2>
+      </div>
+      <div className="rounded-xl border border-white/[0.08] bg-[#111113] overflow-hidden">
+        {/* Header */}
+        <div className={`grid ${colClass} gap-px bg-white/[0.05]`}>
+          <div className="bg-[#111113] px-4 py-2">
+            <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Seater</span>
+          </div>
+          {hasNonAcRooms && (
+            <div className="bg-[#111113] px-4 py-2 text-center min-w-[90px]">
+              <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Standard</span>
+            </div>
+          )}
+          {hasAcRooms && (
+            <div className="bg-[#111113] px-4 py-2 text-center min-w-[90px]">
+              <span className="text-[10px] font-semibold text-blue-400/60 uppercase tracking-widest">AC Room</span>
+            </div>
+          )}
+        </div>
+        {/* Rows */}
+        {rows.map((c, i) => {
+          const p = seaterPrices[c]!;
+          const depositNoAc = (p.deposit_no_ac ?? 0) > 0 ? p.deposit_no_ac! : config.security_deposit;
+          const depositAc = (p.deposit_ac ?? 0) > 0 ? p.deposit_ac! : config.security_deposit;
+          return (
+            <div
+              key={c}
+              className={`grid ${colClass} gap-px bg-white/[0.04] ${i !== 0 ? "border-t border-white/[0.05]" : ""}`}
+            >
+              <div className="bg-[#111113] px-4 py-3 flex items-center">
+                <p className="text-sm font-medium leading-tight">{SEATER_LABELS[c]}</p>
+              </div>
+              {hasNonAcRooms && (
+                <div className="bg-[#111113] px-4 py-3 flex flex-col items-end justify-center min-w-[90px]">
+                  {p.no_ac > 0
+                    ? <span className="text-sm font-semibold text-amber tabular-nums">{formatCurrency(p.no_ac)}</span>
+                    : <span className="text-xs text-muted-foreground/30">—</span>}
+                  {p.no_ac > 0 && depositNoAc > 0 && (
+                    <span className="text-[10px] text-muted-foreground/50 mt-0.5">Dep {formatCurrency(depositNoAc)}</span>
+                  )}
+                </div>
+              )}
+              {hasAcRooms && (
+                <div className="bg-[#111113] px-4 py-3 flex flex-col items-end justify-center min-w-[90px]">
+                  {p.ac > 0
+                    ? <span className="text-sm font-semibold text-blue-400 tabular-nums">{formatCurrency(p.ac)}</span>
+                    : <span className="text-xs text-muted-foreground/30">—</span>}
+                  {p.ac > 0 && depositAc > 0 && (
+                    <span className="text-[10px] text-muted-foreground/50 mt-0.5">Dep {formatCurrency(depositAc)}</span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {/* AC note */}
+        {hasAcRooms && config.ac_per_unit_rate > 0 && (
+          <div className="border-t border-white/[0.05] px-4 py-2.5 flex items-center gap-2">
+            <Wind className="w-3 h-3 text-blue-400/60 shrink-0" />
+            <span className="text-[11px] text-blue-400/70">AC rooms billed additionally at {formatCurrency(config.ac_per_unit_rate)}/unit consumed</span>
           </div>
         )}
       </div>
@@ -1202,12 +1413,30 @@ export function HostelDetailClient({
           {/* ── Details tab ── */}
           {activeTab === "details" && (
             <>
+              {/* One pricing table only — seater pricing takes over as the sole
+                  "Monthly Pricing" table once configured (it's the more specific,
+                  capacity-aware source), otherwise the flat package-tier table
+                  shows exactly as before. Never both at once. */}
               {hostel.package_config && (() => {
-                const prices = hostel.package_config.package_prices ?? {};
+                const config = hostel.package_config;
+                const seaterVals = Object.values(config.seater_prices ?? {});
+                const hasSeaterPricing = seaterVals.some((p) => (p?.no_ac ?? 0) > 0 || (p?.ac ?? 0) > 0);
+
+                if (hasSeaterPricing) {
+                  return (
+                    <SeaterPricingSection
+                      config={config}
+                      hasAcRooms={seaterVals.some((p) => p!.ac > 0)}
+                      hasNonAcRooms={seaterVals.some((p) => p!.no_ac > 0)}
+                    />
+                  );
+                }
+
+                const prices = config.package_prices ?? {};
                 const vals = Object.values(prices);
                 return (
                   <PackagePricingSection
-                    config={hostel.package_config}
+                    config={config}
                     hasAcRooms={vals.some((p) => p.ac > 0)}
                     hasNonAcRooms={vals.some((p) => p.no_ac > 0)}
                   />

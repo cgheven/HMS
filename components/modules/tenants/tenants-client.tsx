@@ -4,7 +4,7 @@ import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, History,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
-  FileSpreadsheet, FileText, ExternalLink, Banknote, Copy,
+  FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -17,6 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
+import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates } from "@/lib/food-addon";
 import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
@@ -118,6 +119,7 @@ const emptyForm = {
   emergency_contact: "", emergency_relationship: "", emergency_phone: "", notes: "",
   is_waiting: false,
   photo_url: "" as string,
+  food_breakfast: false, food_lunch: false, food_dinner: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -283,12 +285,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [pkgPrices, setPkgPrices] = useState<Partial<Record<PackageTier, PackagePrices>>>({});
   const [customPackages, setCustomPackages] = useState<CustomPackage[]>([]);
   const [configSecurityDeposit, setConfigSecurityDeposit] = useState<number>(0);
+  const [foodAddonRates, setFoodAddonRates] = useState<FoodAddonRates>({
+    food_breakfast_rate: 0, food_lunch_rate: 0, food_dinner_rate: 0, food_all_meals_rate: 0,
+  });
 
   useEffect(() => {
     if (!hostelId) return;
     const supabase = createClient();
     supabase.from("hms_package_configs")
-      .select("package_prices, security_deposit")
+      .select("package_prices, security_deposit, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate")
       .eq("hostel_id", hostelId)
       .maybeSingle()
       .then(({ data }) => {
@@ -313,6 +318,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         if (data?.security_deposit) {
           setConfigSecurityDeposit(Number(data.security_deposit));
         }
+        if (data) {
+          setFoodAddonRates({
+            food_breakfast_rate: Number(data.food_breakfast_rate ?? 0),
+            food_lunch_rate: Number(data.food_lunch_rate ?? 0),
+            food_dinner_rate: Number(data.food_dinner_rate ?? 0),
+            food_all_meals_rate: Number(data.food_all_meals_rate ?? 0),
+          });
+        }
       });
   }, [hostelId]);
   const [timelineTenant, setTimelineTenant] = useState<Tenant | null>(null);
@@ -330,6 +343,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     bed_number: null,
     is_waiting: true,
     notes: null,
+    food_breakfast: false,
+    food_lunch: false,
+    food_dinner: false,
   });
   const [approveSaving, setApproveSaving] = useState(false);
   const [editingDocs, setEditingDocs] = useState<TenantDocument[]>([]);
@@ -399,6 +415,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       bed_number: null,
       is_waiting: matchedRoom === null, // auto-switch to Active if room found
       notes: app.notes ?? null,
+      food_breakfast: app.food_breakfast ?? false,
+      food_lunch: app.food_lunch ?? false,
+      food_dinner: app.food_dinner ?? false,
     });
   }
 
@@ -467,6 +486,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       notes: t.notes ?? "",
       is_waiting: forceActive ? false : t.is_waiting,
       photo_url: t.photo_url ?? "",
+      food_breakfast: t.food_breakfast ?? false,
+      food_lunch: t.food_lunch ?? false,
+      food_dinner: t.food_dinner ?? false,
     });
     setDialogOpen(true);
   }
@@ -504,6 +526,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       is_waiting: form.is_waiting,
       is_active: !form.is_waiting,
       photo_url: form.photo_url || null,
+      food_breakfast: form.food_breakfast,
+      food_lunch: form.food_lunch,
+      food_dinner: form.food_dinner,
     };
 
     const prevRoomId = editing?.room_id;
@@ -1361,7 +1386,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       ? (approveRoom.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
                       : 0;
                     const suggestedDeposit = tierDeposit > 0 ? tierDeposit : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
-                    setApproveForm({ ...approveForm, package_tier: tier, security_deposit: suggestedDeposit });
+                    // Clear any add-on meal selection when switching to a package that
+                    // already bundles food — prevents a stale double-charge on save.
+                    const clearFood = FOOD_INCLUSIVE_TIERS.has(tier)
+                      ? { food_breakfast: false, food_lunch: false, food_dinner: false }
+                      : {};
+                    setApproveForm({ ...approveForm, package_tier: tier, security_deposit: suggestedDeposit, ...clearFood });
                   }}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -1372,6 +1402,76 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </Select>
                 </div>
               </div>
+
+              {/* Food Add-on — optional, independent of package tier. Only shown if the hostel
+                  configured rates AND the selected package doesn't already bundle food. */}
+              {hasFoodAddonRates(foodAddonRates) && (
+                FOOD_INCLUSIVE_TIERS.has(approveForm.package_tier) ? (
+                  <p className="text-xs text-muted-foreground/60">Food is already included in this package.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    <Label>Add Food? <span className="text-muted-foreground font-normal text-xs">(optional)</span></Label>
+                    {hasIndividualFoodRates(foodAddonRates) ? (
+                      <div className="rounded-xl border border-sidebar-border divide-y divide-sidebar-border overflow-hidden">
+                        {([
+                          { key: "food_breakfast" as const, label: "Breakfast", rate: foodAddonRates.food_breakfast_rate },
+                          { key: "food_lunch" as const, label: "Lunch", rate: foodAddonRates.food_lunch_rate },
+                          { key: "food_dinner" as const, label: "Dinner", rate: foodAddonRates.food_dinner_rate },
+                        ]).filter((meal) => meal.rate > 0).map((meal) => {
+                          const checked = approveForm[meal.key] ?? false;
+                          return (
+                            <button
+                              key={meal.key}
+                              type="button"
+                              onClick={() => setApproveForm({ ...approveForm, [meal.key]: !checked })}
+                              className={cn(
+                                "w-full flex items-center justify-between px-3 py-2.5 text-sm transition-colors",
+                                checked ? "bg-amber/10 text-foreground" : "bg-card text-muted-foreground hover:bg-white/[0.02]"
+                              )}
+                            >
+                              <span className="flex items-center gap-2.5">
+                                <span className={cn(
+                                  "w-4 h-4 rounded shrink-0 border-2 flex items-center justify-center",
+                                  checked ? "border-amber bg-amber" : "border-sidebar-border"
+                                )}>
+                                  {checked && <Check className="w-3 h-3 text-background" strokeWidth={3} />}
+                                </span>
+                                {meal.label}
+                              </span>
+                              <span className={checked ? "text-amber font-medium" : ""}>+{formatCurrency(meal.rate)}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      (() => {
+                        const checked = approveForm.food_breakfast && approveForm.food_lunch && approveForm.food_dinner;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => setApproveForm({ ...approveForm, food_breakfast: !checked, food_lunch: !checked, food_dinner: !checked })}
+                            className={cn(
+                              "w-full flex items-center justify-between px-3 py-2.5 text-sm rounded-xl border transition-colors",
+                              checked ? "bg-amber/10 border-amber/30 text-foreground" : "bg-card border-sidebar-border text-muted-foreground hover:bg-white/[0.02]"
+                            )}
+                          >
+                            <span className="flex items-center gap-2.5">
+                              <span className={cn(
+                                "w-4 h-4 rounded shrink-0 border-2 flex items-center justify-center",
+                                checked ? "border-amber bg-amber" : "border-sidebar-border"
+                              )}>
+                                {checked && <Check className="w-3 h-3 text-background" strokeWidth={3} />}
+                              </span>
+                              All Meals (Breakfast + Lunch + Dinner)
+                            </span>
+                            <span className={checked ? "text-amber font-medium" : ""}>+{formatCurrency(foodAddonRates.food_all_meals_rate)}</span>
+                          </button>
+                        );
+                      })()
+                    )}
+                  </div>
+                )
+              )}
 
               {/* Billing type */}
               <div>
@@ -1645,7 +1745,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           ? (selectedRoom.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
                           : 0;
                         const suggestedDeposit = tierDeposit > 0 ? String(tierDeposit) : (configSecurityDeposit > 0 ? String(configSecurityDeposit) : "");
-                        setForm({ ...form, package_tier: tier, custom_package_id: null, monthly_rent: suggested || form.monthly_rent, security_deposit: suggestedDeposit || form.security_deposit });
+                        // Clear any add-on meal selection when switching to a package that
+                        // already bundles food — prevents a stale double-charge on save.
+                        const clearFood = FOOD_INCLUSIVE_TIERS.has(tier)
+                          ? { food_breakfast: false, food_lunch: false, food_dinner: false }
+                          : {};
+                        setForm({ ...form, package_tier: tier, custom_package_id: null, monthly_rent: suggested || form.monthly_rent, security_deposit: suggestedDeposit || form.security_deposit, ...clearFood });
                       }
                     }}
                   >
@@ -1686,6 +1791,84 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </div>
               );
             })()}
+
+            {/* Food Add-on — optional, independent of package tier. Only shown if the hostel
+                configured rates AND the selected package doesn't already bundle food (avoids
+                double-charging once via the tier's flat rate and again via the add-on). */}
+            {hasFoodAddonRates(foodAddonRates) && (
+              FOOD_INCLUSIVE_TIERS.has(form.package_tier) ? (
+                <p className="text-xs text-muted-foreground/60">Food is already included in this package.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label>Add Food? <span className="text-muted-foreground font-normal text-xs">(optional)</span></Label>
+                  {hasIndividualFoodRates(foodAddonRates) ? (
+                    <div className="rounded-xl border border-sidebar-border divide-y divide-sidebar-border overflow-hidden">
+                      {([
+                        { key: "food_breakfast" as const, label: "Breakfast", rate: foodAddonRates.food_breakfast_rate },
+                        { key: "food_lunch" as const, label: "Lunch", rate: foodAddonRates.food_lunch_rate },
+                        { key: "food_dinner" as const, label: "Dinner", rate: foodAddonRates.food_dinner_rate },
+                      ]).filter((meal) => meal.rate > 0).map((meal) => {
+                        const checked = form[meal.key];
+                        return (
+                          <button
+                            key={meal.key}
+                            type="button"
+                            onClick={() => setForm({ ...form, [meal.key]: !checked })}
+                            className={cn(
+                              "w-full flex items-center justify-between px-3 py-2.5 text-sm transition-colors",
+                              checked ? "bg-amber/10 text-foreground" : "bg-card text-muted-foreground hover:bg-white/[0.02]"
+                            )}
+                          >
+                            <span className="flex items-center gap-2.5">
+                              <span className={cn(
+                                "w-4 h-4 rounded shrink-0 border-2 flex items-center justify-center",
+                                checked ? "border-amber bg-amber" : "border-sidebar-border"
+                              )}>
+                                {checked && <Check className="w-3 h-3 text-background" strokeWidth={3} />}
+                              </span>
+                              {meal.label}
+                            </span>
+                            <span className={checked ? "text-amber font-medium" : ""}>+{formatCurrency(meal.rate)}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    // Bundle-only hostel — no individual meal rates, so offer a single
+                    // combined toggle instead of 3 checkboxes with undefined partial pricing.
+                    (() => {
+                      const checked = form.food_breakfast && form.food_lunch && form.food_dinner;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => setForm({ ...form, food_breakfast: !checked, food_lunch: !checked, food_dinner: !checked })}
+                          className={cn(
+                            "w-full flex items-center justify-between px-3 py-2.5 text-sm rounded-xl border transition-colors",
+                            checked ? "bg-amber/10 border-amber/30 text-foreground" : "bg-card border-sidebar-border text-muted-foreground hover:bg-white/[0.02]"
+                          )}
+                        >
+                          <span className="flex items-center gap-2.5">
+                            <span className={cn(
+                              "w-4 h-4 rounded shrink-0 border-2 flex items-center justify-center",
+                              checked ? "border-amber bg-amber" : "border-sidebar-border"
+                            )}>
+                              {checked && <Check className="w-3 h-3 text-background" strokeWidth={3} />}
+                            </span>
+                            All Meals (Breakfast + Lunch + Dinner)
+                          </span>
+                          <span className={checked ? "text-amber font-medium" : ""}>+{formatCurrency(foodAddonRates.food_all_meals_rate)}</span>
+                        </button>
+                      );
+                    })()
+                  )}
+                  {(form.food_breakfast || form.food_lunch || form.food_dinner) && (
+                    <p className="text-xs text-muted-foreground">
+                      Food add-on: <span className="text-foreground font-medium">{formatCurrency(calcFoodAddonCharge(form, foodAddonRates))}</span>/mo — billed automatically on top of rent.
+                    </p>
+                  )}
+                </div>
+              )
+            )}
 
             {/* Billing type toggle */}
             <div className="flex gap-2">

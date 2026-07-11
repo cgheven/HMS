@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrAbove } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
+import { calcFoodAddonCharge } from "@/lib/food-addon";
 import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -506,7 +507,7 @@ export async function backfillTenantPaymentsAction(
     // Fetch tenant — verify it belongs to this hostel
     const { data: tenant } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, check_in, monthly_rent, security_deposit, package_tier, billing_type")
+      .select("id, full_name, hostel_id, check_in, monthly_rent, security_deposit, package_tier, billing_type, food_breakfast, food_lunch, food_dinner")
       .eq("id", tenantId)
       .eq("hostel_id", hostelId)
       .single();
@@ -521,11 +522,13 @@ export async function backfillTenantPaymentsAction(
     // Get food rate from package config
     const { data: pkgConfig } = await adminDb
       .from("hms_package_configs")
-      .select("food_monthly_rate")
+      .select("food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate")
       .eq("hostel_id", hostelId)
       .single();
     const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
-    const foodCharge = FOOD_TIERS.has(tenant.package_tier ?? "") ? foodRate : 0;
+    const tierFoodCharge = FOOD_TIERS.has(tenant.package_tier ?? "") ? foodRate : 0;
+    const addonFoodCharge = pkgConfig ? calcFoodAddonCharge(tenant, pkgConfig) : 0;
+    const foodCharge = tierFoodCharge + addonFoodCharge;
     const baseRent = Number(tenant.monthly_rent);
     const totalAmount = baseRent + foodCharge;
     const checkInMonth = tenant.check_in.slice(0, 7);

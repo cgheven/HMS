@@ -18,6 +18,7 @@ import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
+import { calcFoodAddonCharge } from "@/lib/food-addon";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -79,7 +80,7 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("hms_tenants")
-    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out")
+    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, food_breakfast, food_lunch, food_dinner")
     .eq("id", tenantId)
     .eq("hostel_id", hostelId) // ensures the tenant belongs to the owner's hostel
     .single();
@@ -93,6 +94,9 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
     package_tier: PackageTier;
     check_in: string;
     check_out: string | null;
+    food_breakfast: boolean;
+    food_lunch: boolean;
+    food_dinner: boolean;
   };
 }
 
@@ -115,12 +119,12 @@ export async function syncMonthAction(
     const [{ data: tenants, error: tenantsErr }, { data: configData }] = await Promise.all([
       supabase
         .from("hms_tenants")
-        .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out")
+        .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, food_breakfast, food_lunch, food_dinner")
         .eq("hostel_id", hostelId)
         .eq("is_active", true),
       supabase
         .from("hms_package_configs")
-        .select("food_monthly_rate, ac_per_unit_rate")
+        .select("food_monthly_rate, ac_per_unit_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate")
         .eq("hostel_id", hostelId)
         .maybeSingle(),
     ]);
@@ -151,7 +155,9 @@ export async function syncMonthAction(
         if (!VALID_TIERS.has(tier)) throw new Error(`Invalid package_tier in DB for tenant ${t.id}`);
 
         const baseRent = calcBaseRentServer(t, month);
-        const foodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
+        const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
+        const addonFoodCharge = configData ? calcFoodAddonCharge(t, configData) : 0;
+        const foodCharge = tierFoodCharge + addonFoodCharge;
 
         const existing = existingMap.get(t.id);
 
@@ -305,7 +311,15 @@ export async function markPaymentPaidAction(
     }
 
     // --- Re-derive base_rent and total from DB-canonical values (F-001) ---
-    const tenantData = await fetchTenantData(existingPayment.tenant_id, hostelId);
+    // Fanned out — independent reads, no need to serialize.
+    const [tenantData, { data: foodConfigData }] = await Promise.all([
+      fetchTenantData(existingPayment.tenant_id, hostelId),
+      supabase
+        .from("hms_package_configs")
+        .select("food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate")
+        .eq("hostel_id", hostelId)
+        .maybeSingle(),
+    ]);
     const forMonth = existingPayment.for_month;
 
     let baseRent: number;
@@ -316,17 +330,14 @@ export async function markPaymentPaidAction(
       baseRent = calcBaseRentServer(tenantData, forMonth);
     }
 
-    // Re-fetch food_charge from the canonical package config rate (never trust
+    // Re-derive food_charge from the canonical package config rate (never trust
     // the stored row value, which could have been corrupted via direct API PATCH).
-    let foodCharge = 0;
-    if (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") {
-      const { data: foodConfigData } = await supabase
-        .from("hms_package_configs")
-        .select("food_monthly_rate")
-        .eq("hostel_id", hostelId)
-        .maybeSingle();
-      foodCharge = Number(foodConfigData?.food_monthly_rate ?? 0);
-    }
+    // The add-on applies independently of package tier.
+    const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler")
+      ? Number(foodConfigData?.food_monthly_rate ?? 0)
+      : 0;
+    const addonFoodCharge = foodConfigData ? calcFoodAddonCharge(tenantData, foodConfigData) : 0;
+    const foodCharge = tierFoodCharge + addonFoodCharge;
 
     const newTotalAmount = baseRent + foodCharge + newAcCharge;
 
@@ -522,7 +533,7 @@ export async function applyRoomACUnitsAction(
     const prevMonthStr = getPrevMonth(forMonth);
     const [{ data: room }, { data: pkgConfig }, { data: prevRecord }] = await Promise.all([
       supabase.from("hms_rooms").select("id, hostel_id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
-      supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate").eq("hostel_id", hostelId).single(),
+      supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate").eq("hostel_id", hostelId).single(),
       supabase.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
     ]);
 
@@ -546,7 +557,7 @@ export async function applyRoomACUnitsAction(
     // ── Find all active tenants in this room ─────────────────────
     const { data: allTenants } = await supabase
       .from("hms_tenants")
-      .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out")
+      .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, food_breakfast, food_lunch, food_dinner")
       .eq("hostel_id", hostelId)
       .eq("room_id", roomId)
       .eq("is_active", true);
@@ -760,7 +771,9 @@ export async function applyRoomACUnitsAction(
           },
           forMonth
         );
-        const foodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
+        const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
+        const addonFoodCharge = pkgConfig ? calcFoodAddonCharge(t, pkgConfig) : 0;
+        const foodCharge = tierFoodCharge + addonFoodCharge;
         return {
           hostel_id: hostelId,
           tenant_id: t.id,

@@ -17,6 +17,7 @@ import type { HostelType, Hostel, FormConfig, FormFieldConfig, PaymentMethodAcco
 import { DEFAULT_FORM_CONFIG } from "@/types";
 import { savePaymentRecoverySettings } from "@/app/actions/settings";
 import { DEFAULT_REMINDER_TEMPLATE, formatAccounts, buildReminderMessage } from "@/lib/whatsapp-reminder";
+import { SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
 
 const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
   { value: "boys",   label: "Boys Only" },
@@ -101,6 +102,12 @@ export function SettingsClient() {
   const [packageForm, setPackageForm] = useState<{ ac_per_unit_rate: string; security_deposit: string; prices: PkgPriceForm }>({
     ac_per_unit_rate: "", security_deposit: "", prices: emptyPriceForm(),
   });
+  const [foodAddonForm, setFoodAddonForm] = useState<{ breakfast: string; lunch: string; dinner: string; allMeals: string }>({
+    breakfast: "", lunch: "", dinner: "", allMeals: "",
+  });
+  const [seaterForm, setSeaterForm] = useState<Record<string, { no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string }>>(
+    Object.fromEntries(SEATER_CAPACITIES.map((c) => [c, { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" }]))
+  );
   const [customRows, setCustomRows] = useState<Array<{ id: string; name: string; no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string }>>([]);
   const [savingPackage, setSavingPackage] = useState(false);
   const [packageLoaded, setPackageLoaded] = useState(false);
@@ -166,7 +173,7 @@ export function SettingsClient() {
     const supabase = createClient();
     const { data } = await supabase
       .from("hms_package_configs")
-      .select("ac_per_unit_rate, security_deposit, package_prices")
+      .select("ac_per_unit_rate, security_deposit, package_prices, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, seater_prices")
       .eq("hostel_id", id)
       .maybeSingle();
     if (data) {
@@ -200,6 +207,22 @@ export function SettingsClient() {
         deposit_no_ac: (c.deposit_no_ac ?? 0) > 0 ? String(c.deposit_no_ac) : "",
         deposit_ac: (c.deposit_ac ?? 0) > 0 ? String(c.deposit_ac) : "",
       })));
+      setFoodAddonForm({
+        breakfast: data.food_breakfast_rate > 0 ? String(data.food_breakfast_rate) : "",
+        lunch: data.food_lunch_rate > 0 ? String(data.food_lunch_rate) : "",
+        dinner: data.food_dinner_rate > 0 ? String(data.food_dinner_rate) : "",
+        allMeals: data.food_all_meals_rate > 0 ? String(data.food_all_meals_rate) : "",
+      });
+      const rawSeater = (data.seater_prices ?? {}) as Record<string, { no_ac?: number; ac?: number; deposit_no_ac?: number; deposit_ac?: number }>;
+      setSeaterForm(Object.fromEntries(SEATER_CAPACITIES.map((c) => [
+        c,
+        {
+          no_ac: (rawSeater[c]?.no_ac ?? 0) > 0 ? String(rawSeater[c]!.no_ac) : "",
+          ac: (rawSeater[c]?.ac ?? 0) > 0 ? String(rawSeater[c]!.ac) : "",
+          deposit_no_ac: (rawSeater[c]?.deposit_no_ac ?? 0) > 0 ? String(rawSeater[c]!.deposit_no_ac) : "",
+          deposit_ac: (rawSeater[c]?.deposit_ac ?? 0) > 0 ? String(rawSeater[c]!.deposit_ac) : "",
+        },
+      ])));
     }
     setPackageLoaded(true);
   }
@@ -475,15 +498,31 @@ export function SettingsClient() {
         deposit_ac: parseFloat(c.deposit_ac) || 0,
       }));
     }
+    const seaterPayload: Record<string, { no_ac: number; ac: number; deposit_no_ac: number; deposit_ac: number }> = {};
+    for (const c of SEATER_CAPACITIES) {
+      const no_ac = parseFloat(seaterForm[c]?.no_ac) || 0;
+      const ac = parseFloat(seaterForm[c]?.ac) || 0;
+      const deposit_no_ac = parseFloat(seaterForm[c]?.deposit_no_ac) || 0;
+      const deposit_ac = parseFloat(seaterForm[c]?.deposit_ac) || 0;
+      if (no_ac > 0 || ac > 0 || deposit_no_ac > 0 || deposit_ac > 0) {
+        seaterPayload[c] = { no_ac, ac, deposit_no_ac, deposit_ac };
+      }
+    }
+
     const { error } = await supabase
       .from("hms_package_configs")
       .upsert(
         {
-          hostel_id:        hostelId,
-          ac_per_unit_rate: parseFloat(packageForm.ac_per_unit_rate) || 0,
-          security_deposit: parseFloat(packageForm.security_deposit) || 0,
-          package_prices:   dbPayload,
-          updated_at:       new Date().toISOString(),
+          hostel_id:            hostelId,
+          ac_per_unit_rate:     parseFloat(packageForm.ac_per_unit_rate) || 0,
+          security_deposit:     parseFloat(packageForm.security_deposit) || 0,
+          package_prices:       dbPayload,
+          food_breakfast_rate:  parseFloat(foodAddonForm.breakfast) || 0,
+          food_lunch_rate:      parseFloat(foodAddonForm.lunch) || 0,
+          food_dinner_rate:     parseFloat(foodAddonForm.dinner) || 0,
+          food_all_meals_rate:  parseFloat(foodAddonForm.allMeals) || 0,
+          seater_prices:        seaterPayload,
+          updated_at:           new Date().toISOString(),
         },
         { onConflict: "hostel_id" }
       );
@@ -1115,6 +1154,132 @@ export function SettingsClient() {
                 />
                 <p className="text-xs text-muted-foreground">Fallback when no per-package deposit is set above. Shown on the public hostel page.</p>
               </div>
+            </div>
+
+            {/* Food Add-on Pricing — independent of package tiers */}
+            <div className="space-y-3 pt-2 border-t border-sidebar-border">
+              <div>
+                <Label className="text-xs font-semibold">Food Add-on Pricing <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Let tenants add specific meals on top of any room package, priced independently — separate from the bundled packages above. Leave blank if you don&apos;t offer this.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-6">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Breakfast (Rs. / month)</Label>
+                  <Input
+                    type="number" min="0" step="1" placeholder="e.g. 5000"
+                    value={foodAddonForm.breakfast}
+                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, breakfast: e.target.value })}
+                    disabled={!packageLoaded}
+                    className="max-w-[160px]"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Lunch (Rs. / month)</Label>
+                  <Input
+                    type="number" min="0" step="1" placeholder="e.g. 5000"
+                    value={foodAddonForm.lunch}
+                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, lunch: e.target.value })}
+                    disabled={!packageLoaded}
+                    className="max-w-[160px]"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Dinner (Rs. / month)</Label>
+                  <Input
+                    type="number" min="0" step="1" placeholder="e.g. 5000"
+                    value={foodAddonForm.dinner}
+                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, dinner: e.target.value })}
+                    disabled={!packageLoaded}
+                    className="max-w-[160px]"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">All 3 Meals Bundle (Rs. / month)</Label>
+                  <Input
+                    type="number" min="0" step="1" placeholder="e.g. 15000"
+                    value={foodAddonForm.allMeals}
+                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, allMeals: e.target.value })}
+                    disabled={!packageLoaded}
+                    className="max-w-[160px]"
+                  />
+                  <p className="text-xs text-muted-foreground">Used automatically when cheaper than the sum of all 3.</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Seater Pricing — automatic per-room pricing by capacity */}
+            <div className="space-y-3 pt-2 border-t border-sidebar-border">
+              <div>
+                <Label className="text-xs font-semibold">Seater Pricing <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Set a rent and deposit by seat count and every room on your public page prices itself automatically, based on its own capacity — no need to price each room by hand. Leave blank to keep using the pricing above.
+                </p>
+              </div>
+              <div className="rounded-lg border border-border overflow-hidden overflow-x-auto">
+                <div className="grid grid-cols-[1fr_90px_90px_90px_90px] gap-px bg-border min-w-[560px]">
+                  <div className="bg-card px-3 py-2">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Seater</span>
+                  </div>
+                  <div className="bg-card px-2 py-2 text-center">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Rent (Std)</span>
+                  </div>
+                  <div className="bg-card px-2 py-2 text-center">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Rent (AC)</span>
+                  </div>
+                  <div className="bg-card px-2 py-2 text-center">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (Std)</span>
+                  </div>
+                  <div className="bg-card px-2 py-2 text-center">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (AC)</span>
+                  </div>
+                </div>
+                {SEATER_CAPACITIES.map((c) => (
+                  <div key={c} className="grid grid-cols-[1fr_90px_90px_90px_90px] gap-px bg-border min-w-[560px]">
+                    <div className="bg-card px-3 py-2.5 flex items-center">
+                      <p className="text-sm font-medium">{SEATER_LABELS[c]}</p>
+                    </div>
+                    <div className="bg-card px-2 py-2 flex items-center">
+                      <Input
+                        type="number" min="0" step="1" placeholder="0"
+                        value={seaterForm[c]?.no_ac ?? ""}
+                        onChange={(e) => setSeaterForm({ ...seaterForm, [c]: { ...seaterForm[c], no_ac: e.target.value } })}
+                        disabled={!packageLoaded}
+                        className="h-7 text-xs text-center px-1"
+                      />
+                    </div>
+                    <div className="bg-card px-2 py-2 flex items-center">
+                      <Input
+                        type="number" min="0" step="1" placeholder="0"
+                        value={seaterForm[c]?.ac ?? ""}
+                        onChange={(e) => setSeaterForm({ ...seaterForm, [c]: { ...seaterForm[c], ac: e.target.value } })}
+                        disabled={!packageLoaded}
+                        className="h-7 text-xs text-center px-1"
+                      />
+                    </div>
+                    <div className="bg-card px-2 py-2 flex items-center">
+                      <Input
+                        type="number" min="0" step="1" placeholder="—"
+                        value={seaterForm[c]?.deposit_no_ac ?? ""}
+                        onChange={(e) => setSeaterForm({ ...seaterForm, [c]: { ...seaterForm[c], deposit_no_ac: e.target.value } })}
+                        disabled={!packageLoaded}
+                        className="h-7 text-xs text-center px-1"
+                      />
+                    </div>
+                    <div className="bg-card px-2 py-2 flex items-center">
+                      <Input
+                        type="number" min="0" step="1" placeholder="—"
+                        value={seaterForm[c]?.deposit_ac ?? ""}
+                        onChange={(e) => setSeaterForm({ ...seaterForm, [c]: { ...seaterForm[c], deposit_ac: e.target.value } })}
+                        disabled={!packageLoaded}
+                        className="h-7 text-xs text-center px-1"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">Leave a deposit blank to fall back to the Default Security Deposit below.</p>
             </div>
 
             <Button type="submit" disabled={savingPackage || !packageLoaded} className="gap-2">

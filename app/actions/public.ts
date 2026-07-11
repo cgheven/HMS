@@ -197,7 +197,7 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
         .order("sort_order"),
       admin
         .from("hms_package_configs")
-        .select("id,hostel_id,food_monthly_rate,food_bd_rate,food_3meals_rate,ac_per_unit_rate,security_deposit,package_prices,created_at,updated_at")
+        .select("id,hostel_id,food_monthly_rate,food_bd_rate,food_3meals_rate,food_breakfast_rate,food_lunch_rate,food_dinner_rate,food_all_meals_rate,ac_per_unit_rate,security_deposit,package_prices,seater_prices,created_at,updated_at")
         .eq("hostel_id", hostelId)
         .maybeSingle(),
     ]);
@@ -348,6 +348,9 @@ export async function submitApplication(
     move_in_date?: string;
     notes?: string;
     cnic_doc_path?: string;
+    food_breakfast?: boolean;
+    food_lunch?: boolean;
+    food_dinner?: boolean;
   }
 ): Promise<{ error?: string }> {
   try {
@@ -374,6 +377,9 @@ export async function submitApplication(
       move_in_date: data.move_in_date || null,
       notes: data.notes?.trim().slice(0, 500) || null,
       cnic_doc_path: data.cnic_doc_path || null,
+      food_breakfast: data.food_breakfast ?? false,
+      food_lunch: data.food_lunch ?? false,
+      food_dinner: data.food_dinner ?? false,
     };
     const { error } = await admin.from("hms_tenant_applications").insert(payload);
     if (error) throw error;

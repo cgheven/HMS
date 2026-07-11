@@ -233,6 +233,9 @@ export interface Tenant {
   monthly_rent: number;
   daily_rate: number;
   security_deposit: number;
+  food_breakfast: boolean;
+  food_lunch: boolean;
+  food_dinner: boolean;
   is_active: boolean;
   is_waiting: boolean;
   bed_number: string | null;
@@ -494,9 +497,14 @@ export interface PackageConfig {
   food_monthly_rate: number;
   food_bd_rate: number;
   food_3meals_rate: number;
+  food_breakfast_rate: number;
+  food_lunch_rate: number;
+  food_dinner_rate: number;
+  food_all_meals_rate: number;
   ac_per_unit_rate: number;
   security_deposit: number;
   package_prices: Partial<Record<PackageTier, PackagePrices>>;
+  seater_prices: Partial<Record<string, { no_ac: number; ac: number; deposit_no_ac?: number; deposit_ac?: number }>>;
   created_at: string;
   updated_at: string;
 }
@@ -563,6 +571,9 @@ export interface TenantApplication {
   notes: string | null;
   photo_url: string | null;
   cnic_doc_path: string | null;
+  food_breakfast: boolean;
+  food_lunch: boolean;
+  food_dinner: boolean;
   status: ApplicationStatus;
   applied_at: string;
   reviewed_at: string | null;
