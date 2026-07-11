@@ -1,6 +1,6 @@
 "use client";
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Home, CheckCircle2, Loader2, Phone, Mail, User, CreditCard, Calendar, MessageSquare, Camera, Upload, X, RefreshCw } from "lucide-react";
+import { Home, CheckCircle2, Loader2, Phone, Mail, User, CreditCard, Calendar, MessageSquare, Camera, Upload, X, RefreshCw, BedDouble, Check } from "lucide-react";
 import { submitApplication } from "@/app/actions/applications";
 import { uploadApplicationCnic } from "@/app/actions/public";
 import { Button } from "@/components/ui/button";
@@ -8,44 +8,52 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import type { Hostel, PackageTier, FormConfig } from "@/types";
+import { formatCurrency, cn } from "@/lib/utils";
+import { buildPackageOptions } from "@/lib/room-pricing";
+import { SEATER_LABELS } from "@/lib/seater-pricing";
+import type { PublicHostelDetail, PublicRoom, PackageTier, FormConfig } from "@/types";
 import { DEFAULT_FORM_CONFIG } from "@/types";
 
-const PACKAGE_LABELS: Record<PackageTier, string> = {
-  space_only: "Space Only",
-  space_food: "Space + 2 Meals",
-  space_3meals: "Space + 3 Meals",
-  space_food_ac: "Space + Meals + AC",
-  space_meals_cooler: "Space + Meals + Cooler",
-};
-
-const ROOM_PREFS = [
-  { value: "no_preference", label: "No Preference" },
-  { value: "student", label: "Student" },
-  { value: "professional", label: "Professional" },
-  { value: "general", label: "General" },
-];
-
 interface Props {
-  hostel: Hostel;
-  availableTiers: PackageTier[];
+  hostel: PublicHostelDetail;
+  preselectedRoomNumber: string | null;
 }
 
-export function JoinFormClient({ hostel, availableTiers }: Props) {
+export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
   const cfg = { ...DEFAULT_FORM_CONFIG, ...(hostel.form_config as FormConfig | null ?? {}) };
   const show = (key: keyof typeof cfg) => cfg[key]?.enabled !== false;
   const req  = (key: keyof typeof cfg) => cfg[key]?.required === true;
+
+  const availableRooms = hostel.rooms.filter((r) => r.status !== "maintenance" && r.capacity - r.occupied > 0);
+  const preselectedRoom = preselectedRoomNumber
+    ? availableRooms.find((r) => r.room_number === preselectedRoomNumber) ?? null
+    : null;
+
+  // Fallback package tiers — used only when room selection is disabled for
+  // this hostel (show("room_preference") === false), matching the old
+  // behavior exactly so those hostels see zero change.
+  const fallbackTierKeys = (() => {
+    const prices = hostel.package_config?.package_prices ?? {};
+    const keys = Object.keys(prices).filter((k) => k !== "_custom") as PackageTier[];
+    return keys.length > 0 ? keys : (["space_only", "space_food", "space_3meals", "space_food_ac", "space_meals_cooler"] as PackageTier[]);
+  })();
 
   const [form, setForm] = useState({
     full_name: "",
     phone: "",
     email: "",
     cnic: "",
-    package_tier: (availableTiers[0] ?? "space_only") as PackageTier,
-    room_preference: "no_preference",
+    room_id: preselectedRoom?.id ?? "",
+    package_tier: (preselectedRoom ? "space_only" : (fallbackTierKeys[0] ?? "space_only")) as PackageTier,
     move_in_date: "",
     notes: "",
   });
+
+  const selectedRoom: PublicRoom | null = form.room_id ? hostel.rooms.find((r) => r.id === form.room_id) ?? null : null;
+  const packageOptions = selectedRoom ? buildPackageOptions(selectedRoom, hostel.package_config) : [];
+  // A room clicked on the browsing page arrives preselected — show just that
+  // one room instead of the full list, with a way to expand and pick another.
+  const [showRoomList, setShowRoomList] = useState(!preselectedRoom);
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -170,6 +178,10 @@ export function JoinFormClient({ hostel, availableTiers }: Props) {
     if (show("email") && req("email") && !form.email.trim()) { setError("Email is required."); return; }
     if (show("cnic") && req("cnic") && !form.cnic.trim()) { setError("CNIC is required."); return; }
     if (show("move_in_date") && req("move_in_date") && !form.move_in_date) { setError("Move-in date is required."); return; }
+    if (show("room_preference") && req("room_preference") && availableRooms.length > 0 && !form.room_id) {
+      setError("Please select a room.");
+      return;
+    }
 
     setLoading(true);
     const result = await submitApplication(hostel.id, {
@@ -177,8 +189,11 @@ export function JoinFormClient({ hostel, availableTiers }: Props) {
       phone: form.phone,
       email: show("email") ? form.email || undefined : undefined,
       cnic: show("cnic") ? form.cnic || undefined : undefined,
-      package_tier: show("package_tier") ? form.package_tier : "space_only",
-      room_preference: show("room_preference") && form.room_preference !== "no_preference" ? form.room_preference : undefined,
+      package_tier: show("room_preference") && selectedRoom
+        ? form.package_tier
+        : (show("package_tier") ? form.package_tier : "space_only"),
+      room_id: show("room_preference") && selectedRoom ? selectedRoom.id : undefined,
+      room_preference: show("room_preference") && selectedRoom ? selectedRoom.room_number : undefined,
       move_in_date: show("move_in_date") ? form.move_in_date || undefined : undefined,
       notes: show("notes") ? form.notes || undefined : undefined,
       cnic_doc_path: cnicDoc?.path,
@@ -401,16 +416,68 @@ export function JoinFormClient({ hostel, availableTiers }: Props) {
             </div>
           </div>
 
-          {/* Preferences — only render the card if at least one preference field is visible */}
-          {(show("package_tier") || show("room_preference") || show("move_in_date")) && (
+          {/* Room selection — a real room list with live pricing, replacing the
+              old generic "Room Type Preference" category dropdown. The exact
+              room picked here flows straight through to approval later, so
+              staff doesn't have to re-figure it out. */}
+          {show("room_preference") && availableRooms.length > 0 && (
             <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
-              <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
-                <Home className="w-4 h-4 text-muted-foreground" /> Room Preferences
-              </h2>
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <BedDouble className="w-4 h-4 text-muted-foreground" /> Select Your Room {req("room_preference") && <span className="text-rose-400">*</span>}
+                </h2>
+                {!showRoomList && selectedRoom && (
+                  <button
+                    type="button"
+                    onClick={() => setShowRoomList(true)}
+                    className="text-xs font-medium text-amber hover:underline shrink-0"
+                  >
+                    Change room
+                  </button>
+                )}
+              </div>
+              <div className="space-y-2">
+                {(showRoomList || !selectedRoom ? availableRooms : [selectedRoom]).map((room) => {
+                  const checked = form.room_id === room.id;
+                  const price = buildPackageOptions(room, hostel.package_config)[0]?.price ?? room.monthly_rent;
+                  const seaterLabel = SEATER_LABELS[String(room.capacity)] ?? `${room.capacity} Seater`;
+                  const free = room.capacity - room.occupied;
+                  return (
+                    <button
+                      key={room.id}
+                      type="button"
+                      onClick={() => {
+                        setForm({ ...form, room_id: room.id, package_tier: "space_only" });
+                        setShowRoomList(false);
+                      }}
+                      className={cn(
+                        "w-full flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition-colors",
+                        checked ? "border-amber/40 bg-amber/[0.06]" : "border-sidebar-border hover:border-muted-foreground/30"
+                      )}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className={cn(
+                          "w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center",
+                          checked ? "border-amber bg-amber" : "border-sidebar-border"
+                        )}>
+                          {checked && <Check className="w-2.5 h-2.5 text-background" strokeWidth={3} />}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-foreground">Room {room.room_number}</p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {seaterLabel}{room.has_ac ? " · AC" : ""} · {free} {free === 1 ? "bed" : "beds"} free
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-sm font-semibold text-amber shrink-0">{formatCurrency(price)}/mo</span>
+                    </button>
+                  );
+                })}
+              </div>
 
-              {show("package_tier") && (
-                <div className="space-y-1.5">
-                  <Label>Package Preference {req("package_tier") && <span className="text-rose-400">*</span>}</Label>
+              {selectedRoom && packageOptions.length > 1 && (
+                <div className="space-y-1.5 pt-1">
+                  <Label>Package Preference</Label>
                   <Select
                     value={form.package_tier}
                     onValueChange={(v) => setForm({ ...form, package_tier: v as PackageTier })}
@@ -419,47 +486,57 @@ export function JoinFormClient({ hostel, availableTiers }: Props) {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {availableTiers.map((tier) => (
-                        <SelectItem key={tier} value={tier}>{PACKAGE_LABELS[tier]}</SelectItem>
+                      {packageOptions.filter((o) => !o.disabled).map((o) => (
+                        <SelectItem key={o.tier} value={o.tier}>
+                          {o.label} <span className="text-muted-foreground">— {formatCurrency(o.price)}/mo</span>
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
               )}
+            </div>
+          )}
 
-              {show("room_preference") && (
-                <div className="space-y-1.5">
-                  <Label>Room Type Preference {req("room_preference") && <span className="text-rose-400">*</span>}</Label>
-                  <Select
-                    value={form.room_preference}
-                    onValueChange={(v) => setForm({ ...form, room_preference: v })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ROOM_PREFS.map((p) => (
-                        <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
+          {/* Fallback — only used when this hostel has room selection disabled */}
+          {!show("room_preference") && show("package_tier") && (
+            <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
+              <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Home className="w-4 h-4 text-muted-foreground" /> Room Preferences
+              </h2>
+              <div className="space-y-1.5">
+                <Label>Package Preference {req("package_tier") && <span className="text-rose-400">*</span>}</Label>
+                <Select
+                  value={form.package_tier}
+                  onValueChange={(v) => setForm({ ...form, package_tier: v as PackageTier })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {fallbackTierKeys.map((tier) => (
+                      <SelectItem key={tier} value={tier}>{tier.replace(/_/g, " ")}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
 
-              {show("move_in_date") && (
-                <div className="space-y-1.5">
-                  <Label className="flex items-center gap-1.5">
-                    <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
-                    Preferred Move-in Date {req("move_in_date") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
-                  </Label>
-                  <Input
-                    type="date"
-                    value={form.move_in_date}
-                    onChange={(e) => setForm({ ...form, move_in_date: e.target.value })}
-                    required={req("move_in_date")}
-                  />
-                </div>
-              )}
+          {show("move_in_date") && (
+            <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
+              <div className="space-y-1.5">
+                <Label className="flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
+                  Preferred Move-in Date {req("move_in_date") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                </Label>
+                <Input
+                  type="date"
+                  value={form.move_in_date}
+                  onChange={(e) => setForm({ ...form, move_in_date: e.target.value })}
+                  required={req("move_in_date")}
+                />
+              </div>
             </div>
           )}
 

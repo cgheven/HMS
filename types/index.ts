@@ -176,6 +176,7 @@ export interface PublicHostelDetail extends PublicHostel {
   rooms: PublicRoom[];
   food_menu: FoodItem[];
   package_config: PackageConfig | null;
+  form_config: FormConfig | null;
 }
 
 export interface Room {
@@ -566,6 +567,7 @@ export interface TenantApplication {
   email: string | null;
   cnic: string | null;
   room_preference: string | null;
+  room_id: string | null;
   package_tier: PackageTier;
   move_in_date: string | null;
   notes: string | null;

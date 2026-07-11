@@ -4,15 +4,16 @@ import Link from "next/link";
 import {
   ArrowLeft, MapPin, ExternalLink, BedDouble, Zap, Wifi,
   Utensils, Shield, ChevronLeft, ChevronRight, Clock, Loader2, X,
-  Wind, Thermometer, Users, CheckCircle2, Banknote, Check,
+  Wind, Thermometer, Users, Banknote, Check,
 } from "lucide-react";
-import { joinWaitlist, submitApplication } from "@/app/actions/public";
+import { joinWaitlist } from "@/app/actions/public";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { formatCurrency } from "@/lib/utils";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
+import { buildPackageOptions } from "@/lib/room-pricing";
 import type { PublicHostelDetail, PublicRoom, FoodItem, MealType, SpaceType, PackageConfig, PackageTier } from "@/types";
 
 // ── WhatsApp icon ─────────────────────────────────────────────────────────────
@@ -63,268 +64,6 @@ function isSunday(iso: string) {
   return new Date(iso + "T00:00:00").getDay() === 0;
 }
 
-// ── Package options ───────────────────────────────────────────────────────────
-
-interface PackageOption {
-  tier: string;
-  label: string;
-  subtitle: string;
-  price: number;
-  extra: string | null;
-  disabled: boolean;
-}
-
-function buildPackageOptions(room: PublicRoom, config: PackageConfig | null): PackageOption[] {
-  const pkgPrices = config?.package_prices ?? {};
-
-  function pkgPrice(tier: PackageTier): number | null {
-    const p = pkgPrices[tier];
-    if (p) {
-      const val = room.has_ac ? p.ac : p.no_ac;
-      if (val > 0) return val;
-    }
-    return null;
-  }
-
-  // Seater price (by room capacity + AC) takes priority when configured — it's
-  // the most specific, intentional pricing signal. Falls back to the flat
-  // "Space Only" package price, then the room's own manual rent, exactly as
-  // before for hostels that never set seater pricing.
-  const spaceOnlyPrice = getSeaterPrice(room.capacity, room.has_ac, config?.seater_prices) ?? pkgPrice("space_only") ?? room.monthly_rent;
-
-  const options: PackageOption[] = [
-    {
-      tier: "space_only",
-      label: "Space Only",
-      subtitle: "Bed + room facilities",
-      price: spaceOnlyPrice,
-      extra: null,
-      disabled: false,
-    },
-    {
-      tier: "space_food",
-      label: "Space + Breakfast & Dinner",
-      subtitle: "Bed + 2 meals daily",
-      price: pkgPrice("space_food") ?? 0,
-      extra: null,
-      disabled: !pkgPrice("space_food"),
-    },
-    {
-      tier: "space_3meals",
-      label: "Space + 3 Meals",
-      subtitle: "Bed + breakfast, lunch & dinner",
-      price: pkgPrice("space_3meals") ?? 0,
-      extra: null,
-      disabled: !pkgPrice("space_3meals"),
-    },
-  ];
-
-  if (room.has_cooler) {
-    options.push({
-      tier: "space_meals_cooler",
-      label: "Space + Meals + Cooler",
-      subtitle: "Bed + meals + cooler included",
-      price: pkgPrice("space_meals_cooler") ?? 0,
-      extra: null,
-      disabled: !pkgPrice("space_meals_cooler"),
-    });
-  }
-
-  return options;
-}
-
-// ── Registration modal ────────────────────────────────────────────────────────
-
-interface RegModalProps {
-  room: PublicRoom;
-  hostelId: string;
-  hostelName: string;
-  selectedTier: string;
-  selectedLabel: string;
-  selectedPrice: number;
-  selectedMeals: { food_breakfast: boolean; food_lunch: boolean; food_dinner: boolean };
-  mealsCharge: number;
-  onClose: () => void;
-}
-
-function RegistrationModal({ room, hostelId, hostelName, selectedTier, selectedLabel, selectedPrice, selectedMeals, mealsCharge, onClose }: RegModalProps) {
-  const [fullName, setFullName]     = useState("");
-  const [phone, setPhone]           = useState("");
-  const [email, setEmail]           = useState("");
-  const [cnic, setCnic]             = useState("");
-  const [moveIn, setMoveIn]         = useState("");
-  const [notes, setNotes]           = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError]           = useState("");
-  const [done, setDone]             = useState(false);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setError("");
-    const result = await submitApplication(hostelId, {
-      full_name: fullName,
-      phone,
-      email: email || undefined,
-      cnic: cnic || undefined,
-      room_preference: room.room_number,
-      package_tier: selectedTier,
-      move_in_date: moveIn || undefined,
-      notes: notes || undefined,
-      food_breakfast: selectedMeals.food_breakfast,
-      food_lunch: selectedMeals.food_lunch,
-      food_dinner: selectedMeals.food_dinner,
-    });
-    setSubmitting(false);
-    if (result.error) {
-      setError(result.error);
-    } else {
-      setDone(true);
-    }
-  }
-
-  return (
-    <div role="dialog" aria-modal="true" aria-label={`Apply for Room ${room.room_number}`} className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/75 backdrop-blur-md" onClick={onClose} />
-      <div className="relative w-full max-w-md rounded-2xl border border-white/[0.08] bg-[#0E0E10] shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.06] shrink-0">
-          <div>
-            <p className="font-semibold text-sm">Apply for Room {room.room_number}</p>
-            <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-[280px]">{hostelName}</p>
-          </div>
-          <button onClick={onClose} aria-label="Close application form" className="p-3 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="overflow-y-auto flex-1 px-5 py-5">
-          {done ? (
-            <div className="flex flex-col items-center gap-4 py-6 text-center">
-              <div className="w-14 h-14 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
-                <CheckCircle2 className="w-7 h-7 text-emerald-400" />
-              </div>
-              <div>
-                <p className="font-semibold text-base">Application Submitted!</p>
-                <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
-                  <strong className="text-foreground">{fullName}</strong>, your application for Room {room.room_number} ({selectedLabel}) has been received.
-                </p>
-                <p className="text-sm text-muted-foreground mt-2">
-                  We&apos;ll contact you on <strong className="text-foreground">{phone}</strong> within 24 hours.
-                </p>
-              </div>
-              <div className="w-full rounded-xl border border-white/[0.07] bg-white/[0.02] p-4 text-left space-y-1.5">
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Package</span>
-                  <span className="text-foreground">{selectedLabel}</span>
-                </div>
-                {mealsCharge > 0 && (
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Meals</span>
-                    <span className="text-foreground">{formatCurrency(mealsCharge)}</span>
-                  </div>
-                )}
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Monthly Total</span>
-                  <span className="text-amber font-semibold">{formatCurrency(selectedPrice + mealsCharge)}/mo</span>
-                </div>
-              </div>
-              <Button variant="outline" onClick={onClose} className="w-full mt-2">Close</Button>
-            </div>
-          ) : (
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Package summary */}
-              <div className="rounded-xl border border-amber/20 bg-amber/[0.04] px-4 py-3 flex items-center justify-between">
-                <div>
-                  <p className="text-xs text-muted-foreground">Selected Package</p>
-                  <p className="text-sm font-medium text-foreground mt-0.5">
-                    {selectedLabel}
-                    {mealsCharge > 0 && <span className="text-muted-foreground"> + Meals</span>}
-                  </p>
-                </div>
-                <p className="text-amber font-semibold text-sm">{formatCurrency(selectedPrice + mealsCharge)}/mo</p>
-              </div>
-
-              {error && (
-                <div className="rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-400">{error}</div>
-              )}
-
-              <div className="space-y-1.5">
-                <Label className="text-xs">Full Name *</Label>
-                <Input
-                  placeholder="Ali Ahmed"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  required
-                  className="bg-white/[0.03] border-white/[0.08] h-9 text-sm"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs">WhatsApp Number *</Label>
-                <Input
-                  placeholder="03xx xxxxxxx"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  required
-                  className="bg-white/[0.03] border-white/[0.08] h-9 text-sm"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs">Email <span className="text-muted-foreground/50">(optional)</span></Label>
-                <Input
-                  type="email"
-                  placeholder="ali@email.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="bg-white/[0.03] border-white/[0.08] h-9 text-sm"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs">CNIC <span className="text-muted-foreground/50">(optional)</span></Label>
-                <Input
-                  placeholder="XXXXX-XXXXXXX-X"
-                  value={cnic}
-                  onChange={(e) => setCnic(e.target.value)}
-                  className="bg-white/[0.03] border-white/[0.08] h-9 text-sm"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs">Preferred Move-in Date <span className="text-muted-foreground/50">(optional)</span></Label>
-                <Input
-                  type="date"
-                  value={moveIn}
-                  onChange={(e) => setMoveIn(e.target.value)}
-                  className="bg-white/[0.03] border-white/[0.08] h-9 text-sm"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs">Notes / Special Requests <span className="text-muted-foreground/50">(optional)</span></Label>
-                <textarea
-                  rows={3}
-                  placeholder="Any special requirements or questions..."
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  className="w-full rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/40 resize-none"
-                />
-              </div>
-
-              <Button type="submit" disabled={submitting} className="w-full h-10 gap-2 bg-emerald-600 hover:bg-emerald-500 text-white border-0">
-                {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                {submitting ? "Submitting…" : "Submit Application"}
-              </Button>
-            </form>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Room detail modal ─────────────────────────────────────────────────────────
 
 interface RoomDetailModalProps {
@@ -337,7 +76,6 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
   const photos = [room.photo_path, room.photo_path_2, room.photo_path_3, room.photo_path_4, room.photo_path_5].filter(Boolean) as string[];
   const [photoIdx, setPhotoIdx]   = useState(0);
   const [selectedTier, setSelectedTier] = useState("space_only");
-  const [regOpen, setRegOpen]     = useState(false);
   const [meals, setMeals] = useState({ food_breakfast: false, food_lunch: false, food_dinner: false });
 
   const available = room.capacity - room.occupied;
@@ -367,30 +105,16 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape" && !regOpen) onClose();
+      if (e.key === "Escape") onClose();
       if (e.key === "ArrowRight" && photos.length > 1) setPhotoIdx((i) => (i + 1) % photos.length);
       if (e.key === "ArrowLeft"  && photos.length > 1) setPhotoIdx((i) => (i - 1 + photos.length) % photos.length);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [photos.length, onClose, regOpen]);
+  }, [photos.length, onClose]);
 
   return (
     <>
-      {regOpen && (
-        <RegistrationModal
-          room={room}
-          hostelId={hostel.id}
-          hostelName={hostel.name}
-          selectedTier={selectedTier}
-          selectedLabel={selected.label}
-          selectedPrice={selected.price}
-          selectedMeals={meals}
-          mealsCharge={mealsCharge}
-          onClose={() => setRegOpen(false)}
-        />
-      )}
-
       <div role="dialog" aria-modal="true" aria-label={`Room ${room.room_number} details`} className="fixed inset-0 z-50 flex items-center justify-center sm:p-4">
         <div className="absolute inset-0 bg-black/75 backdrop-blur-md" onClick={onClose} />
 
@@ -712,12 +436,14 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
               ) : (
                 <div className="flex-1" />
               )}
-              <button
-                onClick={() => setRegOpen(true)}
-                className="flex-1 flex items-center justify-center gap-2 h-11 rounded-xl border border-white/[0.12] hover:border-white/20 hover:bg-white/[0.04] text-sm font-medium text-foreground transition-colors"
-              >
-                Apply / Register
-              </button>
+              {hostel.slug && (
+                <Link
+                  href={`/join/${hostel.slug}?room=${encodeURIComponent(room.room_number)}`}
+                  className="flex-1 flex items-center justify-center gap-2 h-11 rounded-xl border border-white/[0.12] hover:border-white/20 hover:bg-white/[0.04] text-sm font-medium text-foreground transition-colors"
+                >
+                  Apply / Register
+                </Link>
+              )}
             </div>
           </div>
         </div>

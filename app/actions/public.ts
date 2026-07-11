@@ -162,7 +162,7 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
 
     const { data: hostelData, error: hostelErr } = await admin
       .from("hms_hostels")
-      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays,cover_image_url")
+      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays,cover_image_url,form_config")
       .eq("slug", slug)
       .eq("listing_enabled", true)
       .single();
@@ -331,59 +331,6 @@ export async function uploadApplicationCnic(
     if (uploadError) return { error: "Upload failed. Please try again." };
 
     return { path };
-  } catch {
-    return { error: "Something went wrong. Please try again." };
-  }
-}
-
-export async function submitApplication(
-  hostelId: string,
-  data: {
-    full_name: string;
-    phone: string;
-    email?: string;
-    cnic?: string;
-    room_preference?: string;
-    package_tier: string;
-    move_in_date?: string;
-    notes?: string;
-    cnic_doc_path?: string;
-    food_breakfast?: boolean;
-    food_lunch?: boolean;
-    food_dinner?: boolean;
-  }
-): Promise<{ error?: string }> {
-  try {
-    if (!data.full_name.trim() || !data.phone.trim()) throw new Error("Name and phone are required");
-    const admin = createAdminClient();
-
-    // SECURITY: validate hostel is publicly listed before accepting any application
-    const { data: targetHostel } = await admin
-      .from("hms_hostels")
-      .select("id")
-      .eq("id", hostelId)
-      .eq("listing_enabled", true)
-      .maybeSingle();
-    if (!targetHostel) return { error: "Hostel not found." };
-
-    const payload = {
-      hostel_id: hostelId,
-      full_name: data.full_name.trim().slice(0, 100),
-      phone: data.phone.trim().slice(0, 20),
-      email: data.email?.trim().slice(0, 200) || null,
-      cnic: data.cnic?.trim().slice(0, 20) || null,
-      room_preference: data.room_preference?.trim().slice(0, 50) || null,
-      package_tier: data.package_tier,
-      move_in_date: data.move_in_date || null,
-      notes: data.notes?.trim().slice(0, 500) || null,
-      cnic_doc_path: data.cnic_doc_path || null,
-      food_breakfast: data.food_breakfast ?? false,
-      food_lunch: data.food_lunch ?? false,
-      food_dinner: data.food_dinner ?? false,
-    };
-    const { error } = await admin.from("hms_tenant_applications").insert(payload);
-    if (error) throw error;
-    return {};
   } catch {
     return { error: "Something went wrong. Please try again." };
   }

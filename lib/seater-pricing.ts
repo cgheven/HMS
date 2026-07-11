@@ -16,13 +16,13 @@ export type SeaterPrices = Partial<Record<string, SeaterRate>>;
 export const SEATER_CAPACITIES = ["1", "2", "3", "4", "5", "6", "7"] as const;
 
 export const SEATER_LABELS: Record<string, string> = {
-  "1": "Single Seater",
-  "2": "Double Seater",
-  "3": "Third Seater",
-  "4": "Fourth Seater",
-  "5": "Fifth Seater",
-  "6": "Sixth Seater",
-  "7": "Seventh Seater",
+  "1": "1 Seater",
+  "2": "2 Seater",
+  "3": "3 Seater",
+  "4": "4 Seater",
+  "5": "5 Seater",
+  "6": "6 Seater",
+  "7": "7 Seater",
 };
 
 export function getSeaterPrice(

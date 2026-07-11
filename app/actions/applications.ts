@@ -13,6 +13,7 @@ interface ApplicationInput {
   cnic?: string;
   package_tier: PackageTier;
   room_preference?: string;
+  room_id?: string;
   move_in_date?: string;
   notes?: string;
   cnic_doc_path?: string;
@@ -27,6 +28,18 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
   // This mirrors the DB-level trigger in migration 024 as an early-exit check
   // so the error message is user-friendly rather than a raw DB exception.
   const admin = createAdminClient();
+
+  // SECURITY: only accept applications for hostels that are publicly listed —
+  // this is the sole application entry point now that the room-card popup
+  // (which had its own listing_enabled check) has been removed.
+  const { data: targetHostel } = await admin
+    .from("hms_hostels")
+    .select("id")
+    .eq("id", hostelId)
+    .eq("listing_enabled", true)
+    .maybeSingle();
+  if (!targetHostel) return { success: false, error: "Hostel not found" };
+
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const { count: recentCount } = await admin
     .from("hms_tenant_applications")
@@ -37,6 +50,19 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     return { success: false, error: "Too many applications from this number. Please try again tomorrow." };
   }
 
+  // SECURITY: never trust a client-supplied room_id blindly — verify it's a
+  // real room belonging to THIS hostel before linking it to the application.
+  let verifiedRoomId: string | null = null;
+  if (data.room_id) {
+    const { data: roomCheck } = await admin
+      .from("hms_rooms")
+      .select("id")
+      .eq("id", data.room_id)
+      .eq("hostel_id", hostelId)
+      .maybeSingle();
+    verifiedRoomId = roomCheck?.id ?? null;
+  }
+
   const { error } = await admin.from("hms_tenant_applications").insert({
     hostel_id: hostelId,
     full_name: data.full_name.trim(),
@@ -45,6 +71,7 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     cnic: data.cnic?.trim() || null,
     package_tier: data.package_tier,
     room_preference: data.room_preference || null,
+    room_id: verifiedRoomId,
     move_in_date: data.move_in_date || null,
     notes: data.notes?.trim() || null,
     cnic_doc_path: data.cnic_doc_path || null,

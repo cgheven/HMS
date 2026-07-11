@@ -17,7 +17,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
-import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates } from "@/lib/food-addon";
+import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates, type FoodAddonFlags } from "@/lib/food-addon";
+import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
 import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
@@ -83,6 +84,50 @@ function getPkgPrice(prices: Partial<Record<PackageTier, { no_ac: number; ac: nu
   if (!p) return "";
   const val = hasAc ? p.ac : p.no_ac;
   return val > 0 ? String(val) : "";
+}
+
+// Suggested rent for a room + package tier — mirrors the precedence chain used on the
+// public join/room-browsing pages (lib/room-pricing.ts): seater price only governs the
+// base "space_only" tier; other tiers are always flat package-tier prices.
+function getSuggestedRent(
+  room: Room,
+  tier: PackageTier,
+  pkgPrices: Partial<Record<PackageTier, PackagePrices>>,
+  seaterPrices: SeaterPrices | null | undefined
+): number {
+  if (tier === "space_only") {
+    const seater = getSeaterPrice(room.capacity, room.has_ac, seaterPrices);
+    if (seater !== null) return seater;
+  }
+  const tierPrices = pkgPrices[tier];
+  const tierPrice = tierPrices ? (room.has_ac ? tierPrices.ac : tierPrices.no_ac) : 0;
+  if (tierPrice > 0) return tierPrice;
+  return tier === "space_only" ? room.monthly_rent : 0;
+}
+
+function getSuggestedDeposit(
+  room: Room,
+  tier: PackageTier,
+  pkgPrices: Partial<Record<PackageTier, PackagePrices>>,
+  seaterPrices: SeaterPrices | null | undefined,
+  configSecurityDeposit: number
+): number {
+  if (tier === "space_only") {
+    const seaterDep = getSeaterDeposit(room.capacity, room.has_ac, seaterPrices);
+    if (seaterDep !== null) return seaterDep;
+  }
+  const tierPrices = pkgPrices[tier];
+  const tierDeposit = tierPrices ? (room.has_ac ? (tierPrices.deposit_ac ?? 0) : (tierPrices.deposit_no_ac ?? 0)) : 0;
+  if (tierDeposit > 0) return tierDeposit;
+  return configSecurityDeposit;
+}
+
+function approveFormFoodFlags(form: ConvertFormData): FoodAddonFlags {
+  return {
+    food_breakfast: form.food_breakfast ?? false,
+    food_lunch: form.food_lunch ?? false,
+    food_dinner: form.food_dinner ?? false,
+  };
 }
 
 interface CustomPackage {
@@ -285,6 +330,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [pkgPrices, setPkgPrices] = useState<Partial<Record<PackageTier, PackagePrices>>>({});
   const [customPackages, setCustomPackages] = useState<CustomPackage[]>([]);
   const [configSecurityDeposit, setConfigSecurityDeposit] = useState<number>(0);
+  const [seaterPrices, setSeaterPrices] = useState<SeaterPrices>({});
   const [foodAddonRates, setFoodAddonRates] = useState<FoodAddonRates>({
     food_breakfast_rate: 0, food_lunch_rate: 0, food_dinner_rate: 0, food_all_meals_rate: 0,
   });
@@ -293,7 +339,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     if (!hostelId) return;
     const supabase = createClient();
     supabase.from("hms_package_configs")
-      .select("package_prices, security_deposit, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate")
+      .select("package_prices, security_deposit, seater_prices, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate")
       .eq("hostel_id", hostelId)
       .maybeSingle()
       .then(({ data }) => {
@@ -317,6 +363,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         }
         if (data?.security_deposit) {
           setConfigSecurityDeposit(Number(data.security_deposit));
+        }
+        if (data?.seater_prices) {
+          setSeaterPrices(data.seater_prices as SeaterPrices);
         }
         if (data) {
           setFoodAddonRates({
@@ -399,17 +448,30 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
   function openApproveDialog(app: TenantApplication) {
     setApprovingApp(app);
-    // Match room_preference (room number string) to an actual room
-    const matchedRoom = app.room_preference
+    // Prefer the verified room_id FK captured by the join form — trust it over the
+    // free-text room_preference string, which only exists for legacy applications
+    // submitted before room selection was added to the join form.
+    const rawMatchedRoom = app.room_id
+      ? rooms.find((r) => r.id === app.room_id) ?? null
+      : app.room_preference
       ? rooms.find((r) => r.room_number === app.room_preference) ?? null
       : null;
+    // A room that filled up or went into maintenance between application and approval
+    // must not be silently auto-activated — fall back to the waitlist so staff notice
+    // and pick a new room.
+    const matchedRoom = rawMatchedRoom && rawMatchedRoom.status !== "maintenance" && rawMatchedRoom.capacity - rawMatchedRoom.occupied > 0
+      ? rawMatchedRoom
+      : null;
+    const tier = app.package_tier ?? "space_only";
     setApproveForm({
       type: matchedRoom?.type ?? app.room_preference ?? "general",
-      package_tier: app.package_tier ?? "space_only",
+      package_tier: tier,
       billing_type: "monthly",
-      monthly_rent: matchedRoom?.monthly_rent ?? 0,
+      monthly_rent: matchedRoom ? getSuggestedRent(matchedRoom, tier, pkgPrices, seaterPrices) : 0,
       daily_rate: 0,
-      security_deposit: 10000,
+      security_deposit: matchedRoom
+        ? getSuggestedDeposit(matchedRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
+        : (configSecurityDeposit > 0 ? configSecurityDeposit : 10000),
       check_in: app.move_in_date ?? formatDateInput(new Date()),
       room_id: matchedRoom?.id ?? null,
       bed_number: null,
@@ -1381,17 +1443,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   <Select value={approveForm.package_tier} onValueChange={(v) => {
                     const tier = v as PackageTier;
                     const approveRoom = approveForm.room_id ? rooms.find((r) => r.id === approveForm.room_id) : null;
-                    const tierPrices = pkgPrices[tier];
-                    const tierDeposit = approveRoom
-                      ? (approveRoom.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
-                      : 0;
-                    const suggestedDeposit = tierDeposit > 0 ? tierDeposit : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
+                    const suggestedDeposit = approveRoom
+                      ? getSuggestedDeposit(approveRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
+                      : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
+                    const suggestedRent = approveRoom
+                      ? getSuggestedRent(approveRoom, tier, pkgPrices, seaterPrices)
+                      : approveForm.monthly_rent;
                     // Clear any add-on meal selection when switching to a package that
                     // already bundles food — prevents a stale double-charge on save.
                     const clearFood = FOOD_INCLUSIVE_TIERS.has(tier)
                       ? { food_breakfast: false, food_lunch: false, food_dinner: false }
                       : {};
-                    setApproveForm({ ...approveForm, package_tier: tier, security_deposit: suggestedDeposit, ...clearFood });
+                    setApproveForm({ ...approveForm, package_tier: tier, security_deposit: suggestedDeposit, monthly_rent: suggestedRent, ...clearFood });
                   }}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -1469,6 +1532,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         );
                       })()
                     )}
+                    {(approveForm.food_breakfast || approveForm.food_lunch || approveForm.food_dinner) && (
+                      <p className="text-xs text-muted-foreground">
+                        Food add-on: <span className="text-foreground font-medium">{formatCurrency(calcFoodAddonCharge(approveFormFoodFlags(approveForm), foodAddonRates))}</span>/mo — billed automatically on top of rent.
+                      </p>
+                    )}
                   </div>
                 )
               )}
@@ -1505,6 +1573,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         : { ...approveForm, daily_rate: val });
                     }}
                   />
+                  {approveForm.billing_type === "monthly" && (approveForm.food_breakfast || approveForm.food_lunch || approveForm.food_dinner) && (() => {
+                    const foodCharge = calcFoodAddonCharge(approveFormFoodFlags(approveForm), foodAddonRates);
+                    return (
+                      <p className="text-xs text-amber">
+                        + {formatCurrency(foodCharge)} food = {formatCurrency(approveForm.monthly_rent + foodCharge)}/mo total
+                      </p>
+                    );
+                  })()}
                 </div>
                 <div className="space-y-1.5">
                   <Label>Security Deposit (PKR)</Label>
@@ -1526,15 +1602,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       value={approveForm.room_id ?? ""}
                       onValueChange={(v) => {
                         const approveRoom = rooms.find((r) => r.id === v);
-                        const tierPrices = pkgPrices[approveForm.package_tier as PackageTier];
-                        const tierDeposit = approveRoom
-                          ? (approveRoom.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
-                          : 0;
-                        const suggestedDeposit = tierDeposit > 0 ? tierDeposit : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
+                        const tier = approveForm.package_tier as PackageTier;
+                        const suggestedDeposit = approveRoom
+                          ? getSuggestedDeposit(approveRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
+                          : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
                         setApproveForm({
                           ...approveForm,
                           room_id: v || null,
-                          monthly_rent: approveRoom?.monthly_rent ?? approveForm.monthly_rent,
+                          monthly_rent: approveRoom ? getSuggestedRent(approveRoom, tier, pkgPrices, seaterPrices) : approveForm.monthly_rent,
                           security_deposit: suggestedDeposit,
                         });
                       }}
@@ -1543,7 +1618,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       <SelectContent>
                         {availableRooms.map((r) => (
                           <SelectItem key={r.id} value={r.id}>
-                            Rm {r.room_number} · {r.capacity - r.occupied} free · {formatCurrency(r.monthly_rent)}/mo
+                            Rm {r.room_number} · {r.capacity - r.occupied} free · {formatCurrency(getSuggestedRent(r, approveForm.package_tier as PackageTier, pkgPrices, seaterPrices))}/mo
                           </SelectItem>
                         ))}
                       </SelectContent>
