@@ -450,10 +450,10 @@ function LoginModal({
                 </div>
               </div>
 
-              <div className="flex items-center justify-between">
+              <div className="space-y-1">
                 <span className="text-xs text-muted-foreground uppercase tracking-wider">Login URL</span>
-                <div className="flex items-center">
-                  <span className="text-sm font-mono text-amber/80">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-mono text-amber/80 break-all">
                     {typeof window !== "undefined" ? window.location.origin : ""}/login
                   </span>
                   <CopyButton value={`${typeof window !== "undefined" ? window.location.origin : ""}/login`} />
