@@ -35,8 +35,12 @@ export async function updateSession(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
   const isAuthRoute = pathname.startsWith("/login");
+  // Segment-boundary match (not a bare startsWith) so a future route like
+  // /sales/login-history can't accidentally inherit public access.
+  const isSalesLogin = pathname === "/sales/login" || pathname.startsWith("/sales/login/");
   const isPublic =
     isAuthRoute ||
+    isSalesLogin ||
     pathname.startsWith("/find") ||
     pathname.startsWith("/onboarding") ||
     pathname.startsWith("/join/") ||
@@ -46,7 +50,9 @@ export async function updateSession(request: NextRequest) {
 
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();
-    url.pathname = "/login";
+    // Sales reps have their own dedicated login — bouncing them to the shared
+    // Owner/Manager page (which no longer has a Sales tab) would strand them.
+    url.pathname = pathname.startsWith("/sales") ? "/sales/login" : "/login";
     return NextResponse.redirect(url);
   }
 

@@ -1,5 +1,6 @@
 import { requireSuperAdmin } from "@/lib/auth";
-import { listLeads } from "@/app/actions/super-admin";
+import { listLeadsForAdmin } from "@/app/actions/leads";
+import { listSalesReps } from "@/app/actions/sales-reps";
 import { SuperAdminLeadsClient } from "@/components/modules/super-admin/leads-client";
 
 export const dynamic = "force-dynamic";
@@ -7,8 +8,10 @@ export const dynamic = "force-dynamic";
 export default async function SuperAdminLeadsPage() {
   await requireSuperAdmin();
 
-  const res = await listLeads();
-  const leads = res.leads ?? [];
+  const [leadsRes, repsRes] = await Promise.all([listLeadsForAdmin(), listSalesReps()]);
 
-  return <SuperAdminLeadsClient initialLeads={leads} />;
+  const leads = "leads" in leadsRes ? leadsRes.leads : [];
+  const salesReps = "reps" in repsRes ? repsRes.reps : [];
+
+  return <SuperAdminLeadsClient initialLeads={leads} salesReps={salesReps} />;
 }

@@ -22,6 +22,16 @@ export function formatDate(date: string | Date) {
   }).format(new Date(date));
 }
 
+export function formatDateTime(date: string | Date) {
+  return new Intl.DateTimeFormat("en-PK", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(date));
+}
+
 export function formatDateInput(date: Date) {
   return date.toISOString().split("T")[0];
 }

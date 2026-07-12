@@ -1,40 +1,61 @@
 "use client";
 
-import { useState, useTransition, useMemo } from "react";
+import { useState, useTransition, useMemo, useEffect } from "react";
+import { isToday, startOfDay, subDays } from "date-fns";
 import {
-  Inbox, RefreshCw, Search, PhoneCall, X, CheckCircle2, Plus,
+  Inbox, RefreshCw, Search, Eye, CheckCircle2, Plus, PhoneCall, MapPin,
+  Presentation, StickyNote, ArrowRightLeft, MessageCircle, Mail, Send, User,
+  Calendar, AlertCircle,
 } from "lucide-react";
-import {
-  listLeads,
-  updateLeadStatus,
-  createHostelForClient,
-} from "@/app/actions/super-admin";
+import { listLeadsForAdmin, createLead, assignLead, updateLeadStage, setLeadFollowUpDate, logLeadActivity, listLeadActivities } from "@/app/actions/leads";
+import { createHostelForClient } from "@/app/actions/super-admin";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Separator } from "@/components/ui/separator";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
+import {
+  Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
+} from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
-import { formatDate } from "@/lib/utils";
-import type { PlatformLead, LeadStatus } from "@/types";
+import { LEAD_SOURCES, LEAD_SOURCE_OTHER } from "@/lib/lead-sources";
+import { LEAD_STATUS_CONFIG as STATUS_CONFIG, LEAD_STATUS_ORDER as STATUS_ORDER, followUpUrgency } from "@/lib/lead-status";
+import { formatDate, formatDateTime } from "@/lib/utils";
+import type { PlatformLead, LeadStatus, LeadActivity, LeadActivityType, SalesRep } from "@/types";
 import { cn } from "@/lib/utils";
 
-const STATUS_CONFIG: Record<LeadStatus, { label: string; cls: string }> = {
-  new:       { label: "New",       cls: "bg-blue-500/10 text-blue-400 border-blue-500/20" },
-  contacted: { label: "Contacted", cls: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20" },
-  converted: { label: "Converted", cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" },
-  rejected:  { label: "Rejected",  cls: "bg-rose-500/10 text-rose-400 border-rose-500/20" },
+const STATUS_FILTERS: { value: "all" | LeadStatus; label: string }[] = [
+  { value: "all", label: "All" },
+  ...STATUS_ORDER.map((s) => ({ value: s, label: STATUS_CONFIG[s].label })),
+];
+
+const ACTIVITY_TYPE_CONFIG: Record<LeadActivityType, { label: string; icon: typeof PhoneCall }> = {
+  call:          { label: "Call",          icon: PhoneCall },
+  visit:         { label: "Visit",         icon: MapPin },
+  demo:          { label: "Demo",          icon: Presentation },
+  note:          { label: "Note",          icon: StickyNote },
+  status_change: { label: "Status Change", icon: ArrowRightLeft },
+  whatsapp:      { label: "WhatsApp",      icon: MessageCircle },
+  email:         { label: "Email",         icon: Mail },
 };
 
-const STATUS_FILTERS: { value: "all" | LeadStatus; label: string }[] = [
-  { value: "all",       label: "All" },
-  { value: "new",       label: "New" },
-  { value: "contacted", label: "Contacted" },
-  { value: "converted", label: "Converted" },
-  { value: "rejected",  label: "Rejected" },
+const ACTIVITY_TYPES: LeadActivityType[] = [
+  "call", "visit", "demo", "note", "status_change", "whatsapp", "email",
+];
+
+type DateFilter = "all" | "today" | "week" | "month" | "custom";
+
+const DATE_FILTERS: { value: DateFilter; label: string }[] = [
+  { value: "all", label: "All time" },
+  { value: "today", label: "Today" },
+  { value: "week", label: "Last 7 days" },
+  { value: "month", label: "Last 30 days" },
+  { value: "custom", label: "Custom range" },
 ];
 
 const emptyConvertForm = {
@@ -43,26 +64,89 @@ const emptyConvertForm = {
   address: "",
 };
 
+const emptyAddLeadForm = {
+  business_name: "",
+  owner_name: "",
+  phone: "",
+  email: "",
+  city: "",
+  branch_count: "1",
+  source: "",
+  sourceCustom: "",
+  notes: "",
+  assigned_to: "",
+};
+
 interface Props {
   initialLeads: PlatformLead[];
+  salesReps: SalesRep[];
 }
 
-export function SuperAdminLeadsClient({ initialLeads }: Props) {
+export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
   const [leads, setLeads] = useState<PlatformLead[]>(initialLeads);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | LeadStatus>("all");
+  const [dateFilter, setDateFilter] = useState<DateFilter>("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [loading, setLoading] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   // Convert dialog state
   const [convertOpen, setConvertOpen] = useState(false);
-  const [selectedLead, setSelectedLead] = useState<PlatformLead | null>(null);
+  const [convertLeadId, setConvertLeadId] = useState<string | null>(null);
   const [convertForm, setConvertForm] = useState(emptyConvertForm);
+
+  // Add Lead dialog state
+  const [addLeadOpen, setAddLeadOpen] = useState(false);
+  const [addLeadForm, setAddLeadForm] = useState(emptyAddLeadForm);
+  const [addLeadSubmitting, setAddLeadSubmitting] = useState(false);
+
+  // Detail dialog state
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLeadId, setDetailLeadId] = useState<string | null>(null);
+  const [activities, setActivities] = useState<LeadActivity[]>([]);
+  const [activitiesLoading, setActivitiesLoading] = useState(false);
+
+  // Log activity form state
+  const [logType, setLogType] = useState<LeadActivityType>("call");
+  const [logOutcome, setLogOutcome] = useState("");
+  const [logNotes, setLogNotes] = useState("");
+  const [logSubmitting, setLogSubmitting] = useState(false);
+
+  const selectedLead = useMemo(() => leads.find((l) => l.id === convertLeadId) ?? null, [leads, convertLeadId]);
+  const detailLead = useMemo(() => leads.find((l) => l.id === detailLeadId) ?? null, [leads, detailLeadId]);
+  // The server rejects assigning to a deactivated rep — never offer one as a NEW pick.
+  const assignableReps = useMemo(() => salesReps.filter((r) => r.is_active), [salesReps]);
+  // For a lead already assigned to a since-deactivated rep, still show that rep in the
+  // list (labeled inactive) — otherwise the picker silently renders as "Unassigned" even
+  // though the DB still has a real assignee, misleading the admin.
+  function assignOptionsFor(lead: PlatformLead): SalesRep[] {
+    if (lead.assigned_to && !assignableReps.some((r) => r.id === lead.assigned_to)) {
+      const current = salesReps.find((r) => r.id === lead.assigned_to);
+      if (current) return [...assignableReps, current];
+    }
+    return assignableReps;
+  }
+
+  useEffect(() => {
+    if (!detailOpen || !detailLeadId) return;
+    setActivitiesLoading(true);
+    listLeadActivities(detailLeadId).then((res) => {
+      if ("activities" in res) {
+        setActivities(res.activities);
+      } else {
+        toast({ title: "Failed to load activity timeline", description: res.error, variant: "destructive" });
+        setActivities([]);
+      }
+      setActivitiesLoading(false);
+    });
+  }, [detailOpen, detailLeadId]);
 
   async function refresh() {
     setLoading(true);
-    const res = await listLeads();
-    if (res.error) {
+    const res = await listLeadsForAdmin();
+    if ("error" in res) {
       toast({ title: "Error refreshing leads", description: res.error, variant: "destructive" });
     } else {
       setLeads(res.leads ?? []);
@@ -70,32 +154,76 @@ export function SuperAdminLeadsClient({ initialLeads }: Props) {
     setLoading(false);
   }
 
-  function handleMarkContacted(lead: PlatformLead) {
+  function handleAssign(lead: PlatformLead, repId: string | null) {
+    const prevAssignedTo = lead.assigned_to;
+    const prevSalesRep = lead.sales_rep;
+    const rep = repId ? salesReps.find((r) => r.id === repId) ?? null : null;
+
+    setLeads((prev) =>
+      prev.map((l) =>
+        l.id === lead.id
+          ? { ...l, assigned_to: repId, sales_rep: rep ? { id: rep.id, name: rep.name } : null }
+          : l
+      )
+    );
+
     startTransition(async () => {
-      const res = await updateLeadStatus(lead.id, "contacted");
+      const res = await assignLead(lead.id, repId);
       if (res.error) {
-        toast({ title: "Failed", description: res.error, variant: "destructive" });
+        toast({ title: "Failed to assign lead", description: res.error, variant: "destructive" });
+        setLeads((prev) =>
+          prev.map((l) =>
+            l.id === lead.id ? { ...l, assigned_to: prevAssignedTo, sales_rep: prevSalesRep } : l
+          )
+        );
       } else {
-        toast({ title: "Marked as contacted" });
-        setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, status: "contacted" } : l)));
+        toast({ title: repId ? "Lead assigned" : "Lead unassigned" });
       }
     });
   }
 
-  function handleMarkRejected(lead: PlatformLead) {
+  function handleStageChange(lead: PlatformLead, status: LeadStatus) {
+    const prevStatus = lead.status;
+    setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, status } : l)));
+
     startTransition(async () => {
-      const res = await updateLeadStatus(lead.id, "rejected");
+      const res = await updateLeadStage(lead.id, status);
       if (res.error) {
-        toast({ title: "Failed", description: res.error, variant: "destructive" });
+        toast({ title: "Failed to update stage", description: res.error, variant: "destructive" });
+        setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, status: prevStatus } : l)));
       } else {
-        toast({ title: "Marked as rejected" });
-        setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, status: "rejected" } : l)));
+        toast({ title: "Stage updated" });
       }
     });
+  }
+
+  function handleFollowUpChange(lead: PlatformLead, date: string | null) {
+    const prevDate = lead.next_follow_up_date;
+    setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, next_follow_up_date: date } : l)));
+
+    startTransition(async () => {
+      const res = await setLeadFollowUpDate(lead.id, date);
+      if (res.error) {
+        toast({ title: "Failed to set follow-up date", description: res.error, variant: "destructive" });
+        setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, next_follow_up_date: prevDate } : l)));
+      } else {
+        toast({ title: "Follow-up date updated" });
+      }
+    });
+  }
+
+  function openDetailDialog(lead: PlatformLead) {
+    setDetailLeadId(lead.id);
+    setActivities([]);
+    setLogType("call");
+    setLogOutcome("");
+    setLogNotes("");
+    setDetailOpen(true);
   }
 
   function openConvertDialog(lead: PlatformLead) {
-    setSelectedLead(lead);
+    setDetailOpen(false);
+    setConvertLeadId(lead.id);
     setConvertForm({
       hostelName: lead.business_name,
       city: lead.city ?? "",
@@ -121,9 +249,76 @@ export function SuperAdminLeadsClient({ initialLeads }: Props) {
       } else {
         toast({ title: "Lead converted", description: "Owner account and hostel created successfully." });
         setConvertOpen(false);
-        setSelectedLead(null);
+        setConvertLeadId(null);
         refresh();
       }
+    });
+  }
+
+  function handleAddLead() {
+    if (!addLeadForm.business_name.trim() || !addLeadForm.owner_name.trim() || !addLeadForm.phone.trim()) {
+      toast({ title: "Missing required fields", description: "Business name, owner name, and phone are required.", variant: "destructive" });
+      return;
+    }
+    setAddLeadSubmitting(true);
+    const source = addLeadForm.source === LEAD_SOURCE_OTHER
+      ? addLeadForm.sourceCustom.trim() || undefined
+      : addLeadForm.source || undefined;
+    startTransition(async () => {
+      const res = await createLead({
+        business_name: addLeadForm.business_name,
+        owner_name: addLeadForm.owner_name,
+        phone: addLeadForm.phone,
+        email: addLeadForm.email || undefined,
+        city: addLeadForm.city || undefined,
+        branch_count: Number(addLeadForm.branch_count) || 1,
+        source,
+        notes: addLeadForm.notes || undefined,
+        assigned_to: addLeadForm.assigned_to || null,
+      });
+      setAddLeadSubmitting(false);
+      if ("error" in res) {
+        toast({ title: "Failed to add lead", description: res.error, variant: "destructive" });
+        return;
+      }
+      setLeads((prev) => [res.lead, ...prev]);
+      setAddLeadOpen(false);
+      setAddLeadForm(emptyAddLeadForm);
+      toast({ title: "Lead added" });
+    });
+  }
+
+  function handleLogActivity() {
+    if (!detailLeadId) return;
+    setLogSubmitting(true);
+    startTransition(async () => {
+      const res = await logLeadActivity(detailLeadId, {
+        type: logType,
+        outcome: logOutcome.trim() || undefined,
+        notes: logNotes.trim() || undefined,
+      });
+      setLogSubmitting(false);
+      if (res.error) {
+        toast({ title: "Failed to log activity", description: res.error, variant: "destructive" });
+        return;
+      }
+      const now = new Date().toISOString();
+      const optimisticEntry: LeadActivity = {
+        id: `temp-${Date.now()}`,
+        lead_id: detailLeadId,
+        sales_rep_id: null,
+        actor_id: null,
+        type: logType,
+        outcome: logOutcome.trim() || null,
+        notes: logNotes.trim() || null,
+        occurred_at: now,
+        created_at: now,
+        sales_rep: null,
+      };
+      setActivities((prev) => [optimisticEntry, ...prev]);
+      setLogOutcome("");
+      setLogNotes("");
+      toast({ title: "Activity logged" });
     });
   }
 
@@ -141,8 +336,28 @@ export function SuperAdminLeadsClient({ initialLeads }: Props) {
           (l.city ?? "").toLowerCase().includes(q)
       );
     }
+    if (dateFilter === "today") {
+      list = list.filter((l) => isToday(new Date(l.created_at)));
+    } else if (dateFilter === "week") {
+      const cutoff = subDays(startOfDay(new Date()), 6);
+      list = list.filter((l) => new Date(l.created_at) >= cutoff);
+    } else if (dateFilter === "month") {
+      const cutoff = subDays(startOfDay(new Date()), 29);
+      list = list.filter((l) => new Date(l.created_at) >= cutoff);
+    } else if (dateFilter === "custom") {
+      // Parse as local calendar boundaries, not UTC — new Date("YYYY-MM-DD") parses
+      // as UTC midnight, which shifts the effective boundary by a day west of UTC.
+      if (customFrom) {
+        const from = new Date(`${customFrom}T00:00:00`);
+        list = list.filter((l) => new Date(l.created_at) >= from);
+      }
+      if (customTo) {
+        const to = new Date(`${customTo}T23:59:59.999`);
+        list = list.filter((l) => new Date(l.created_at) <= to);
+      }
+    }
     return list;
-  }, [leads, search, statusFilter]);
+  }, [leads, search, statusFilter, dateFilter, customFrom, customTo]);
 
   const counts = useMemo(() => {
     const map: Record<string, number> = { all: leads.length };
@@ -166,10 +381,16 @@ export function SuperAdminLeadsClient({ initialLeads }: Props) {
               <p className="text-xs text-muted-foreground">Onboarding pipeline for new hostel owners</p>
             </div>
           </div>
-          <Button variant="ghost" size="sm" className="gap-2" onClick={refresh} disabled={loading}>
-            <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
-            <span className="hidden sm:inline">Refresh</span>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" className="gap-2" onClick={() => setAddLeadOpen(true)}>
+              <Plus className="w-4 h-4" />
+              <span className="hidden sm:inline">Add Lead</span>
+            </Button>
+            <Button variant="ghost" size="sm" className="gap-2" onClick={refresh} disabled={loading}>
+              <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+              <span className="hidden sm:inline">Refresh</span>
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -198,15 +419,52 @@ export function SuperAdminLeadsClient({ initialLeads }: Props) {
           ))}
         </div>
 
-        {/* Search */}
-        <div className="relative max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            placeholder="Search by business, owner, phone..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-          />
+        {/* Search + date range */}
+        <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+          <div className="relative max-w-sm w-full">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Search by business, owner, phone..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+
+          <div className="flex gap-1 p-1 bg-white/[0.03] border border-sidebar-border rounded-xl w-fit overflow-x-auto">
+            {DATE_FILTERS.map(({ value, label }) => (
+              <button
+                key={value}
+                onClick={() => setDateFilter(value)}
+                className={cn(
+                  "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap",
+                  dateFilter === value
+                    ? "bg-amber/10 text-amber"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {dateFilter === "custom" && (
+            <div className="flex items-center gap-2">
+              <Input
+                type="date"
+                value={customFrom}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                className="h-9 w-36 text-xs"
+              />
+              <span className="text-xs text-muted-foreground">to</span>
+              <Input
+                type="date"
+                value={customTo}
+                onChange={(e) => setCustomTo(e.target.value)}
+                className="h-9 w-36 text-xs"
+              />
+            </div>
+          )}
         </div>
 
         {/* Table */}
@@ -214,7 +472,7 @@ export function SuperAdminLeadsClient({ initialLeads }: Props) {
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Leads ({filtered.length})</CardTitle>
             <CardDescription>
-              Mark leads as contacted or rejected. Convert to create the owner account and hostel.
+              Assign leads to sales reps, track pipeline stage, and convert to create the owner account and hostel.
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
@@ -243,6 +501,8 @@ export function SuperAdminLeadsClient({ initialLeads }: Props) {
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden sm:table-cell">Contact</th>
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">City / Branches</th>
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Status</th>
+                      <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">Assigned</th>
+                      <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden lg:table-cell">Follow-up</th>
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden lg:table-cell">Date</th>
                       <th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">Actions</th>
                     </tr>
@@ -268,32 +528,73 @@ export function SuperAdminLeadsClient({ initialLeads }: Props) {
                             <p className="text-xs text-muted-foreground">{lead.branch_count} branch{lead.branch_count !== 1 ? "es" : ""}</p>
                           </td>
                           <td className="px-4 py-3">
-                            <span
+                            <select
+                              value={lead.status}
+                              onChange={(e) => handleStageChange(lead, e.target.value as LeadStatus)}
+                              disabled={isPending}
                               className={cn(
-                                "inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium",
+                                "rounded border text-xs font-medium whitespace-nowrap px-1.5 py-1 outline-none focus:ring-1 focus:ring-amber/40 bg-transparent cursor-pointer",
                                 badge.cls
                               )}
                             >
-                              {badge.label}
-                            </span>
+                              {STATUS_ORDER.map((s) => (
+                                <option key={s} value={s} className="bg-background text-foreground">
+                                  {STATUS_CONFIG[s].label}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-4 py-3 hidden md:table-cell">
+                            <select
+                              value={lead.assigned_to ?? ""}
+                              onChange={(e) => handleAssign(lead, e.target.value || null)}
+                              disabled={isPending}
+                              className={cn(
+                                "text-xs rounded-md border border-sidebar-border bg-white/[0.03] px-1.5 py-1 max-w-[130px] outline-none focus:ring-1 focus:ring-amber/40",
+                                lead.assigned_to ? "text-foreground" : "text-muted-foreground"
+                              )}
+                            >
+                              <option value="">Unassigned</option>
+                              {assignOptionsFor(lead).map((rep) => (
+                                <option key={rep.id} value={rep.id}>{rep.name}{!rep.is_active ? " (inactive)" : ""}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-4 py-3 hidden lg:table-cell whitespace-nowrap">
+                            {(() => {
+                              const urgency = followUpUrgency(lead.next_follow_up_date);
+                              if (!lead.next_follow_up_date) return <span className="text-xs text-muted-foreground">—</span>;
+                              return (
+                                <span
+                                  className={cn(
+                                    "inline-flex items-center gap-1 text-xs font-medium",
+                                    urgency === "overdue" && "text-rose-400",
+                                    urgency === "today" && "text-amber",
+                                    urgency === "future" && "text-muted-foreground"
+                                  )}
+                                >
+                                  {urgency === "overdue" ? <AlertCircle className="w-3 h-3" /> : <Calendar className="w-3 h-3" />}
+                                  {formatDate(lead.next_follow_up_date)}
+                                  {urgency === "today" && " (today)"}
+                                  {urgency === "overdue" && " (overdue)"}
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td className="px-4 py-3 text-xs text-muted-foreground hidden lg:table-cell whitespace-nowrap">
                             {formatDate(lead.created_at)}
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex items-center justify-end gap-1">
-                              {lead.status === "new" && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-7 text-xs gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                                  onClick={() => handleMarkContacted(lead)}
-                                  disabled={isPending}
-                                >
-                                  <PhoneCall className="w-3 h-3" />
-                                  <span className="hidden sm:inline">Contacted</span>
-                                </Button>
-                              )}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs gap-1"
+                                onClick={() => openDetailDialog(lead)}
+                              >
+                                <Eye className="w-3 h-3" />
+                                <span className="hidden sm:inline">View</span>
+                              </Button>
                               {canConvert && (
                                 <Button
                                   size="sm"
@@ -302,18 +603,6 @@ export function SuperAdminLeadsClient({ initialLeads }: Props) {
                                 >
                                   <Plus className="w-3 h-3" />
                                   <span className="hidden sm:inline">Convert</span>
-                                </Button>
-                              )}
-                              {lead.status !== "rejected" && lead.status !== "converted" && (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-7 text-xs gap-1 text-rose-400 hover:text-rose-400 hover:bg-rose-500/10 opacity-0 group-hover:opacity-100 transition-opacity"
-                                  onClick={() => handleMarkRejected(lead)}
-                                  disabled={isPending}
-                                >
-                                  <X className="w-3 h-3" />
-                                  <span className="hidden sm:inline">Reject</span>
                                 </Button>
                               )}
                             </div>
@@ -328,6 +617,348 @@ export function SuperAdminLeadsClient({ initialLeads }: Props) {
           </CardContent>
         </Card>
       </div>
+
+      {/* Add Lead Dialog */}
+      <Dialog open={addLeadOpen} onOpenChange={(o) => { setAddLeadOpen(o); if (!o) setAddLeadForm(emptyAddLeadForm); }}>
+        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto scrollbar-thin">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Plus className="w-4 h-4 text-amber" /> Add Lead
+            </DialogTitle>
+            <DialogDescription>Manually log a lead sourced from a cold call, referral, or walk-in.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Business Name *</Label>
+                <Input
+                  value={addLeadForm.business_name}
+                  onChange={(e) => setAddLeadForm({ ...addLeadForm, business_name: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Owner Name *</Label>
+                <Input
+                  value={addLeadForm.owner_name}
+                  onChange={(e) => setAddLeadForm({ ...addLeadForm, owner_name: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Phone *</Label>
+                <Input
+                  placeholder="03XXXXXXXXX"
+                  value={addLeadForm.phone}
+                  onChange={(e) => setAddLeadForm({ ...addLeadForm, phone: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Email</Label>
+                <Input
+                  type="email"
+                  value={addLeadForm.email}
+                  onChange={(e) => setAddLeadForm({ ...addLeadForm, email: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>City</Label>
+                <Input
+                  placeholder="Lahore"
+                  value={addLeadForm.city}
+                  onChange={(e) => setAddLeadForm({ ...addLeadForm, city: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Branches</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={addLeadForm.branch_count}
+                  onChange={(e) => setAddLeadForm({ ...addLeadForm, branch_count: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Source</Label>
+                <Select
+                  value={addLeadForm.source || "__none"}
+                  onValueChange={(v) => setAddLeadForm({ ...addLeadForm, source: v === "__none" ? "" : v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select source" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">—</SelectItem>
+                    {LEAD_SOURCES.map((s) => (
+                      <SelectItem key={s} value={s}>{s}</SelectItem>
+                    ))}
+                    <SelectItem value={LEAD_SOURCE_OTHER}>{LEAD_SOURCE_OTHER}...</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Assign To</Label>
+                <Select
+                  value={addLeadForm.assigned_to || "__unassigned"}
+                  onValueChange={(v) => setAddLeadForm({ ...addLeadForm, assigned_to: v === "__unassigned" ? "" : v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__unassigned">Unassigned</SelectItem>
+                    {assignableReps.map((rep) => (
+                      <SelectItem key={rep.id} value={rep.id}>{rep.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {addLeadForm.source === LEAD_SOURCE_OTHER && (
+              <div className="space-y-1.5">
+                <Label>Custom Source</Label>
+                <Input
+                  placeholder="e.g. Trade show, WhatsApp group..."
+                  value={addLeadForm.sourceCustom}
+                  onChange={(e) => setAddLeadForm({ ...addLeadForm, sourceCustom: e.target.value })}
+                />
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label>Notes</Label>
+              <Textarea
+                placeholder="Any context worth recording..."
+                value={addLeadForm.notes}
+                onChange={(e) => setAddLeadForm({ ...addLeadForm, notes: e.target.value })}
+                className="min-h-[60px]"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddLeadOpen(false)}>Cancel</Button>
+            <Button
+              onClick={handleAddLead}
+              disabled={addLeadSubmitting || !addLeadForm.business_name.trim() || !addLeadForm.owner_name.trim() || !addLeadForm.phone.trim()}
+              className="gap-2"
+            >
+              <Plus className="w-4 h-4" />
+              {addLeadSubmitting ? "Adding..." : "Add Lead"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Lead Detail Dialog */}
+      <Dialog open={detailOpen} onOpenChange={(o) => !o && setDetailOpen(false)}>
+        <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto scrollbar-thin">
+          {detailLead && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  {detailLead.business_name}
+                  <span className={cn(
+                    "inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium",
+                    STATUS_CONFIG[detailLead.status].cls
+                  )}>
+                    {STATUS_CONFIG[detailLead.status].label}
+                  </span>
+                </DialogTitle>
+                <DialogDescription>Lead details, pipeline stage, and activity history.</DialogDescription>
+              </DialogHeader>
+
+              <div className="space-y-5">
+                {/* Contact info */}
+                <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Owner</p>
+                    <p className="font-medium">{detailLead.owner_name}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Phone</p>
+                    <p className="font-medium">{detailLead.phone}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Email</p>
+                    <p className="font-medium">{detailLead.email ?? "—"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">City</p>
+                    <p className="font-medium">{detailLead.city ?? "—"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Branches</p>
+                    <p className="font-medium">{detailLead.branch_count}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Source</p>
+                    <p className="font-medium">{detailLead.source ?? "—"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Created</p>
+                    <p className="font-medium">{formatDate(detailLead.created_at)}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Next Follow-up</p>
+                    <Input
+                      type="date"
+                      value={detailLead.next_follow_up_date ?? ""}
+                      onChange={(e) => handleFollowUpChange(detailLead, e.target.value || null)}
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  {detailLead.notes && (
+                    <div className="col-span-2">
+                      <p className="text-xs text-muted-foreground">Notes</p>
+                      <p className="font-medium whitespace-pre-wrap">{detailLead.notes}</p>
+                    </div>
+                  )}
+                </div>
+
+                <Separator />
+
+                {/* Stage + Assign */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label>Pipeline Stage</Label>
+                    <Select
+                      value={detailLead.status}
+                      onValueChange={(v) => handleStageChange(detailLead, v as LeadStatus)}
+                      disabled={isPending}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {STATUS_ORDER.map((s) => (
+                          <SelectItem key={s} value={s}>{STATUS_CONFIG[s].label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Assigned Rep</Label>
+                    <Select
+                      value={detailLead.assigned_to ?? "__unassigned"}
+                      onValueChange={(v) => handleAssign(detailLead, v === "__unassigned" ? null : v)}
+                      disabled={isPending}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__unassigned">Unassigned</SelectItem>
+                        {assignOptionsFor(detailLead).map((rep) => (
+                          <SelectItem key={rep.id} value={rep.id}>{rep.name}{!rep.is_active ? " (inactive)" : ""}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <Separator />
+
+                {/* Activity timeline */}
+                <div className="space-y-3">
+                  <h3 className="text-sm font-semibold">Activity Timeline</h3>
+                  {activitiesLoading ? (
+                    <div className="space-y-2">
+                      {Array.from({ length: 3 }).map((_, i) => (
+                        <div key={i} className="h-12 bg-muted rounded-lg animate-pulse" />
+                      ))}
+                    </div>
+                  ) : activities.length === 0 ? (
+                    <p className="text-sm text-muted-foreground py-3">No activity logged yet.</p>
+                  ) : (
+                    <div className="space-y-2.5 max-h-64 overflow-y-auto scrollbar-thin pr-1">
+                      {activities.map((activity) => {
+                        const config = ACTIVITY_TYPE_CONFIG[activity.type];
+                        const Icon = config.icon;
+                        return (
+                          <div key={activity.id} className="flex gap-3 rounded-lg border border-sidebar-border bg-white/[0.02] p-3">
+                            <div className="p-1.5 rounded-md bg-amber/10 border border-amber/20 h-fit">
+                              <Icon className="w-3.5 h-3.5 text-amber" />
+                            </div>
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <span className="text-xs font-semibold">{config.label}</span>
+                                {activity.outcome && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/5 border border-white/10 text-muted-foreground">
+                                    {activity.outcome}
+                                  </span>
+                                )}
+                              </div>
+                              {activity.notes && (
+                                <p className="text-xs text-muted-foreground whitespace-pre-wrap">{activity.notes}</p>
+                              )}
+                              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/70">
+                                <User className="w-2.5 h-2.5" />
+                                <span>{activity.sales_rep?.name ?? (activity.sales_rep_id ? "Deleted rep" : "Admin")}</span>
+                                <span>·</span>
+                                <span>{formatDateTime(activity.occurred_at)}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Log activity form */}
+                <div className="space-y-2.5 rounded-lg border border-sidebar-border bg-white/[0.02] p-3">
+                  <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Log Activity</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Select value={logType} onValueChange={(v) => setLogType(v as LeadActivityType)}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {ACTIVITY_TYPES.map((t) => (
+                          <SelectItem key={t} value={t}>{ACTIVITY_TYPE_CONFIG[t].label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      placeholder="Outcome (optional)"
+                      value={logOutcome}
+                      onChange={(e) => setLogOutcome(e.target.value)}
+                    />
+                  </div>
+                  <Textarea
+                    placeholder="Notes (optional)"
+                    value={logNotes}
+                    onChange={(e) => setLogNotes(e.target.value)}
+                    className="min-h-[60px]"
+                  />
+                  <Button
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={handleLogActivity}
+                    disabled={logSubmitting}
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    {logSubmitting ? "Logging..." : "Log Activity"}
+                  </Button>
+                </div>
+              </div>
+
+              <DialogFooter className="gap-2">
+                <Button variant="outline" onClick={() => setDetailOpen(false)}>Close</Button>
+                {detailLead.status !== "converted" && detailLead.status !== "rejected" && !!detailLead.email && (
+                  <Button onClick={() => openConvertDialog(detailLead)} className="gap-2">
+                    <CheckCircle2 className="w-4 h-4" />
+                    Convert Lead
+                  </Button>
+                )}
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Convert Lead Dialog */}
       <Dialog open={convertOpen} onOpenChange={(o) => !o && setConvertOpen(false)}>

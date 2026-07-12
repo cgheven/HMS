@@ -16,7 +16,16 @@ export type SalaryStatus = "pending" | "paid";
 export type ProspectStatus = "pending" | "visited" | "onboarded";
 export type PackageTier = "space_only" | "space_food" | "space_3meals" | "space_food_ac"  | "space_meals_cooler";
 export type Role = "super_admin" | "owner" | "partner";
-export type LeadStatus = "new" | "contacted" | "converted" | "rejected";
+export type LeadStatus =
+  | "new"
+  | "contacted"
+  | "follow_up"
+  | "demo_scheduled"
+  | "demo_done"
+  | "onboarding"
+  | "converted"
+  | "rejected";
+export type LeadActivityType = "call" | "visit" | "demo" | "note" | "status_change" | "whatsapp" | "email";
 export type ApplicationStatus = "pending" | "approved" | "rejected";
 
 export interface Profile {
@@ -547,7 +556,52 @@ export interface PlatformLead {
   status: LeadStatus;
   converted_hostel_id: string | null;
   ip_address: string | null;
+  assigned_to: string | null;
+  source: string | null;
+  next_follow_up_date: string | null;
   created_at: string;
+  updated_at: string;
+  sales_rep?: { id: string; name: string } | null;
+}
+
+export interface LeadActivity {
+  id: string;
+  lead_id: string;
+  sales_rep_id: string | null;
+  actor_id: string | null;
+  type: LeadActivityType;
+  outcome: string | null;
+  notes: string | null;
+  occurred_at: string;
+  created_at: string;
+  sales_rep?: { id: string; name: string } | null;
+}
+
+export interface SalesRep {
+  id: string;
+  created_by: string;
+  name: string;
+  email: string | null;
+  phone: string;
+  supabase_user_id: string | null;
+  has_login: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  target?: SalesTarget | null;
+}
+
+export interface SalesTarget {
+  sales_rep_id: string;
+  daily_calls_target: number;
+  daily_visits_target: number;
+  weekly_calls_target: number;
+  weekly_visits_target: number;
+  updated_at: string;
+}
+
+export interface SalesRepContext {
+  salesRep: SalesRep;
 }
 
 export interface InvoiceLink {

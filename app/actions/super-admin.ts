@@ -4,7 +4,7 @@ import { randomBytes } from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { writeAuditLog } from "@/lib/audit";
-import type { PlatformLead, LeadStatus } from "@/types";
+import type { PlatformLead } from "@/types";
 
 // ── Guard ─────────────────────────────────────────────────────────────────────
 
@@ -141,60 +141,6 @@ export async function listAllHostels(): Promise<{
     return { hostels };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to list hostels" };
-  }
-}
-
-// ── listLeads ─────────────────────────────────────────────────────────────────
-
-export async function listLeads(): Promise<{
-  leads?: PlatformLead[];
-  error?: string;
-}> {
-  try {
-    await requireSuperAdmin();
-    const admin = createAdminClient();
-
-    const { data, error } = await admin
-      .from("hms_platform_leads")
-      .select("*")
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-    return { leads: (data ?? []) as PlatformLead[] };
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : "Failed to list leads" };
-  }
-}
-
-// ── updateLeadStatus ──────────────────────────────────────────────────────────
-
-export async function updateLeadStatus(
-  leadId: string,
-  status: LeadStatus
-): Promise<{ error?: string }> {
-  try {
-    const caller = await requireSuperAdmin();
-    const admin = createAdminClient();
-
-    const { error } = await admin
-      .from("hms_platform_leads")
-      .update({ status })
-      .eq("id", leadId);
-
-    if (error) throw error;
-
-    await writeAuditLog({
-      actor_id: caller.id,
-      actor_email: caller.email ?? "",
-      action: "lead.update_status",
-      entity: "platform_lead",
-      entity_id: leadId,
-      meta: { status },
-    });
-
-    return {};
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : "Failed to update lead status" };
   }
 }
 
