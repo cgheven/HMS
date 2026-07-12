@@ -46,7 +46,10 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/join/") ||
     pathname.startsWith("/r/") ||
     pathname.startsWith("/partner/login") ||
-    pathname.startsWith("/pricing");
+    pathname.startsWith("/pricing") ||
+    // Server-to-server cron invocation — no user cookie, authenticates via
+    // CRON_SECRET bearer token inside the route handler itself.
+    pathname.startsWith("/api/cron/");
 
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();

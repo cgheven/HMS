@@ -8,11 +8,14 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { writeAuditLog } from "@/lib/audit";
 import { EMAIL_RE } from "@/lib/validation";
+import { sendLeadFollowUpDigest } from "@/lib/email";
+import { PKT_OFFSET_MS } from "@/lib/pkt-time";
 import type {
   PlatformLead,
   LeadActivity,
   LeadStatus,
   LeadActivityType,
+  LeadPriority,
   SalesRep,
   SalesTarget,
 } from "@/types";
@@ -44,8 +47,6 @@ async function resolveCaller(): Promise<Caller | null> {
 // Pakistan is a fixed UTC+5 offset (no DST) — bucket "today"/"this week" against
 // that wall clock instead of the server process's local timezone (often UTC),
 // so performance stats aren't off by hours around midnight PKT.
-const PKT_OFFSET_MS = 5 * 60 * 60 * 1000;
-
 function pktBoundaries(now: Date) {
   const shifted = new Date(now.getTime() + PKT_OFFSET_MS);
   return {
@@ -76,6 +77,8 @@ const ALLOWED_STATUSES: LeadStatus[] = [
   "converted",
   "rejected",
 ];
+
+const ALLOWED_PRIORITIES: LeadPriority[] = ["low", "medium", "high"];
 
 const ALLOWED_ACTIVITY_TYPES: LeadActivityType[] = [
   "call",
@@ -333,6 +336,122 @@ export async function setLeadFollowUpDate(
     return {};
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to set follow-up date" };
+  }
+}
+
+// ── setLeadPriority ──────────────────────────────────────────────────────────────
+
+export async function setLeadPriority(
+  leadId: string,
+  priority: LeadPriority
+): Promise<{ error?: string }> {
+  try {
+    if (!ALLOWED_PRIORITIES.includes(priority)) return { error: "Invalid priority" };
+
+    const caller = await resolveCaller();
+    if (!caller) return { error: "Unauthorized" };
+
+    if (caller.kind === "rep" && !(await isLeadAssignedToRep(leadId, caller.salesRepId))) {
+      return { error: "Unauthorized" };
+    }
+
+    const admin = createAdminClient();
+    const { error } = await admin
+      .from("hms_platform_leads")
+      .update({ priority })
+      .eq("id", leadId);
+    if (error) throw error;
+
+    revalidatePath("/super-admin/leads");
+    revalidatePath("/sales");
+    return {};
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to set priority" };
+  }
+}
+
+// ── deleteLead ──────────────────────────────────────────────────────────────────
+// Admin-only — sales reps can lose/win/reassign leads but never delete outright,
+// since that would also erase the rep's own activity history for it.
+
+export async function deleteLead(leadId: string): Promise<{ error?: string }> {
+  const caller = await requireSuperAdmin();
+  try {
+    const admin = createAdminClient();
+    const supabase = await createClient();
+
+    // Snapshot before delete — the row (and its business_name/owner_name) is gone
+    // afterward, so this is the only chance to make the audit entry self-contained.
+    const [{ data: lead }, { data: { user } }] = await Promise.all([
+      admin.from("hms_platform_leads").select("business_name, owner_name, phone").eq("id", leadId).maybeSingle(),
+      supabase.auth.getUser(),
+    ]);
+
+    // hms_lead_activities.lead_id is ON DELETE CASCADE, so the timeline goes with it.
+    const { error } = await admin.from("hms_platform_leads").delete().eq("id", leadId);
+    if (error) throw error;
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: user?.email ?? "",
+      action: "lead.delete",
+      entity: "platform_lead",
+      entity_id: leadId,
+      meta: lead ?? {},
+    });
+
+    revalidatePath("/super-admin/leads");
+    revalidatePath("/sales");
+    return {};
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to delete lead" };
+  }
+}
+
+// ── sendFollowUpDigestEmail ─────────────────────────────────────────────────────
+// On-demand version of the /api/cron/lead-followups job — sends whatever set of
+// leads the admin currently has filtered to on the leads page, instead of waiting
+// for the 9 AM PKT run.
+
+export async function sendFollowUpDigestEmail(
+  leadIds: string[]
+): Promise<{ error?: string; sent?: number }> {
+  const caller = await requireSuperAdmin();
+  try {
+    if (leadIds.length === 0) return { error: "No leads selected" };
+
+    const recipient = process.env.LEADS_FOLLOWUP_DIGEST_EMAIL;
+    if (!recipient) return { error: "Digest recipient email is not configured" };
+
+    const admin = createAdminClient();
+    const supabase = await createClient();
+
+    const [{ data, error }, { data: { user } }] = await Promise.all([
+      admin
+        .from("hms_platform_leads")
+        .select("*, sales_rep:hms_sales_reps(id,name)")
+        .in("id", leadIds)
+        .order("next_follow_up_date", { ascending: true }),
+      supabase.auth.getUser(),
+    ]);
+    if (error) throw error;
+
+    const leads = (data ?? []) as PlatformLead[];
+    if (leads.length === 0) return { error: "No matching leads found" };
+
+    await sendLeadFollowUpDigest(recipient, leads);
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: user?.email ?? "",
+      action: "lead.followup_digest_sent",
+      entity: "platform_lead",
+      meta: { count: leads.length, recipient, lead_ids: leadIds },
+    });
+
+    return { sent: leads.length };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to send digest email" };
   }
 }
 

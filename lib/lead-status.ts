@@ -18,9 +18,16 @@ export const LEAD_STATUS_ORDER: LeadStatus[] = [
   "new", "contacted", "follow_up", "demo_scheduled", "demo_done", "onboarding", "converted", "rejected",
 ];
 
+// next_follow_up_date is a DATE column ("YYYY-MM-DD") — parse as local calendar
+// midnight, not `new Date(dateStr)` (which is UTC midnight per spec and shifts
+// the effective day for any browser west of UTC).
+export function parseDateOnly(dateStr: string): Date {
+  return new Date(`${dateStr}T00:00:00`);
+}
+
 export function followUpUrgency(dateStr: string | null): "overdue" | "today" | "future" | null {
   if (!dateStr) return null;
-  const d = startOfDay(new Date(dateStr));
+  const d = startOfDay(parseDateOnly(dateStr));
   if (isToday(d)) return "today";
   if (isPast(d)) return "overdue";
   return "future";

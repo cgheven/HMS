@@ -4,10 +4,10 @@ import { useMemo, useState } from "react";
 import {
   Phone, MapPin, Presentation, FileText, RefreshCw, MessageCircle, Mail,
   Calendar, ChevronDown, ChevronUp, Target, Users, Clock, AlertCircle, Loader2, Plus,
-  CheckCircle2, Flame,
+  CheckCircle2, Flame, Flag,
 } from "lucide-react";
 import {
-  createLead, updateLeadStage, setLeadFollowUpDate, logLeadActivity, listLeadActivities,
+  createLead, updateLeadStage, setLeadFollowUpDate, setLeadPriority, logLeadActivity, listLeadActivities,
   type LogLeadActivityInput,
 } from "@/app/actions/leads";
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,8 +24,9 @@ import {
 import { toast } from "@/hooks/use-toast";
 import { LEAD_SOURCES, LEAD_SOURCE_OTHER } from "@/lib/lead-sources";
 import { LEAD_STATUS_CONFIG as STATUS_CONFIG, LEAD_STATUS_ORDER as STATUS_OPTIONS, followUpUrgency } from "@/lib/lead-status";
+import { LEAD_PRIORITY_CONFIG as PRIORITY_CONFIG, LEAD_PRIORITY_ORDER as PRIORITY_OPTIONS } from "@/lib/lead-priority";
 import { cn, formatDate, formatDateTime } from "@/lib/utils";
-import type { PlatformLead, LeadStatus, LeadActivity, LeadActivityType, SalesTarget } from "@/types";
+import type { PlatformLead, LeadStatus, LeadPriority, LeadActivity, LeadActivityType, SalesTarget } from "@/types";
 
 const emptyAddLeadForm = { business_name: "", owner_name: "", phone: "", city: "", source: "", sourceCustom: "", notes: "" };
 
@@ -156,6 +157,7 @@ interface LeadCardProps {
   onStageChange: (status: LeadStatus) => void;
   onLogActivity: () => void;
   onFollowUpChange: (date: string | null) => void;
+  onPriorityChange: (priority: LeadPriority) => void;
 }
 
 function FollowUpBadge({
@@ -199,8 +201,32 @@ function FollowUpBadge({
   );
 }
 
+function PriorityBadge({
+  priority, onChange,
+}: {
+  priority: LeadPriority; onChange: (priority: LeadPriority) => void;
+}) {
+  const cfg = PRIORITY_CONFIG[priority];
+  return (
+    <select
+      value={priority}
+      onChange={(e) => onChange(e.target.value as LeadPriority)}
+      className={cn(
+        "rounded-lg border text-[11px] font-medium px-2 py-0.5 outline-none focus:ring-1 focus:ring-amber/40 bg-transparent cursor-pointer",
+        cfg.cls
+      )}
+    >
+      {PRIORITY_OPTIONS.map((p) => (
+        <option key={p} value={p} className="bg-background text-foreground">
+          {PRIORITY_CONFIG[p].label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function LeadCard({
-  lead, expanded, activities, loadingActivities, savingStage, onToggleExpand, onStageChange, onLogActivity, onFollowUpChange,
+  lead, expanded, activities, loadingActivities, savingStage, onToggleExpand, onStageChange, onLogActivity, onFollowUpChange, onPriorityChange,
 }: LeadCardProps) {
   const badge = STATUS_CONFIG[lead.status];
 
@@ -212,9 +238,12 @@ function LeadCard({
             <p className="font-semibold text-sm text-foreground truncate">{lead.business_name}</p>
             <p className="text-xs text-muted-foreground mt-0.5">{lead.owner_name}</p>
           </button>
-          <span className={cn("inline-flex items-center shrink-0 px-2 py-0.5 rounded border text-[11px] font-medium", badge.cls)}>
-            {badge.label}
-          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className={cn("inline-flex items-center px-2 py-0.5 rounded border text-[11px] font-medium", badge.cls)}>
+              {badge.label}
+            </span>
+            <PriorityBadge priority={lead.priority} onChange={onPriorityChange} />
+          </div>
         </div>
 
         <div className="flex items-center gap-3 mt-3 flex-wrap">
@@ -290,6 +319,12 @@ function TodayFollowUpRow({
           <span className={cn("inline-flex items-center shrink-0 px-1.5 py-0.5 rounded border text-[10px] font-medium", badge.cls)}>
             {badge.label}
           </span>
+          {lead.priority === "high" && (
+            <span className={cn("inline-flex items-center gap-0.5 shrink-0 px-1.5 py-0.5 rounded border text-[10px] font-medium", PRIORITY_CONFIG.high.cls)}>
+              <Flag className="w-2.5 h-2.5" />
+              {PRIORITY_CONFIG.high.label}
+            </span>
+          )}
         </div>
         <p className="text-xs text-muted-foreground mt-0.5">{lead.owner_name}</p>
       </div>
@@ -387,6 +422,19 @@ export function SalesDashboardClient({ initialLeads, performance }: Props) {
       toast({ title: "Stage updated", description: `${lead.business_name} → ${STATUS_CONFIG[status].label}` });
     }
     setSavingStageId(null);
+  }
+
+  async function handlePriorityChange(lead: PlatformLead, priority: LeadPriority) {
+    const prevPriority = lead.priority;
+    setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, priority } : l)));
+
+    const res = await setLeadPriority(lead.id, priority);
+    if (res.error) {
+      setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, priority: prevPriority } : l)));
+      toast({ title: "Failed to update priority", description: res.error, variant: "destructive" });
+    } else {
+      toast({ title: "Priority updated" });
+    }
   }
 
   async function handleFollowUpChange(lead: PlatformLead, date: string | null) {
@@ -582,6 +630,7 @@ export function SalesDashboardClient({ initialLeads, performance }: Props) {
                 onStageChange={(status) => handleStageChange(lead, status)}
                 onLogActivity={() => openActivityDialog(lead)}
                 onFollowUpChange={(date) => handleFollowUpChange(lead, date)}
+                onPriorityChange={(priority) => handlePriorityChange(lead, priority)}
               />
             ))
           )}

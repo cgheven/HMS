@@ -1,10 +1,12 @@
 import "server-only";
 import { Resend } from "resend";
+import { pktTodayDateString } from "@/lib/pkt-time";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Verified sender — configure RESEND_FROM_EMAIL in env (must match a verified Resend domain)
 const FROM = process.env.RESEND_FROM_EMAIL ?? "Pulse HMS <noreply@yourpulse.io>";
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hms.yourpulse.io";
 
 // Escape user-supplied content before embedding in HTML to prevent injection
 function esc(s: string | null | undefined): string {
@@ -117,5 +119,64 @@ export async function sendWaitlistEmail(data: WaitlistEmailData): Promise<void> 
     to: data.ownerEmail,
     subject: `New waitlist signup — ${data.hostelName}`,
     html: baseHtml("Waitlist Signup", body),
+  });
+}
+
+// ─── Lead follow-up digest (SuperAdmin notification) ──────────────────────────
+// Sent daily by the /api/cron/lead-followups job and on-demand from the
+// SuperAdmin leads page ("Send Follow-up Email").
+
+interface LeadFollowUpDigestItem {
+  business_name: string;
+  owner_name: string;
+  phone: string;
+  next_follow_up_date: string | null;
+  sales_rep?: { name: string } | null;
+}
+
+export async function sendLeadFollowUpDigest(
+  recipientEmail: string,
+  leads: LeadFollowUpDigestItem[]
+): Promise<void> {
+  const todayStr = pktTodayDateString();
+
+  const rows = leads
+    .map((l) => {
+      // Three-state, not binary — a lead due later this week (e.g. sent via the
+      // "Due This Week" filter) must never render as "today" or "overdue".
+      const isOverdue = !!l.next_follow_up_date && l.next_follow_up_date < todayStr;
+      const isDueToday = l.next_follow_up_date === todayStr;
+      const suffix = isOverdue ? " · overdue" : isDueToday ? " · today" : "";
+      const dateLabel = l.next_follow_up_date ? `${l.next_follow_up_date}${suffix}` : "—";
+      const dateColor = isOverdue ? "#fb7185" : isDueToday ? "#f59e0b" : "#a1a1aa";
+      return `<tr>
+        <td style="padding:10px 0;border-top:1px solid #27272a;font-size:13px;color:#e5e5e5;vertical-align:top;">
+          <div style="font-weight:600;">${esc(l.business_name)}</div>
+          <div style="color:#a1a1aa;font-size:12px;margin-top:2px;">${esc(l.owner_name)} · ${esc(l.phone)}</div>
+          ${l.sales_rep ? `<div style="color:#71717a;font-size:11px;margin-top:2px;">Rep: ${esc(l.sales_rep.name)}</div>` : ""}
+        </td>
+        <td style="padding:10px 0;border-top:1px solid #27272a;font-size:12px;font-weight:600;color:${dateColor};text-align:right;white-space:nowrap;vertical-align:top;">
+          ${esc(dateLabel)}
+        </td>
+      </tr>`;
+    })
+    .join("");
+
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Daily Follow-up Digest</h2>
+    <p style="margin:0 0 20px;font-size:14px;color:#a1a1aa;">
+      ${leads.length} lead${leads.length !== 1 ? "s" : ""} ${leads.length !== 1 ? "need" : "needs"} follow-up.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0">${rows}</table>
+    <p style="margin:24px 0 0;">
+      <a href="${SITE_URL}/super-admin/leads" style="display:inline-block;background:#f59e0b;color:#0f0f11;font-size:13px;font-weight:600;padding:10px 18px;border-radius:8px;text-decoration:none;">Open Leads Pipeline</a>
+    </p>
+  `;
+
+  await resend.emails.send({
+    from: FROM,
+    to: recipientEmail,
+    subject: `${leads.length} lead follow-up${leads.length !== 1 ? "s" : ""} pending`,
+    html: baseHtml("Follow-up Digest", body),
   });
 }

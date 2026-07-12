@@ -1,13 +1,13 @@
 "use client";
 
 import { useState, useTransition, useMemo, useEffect } from "react";
-import { isToday, startOfDay, subDays } from "date-fns";
+import { isToday, startOfDay, addDays, subDays } from "date-fns";
 import {
   Inbox, RefreshCw, Search, Eye, CheckCircle2, Plus, PhoneCall, MapPin,
   Presentation, StickyNote, ArrowRightLeft, MessageCircle, Mail, Send, User,
-  Calendar, AlertCircle,
+  Calendar, AlertCircle, Trash2, Flag, MailCheck,
 } from "lucide-react";
-import { listLeadsForAdmin, createLead, assignLead, updateLeadStage, setLeadFollowUpDate, logLeadActivity, listLeadActivities } from "@/app/actions/leads";
+import { listLeadsForAdmin, createLead, assignLead, updateLeadStage, setLeadFollowUpDate, setLeadPriority, deleteLead, sendFollowUpDigestEmail, logLeadActivity, listLeadActivities } from "@/app/actions/leads";
 import { createHostelForClient } from "@/app/actions/super-admin";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,14 +19,16 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
 import { LEAD_SOURCES, LEAD_SOURCE_OTHER } from "@/lib/lead-sources";
-import { LEAD_STATUS_CONFIG as STATUS_CONFIG, LEAD_STATUS_ORDER as STATUS_ORDER, followUpUrgency } from "@/lib/lead-status";
+import { LEAD_STATUS_CONFIG as STATUS_CONFIG, LEAD_STATUS_ORDER as STATUS_ORDER, followUpUrgency, parseDateOnly } from "@/lib/lead-status";
+import { LEAD_PRIORITY_CONFIG as PRIORITY_CONFIG, LEAD_PRIORITY_ORDER as PRIORITY_ORDER } from "@/lib/lead-priority";
 import { formatDate, formatDateTime } from "@/lib/utils";
-import type { PlatformLead, LeadStatus, LeadActivity, LeadActivityType, SalesRep } from "@/types";
+import type { PlatformLead, LeadStatus, LeadPriority, LeadActivity, LeadActivityType, SalesRep } from "@/types";
 import { cn } from "@/lib/utils";
 
 const STATUS_FILTERS: { value: "all" | LeadStatus; label: string }[] = [
@@ -56,6 +58,17 @@ const DATE_FILTERS: { value: DateFilter; label: string }[] = [
   { value: "week", label: "Last 7 days" },
   { value: "month", label: "Last 30 days" },
   { value: "custom", label: "Custom range" },
+];
+
+// Filters on next_follow_up_date, independent of the "Added" date filter above —
+// this is what decides which leads "Send Follow-up Email" mails out.
+type FollowUpFilter = "all" | "overdue" | "today" | "week";
+
+const FOLLOWUP_FILTERS: { value: FollowUpFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "overdue", label: "Overdue" },
+  { value: "today", label: "Due Today" },
+  { value: "week", label: "Due This Week" },
 ];
 
 const emptyConvertForm = {
@@ -89,6 +102,8 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  const [followUpFilter, setFollowUpFilter] = useState<FollowUpFilter>("all");
+  const [sendingDigest, setSendingDigest] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isPending, startTransition] = useTransition();
 
@@ -101,6 +116,10 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
   const [addLeadOpen, setAddLeadOpen] = useState(false);
   const [addLeadForm, setAddLeadForm] = useState(emptyAddLeadForm);
   const [addLeadSubmitting, setAddLeadSubmitting] = useState(false);
+
+  // Delete confirmation state
+  const [deleteConfirm, setDeleteConfirm] = useState<{ open: boolean; lead: PlatformLead | null }>({ open: false, lead: null });
+  const [deleting, setDeleting] = useState(false);
 
   // Detail dialog state
   const [detailOpen, setDetailOpen] = useState(false);
@@ -210,6 +229,36 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
         toast({ title: "Follow-up date updated" });
       }
     });
+  }
+
+  function handlePriorityChange(lead: PlatformLead, priority: LeadPriority) {
+    const prevPriority = lead.priority;
+    setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, priority } : l)));
+
+    startTransition(async () => {
+      const res = await setLeadPriority(lead.id, priority);
+      if (res.error) {
+        toast({ title: "Failed to update priority", description: res.error, variant: "destructive" });
+        setLeads((prev) => prev.map((l) => (l.id === lead.id ? { ...l, priority: prevPriority } : l)));
+      } else {
+        toast({ title: "Priority updated" });
+      }
+    });
+  }
+
+  async function handleDeleteLead() {
+    if (!deleteConfirm.lead) return;
+    setDeleting(true);
+    const res = await deleteLead(deleteConfirm.lead.id);
+    setDeleting(false);
+    if (res.error) {
+      toast({ title: "Failed to delete lead", description: res.error, variant: "destructive" });
+      return;
+    }
+    setLeads((prev) => prev.filter((l) => l.id !== deleteConfirm.lead!.id));
+    setDeleteConfirm({ open: false, lead: null });
+    if (detailLeadId === deleteConfirm.lead.id) setDetailOpen(false);
+    toast({ title: "Lead deleted" });
   }
 
   function openDetailDialog(lead: PlatformLead) {
@@ -356,8 +405,45 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
         list = list.filter((l) => new Date(l.created_at) <= to);
       }
     }
+    if (followUpFilter === "overdue") {
+      list = list.filter((l) => followUpUrgency(l.next_follow_up_date) === "overdue");
+    } else if (followUpFilter === "today") {
+      list = list.filter((l) => followUpUrgency(l.next_follow_up_date) === "today");
+    } else if (followUpFilter === "week") {
+      const now = startOfDay(new Date());
+      const weekOut = addDays(now, 7);
+      list = list.filter((l) => {
+        if (!l.next_follow_up_date) return false;
+        const d = startOfDay(parseDateOnly(l.next_follow_up_date));
+        return d >= now && d <= weekOut;
+      });
+    }
     return list;
-  }, [leads, search, statusFilter, dateFilter, customFrom, customTo]);
+  }, [leads, search, statusFilter, dateFilter, customFrom, customTo, followUpFilter]);
+
+  // The set "Send Follow-up Email" mails out. With no follow-up chip selected,
+  // default to what's actually due (overdue + today) rather than every lead that
+  // merely has a follow-up date set somewhere in the future — otherwise a stray
+  // click sends a digest full of leads due next month, mislabeled as urgent.
+  const followUpCandidates = useMemo(() => {
+    if (followUpFilter !== "all") return filtered.filter((l) => !!l.next_follow_up_date);
+    return filtered.filter((l) => {
+      const urgency = followUpUrgency(l.next_follow_up_date);
+      return urgency === "overdue" || urgency === "today";
+    });
+  }, [filtered, followUpFilter]);
+
+  async function handleSendDigest() {
+    if (followUpCandidates.length === 0) return;
+    setSendingDigest(true);
+    const res = await sendFollowUpDigestEmail(followUpCandidates.map((l) => l.id));
+    setSendingDigest(false);
+    if (res.error) {
+      toast({ title: "Failed to send email", description: res.error, variant: "destructive" });
+    } else {
+      toast({ title: "Follow-up email sent", description: `${res.sent} lead${res.sent !== 1 ? "s" : ""} included.` });
+    }
+  }
 
   const counts = useMemo(() => {
     const map: Record<string, number> = { all: leads.length };
@@ -431,21 +517,24 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
             />
           </div>
 
-          <div className="flex gap-1 p-1 bg-white/[0.03] border border-sidebar-border rounded-xl w-fit overflow-x-auto">
-            {DATE_FILTERS.map(({ value, label }) => (
-              <button
-                key={value}
-                onClick={() => setDateFilter(value)}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap",
-                  dateFilter === value
-                    ? "bg-amber/10 text-amber"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs text-muted-foreground shrink-0">Added:</span>
+            <div className="flex gap-1 p-1 bg-white/[0.03] border border-sidebar-border rounded-xl w-fit overflow-x-auto">
+              {DATE_FILTERS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setDateFilter(value)}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap",
+                    dateFilter === value
+                      ? "bg-amber/10 text-amber"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {dateFilter === "custom" && (
@@ -465,6 +554,41 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
               />
             </div>
           )}
+        </div>
+
+        {/* Follow-up filter + digest email */}
+        <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs text-muted-foreground shrink-0">Follow-up:</span>
+            <div className="flex gap-1 p-1 bg-white/[0.03] border border-sidebar-border rounded-xl w-fit overflow-x-auto">
+              {FOLLOWUP_FILTERS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setFollowUpFilter(value)}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap",
+                    followUpFilter === value
+                      ? "bg-amber/10 text-amber"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2 shrink-0"
+            onClick={handleSendDigest}
+            disabled={sendingDigest || followUpCandidates.length === 0}
+          >
+            <MailCheck className="w-4 h-4" />
+            {sendingDigest
+              ? "Sending..."
+              : `Send Follow-up Email${followUpCandidates.length > 0 ? ` (${followUpCandidates.length})` : ""}`}
+          </Button>
         </div>
 
         {/* Table */}
@@ -501,6 +625,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden sm:table-cell">Contact</th>
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">City / Branches</th>
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Status</th>
+                      <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden sm:table-cell">Priority</th>
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">Assigned</th>
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden lg:table-cell">Follow-up</th>
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden lg:table-cell">Date</th>
@@ -540,6 +665,23 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
                               {STATUS_ORDER.map((s) => (
                                 <option key={s} value={s} className="bg-background text-foreground">
                                   {STATUS_CONFIG[s].label}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="px-4 py-3 hidden sm:table-cell">
+                            <select
+                              value={lead.priority}
+                              onChange={(e) => handlePriorityChange(lead, e.target.value as LeadPriority)}
+                              disabled={isPending}
+                              className={cn(
+                                "rounded border text-xs font-medium whitespace-nowrap px-1.5 py-1 outline-none focus:ring-1 focus:ring-amber/40 bg-transparent cursor-pointer",
+                                PRIORITY_CONFIG[lead.priority].cls
+                              )}
+                            >
+                              {PRIORITY_ORDER.map((p) => (
+                                <option key={p} value={p} className="bg-background text-foreground">
+                                  {PRIORITY_CONFIG[p].label}
                                 </option>
                               ))}
                             </select>
@@ -605,6 +747,15 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
                                   <span className="hidden sm:inline">Convert</span>
                                 </Button>
                               )}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-400"
+                                onClick={() => setDeleteConfirm({ open: true, lead })}
+                                title="Delete Lead"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </Button>
                             </div>
                           </td>
                         </tr>
@@ -758,13 +909,20 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
           {detailLead && (
             <>
               <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
+                <DialogTitle className="flex items-center gap-2 flex-wrap">
                   {detailLead.business_name}
                   <span className={cn(
                     "inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium",
                     STATUS_CONFIG[detailLead.status].cls
                   )}>
                     {STATUS_CONFIG[detailLead.status].label}
+                  </span>
+                  <span className={cn(
+                    "inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-medium",
+                    PRIORITY_CONFIG[detailLead.priority].cls
+                  )}>
+                    <Flag className="w-3 h-3" />
+                    {PRIORITY_CONFIG[detailLead.priority].label}
                   </span>
                 </DialogTitle>
                 <DialogDescription>Lead details, pipeline stage, and activity history.</DialogDescription>
@@ -820,7 +978,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
 
                 <Separator />
 
-                {/* Stage + Assign */}
+                {/* Stage + Priority + Assign */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <Label>Pipeline Stage</Label>
@@ -840,6 +998,23 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
                     </Select>
                   </div>
                   <div className="space-y-1.5">
+                    <Label>Priority</Label>
+                    <Select
+                      value={detailLead.priority}
+                      onValueChange={(v) => handlePriorityChange(detailLead, v as LeadPriority)}
+                      disabled={isPending}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PRIORITY_ORDER.map((p) => (
+                          <SelectItem key={p} value={p}>{PRIORITY_CONFIG[p].label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5 col-span-2">
                     <Label>Assigned Rep</Label>
                     <Select
                       value={detailLead.assigned_to ?? "__unassigned"}
@@ -946,14 +1121,24 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
                 </div>
               </div>
 
-              <DialogFooter className="gap-2">
-                <Button variant="outline" onClick={() => setDetailOpen(false)}>Close</Button>
-                {detailLead.status !== "converted" && detailLead.status !== "rejected" && !!detailLead.email && (
-                  <Button onClick={() => openConvertDialog(detailLead)} className="gap-2">
-                    <CheckCircle2 className="w-4 h-4" />
-                    Convert Lead
-                  </Button>
-                )}
+              <DialogFooter className="gap-2 sm:justify-between">
+                <Button
+                  variant="ghost"
+                  className="text-rose-400 hover:text-rose-400 hover:bg-rose-500/10 gap-2"
+                  onClick={() => setDeleteConfirm({ open: true, lead: detailLead })}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Delete Lead
+                </Button>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setDetailOpen(false)}>Close</Button>
+                  {detailLead.status !== "converted" && detailLead.status !== "rejected" && !!detailLead.email && (
+                    <Button onClick={() => openConvertDialog(detailLead)} className="gap-2">
+                      <CheckCircle2 className="w-4 h-4" />
+                      Convert Lead
+                    </Button>
+                  )}
+                </div>
               </DialogFooter>
             </>
           )}
@@ -1016,6 +1201,15 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={deleteConfirm.open}
+        title="Delete Lead"
+        description={`Delete ${deleteConfirm.lead?.business_name ?? "this lead"}? This also removes its activity history and cannot be undone.`}
+        confirmLabel={deleting ? "Deleting…" : "Delete"}
+        onConfirm={handleDeleteLead}
+        onCancel={() => setDeleteConfirm({ open: false, lead: null })}
+      />
     </div>
   );
 }

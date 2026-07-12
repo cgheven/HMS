@@ -26,6 +26,7 @@ export type LeadStatus =
   | "converted"
   | "rejected";
 export type LeadActivityType = "call" | "visit" | "demo" | "note" | "status_change" | "whatsapp" | "email";
+export type LeadPriority = "low" | "medium" | "high";
 export type ApplicationStatus = "pending" | "approved" | "rejected";
 
 export interface Profile {
@@ -559,6 +560,7 @@ export interface PlatformLead {
   assigned_to: string | null;
   source: string | null;
   next_follow_up_date: string | null;
+  priority: LeadPriority;
   created_at: string;
   updated_at: string;
   sales_rep?: { id: string; name: string } | null;
