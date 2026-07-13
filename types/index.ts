@@ -241,9 +241,11 @@ export interface Tenant {
   check_out: string | null;
   billing_type: "monthly" | "daily";
   package_tier: PackageTier;
+  custom_package_id: string | null;
   monthly_rent: number;
   daily_rate: number;
   security_deposit: number;
+  joining_meter_reading: number | null;
   food_breakfast: boolean;
   food_lunch: boolean;
   food_dinner: boolean;

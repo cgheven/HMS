@@ -161,6 +161,7 @@ const emptyForm = {
   check_in: formatDateInput(new Date()),
   billing_type: "monthly" as "monthly" | "daily",
   monthly_rent: "", daily_rate: "", check_out: "", security_deposit: "0",
+  joining_meter_reading: "",
   emergency_contact: "", emergency_relationship: "", emergency_phone: "", notes: "",
   is_waiting: false,
   photo_url: "" as string,
@@ -392,6 +393,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     bed_number: null,
     is_waiting: true,
     notes: null,
+    joining_meter_reading: null,
     food_breakfast: false,
     food_lunch: false,
     food_dinner: false,
@@ -477,6 +479,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       bed_number: null,
       is_waiting: matchedRoom === null, // auto-switch to Active if room found
       notes: app.notes ?? null,
+      joining_meter_reading: null,
       food_breakfast: app.food_breakfast ?? false,
       food_lunch: app.food_lunch ?? false,
       food_dinner: app.food_dinner ?? false,
@@ -533,7 +536,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       cnic: t.cnic ?? "",
       type: t.type,
       package_tier: t.package_tier ?? "space_only",
-      custom_package_id: null,
+      custom_package_id: t.custom_package_id ?? null,
       room_id: t.room_id ?? "",
       bed_number: t.bed_number ?? "",
       check_in: t.check_in ?? formatDateInput(new Date()),
@@ -542,6 +545,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       daily_rate: t.daily_rate?.toString() ?? "0",
       check_out: t.check_out ?? "",
       security_deposit: t.security_deposit?.toString() ?? "0",
+      joining_meter_reading: t.joining_meter_reading?.toString() ?? "",
       emergency_contact: t.emergency_contact ?? "",
       emergency_relationship: t.emergency_relationship ?? "",
       emergency_phone: t.emergency_phone ?? "",
@@ -573,6 +577,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       cnic: form.cnic || null,
       type: form.type,
       package_tier: form.package_tier,
+      custom_package_id: form.custom_package_id || null,
       room_id: form.is_waiting || !form.room_id ? null : form.room_id,
       bed_number: form.bed_number || null,
       check_in: form.is_waiting ? formatDateInput(new Date()) : form.check_in,
@@ -581,6 +586,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       monthly_rent: form.billing_type === "monthly" ? parseFloat(form.monthly_rent) || 0 : 0,
       daily_rate: form.billing_type === "daily" ? parseFloat(form.daily_rate) || 0 : 0,
       security_deposit: parseFloat(form.security_deposit) || 0,
+      joining_meter_reading: form.joining_meter_reading.trim() ? parseFloat(form.joining_meter_reading) || null : null,
       emergency_contact: form.emergency_contact || null,
       emergency_relationship: form.emergency_relationship || null,
       emergency_phone: form.emergency_phone || null,
@@ -1635,6 +1641,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </div>
               )}
 
+              {/* AC Meter Reading at move-in — printed on the tenant's receipt so
+                  there's a documented reference if AC billing is ever disputed. */}
+              {!approveForm.is_waiting && approveForm.room_id && rooms.find((r) => r.id === approveForm.room_id)?.has_ac && (
+                <div className="space-y-1.5">
+                  <Label>AC Meter Reading at Move-in</Label>
+                  <Input
+                    type="number" min={0} step="0.01"
+                    placeholder="e.g. 1284.5"
+                    value={approveForm.joining_meter_reading ?? ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, joining_meter_reading: e.target.value ? parseFloat(e.target.value) || null : null })}
+                  />
+                  <p className="text-xs text-muted-foreground">Optional — recorded on the tenant's receipt to avoid future disputes over AC billing.</p>
+                </div>
+              )}
+
               {/* Check-in */}
               <div className="space-y-1.5">
                 <Label>Check-in Date</Label>
@@ -1791,6 +1812,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             )}
 
+            {/* AC Meter Reading at move-in — printed on the tenant's receipt so
+                there's a documented reference if AC billing is ever disputed. */}
+            {!form.is_waiting && form.room_id && rooms.find((r) => r.id === form.room_id)?.has_ac && (
+              <div className="space-y-1.5">
+                <Label>AC Meter Reading at Move-in</Label>
+                <Input
+                  type="number" min={0} step="0.01"
+                  placeholder="e.g. 1284.5"
+                  value={form.joining_meter_reading}
+                  onChange={(e) => setForm({ ...form, joining_meter_reading: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">Optional — recorded on the tenant's receipt to avoid future disputes over AC billing.</p>
+              </div>
+            )}
+
             {/* Package Tier — predefined + custom packages, all always selectable */}
             {(() => {
               const selectedRoom = form.room_id ? rooms.find((r) => r.id === form.room_id) : null;
@@ -1858,6 +1894,26 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           </SelectItem>
                         );
                       })}
+                      {/* space_food_ac is excluded from SELECTABLE_TIERS for NEW tenants (the
+                          modern equivalent is the "space_food" tier on an AC room), but tenants
+                          who already carry this tier (still assignable via the public join form's
+                          fallback tier list, so not just legacy data) must still see it here as a
+                          matching option — otherwise the Select can't display or keep their actual
+                          tier and silently shows/reverts to whatever the first item is. */}
+                      {editing?.package_tier === "space_food_ac" && (
+                        <SelectItem value="tier:space_food_ac">
+                          <span>{PACKAGE_TIER_LABELS.space_food_ac}</span>
+                        </SelectItem>
+                      )}
+                      {/* Same mismatch class as space_food_ac above — if this tenant's custom
+                          package was since renamed/removed from the hostel's config, it won't
+                          be in customPackages, so surface it as an "unavailable" fallback
+                          instead of the Select silently reverting to Space Only. */}
+                      {editing?.custom_package_id && !customPackages.some((c) => c.id === editing.custom_package_id) && (
+                        <SelectItem value={`custom:${editing.custom_package_id}`}>
+                          <span>Custom Package (unavailable)</span>
+                        </SelectItem>
+                      )}
                     </SelectContent>
                   </Select>
                   {!form.is_waiting && !form.room_id && (

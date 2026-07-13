@@ -13,7 +13,8 @@ export async function GET(
   }
 
   // Use admin client — hms_invoice_links RLS policy allows anon SELECT where
-  // expires_at > now(). Admin client ensures this works even without a session.
+  // expires_at IS NULL (permanent) OR expires_at > now(). Admin client ensures
+  // this works even without a session.
   const supabase = createAdminClient();
 
   // F-012: Filter expiry in SQL so the DB enforces it regardless of which client
@@ -23,7 +24,7 @@ export async function GET(
     .from("hms_invoice_links")
     .select("id, payment_id, hostel_id, expires_at")
     .eq("token", token)
-    .gt("expires_at", now)
+    .or(`expires_at.is.null,expires_at.gt.${now}`)
     .maybeSingle();
 
   if (linkErr || !link) {
@@ -32,8 +33,9 @@ export async function GET(
     });
   }
 
-  // Redundant JS guard — belt-and-suspenders in case the SQL filter is ever removed
-  if (new Date(link.expires_at) < new Date()) {
+  // Redundant JS guard — belt-and-suspenders in case the SQL filter is ever
+  // removed. NULL expires_at means permanent, never treat it as expired.
+  if (link.expires_at && new Date(link.expires_at) < new Date()) {
     return new NextResponse("This receipt link has expired.", { status: 410 });
   }
 
@@ -47,7 +49,7 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, late_fee, food_charge, ac_charge, ac_units_consumed, payment_method, payment_date, receipt_number, payment_package_tier, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out)"
+        "id, for_month, amount, late_fee, food_charge, ac_charge, ac_units_consumed, payment_method, payment_date, receipt_number, payment_package_tier, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, joining_meter_reading)"
       )
       .eq("id", link.payment_id)
       .single(),
@@ -79,7 +81,7 @@ export async function GET(
   }
 
   const tenant = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
-  const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null; check_out?: string | null } | null;
+  const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null; check_out?: string | null; joining_meter_reading?: number | null } | null;
 
   const checkInMonth = tenantTyped?.check_in?.slice(0, 7);
   const checkOutMonth = tenantTyped?.check_out?.slice(0, 7);
@@ -108,6 +110,7 @@ export async function GET(
       full_name: tenantTyped?.full_name ?? "Tenant",
       phone: tenantTyped?.phone,
       // F-008: cnic intentionally omitted from public receipt
+      joining_meter_reading: tenantTyped?.joining_meter_reading ?? null,
     },
     {
       name: hostel.name,

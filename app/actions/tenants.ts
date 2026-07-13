@@ -443,11 +443,11 @@ export async function createInvoiceLink(
 
     if (pErr || !payment) throw new Error("Payment not found or access denied");
 
-    // Insert the invoice link (DB defaults token via gen_random_bytes)
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    // Insert the invoice link (DB defaults token via gen_random_bytes). No
+    // expires_at — receipt links are permanent, not time-boxed.
     const { data, error } = await supabase
       .from("hms_invoice_links")
-      .insert({ payment_id: paymentId, hostel_id: hostelId, expires_at: expiresAt })
+      .insert({ payment_id: paymentId, hostel_id: hostelId })
       .select("token")
       .single();
 

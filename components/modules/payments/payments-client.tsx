@@ -301,7 +301,6 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         `Assalam o Alaikum ${firstName},\n\n` +
         `Your payment of *${totalFormatted}* for ${p.for_month} has been received.\n\n` +
         `Download your receipt: ${receiptUrl}\n\n` +
-        `Link expires in 7 days.\n\n` +
         `Thank you - ${hostelName}`;
 
       const waUrl = normPhone

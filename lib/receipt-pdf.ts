@@ -24,6 +24,7 @@ interface ReceiptTenant {
   phone?: string | null;
   // F-008: CNIC is sensitive PII; must NOT appear in public-facing receipts.
   room_id?: string | null;
+  joining_meter_reading?: number | null;
 }
 
 interface ReceiptHostel {
@@ -160,6 +161,11 @@ export function generateReceiptPDF(
   add(ML, "Tenant:", 8, true); nl(12);
   add(ML, tenant.full_name, 8, false); nl(12);
   if (tenant.phone) { add(ML, `Phone: ${tenant.phone}`, 8, false); nl(12); }
+  // Printed on every receipt (not just the first month) — it's a permanent
+  // reference the tenant can always point back to if AC billing is disputed.
+  if (tenant.joining_meter_reading != null) {
+    add(ML, `AC Meter Reading at Move-in: ${tenant.joining_meter_reading}`, 7, false); nl(11);
+  }
   nl(2); addDash(); nl(10);
 
   add(ML, "Breakdown:", 8, true); nl(12);

@@ -219,6 +219,7 @@ export interface ConvertFormData {
   bed_number: string | null;
   is_waiting: boolean;
   notes: string | null;
+  joining_meter_reading?: number | null;
   food_breakfast?: boolean;
   food_lunch?: boolean;
   food_dinner?: boolean;
@@ -274,6 +275,7 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     is_active: !extra.is_waiting,
     is_waiting: extra.is_waiting,
     notes: extra.notes || null,
+    joining_meter_reading: extra.joining_meter_reading ?? null,
     food_breakfast: extra.food_breakfast ?? app.food_breakfast ?? false,
     food_lunch: extra.food_lunch ?? app.food_lunch ?? false,
     food_dinner: extra.food_dinner ?? app.food_dinner ?? false,
