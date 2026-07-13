@@ -109,7 +109,7 @@ export async function getDashboardData() {
   const [
     rooms, tenants, expenses, kitchen, bills,
     allExp, allKit, collectedPayments, paidSalaries,
-    pendingPaymentsRes, allPayments6moRes,
+    pendingPaymentsRes, allPayments6moRes, acReadingsRes,
   ] = await Promise.all([
     supabase.from("hms_rooms").select("status,monthly_rent").eq("hostel_id", hostelId),
     supabase.from("hms_tenants").select("monthly_rent,security_deposit").eq("hostel_id", hostelId).eq("is_active", true).eq("is_waiting", false),
@@ -122,6 +122,7 @@ export async function getDashboardData() {
     supabase.from("hms_salary_payments").select("amount").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).eq("status", "paid"),
     supabase.from("hms_payments").select("id,amount,status,tenant:hms_tenants(full_name)").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).neq("status", "paid"),
     supabase.from("hms_payments").select("for_month,amount,status").eq("hostel_id", hostelId).gte("for_month", ranges[0].monthKey).lte("for_month", ranges[5].monthKey),
+    supabase.from("hms_room_ac_readings").select("total_units").eq("hostel_id", hostelId).eq("for_month", currentMonthKey),
   ]);
 
   const roomData = rooms.data ?? [];
@@ -131,6 +132,7 @@ export async function getDashboardData() {
   const monthlyKitchen = (kitchen.data ?? []).reduce((s, e) => s + Number(e.amount), 0);
   const monthlySalaries = (paidSalaries.data ?? []).reduce((s, e) => s + Number(e.amount), 0);
   const monthlyCollected = (collectedPayments.data ?? []).reduce((s, e) => s + Number(e.amount), 0);
+  const monthlyACUnits = (acReadingsRes.data ?? []).reduce((s, r) => s + Number(r.total_units ?? 0), 0);
   type PendingRow = { id: string; amount: unknown; status: string; tenant: { full_name: string } | null };
   const pendingRows = ((pendingPaymentsRes.data ?? []) as unknown) as PendingRow[];
   const monthlyUncollected = pendingRows.reduce((s, p) => s + Number(p.amount), 0);
@@ -173,6 +175,7 @@ export async function getDashboardData() {
     monthly_revenue: monthlyRevenue,
     security_deposit_total: securityDepositTotal,
     security_deposit_count: securityDepositCount,
+    monthly_ac_units: monthlyACUnits,
   };
 
   return { hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters };
@@ -613,7 +616,7 @@ export async function getPaymentsPageData(forMonth: string) {
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false }),
     supabase.from("hms_tenants")
-      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit")
+      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, food_breakfast, food_lunch, food_dinner")
       .eq("hostel_id", hostelId)
       .eq("is_active", true),
     supabase.from("hms_rooms")
@@ -636,7 +639,7 @@ export async function getPaymentsPageData(forMonth: string) {
   return {
     hostelId,
     payments: (payments ?? []) as Payment[],
-    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit"> & { package_tier: PackageTier })[],
+    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "food_breakfast" | "food_lunch" | "food_dinner"> & { package_tier: PackageTier })[],
     rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor" | "has_ac">[],
     packageConfig,
     hostelName: hostel?.name ?? "",

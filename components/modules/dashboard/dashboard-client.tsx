@@ -1,6 +1,6 @@
 import {
   BedDouble, Wallet, TrendingDown, Banknote,
-  Clock, CheckCircle2, FileWarning, ChefHat, Users, UserCog, ShieldCheck,
+  Clock, CheckCircle2, FileWarning, ChefHat, Users, UserCog, ShieldCheck, Snowflake,
 } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -103,18 +103,16 @@ export function DashboardClient({ data }: Props) {
           </div>
         </div>
 
-        {/* Occupancy */}
+        {/* AC Units */}
         <div className="relative rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 hover:border-blue-500/30 transition-all animate-fade-up" style={{ animationDelay: "225ms" }}>
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
-              <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">Occupancy</p>
-              <p className="mt-2 text-lg sm:text-2xl font-bold leading-none">{stats.occupancy_rate}%</p>
-              <p className="mt-2 text-[10px] sm:text-xs text-muted-foreground">
-                {stats.occupied_rooms}/{stats.total_rooms} rooms · {stats.available_rooms} empty
-              </p>
+              <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">AC Units</p>
+              <p className="mt-2 text-lg sm:text-2xl font-bold leading-none">{stats.monthly_ac_units.toLocaleString()}</p>
+              <p className="mt-2 text-[10px] sm:text-xs text-muted-foreground">Consumed this month</p>
             </div>
             <div className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-blue-500/10 border border-blue-500/20 shrink-0">
-              <BedDouble className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-400" />
+              <Snowflake className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-blue-400" />
             </div>
           </div>
         </div>
@@ -123,7 +121,7 @@ export function DashboardClient({ data }: Props) {
       {/* ── Quick Stats ─────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         {[
-          { label: "Active Tenants", value: String(stats.total_tenants),           sub: undefined,                                          icon: Users,        color: "text-blue-400",   iconBg: "bg-blue-500/10 border-blue-500/20",     hover: "hover:border-blue-500/30",   delay: 150 },
+          { label: "Active Tenants", value: String(stats.total_tenants),           sub: `Space Available ${stats.available_rooms}`, icon: Users,        color: "text-blue-400",   iconBg: "bg-blue-500/10 border-blue-500/20",     hover: "hover:border-blue-500/30",   delay: 150 },
           { label: "Kitchen Costs",  value: formatCurrency(stats.monthly_kitchen),  sub: undefined,                                          icon: ChefHat,      color: "text-amber",       iconBg: "bg-amber/10 border-amber/20",            hover: "hover:border-amber/30",       delay: 225 },
           { label: "Staff Salaries", value: formatCurrency(stats.monthly_salaries), sub: undefined,                                          icon: UserCog,      color: "text-purple-400", iconBg: "bg-purple-500/10 border-purple-500/20",  hover: "hover:border-purple-500/30",  delay: 300 },
           { label: "Total Expenses", value: formatCurrency(stats.monthly_expenses), sub: undefined,                                          icon: TrendingDown, color: "text-rose-400",   iconBg: "bg-rose-500/10 border-rose-500/20",      hover: "hover:border-rose-500/30",    delay: 375 },

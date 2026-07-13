@@ -2017,7 +2017,19 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
             {form.billing_type === "monthly" ? (
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5"><Label>Monthly Rent (PKR)</Label><Input type="number" placeholder="0" value={form.monthly_rent} onChange={(e) => setForm({ ...form, monthly_rent: e.target.value })} /></div>
+                <div className="space-y-1.5">
+                  <Label>Monthly Rent (PKR)</Label>
+                  <Input type="number" placeholder="0" value={form.monthly_rent} onChange={(e) => setForm({ ...form, monthly_rent: e.target.value })} />
+                  {(form.food_breakfast || form.food_lunch || form.food_dinner) && (() => {
+                    const foodCharge = calcFoodAddonCharge(form, foodAddonRates);
+                    const rent = parseFloat(form.monthly_rent) || 0;
+                    return (
+                      <p className="text-xs text-amber">
+                        + {formatCurrency(foodCharge)} food = {formatCurrency(rent + foodCharge)}/mo total
+                      </p>
+                    );
+                  })()}
+                </div>
                 <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
               </div>
             ) : (

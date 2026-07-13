@@ -37,6 +37,9 @@ interface TenantRow {
   is_active: boolean;
   package_tier: PackageTier;
   security_deposit: number;
+  food_breakfast?: boolean;
+  food_lunch?: boolean;
+  food_dinner?: boolean;
 }
 
 interface RoomRow { id: string; room_number: string; floor: number | null; has_ac?: boolean | null; }
@@ -1033,12 +1036,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 const food = markDialog.food_charge ?? 0;
                 const ac = markDialog.ac_charge ?? 0;
                 const baseRent = (markDialog.amount ?? 0) - food - ac;
-                const deposit = tenants.find(t => t.id === markDialog.tenant_id)?.security_deposit ?? 0;
+                const tenant = tenants.find(t => t.id === markDialog.tenant_id);
+                const deposit = tenant?.security_deposit ?? 0;
+                const mealsLabel = [tenant?.food_breakfast && "Breakfast", tenant?.food_lunch && "Lunch", tenant?.food_dinner && "Dinner"]
+                  .filter(Boolean).join(" + ");
                 return (
                   <div className="pt-1.5 border-t border-white/10 space-y-1">
                     <div className="flex justify-between text-xs text-muted-foreground">
                       <span>Rent</span><span>{formatCurrency(Math.max(0, baseRent))}</span>
                     </div>
+                    {food > 0 && (
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>Food{mealsLabel ? ` (${mealsLabel})` : ""}</span><span>{formatCurrency(food)}</span>
+                      </div>
+                    )}
                     {ac > 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground">
                         <span>AC</span><span>{formatCurrency(ac)}</span>

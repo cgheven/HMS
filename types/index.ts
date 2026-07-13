@@ -407,6 +407,7 @@ export interface DashboardStats {
   monthly_revenue: number;
   security_deposit_total: number;
   security_deposit_count: number;
+  monthly_ac_units: number;
 }
 
 export interface Defaulter {

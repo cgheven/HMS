@@ -25,6 +25,9 @@ interface ReceiptTenant {
   // F-008: CNIC is sensitive PII; must NOT appear in public-facing receipts.
   room_id?: string | null;
   joining_meter_reading?: number | null;
+  food_breakfast?: boolean;
+  food_lunch?: boolean;
+  food_dinner?: boolean;
 }
 
 interface ReceiptHostel {
@@ -169,9 +172,17 @@ export function generateReceiptPDF(
   nl(2); addDash(); nl(10);
 
   add(ML, "Breakdown:", 8, true); nl(12);
-  // Food is part of the package price — show the package amount (rent + food) as one line.
-  const monthlyRent = payment.amount - (payment.ac_charge ?? 0);
+  // Food-inclusive package tiers bundle food into monthly_rent with no separate
+  // food_charge (0), so this only itemizes food when it was billed as an add-on.
+  const monthlyRent = payment.amount - (payment.ac_charge ?? 0) - (payment.food_charge ?? 0);
   addKv("Monthly Rent", pk(Math.max(0, monthlyRent))); nl(12);
+  if ((payment.food_charge ?? 0) > 0) {
+    addKv("Food Charges", pk(payment.food_charge!)); nl(11);
+    const mealsLabel = [tenant.food_breakfast && "Breakfast", tenant.food_lunch && "Lunch", tenant.food_dinner && "Dinner"]
+      .filter(Boolean).join(" + ");
+    if (mealsLabel) { add(ML + 4, mealsLabel, 6, false); nl(9); }
+    nl(2);
+  }
   if ((payment.ac_charge ?? 0) > 0) {
     addKv("AC Charges", pk(payment.ac_charge!)); nl(11);
     const realRate = payment.ac_per_unit_rate && payment.ac_per_unit_rate > 0 ? payment.ac_per_unit_rate : 0;

@@ -49,7 +49,7 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, late_fee, food_charge, ac_charge, ac_units_consumed, payment_method, payment_date, receipt_number, payment_package_tier, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, joining_meter_reading)"
+        "id, for_month, amount, late_fee, food_charge, ac_charge, ac_units_consumed, payment_method, payment_date, receipt_number, payment_package_tier, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
       )
       .eq("id", link.payment_id)
       .single(),
@@ -81,7 +81,7 @@ export async function GET(
   }
 
   const tenant = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
-  const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null; check_out?: string | null; joining_meter_reading?: number | null } | null;
+  const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null; check_out?: string | null; joining_meter_reading?: number | null; food_breakfast?: boolean; food_lunch?: boolean; food_dinner?: boolean } | null;
 
   const checkInMonth = tenantTyped?.check_in?.slice(0, 7);
   const checkOutMonth = tenantTyped?.check_out?.slice(0, 7);
@@ -111,6 +111,9 @@ export async function GET(
       phone: tenantTyped?.phone,
       // F-008: cnic intentionally omitted from public receipt
       joining_meter_reading: tenantTyped?.joining_meter_reading ?? null,
+      food_breakfast: tenantTyped?.food_breakfast ?? false,
+      food_lunch: tenantTyped?.food_lunch ?? false,
+      food_dinner: tenantTyped?.food_dinner ?? false,
     },
     {
       name: hostel.name,
