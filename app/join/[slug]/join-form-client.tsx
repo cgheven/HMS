@@ -1,6 +1,6 @@
 "use client";
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Home, CheckCircle2, Loader2, Phone, Mail, User, CreditCard, Calendar, MessageSquare, Camera, Upload, X, RefreshCw, BedDouble, Check } from "lucide-react";
+import { Home, CheckCircle2, Loader2, Phone, Mail, User, CreditCard, Calendar, MessageSquare, Camera, Upload, X, RefreshCw, BedDouble, Check, ShieldAlert } from "lucide-react";
 import { submitApplication } from "@/app/actions/applications";
 import { uploadApplicationCnic } from "@/app/actions/public";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,11 @@ interface Props {
   preselectedRoomNumber: string | null;
 }
 
+const RELATIONSHIP_OPTIONS = [
+  "Father", "Mother", "Brother", "Sister", "Spouse",
+  "Chachu (Paternal Uncle)", "Mamu (Maternal Uncle)", "Cousin", "Guardian", "Friend",
+];
+
 export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
   const cfg = { ...DEFAULT_FORM_CONFIG, ...(hostel.form_config as FormConfig | null ?? {}) };
   const show = (key: keyof typeof cfg) => cfg[key]?.enabled !== false;
@@ -29,23 +34,24 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
     ? availableRooms.find((r) => r.room_number === preselectedRoomNumber) ?? null
     : null;
 
-  // Fallback package tiers — used only when room selection is disabled for
-  // this hostel (show("room_preference") === false), matching the old
-  // behavior exactly so those hostels see zero change.
-  const fallbackTierKeys = (() => {
-    const prices = hostel.package_config?.package_prices ?? {};
-    const keys = Object.keys(prices).filter((k) => k !== "_custom") as PackageTier[];
-    return keys.length > 0 ? keys : (["space_only", "space_food", "space_3meals", "space_food_ac", "space_meals_cooler"] as PackageTier[]);
-  })();
+  // A room is only ever picked here when the applicant arrived via a specific
+  // room's "Apply" link (?room=...) on the public browsing page. Someone who
+  // opens the bare share URL directly is a walk-in — they fill out the form
+  // and the hostel assigns a room in person later, so no room list is shown.
+  const showRoomPicker = show("room_preference") && !!preselectedRoom && availableRooms.length > 0;
 
   const [form, setForm] = useState({
     full_name: "",
     phone: "",
     email: "",
     cnic: "",
+    type: "general" as "student" | "professional" | "general",
     room_id: preselectedRoom?.id ?? "",
-    package_tier: (preselectedRoom ? "space_only" : (fallbackTierKeys[0] ?? "space_only")) as PackageTier,
+    package_tier: "space_only" as PackageTier,
     move_in_date: "",
+    emergency_contact: "",
+    emergency_phone: "",
+    emergency_relationship: "",
     notes: "",
   });
 
@@ -54,6 +60,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
   // A room clicked on the browsing page arrives preselected — show just that
   // one room instead of the full list, with a way to expand and pick another.
   const [showRoomList, setShowRoomList] = useState(!preselectedRoom);
+  const [customRelationship, setCustomRelationship] = useState(false);
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -177,9 +184,15 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
     if (!form.phone.trim()) { setError("WhatsApp number is required."); return; }
     if (show("email") && req("email") && !form.email.trim()) { setError("Email is required."); return; }
     if (show("cnic") && req("cnic") && !form.cnic.trim()) { setError("CNIC is required."); return; }
+    if (show("type") && req("type") && !form.type) { setError("Please select a type."); return; }
     if (show("move_in_date") && req("move_in_date") && !form.move_in_date) { setError("Move-in date is required."); return; }
-    if (show("room_preference") && req("room_preference") && availableRooms.length > 0 && !form.room_id) {
+    if (showRoomPicker && req("room_preference") && !form.room_id) {
       setError("Please select a room.");
+      return;
+    }
+    if (show("emergency_contact") && req("emergency_contact") &&
+        (!form.emergency_contact.trim() || !form.emergency_phone.trim())) {
+      setError("Emergency contact name and phone are required.");
       return;
     }
 
@@ -189,12 +202,14 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
       phone: form.phone,
       email: show("email") ? form.email || undefined : undefined,
       cnic: show("cnic") ? form.cnic || undefined : undefined,
-      package_tier: show("room_preference") && selectedRoom
-        ? form.package_tier
-        : (show("package_tier") ? form.package_tier : "space_only"),
-      room_id: show("room_preference") && selectedRoom ? selectedRoom.id : undefined,
-      room_preference: show("room_preference") && selectedRoom ? selectedRoom.room_number : undefined,
+      type: show("type") ? form.type : undefined,
+      package_tier: showRoomPicker && selectedRoom ? form.package_tier : "space_only",
+      room_id: showRoomPicker && selectedRoom ? selectedRoom.id : undefined,
+      room_preference: showRoomPicker && selectedRoom ? selectedRoom.room_number : undefined,
       move_in_date: show("move_in_date") ? form.move_in_date || undefined : undefined,
+      emergency_contact: show("emergency_contact") ? form.emergency_contact || undefined : undefined,
+      emergency_phone: show("emergency_contact") ? form.emergency_phone || undefined : undefined,
+      emergency_relationship: show("emergency_contact") ? form.emergency_relationship || undefined : undefined,
       notes: show("notes") ? form.notes || undefined : undefined,
       cnic_doc_path: cnicDoc?.path,
     });
@@ -343,6 +358,28 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
               </div>
             )}
 
+            {/* Type — configurable */}
+            {show("type") && (
+              <div className="space-y-1.5">
+                <Label>
+                  Type {req("type") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                </Label>
+                <Select
+                  value={form.type}
+                  onValueChange={(v) => setForm({ ...form, type: v as "student" | "professional" | "general" })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="student">Student</SelectItem>
+                    <SelectItem value="professional">Professional</SelectItem>
+                    <SelectItem value="general">General</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
             {/* CNIC Document Upload */}
             <div className="space-y-2">
               <Label className="flex items-center gap-1.5">
@@ -420,7 +457,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
               old generic "Room Type Preference" category dropdown. The exact
               room picked here flows straight through to approval later, so
               staff doesn't have to re-figure it out. */}
-          {show("room_preference") && availableRooms.length > 0 && (
+          {showRoomPicker && (
             <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
@@ -498,31 +535,6 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
             </div>
           )}
 
-          {/* Fallback — only used when this hostel has room selection disabled */}
-          {!show("room_preference") && show("package_tier") && (
-            <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
-              <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
-                <Home className="w-4 h-4 text-muted-foreground" /> Room Preferences
-              </h2>
-              <div className="space-y-1.5">
-                <Label>Package Preference {req("package_tier") && <span className="text-rose-400">*</span>}</Label>
-                <Select
-                  value={form.package_tier}
-                  onValueChange={(v) => setForm({ ...form, package_tier: v as PackageTier })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {fallbackTierKeys.map((tier) => (
-                      <SelectItem key={tier} value={tier}>{tier.replace(/_/g, " ")}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          )}
-
           {show("move_in_date") && (
             <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
               <div className="space-y-1.5">
@@ -536,6 +548,80 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                   onChange={(e) => setForm({ ...form, move_in_date: e.target.value })}
                   required={req("move_in_date")}
                 />
+              </div>
+            </div>
+          )}
+
+          {/* Emergency Contact — configurable */}
+          {show("emergency_contact") && (
+            <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
+              <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-muted-foreground" /> Emergency Contact
+                {!req("emergency_contact") && <span className="text-xs font-normal text-muted-foreground">(optional)</span>}
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label>Contact Name {req("emergency_contact") && <span className="text-rose-400">*</span>}</Label>
+                  <Input
+                    placeholder="Muhammad Ali"
+                    value={form.emergency_contact}
+                    onChange={(e) => setForm({ ...form, emergency_contact: e.target.value })}
+                    required={req("emergency_contact")}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Contact Phone {req("emergency_contact") && <span className="text-rose-400">*</span>}</Label>
+                  <Input
+                    placeholder="0300 0000000"
+                    value={form.emergency_phone}
+                    onChange={(e) => setForm({ ...form, emergency_phone: e.target.value })}
+                    required={req("emergency_contact")}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Relationship <span className="text-muted-foreground text-xs font-normal">(optional)</span></Label>
+                {customRelationship ? (
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="e.g. Family Friend, Neighbor..."
+                      value={form.emergency_relationship}
+                      onChange={(e) => setForm({ ...form, emergency_relationship: e.target.value })}
+                      autoFocus
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0 h-9 text-xs"
+                      onClick={() => { setCustomRelationship(false); setForm({ ...form, emergency_relationship: "" }); }}
+                    >
+                      Choose from list
+                    </Button>
+                  </div>
+                ) : (
+                  <Select
+                    value={RELATIONSHIP_OPTIONS.includes(form.emergency_relationship) ? form.emergency_relationship : ""}
+                    onValueChange={(v) => {
+                      if (v === "other") {
+                        setCustomRelationship(true);
+                        setForm({ ...form, emergency_relationship: "" });
+                      } else {
+                        setForm({ ...form, emergency_relationship: v });
+                      }
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select relationship" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {RELATIONSHIP_OPTIONS.map((r) => (
+                        <SelectItem key={r} value={r}>{r}</SelectItem>
+                      ))}
+                      <SelectItem value="other">Other (specify)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
             </div>
           )}

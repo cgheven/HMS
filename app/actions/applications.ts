@@ -11,10 +11,14 @@ interface ApplicationInput {
   phone: string;
   email?: string;
   cnic?: string;
+  type?: string;
   package_tier: PackageTier;
   room_preference?: string;
   room_id?: string;
   move_in_date?: string;
+  emergency_contact?: string;
+  emergency_phone?: string;
+  emergency_relationship?: string;
   notes?: string;
   cnic_doc_path?: string;
 }
@@ -69,10 +73,14 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     phone: data.phone.trim(),
     email: data.email?.trim() || null,
     cnic: data.cnic?.trim() || null,
+    type: data.type || "general",
     package_tier: data.package_tier,
     room_preference: data.room_preference || null,
     room_id: verifiedRoomId,
     move_in_date: data.move_in_date || null,
+    emergency_contact: data.emergency_contact?.trim() || null,
+    emergency_phone: data.emergency_phone?.trim() || null,
+    emergency_relationship: data.emergency_relationship?.trim() || null,
     notes: data.notes?.trim() || null,
     cnic_doc_path: data.cnic_doc_path || null,
     status: "pending",
@@ -223,6 +231,9 @@ export interface ConvertFormData {
   food_breakfast?: boolean;
   food_lunch?: boolean;
   food_dinner?: boolean;
+  emergency_contact?: string | null;
+  emergency_phone?: string | null;
+  emergency_relationship?: string | null;
 }
 
 export async function convertToTenant(appId: string, extra: ConvertFormData) {
@@ -279,6 +290,9 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     food_breakfast: extra.food_breakfast ?? app.food_breakfast ?? false,
     food_lunch: extra.food_lunch ?? app.food_lunch ?? false,
     food_dinner: extra.food_dinner ?? app.food_dinner ?? false,
+    emergency_contact: extra.emergency_contact ?? app.emergency_contact ?? null,
+    emergency_phone: extra.emergency_phone ?? app.emergency_phone ?? null,
+    emergency_relationship: extra.emergency_relationship ?? app.emergency_relationship ?? null,
   });
 
   if (tenantError) return { success: false, error: tenantError.message };

@@ -191,12 +191,18 @@ export async function getRooms() {
 
 export async function getTenants() {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, active: [], waiting: [], checkedOut: [], rooms: [] };
+  if (!ctx?.hostelId) {
+    return {
+      hostelId: null, active: [], waiting: [], checkedOut: [], rooms: [],
+      foodAddonRates: { food_breakfast_rate: 0, food_lunch_rate: 0, food_dinner_rate: 0, food_all_meals_rate: 0 },
+    };
+  }
   const { supabase, hostelId } = ctx;
 
-  const [{ data: tenants }, { data: rooms }] = await Promise.all([
+  const [{ data: tenants }, { data: rooms }, packageConfig] = await Promise.all([
     supabase.from("hms_tenants").select("*").eq("hostel_id", hostelId).order("created_at", { ascending: false }),
     supabase.from("hms_rooms").select("*").eq("hostel_id", hostelId).order("room_number"),
+    getPackageConfig(hostelId),
   ]);
 
   const all = (tenants ?? []) as Tenant[];
@@ -206,6 +212,12 @@ export async function getTenants() {
     waiting: all.filter((t) => t.is_waiting),
     checkedOut: all.filter((t) => !t.is_active && !t.is_waiting),
     rooms: (rooms ?? []) as Room[],
+    foodAddonRates: {
+      food_breakfast_rate: Number(packageConfig?.food_breakfast_rate ?? 0),
+      food_lunch_rate: Number(packageConfig?.food_lunch_rate ?? 0),
+      food_dinner_rate: Number(packageConfig?.food_dinner_rate ?? 0),
+      food_all_meals_rate: Number(packageConfig?.food_all_meals_rate ?? 0),
+    },
   };
 }
 

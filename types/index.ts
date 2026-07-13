@@ -69,19 +69,21 @@ export interface FormFieldConfig {
 export interface FormConfig {
   email?: FormFieldConfig;
   cnic?: FormFieldConfig;
-  package_tier?: FormFieldConfig;
+  type?: FormFieldConfig;
   room_preference?: FormFieldConfig;
   move_in_date?: FormFieldConfig;
+  emergency_contact?: FormFieldConfig;
   notes?: FormFieldConfig;
 }
 
 export const DEFAULT_FORM_CONFIG: Required<FormConfig> = {
-  email:           { enabled: true, required: false },
-  cnic:            { enabled: true, required: false },
-  package_tier:    { enabled: true, required: false },
-  room_preference: { enabled: true, required: false },
-  move_in_date:    { enabled: true, required: false },
-  notes:           { enabled: true, required: false },
+  email:              { enabled: true, required: false },
+  cnic:               { enabled: true, required: false },
+  type:               { enabled: true, required: false },
+  room_preference:    { enabled: true, required: false },
+  move_in_date:       { enabled: true, required: false },
+  emergency_contact:  { enabled: true, required: false },
+  notes:              { enabled: true, required: false },
 };
 
 export interface PaymentMethodAccount {
@@ -626,10 +628,14 @@ export interface TenantApplication {
   phone: string;
   email: string | null;
   cnic: string | null;
+  type: SpaceType;
   room_preference: string | null;
   room_id: string | null;
   package_tier: PackageTier;
   move_in_date: string | null;
+  emergency_contact: string | null;
+  emergency_phone: string | null;
+  emergency_relationship: string | null;
   notes: string | null;
   photo_url: string | null;
   cnic_doc_path: string | null;

@@ -824,12 +824,13 @@ export function SettingsClient() {
           <form onSubmit={saveFormConfig} className="space-y-4">
             {(
               [
-                { key: "email",           label: "Email Address",        description: "Tenant's email for correspondence" },
-                { key: "cnic",            label: "CNIC",                 description: "National ID number (42101-XXXXXXX-X)" },
-                { key: "package_tier",    label: "Package Preference",   description: "Space Only / Meals / AC / Cooler" },
-                { key: "room_preference", label: "Room Type Preference", description: "Student / Professional / General" },
-                { key: "move_in_date",    label: "Preferred Move-in Date", description: "Requested check-in date" },
-                { key: "notes",           label: "Message / Questions",  description: "Free text for special requests" },
+                { key: "email",              label: "Email Address",        description: "Tenant's email for correspondence" },
+                { key: "cnic",               label: "CNIC",                 description: "National ID number (42101-XXXXXXX-X)" },
+                { key: "type",               label: "Type",                 description: "Student / Professional / General" },
+                { key: "room_preference",    label: "Room Selection",       description: "Lets applicants pick a specific available room" },
+                { key: "move_in_date",       label: "Preferred Move-in Date", description: "Requested check-in date" },
+                { key: "emergency_contact",  label: "Emergency Contact",    description: "Contact name, phone, and relationship" },
+                { key: "notes",              label: "Message / Questions",  description: "Free text for special requests" },
               ] as { key: keyof FormConfig; label: string; description: string }[]
             ).map(({ key, label, description }) => {
               const field: FormFieldConfig = formConfig[key] ?? { enabled: true, required: false };

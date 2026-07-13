@@ -4,7 +4,7 @@ import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, History,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
-  FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check,
+  FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check, UtensilsCrossed,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -36,6 +36,7 @@ interface Props {
   hostelSlug?: string | null;
   hostelName?: string | null;
   waitlistEntries?: WaitlistEntry[];
+  foodAddonRates?: FoodAddonRates;
 }
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
@@ -178,6 +179,7 @@ interface TenantRowProps {
   showCheckout?: boolean;
   showActivate?: boolean;
   roomMap: Record<string, Room>;
+  foodAddonRates: FoodAddonRates;
   onTimeline: (t: Tenant) => void;
   onCheckout: (t: Tenant) => void;
   onActivate: (t: Tenant) => void;
@@ -185,8 +187,9 @@ interface TenantRowProps {
   onDelete: (t: Tenant) => void;
 }
 
-function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, onTimeline, onCheckout, onActivate, onEdit, onDelete }: TenantRowProps) {
+function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foodAddonRates, onTimeline, onCheckout, onActivate, onEdit, onDelete }: TenantRowProps) {
   const room = t.room_id ? roomMap[t.room_id] : null;
+  const foodCharge = calcFoodAddonCharge(t, foodAddonRates);
   const initials = t.full_name[0].toUpperCase();
   return (
     <div className="flex items-center gap-3 px-3 py-3.5 sm:px-4 sm:py-3 rounded-xl hover:bg-white/[0.03] transition-colors">
@@ -245,8 +248,13 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, onT
       <div className="text-right shrink-0 hidden md:block">
         {t.billing_type === "daily"
           ? <p className="text-sm font-semibold text-foreground">{formatCurrency(t.daily_rate)}<span className="text-xs text-muted-foreground font-normal">/day</span></p>
-          : <p className="text-sm font-semibold text-foreground">{formatCurrency(t.monthly_rent)}<span className="text-xs text-muted-foreground font-normal">/mo</span></p>
+          : <p className="text-sm font-semibold text-foreground">{formatCurrency(t.monthly_rent + foodCharge)}<span className="text-xs text-muted-foreground font-normal">/mo</span></p>
         }
+        {foodCharge > 0 && (
+          <p className="text-xs text-amber flex items-center justify-end gap-0.5">
+            <UtensilsCrossed className="w-2.5 h-2.5" />Food incl.
+          </p>
+        )}
         {t.security_deposit > 0 && <p className="text-xs text-muted-foreground">Dep: {formatCurrency(t.security_deposit)}</p>}
       </div>
 
@@ -291,7 +299,7 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, onT
 
 // ---------------------------------------------------------------------------
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [] }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates }: Props) {
   const [active, setActive] = useState(initialActive);
   const [waiting, setWaiting] = useState(initialWaiting);
   const [checkedOut, setCheckedOut] = useState(initialCheckedOut);
@@ -332,9 +340,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [customPackages, setCustomPackages] = useState<CustomPackage[]>([]);
   const [configSecurityDeposit, setConfigSecurityDeposit] = useState<number>(0);
   const [seaterPrices, setSeaterPrices] = useState<SeaterPrices>({});
-  const [foodAddonRates, setFoodAddonRates] = useState<FoodAddonRates>({
-    food_breakfast_rate: 0, food_lunch_rate: 0, food_dinner_rate: 0, food_all_meals_rate: 0,
-  });
+  const [foodAddonRates, setFoodAddonRates] = useState<FoodAddonRates>(
+    initialFoodAddonRates ?? { food_breakfast_rate: 0, food_lunch_rate: 0, food_dinner_rate: 0, food_all_meals_rate: 0 }
+  );
 
   useEffect(() => {
     if (!hostelId) return;
@@ -397,6 +405,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     food_breakfast: false,
     food_lunch: false,
     food_dinner: false,
+    emergency_contact: null,
+    emergency_phone: null,
+    emergency_relationship: null,
   });
   const [approveSaving, setApproveSaving] = useState(false);
   const [editingDocs, setEditingDocs] = useState<TenantDocument[]>([]);
@@ -466,7 +477,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       : null;
     const tier = app.package_tier ?? "space_only";
     setApproveForm({
-      type: matchedRoom?.type ?? app.room_preference ?? "general",
+      type: app.type ?? matchedRoom?.type ?? "general",
       package_tier: tier,
       billing_type: "monthly",
       monthly_rent: matchedRoom ? getSuggestedRent(matchedRoom, tier, pkgPrices, seaterPrices) : 0,
@@ -483,6 +494,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       food_breakfast: app.food_breakfast ?? false,
       food_lunch: app.food_lunch ?? false,
       food_dinner: app.food_dinner ?? false,
+      emergency_contact: app.emergency_contact ?? null,
+      emergency_phone: app.emergency_phone ?? null,
+      emergency_relationship: app.emergency_relationship ?? null,
     });
   }
 
@@ -1124,6 +1138,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <TenantRow
                   key={t.id} t={t} showCheckout
                   roomMap={roomMap}
+                  foodAddonRates={foodAddonRates}
                   onTimeline={setTimelineTenant}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
@@ -1151,6 +1166,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     <TenantRow
                       key={t.id} t={t} showActivate
                       roomMap={roomMap}
+                      foodAddonRates={foodAddonRates}
                       onTimeline={setTimelineTenant}
                       onCheckout={openCheckout}
                       onActivate={(tenant) => openEdit(tenant, true)}
@@ -1243,6 +1259,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <TenantRow
                   key={t.id} t={t}
                   roomMap={roomMap}
+                  foodAddonRates={foodAddonRates}
                   onTimeline={setTimelineTenant}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
