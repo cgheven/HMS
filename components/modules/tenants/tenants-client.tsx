@@ -1448,45 +1448,102 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </div>
               </div>
 
-              {/* Type + Package */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label>Tenant Type</Label>
-                  <Select value={approveForm.type} onValueChange={(v) => setApproveForm({ ...approveForm, type: v })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="student">Student</SelectItem>
-                      <SelectItem value="professional">Professional</SelectItem>
-                      <SelectItem value="general">General</SelectItem>
-                    </SelectContent>
-                  </Select>
+              {/* Tenant Type */}
+              <div className="space-y-1.5">
+                <Label>Tenant Type</Label>
+                <Select value={approveForm.type} onValueChange={(v) => setApproveForm({ ...approveForm, type: v })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="student">Student</SelectItem>
+                    <SelectItem value="professional">Professional</SelectItem>
+                    <SelectItem value="general">General</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Room + Bed (only for active) — must come before Package Tier so AC status is known */}
+              {!approveForm.is_waiting && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label>Room</Label>
+                    <Select
+                      value={approveForm.room_id ?? ""}
+                      onValueChange={(v) => {
+                        const approveRoom = rooms.find((r) => r.id === v);
+                        const tier = approveForm.package_tier as PackageTier;
+                        const suggestedDeposit = approveRoom
+                          ? getSuggestedDeposit(approveRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
+                          : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
+                        setApproveForm({
+                          ...approveForm,
+                          room_id: v || null,
+                          monthly_rent: approveRoom ? getSuggestedRent(approveRoom, tier, pkgPrices, seaterPrices) : approveForm.monthly_rent,
+                          security_deposit: suggestedDeposit,
+                        });
+                      }}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
+                      <SelectContent>
+                        {availableRooms.map((r) => (
+                          <SelectItem key={r.id} value={r.id}>
+                            Rm {r.room_number} · {r.capacity - r.occupied} free · {formatCurrency(getSuggestedRent(r, approveForm.package_tier as PackageTier, pkgPrices, seaterPrices))}/mo
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Bed Number</Label>
+                    <Input
+                      placeholder="A1"
+                      value={approveForm.bed_number ?? ""}
+                      onChange={(e) => setApproveForm({ ...approveForm, bed_number: e.target.value || null })}
+                    />
+                  </div>
                 </div>
+              )}
+
+              {/* AC Meter Reading at move-in — printed on the tenant's receipt so
+                  there's a documented reference if AC billing is ever disputed. */}
+              {!approveForm.is_waiting && approveForm.room_id && rooms.find((r) => r.id === approveForm.room_id)?.has_ac && (
                 <div className="space-y-1.5">
-                  <Label>Package Tier</Label>
-                  <Select value={approveForm.package_tier} onValueChange={(v) => {
-                    const tier = v as PackageTier;
-                    const approveRoom = approveForm.room_id ? rooms.find((r) => r.id === approveForm.room_id) : null;
-                    const suggestedDeposit = approveRoom
-                      ? getSuggestedDeposit(approveRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
-                      : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
-                    const suggestedRent = approveRoom
-                      ? getSuggestedRent(approveRoom, tier, pkgPrices, seaterPrices)
-                      : approveForm.monthly_rent;
-                    // Clear any add-on meal selection when switching to a package that
-                    // already bundles food — prevents a stale double-charge on save.
-                    const clearFood = FOOD_INCLUSIVE_TIERS.has(tier)
-                      ? { food_breakfast: false, food_lunch: false, food_dinner: false }
-                      : {};
-                    setApproveForm({ ...approveForm, package_tier: tier, security_deposit: suggestedDeposit, monthly_rent: suggestedRent, ...clearFood });
-                  }}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {(Object.entries(PACKAGE_TIER_LABELS) as [PackageTier, string][]).map(([k, label]) => (
-                        <SelectItem key={k} value={k}>{label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label>AC Meter Reading at Move-in</Label>
+                  <Input
+                    type="number" min={0} step="0.01"
+                    placeholder="e.g. 1284.5"
+                    value={approveForm.joining_meter_reading ?? ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, joining_meter_reading: e.target.value ? parseFloat(e.target.value) || null : null })}
+                  />
+                  <p className="text-xs text-muted-foreground">Optional — recorded on the tenant's receipt to avoid future disputes over AC billing.</p>
                 </div>
+              )}
+
+              {/* Package Tier */}
+              <div className="space-y-1.5">
+                <Label>Package Tier</Label>
+                <Select value={approveForm.package_tier} onValueChange={(v) => {
+                  const tier = v as PackageTier;
+                  const approveRoom = approveForm.room_id ? rooms.find((r) => r.id === approveForm.room_id) : null;
+                  const suggestedDeposit = approveRoom
+                    ? getSuggestedDeposit(approveRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
+                    : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
+                  const suggestedRent = approveRoom
+                    ? getSuggestedRent(approveRoom, tier, pkgPrices, seaterPrices)
+                    : approveForm.monthly_rent;
+                  // Clear any add-on meal selection when switching to a package that
+                  // already bundles food — prevents a stale double-charge on save.
+                  const clearFood = FOOD_INCLUSIVE_TIERS.has(tier)
+                    ? { food_breakfast: false, food_lunch: false, food_dinner: false }
+                    : {};
+                  setApproveForm({ ...approveForm, package_tier: tier, security_deposit: suggestedDeposit, monthly_rent: suggestedRent, ...clearFood });
+                }}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {(Object.entries(PACKAGE_TIER_LABELS) as [PackageTier, string][]).map(([k, label]) => (
+                      <SelectItem key={k} value={k}>{label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               {/* Food Add-on — optional, independent of package tier. Only shown if the hostel
@@ -1615,63 +1672,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   />
                 </div>
               </div>
-
-              {/* Room + Bed (only for active) */}
-              {!approveForm.is_waiting && (
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <Label>Room</Label>
-                    <Select
-                      value={approveForm.room_id ?? ""}
-                      onValueChange={(v) => {
-                        const approveRoom = rooms.find((r) => r.id === v);
-                        const tier = approveForm.package_tier as PackageTier;
-                        const suggestedDeposit = approveRoom
-                          ? getSuggestedDeposit(approveRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
-                          : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
-                        setApproveForm({
-                          ...approveForm,
-                          room_id: v || null,
-                          monthly_rent: approveRoom ? getSuggestedRent(approveRoom, tier, pkgPrices, seaterPrices) : approveForm.monthly_rent,
-                          security_deposit: suggestedDeposit,
-                        });
-                      }}
-                    >
-                      <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
-                      <SelectContent>
-                        {availableRooms.map((r) => (
-                          <SelectItem key={r.id} value={r.id}>
-                            Rm {r.room_number} · {r.capacity - r.occupied} free · {formatCurrency(getSuggestedRent(r, approveForm.package_tier as PackageTier, pkgPrices, seaterPrices))}/mo
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Bed Number</Label>
-                    <Input
-                      placeholder="A1"
-                      value={approveForm.bed_number ?? ""}
-                      onChange={(e) => setApproveForm({ ...approveForm, bed_number: e.target.value || null })}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* AC Meter Reading at move-in — printed on the tenant's receipt so
-                  there's a documented reference if AC billing is ever disputed. */}
-              {!approveForm.is_waiting && approveForm.room_id && rooms.find((r) => r.id === approveForm.room_id)?.has_ac && (
-                <div className="space-y-1.5">
-                  <Label>AC Meter Reading at Move-in</Label>
-                  <Input
-                    type="number" min={0} step="0.01"
-                    placeholder="e.g. 1284.5"
-                    value={approveForm.joining_meter_reading ?? ""}
-                    onChange={(e) => setApproveForm({ ...approveForm, joining_meter_reading: e.target.value ? parseFloat(e.target.value) || null : null })}
-                  />
-                  <p className="text-xs text-muted-foreground">Optional — recorded on the tenant's receipt to avoid future disputes over AC billing.</p>
-                </div>
-              )}
 
               {/* Check-in */}
               <div className="space-y-1.5">
