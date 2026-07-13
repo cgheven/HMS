@@ -279,7 +279,7 @@ export interface Payment {
   payment_package_tier?: PackageTier | null;
   created_at: string;
   updated_at: string;
-  tenant?: { full_name: string; room_id: string | null; phone?: string | null } | null;
+  tenant?: { full_name: string; room_id: string | null; phone?: string | null; check_in?: string; joining_meter_reading?: number | null } | null;
 }
 
 export interface CheckoutPaymentSettlement {

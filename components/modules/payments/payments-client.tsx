@@ -297,9 +297,18 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       const total = Number(p.amount) + Number(p.late_fee ?? 0);
       const totalFormatted = `Rs. ${total.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
+      // Only on the tenant's very first month — the reading never changes, so
+      // repeating it in every month's WhatsApp text afterward would just be noise.
+      // The receipt PDF (linked below) still shows it every month as the permanent record.
+      const isFirstMonth = p.tenant?.check_in?.slice(0, 7) === p.for_month;
+      const readingLine = isFirstMonth && p.tenant?.joining_meter_reading != null
+        ? `AC meter reading at move-in: *${p.tenant.joining_meter_reading}* units — noted for your records.\n\n`
+        : "";
+
       const message =
         `Assalam o Alaikum ${firstName},\n\n` +
         `Your payment of *${totalFormatted}* for ${p.for_month} has been received.\n\n` +
+        readingLine +
         `Download your receipt: ${receiptUrl}\n\n` +
         `Thank you - ${hostelName}`;
 
