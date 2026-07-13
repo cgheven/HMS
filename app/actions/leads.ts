@@ -8,7 +8,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { writeAuditLog } from "@/lib/audit";
 import { EMAIL_RE } from "@/lib/validation";
-import { sendLeadFollowUpDigest } from "@/lib/email";
+import { sendGroupedFollowUpDigests } from "@/lib/email";
 import { PKT_OFFSET_MS } from "@/lib/pkt-time";
 import type {
   PlatformLead,
@@ -202,6 +202,7 @@ export async function createLead(
         source: input.source?.trim() || (caller.kind === "rep" ? "sales_rep" : "super_admin"),
         status: "new",
         assigned_to: assignedTo,
+        created_by: caller.userId,
       })
       .select("*, sales_rep:hms_sales_reps(id,name)")
       .single();
@@ -411,17 +412,22 @@ export async function deleteLead(leadId: string): Promise<{ error?: string }> {
 // ── sendFollowUpDigestEmail ─────────────────────────────────────────────────────
 // On-demand version of the /api/cron/lead-followups job — sends whatever set of
 // leads the admin currently has filtered to on the leads page, instead of waiting
-// for the 9 AM PKT run.
+// for the 9 AM PKT run. Routing is per-lead: a lead assigned to a rep goes to that
+// rep's email (admin CC'd for confirmation), an unassigned lead goes to the admin.
+
+type LeadWithRepEmail = PlatformLead & {
+  sales_rep: { id: string; name: string; email: string | null; is_active: boolean } | null;
+};
 
 export async function sendFollowUpDigestEmail(
   leadIds: string[]
-): Promise<{ error?: string; sent?: number }> {
+): Promise<{ error?: string; sent?: number; recipients?: number }> {
   const caller = await requireSuperAdmin();
   try {
     if (leadIds.length === 0) return { error: "No leads selected" };
 
-    const recipient = process.env.LEADS_FOLLOWUP_DIGEST_EMAIL;
-    if (!recipient) return { error: "Digest recipient email is not configured" };
+    const adminEmail = process.env.LEADS_FOLLOWUP_DIGEST_EMAIL;
+    if (!adminEmail) return { error: "Digest recipient email is not configured" };
 
     const admin = createAdminClient();
     const supabase = await createClient();
@@ -429,27 +435,27 @@ export async function sendFollowUpDigestEmail(
     const [{ data, error }, { data: { user } }] = await Promise.all([
       admin
         .from("hms_platform_leads")
-        .select("*, sales_rep:hms_sales_reps(id,name)")
+        .select("*, sales_rep:hms_sales_reps(id,name,email,is_active)")
         .in("id", leadIds)
         .order("next_follow_up_date", { ascending: true }),
       supabase.auth.getUser(),
     ]);
     if (error) throw error;
 
-    const leads = (data ?? []) as PlatformLead[];
+    const leads = (data ?? []) as LeadWithRepEmail[];
     if (leads.length === 0) return { error: "No matching leads found" };
 
-    await sendLeadFollowUpDigest(recipient, leads);
+    const { sentCount, recipientCount } = await sendGroupedFollowUpDigests(leads, adminEmail);
 
     await writeAuditLog({
       actor_id: caller.id,
       actor_email: user?.email ?? "",
       action: "lead.followup_digest_sent",
       entity: "platform_lead",
-      meta: { count: leads.length, recipient, lead_ids: leadIds },
+      meta: { count: sentCount, recipients: recipientCount, lead_ids: leadIds },
     });
 
-    return { sent: leads.length };
+    return { sent: sentCount, recipients: recipientCount };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to send digest email" };
   }

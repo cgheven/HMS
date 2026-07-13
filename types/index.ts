@@ -561,6 +561,7 @@ export interface PlatformLead {
   source: string | null;
   next_follow_up_date: string | null;
   priority: LeadPriority;
+  created_by: string | null;
   created_at: string;
   updated_at: string;
   sales_rep?: { id: string; name: string } | null;

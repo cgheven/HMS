@@ -122,9 +122,11 @@ export async function sendWaitlistEmail(data: WaitlistEmailData): Promise<void> 
   });
 }
 
-// ─── Lead follow-up digest (SuperAdmin notification) ──────────────────────────
+// ─── Lead follow-up digest (SuperAdmin + sales rep notification) ──────────────
 // Sent daily by the /api/cron/lead-followups job and on-demand from the
-// SuperAdmin leads page ("Send Follow-up Email").
+// SuperAdmin leads page ("Send Follow-up Email"). Routing (who gets which leads,
+// and who gets CC'd) lives in sendGroupedFollowUpDigests below — this function
+// only renders and sends a single email to a single recipient.
 
 interface LeadFollowUpDigestItem {
   business_name: string;
@@ -136,7 +138,8 @@ interface LeadFollowUpDigestItem {
 
 export async function sendLeadFollowUpDigest(
   recipientEmail: string,
-  leads: LeadFollowUpDigestItem[]
+  leads: LeadFollowUpDigestItem[],
+  options?: { cc?: string; greetingName?: string }
 ): Promise<void> {
   const todayStr = pktTodayDateString();
 
@@ -162,10 +165,12 @@ export async function sendLeadFollowUpDigest(
     })
     .join("");
 
+  const greeting = options?.greetingName ? `Hi ${esc(options.greetingName)}, ` : "";
+
   const body = `
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Daily Follow-up Digest</h2>
     <p style="margin:0 0 20px;font-size:14px;color:#a1a1aa;">
-      ${leads.length} lead${leads.length !== 1 ? "s" : ""} ${leads.length !== 1 ? "need" : "needs"} follow-up.
+      ${greeting}${leads.length} lead${leads.length !== 1 ? "s" : ""} ${leads.length !== 1 ? "need" : "needs"} follow-up.
     </p>
     <table width="100%" cellpadding="0" cellspacing="0">${rows}</table>
     <p style="margin:24px 0 0;">
@@ -176,7 +181,64 @@ export async function sendLeadFollowUpDigest(
   await resend.emails.send({
     from: FROM,
     to: recipientEmail,
+    cc: options?.cc,
     subject: `${leads.length} lead follow-up${leads.length !== 1 ? "s" : ""} pending`,
     html: baseHtml("Follow-up Digest", body),
   });
+}
+
+// ─── Grouped follow-up digest dispatch ─────────────────────────────────────────
+// Splits a mixed batch of leads by who's actually responsible for the follow-up:
+// each ACTIVE sales rep with pending leads gets their own email (their assigned
+// leads only), CC'd to the SuperAdmin digest address for delivery confirmation.
+// Unassigned leads — and any rep who's deactivated or has no login email on
+// file — fall back into the SuperAdmin's own email so nothing is silently
+// dropped, and a deactivated rep never keeps receiving lead PII by email after
+// setSalesRepActive(false) (which only revokes their portal session, not this).
+
+interface FollowUpDigestLead extends LeadFollowUpDigestItem {
+  assigned_to: string | null;
+  sales_rep?: { id: string; name: string; email: string | null; is_active: boolean } | null;
+}
+
+export async function sendGroupedFollowUpDigests(
+  leads: FollowUpDigestLead[],
+  adminEmail: string
+): Promise<{ sentCount: number; recipientCount: number }> {
+  const byRep = new Map<string, { rep: { id: string; name: string; email: string | null; is_active: boolean }; leads: FollowUpDigestLead[] }>();
+  const adminBucket: FollowUpDigestLead[] = [];
+
+  for (const lead of leads) {
+    if (lead.assigned_to && lead.sales_rep) {
+      const existing = byRep.get(lead.sales_rep.id);
+      if (existing) existing.leads.push(lead);
+      else byRep.set(lead.sales_rep.id, { rep: lead.sales_rep, leads: [lead] });
+    } else {
+      adminBucket.push(lead);
+    }
+  }
+
+  const sends: Promise<void>[] = [];
+  let recipientCount = 0;
+
+  for (const { rep, leads: repLeads } of byRep.values()) {
+    if (rep.email && rep.is_active) {
+      sends.push(sendLeadFollowUpDigest(rep.email, repLeads, { cc: adminEmail, greetingName: rep.name }));
+      recipientCount += 1;
+    } else {
+      // Deactivated (portal-locked-out reps must not keep getting lead PII by
+      // email either) or no login email on file — surface it to the admin
+      // instead of silently skipping the reminder. sendLeadFollowUpDigest
+      // already labels each row with "Rep: {name}" when sales_rep is present.
+      adminBucket.push(...repLeads);
+    }
+  }
+
+  if (adminBucket.length > 0) {
+    sends.push(sendLeadFollowUpDigest(adminEmail, adminBucket));
+    recipientCount += 1;
+  }
+
+  await Promise.all(sends);
+  return { sentCount: leads.length, recipientCount };
 }

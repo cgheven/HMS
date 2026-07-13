@@ -71,6 +71,17 @@ const FOLLOWUP_FILTERS: { value: FollowUpFilter; label: string }[] = [
   { value: "week", label: "Due This Week" },
 ];
 
+// Segregates the leads table by who's actually responsible for it — distinct
+// from the per-row "Assigned" select, this is a table-level filter. "mine" =
+// leads the admin personally added and hasn't handed off to a rep; "unclaimed"
+// = nobody's claimed it yet (e.g. public onboarding-form submissions); a rep id
+// = that rep's assigned leads.
+// "all"/"mine"/"unclaimed" are reserved sentinels; any other value is a sales rep id.
+type OwnerFilter = string;
+const OWNER_ALL = "all";
+const OWNER_MINE = "mine";
+const OWNER_UNCLAIMED = "unclaimed";
+
 const emptyConvertForm = {
   hostelName: "",
   city: "",
@@ -93,12 +104,14 @@ const emptyAddLeadForm = {
 interface Props {
   initialLeads: PlatformLead[];
   salesReps: SalesRep[];
+  adminUserId: string;
 }
 
-export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
+export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: Props) {
   const [leads, setLeads] = useState<PlatformLead[]>(initialLeads);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | LeadStatus>("all");
+  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>(OWNER_ALL);
   const [dateFilter, setDateFilter] = useState<DateFilter>("all");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -374,6 +387,13 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
   const filtered = useMemo(() => {
     let list = leads;
     if (statusFilter !== "all") list = list.filter((l) => l.status === statusFilter);
+    if (ownerFilter === OWNER_MINE) {
+      list = list.filter((l) => !l.assigned_to && l.created_by === adminUserId);
+    } else if (ownerFilter === OWNER_UNCLAIMED) {
+      list = list.filter((l) => !l.assigned_to && l.created_by !== adminUserId);
+    } else if (ownerFilter !== OWNER_ALL) {
+      list = list.filter((l) => l.assigned_to === ownerFilter);
+    }
     if (search) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -419,7 +439,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
       });
     }
     return list;
-  }, [leads, search, statusFilter, dateFilter, customFrom, customTo, followUpFilter]);
+  }, [leads, search, statusFilter, ownerFilter, adminUserId, dateFilter, customFrom, customTo, followUpFilter]);
 
   // The set "Send Follow-up Email" mails out. With no follow-up chip selected,
   // default to what's actually due (overdue + today) rather than every lead that
@@ -441,7 +461,10 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
     if (res.error) {
       toast({ title: "Failed to send email", description: res.error, variant: "destructive" });
     } else {
-      toast({ title: "Follow-up email sent", description: `${res.sent} lead${res.sent !== 1 ? "s" : ""} included.` });
+      toast({
+        title: "Follow-up email sent",
+        description: `${res.sent} lead${res.sent !== 1 ? "s" : ""} across ${res.recipients} inbox${res.recipients !== 1 ? "es" : ""} (reps CC you).`,
+      });
     }
   }
 
@@ -503,6 +526,26 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps }: Props) {
               </span>
             </button>
           ))}
+        </div>
+
+        {/* Owner segregation */}
+        <div className="flex items-center gap-2">
+          <User className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+          <Select value={ownerFilter} onValueChange={setOwnerFilter}>
+            <SelectTrigger className="h-9 w-56 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={OWNER_ALL}>All Leads</SelectItem>
+              <SelectItem value={OWNER_MINE}>My Leads</SelectItem>
+              <SelectItem value={OWNER_UNCLAIMED}>Unclaimed</SelectItem>
+              {salesReps.map((rep) => (
+                <SelectItem key={rep.id} value={rep.id}>
+                  {rep.name}{!rep.is_active ? " (inactive)" : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Search + date range */}

@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendLeadFollowUpDigest } from "@/lib/email";
+import { sendGroupedFollowUpDigests } from "@/lib/email";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import type { PlatformLead } from "@/types";
+
+type LeadWithRepEmail = PlatformLead & {
+  sales_rep: { id: string; name: string; email: string | null; is_active: boolean } | null;
+};
 
 // Invoked daily by Vercel Cron (see vercel.json, 0 4 * * * UTC = 9 AM PKT).
 // Vercel sends `Authorization: Bearer ${CRON_SECRET}` automatically when
@@ -16,8 +20,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const recipient = process.env.LEADS_FOLLOWUP_DIGEST_EMAIL;
-  if (!recipient) {
+  const adminEmail = process.env.LEADS_FOLLOWUP_DIGEST_EMAIL;
+  if (!adminEmail) {
     return NextResponse.json({ error: "LEADS_FOLLOWUP_DIGEST_EMAIL not configured" }, { status: 500 });
   }
 
@@ -26,7 +30,7 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await admin
     .from("hms_platform_leads")
-    .select("*, sales_rep:hms_sales_reps(id,name)")
+    .select("*, sales_rep:hms_sales_reps(id,name,email,is_active)")
     .not("next_follow_up_date", "is", null)
     .lte("next_follow_up_date", today)
     .order("next_follow_up_date", { ascending: true });
@@ -38,12 +42,15 @@ export async function GET(request: NextRequest) {
   // Terminal-stage leads don't need a follow-up nudge even if a stale date lingers.
   const leads = (data ?? []).filter(
     (l) => l.status !== "converted" && l.status !== "rejected"
-  ) as PlatformLead[];
+  ) as LeadWithRepEmail[];
 
   if (leads.length === 0) {
     return NextResponse.json({ sent: false, count: 0 });
   }
 
-  await sendLeadFollowUpDigest(recipient, leads);
-  return NextResponse.json({ sent: true, count: leads.length });
+  // Each ACTIVE rep with pending leads gets their own email (admin CC'd for
+  // confirmation); unassigned leads, and any deactivated rep or one with no
+  // login email on file, roll up to the admin instead.
+  const { sentCount, recipientCount } = await sendGroupedFollowUpDigests(leads, adminEmail);
+  return NextResponse.json({ sent: true, count: sentCount, recipients: recipientCount });
 }
