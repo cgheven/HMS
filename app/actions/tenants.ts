@@ -315,8 +315,11 @@ export interface TimelineEvent {
   amount?: number;
   method?: string;
   forMonth?: string;
+  rentCharge?: number;
   foodCharge?: number;
   acCharge?: number;
+  acUnitsConsumed?: number;
+  lateFee?: number;
   paymentId?: string;
 }
 
@@ -327,17 +330,17 @@ export async function getTenantTimeline(
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
-    const [tenantRes, paymentsRes, tenantEventsRes] = await Promise.all([
+    const [tenantRes, paymentsRes, tenantEventsRes, checkoutReadingRes] = await Promise.all([
       supabase
         .from("hms_tenants")
-        .select("id, full_name, check_in, check_out, is_active, created_at")
+        .select("id, full_name, check_in, check_out, is_active, created_at, joining_meter_reading")
         .eq("id", tenantId)
         .eq("hostel_id", hostelId)
         .single(),
       supabase
         .from("hms_payments")
         .select(
-          "id, for_month, amount, late_fee, payment_method, payment_date, status, food_charge, ac_charge, payment_package_tier, created_at"
+          "id, for_month, amount, late_fee, payment_method, payment_date, status, food_charge, ac_charge, ac_units_consumed, payment_package_tier, created_at"
         )
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
@@ -348,6 +351,14 @@ export async function getTenantTimeline(
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
         .order("created_at", { ascending: false }),
+      supabase
+        .from("hms_room_ac_checkout_readings")
+        .select("meter_reading")
+        .eq("tenant_id", tenantId)
+        .eq("hostel_id", hostelId)
+        .order("checkout_date", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
     ]);
 
     if (tenantRes.error || !tenantRes.data) throw new Error("Tenant not found or access denied");
@@ -356,6 +367,7 @@ export async function getTenantTimeline(
     const tenant = tenantRes.data;
     const payments = paymentsRes.data;
     const tenantEvents = tenantEventsRes.data ?? [];
+    const checkoutReading = checkoutReadingRes.data;
 
     const events: TimelineEvent[] = [];
 
@@ -365,7 +377,9 @@ export async function getTenantTimeline(
       type: "joined",
       date: tenant.check_in ?? tenant.created_at,
       label: "Checked in",
-      sub: "Tenant joined the hostel",
+      sub: tenant.joining_meter_reading != null
+        ? `Tenant joined the hostel · AC meter at move-in: ${tenant.joining_meter_reading}`
+        : "Tenant joined the hostel",
     });
 
     // Check-out event
@@ -375,7 +389,9 @@ export async function getTenantTimeline(
         type: "check_out",
         date: tenant.check_out,
         label: "Checked out",
-        sub: "Tenant left the hostel",
+        sub: checkoutReading?.meter_reading != null
+          ? `Tenant left the hostel · AC meter at checkout: ${checkoutReading.meter_reading}`
+          : "Tenant left the hostel",
       });
     }
 
@@ -390,6 +406,13 @@ export async function getTenantTimeline(
           p.payment_method
             ? p.payment_method.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())
             : undefined;
+        // Decompose the paid amount into its components — the receipt shows this
+        // breakdown, and lumping it into one number here hides that the total
+        // isn't just rent (and never includes the deposit, which is its own event).
+        const foodChargeVal = p.food_charge != null ? Number(p.food_charge) : 0;
+        const acChargeVal = p.ac_charge != null ? Number(p.ac_charge) : 0;
+        const lateFeeVal = Number(p.late_fee ?? 0);
+        const rentCharge = Number(p.amount) - foodChargeVal - acChargeVal;
         events.push({
           id: `payment-${p.id}`,
           type: "payment",
@@ -399,8 +422,11 @@ export async function getTenantTimeline(
           amount: totalPaid,
           method: methodLabel,
           forMonth: p.for_month,
-          foodCharge: p.food_charge != null ? Number(p.food_charge) : undefined,
-          acCharge: p.ac_charge != null ? Number(p.ac_charge) : undefined,
+          rentCharge,
+          foodCharge: foodChargeVal > 0 ? foodChargeVal : undefined,
+          acCharge: acChargeVal > 0 ? acChargeVal : undefined,
+          acUnitsConsumed: p.ac_units_consumed != null ? Number(p.ac_units_consumed) : undefined,
+          lateFee: lateFeeVal > 0 ? lateFeeVal : undefined,
           paymentId: p.id,
         });
       } else if (p.status === "waived") {
@@ -413,11 +439,17 @@ export async function getTenantTimeline(
           forMonth: p.for_month,
         });
       } else if (p.status === "pending" || p.status === "overdue") {
+        // Use billing month start as the date — more meaningful than created_at —
+        // EXCEPT for the tenant's first billing month, where the month start can
+        // predate their actual check-in (e.g. joined the 14th, month starts the 1st),
+        // making a mid-month joiner look like they owed rent before they existed.
+        // Anchor to check_in instead when this payment is for that first month.
+        const isFirstBillingMonth = tenant.check_in && tenant.check_in.slice(0, 7) === p.for_month;
+        const pendingDate = isFirstBillingMonth ? tenant.check_in! : `${p.for_month}-01`;
         events.push({
           id: `pending-${p.id}`,
           type: "pending",
-          // Use billing month start as the date — more meaningful than created_at
-          date: `${p.for_month}-01`,
+          date: pendingDate,
           label: `Rs. ${totalPaid.toLocaleString()} ${p.status === "overdue" ? "overdue" : "due"}`,
           sub: `${p.for_month} · ${p.status === "overdue" ? "Overdue — not yet collected" : "Pending — not yet collected"}`,
           amount: totalPaid,
@@ -493,9 +525,13 @@ export async function getTenantTimeline(
       check_out: 7,
     };
     events.sort((a, b) => {
-      const da = new Date(a.date).getTime();
-      const db = new Date(b.date).getTime();
-      if (db !== da) return db - da;
+      // Compare by calendar day, not exact millisecond timestamp — events logged
+      // at different times of the same day (e.g. a date-only "joined" value vs. a
+      // real created_at timestamp) must still tie-break by SAME_DAY_PRIORITY rather
+      // than by incidental time-of-day differences.
+      const dayA = new Date(a.date).toISOString().slice(0, 10);
+      const dayB = new Date(b.date).toISOString().slice(0, 10);
+      if (dayB !== dayA) return dayB < dayA ? -1 : 1;
       return SAME_DAY_PRIORITY[a.type] - SAME_DAY_PRIORITY[b.type];
     });
 

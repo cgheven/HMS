@@ -563,26 +563,27 @@ export async function exportLedgerPDF(
 
   autoTable(doc, {
     startY: y,
-    head: [["Tenant", "Phone", "Room", "Plan", "Status", "Charged (Rs.)", "Paid (Rs.)", "Owed (Rs.)", "Deposit (Rs.)", "Last Payment"]],
+    head: [["Tenant", "Phone", "Room", "Plan", "Price", "Status", "Charged (Rs.)", "Paid (Rs.)", "Due (Rs.)", "Deposit (Rs.)", "Last Payment"]],
     body: rows.map((r) => [
       r.fullName,
       r.phone ?? "—",
       r.roomNumber ? `Rm ${r.roomNumber}` : "—",
       r.packageLabel,
+      r.packagePrice > 0 ? `${r.packagePrice.toLocaleString("en-PK")}/${r.billingType === "daily" ? "day" : "mo"}` : "—",
       LEDGER_STATUS_LABELS[r.status] ?? r.status,
-      r.totalCharged.toLocaleString("en-PK"),
+      r.totalFoodCharge > 0 ? `${r.totalCharged.toLocaleString("en-PK")} (incl. ${r.totalFoodCharge.toLocaleString("en-PK")} food)` : r.totalCharged.toLocaleString("en-PK"),
       r.totalPaid.toLocaleString("en-PK"),
       r.totalOwed.toLocaleString("en-PK"),
       r.securityDeposit > 0 ? r.securityDeposit.toLocaleString("en-PK") : "—",
       fmtDate(r.lastPaymentDate),
     ]),
-    foot: [["", "", "", "", "Total", totalCharged.toLocaleString("en-PK"), totalPaid.toLocaleString("en-PK"), totalOwed.toLocaleString("en-PK"), totalDeposit.toLocaleString("en-PK"), ""]],
+    foot: [["", "", "", "", "", "Total", totalCharged.toLocaleString("en-PK"), totalPaid.toLocaleString("en-PK"), totalOwed.toLocaleString("en-PK"), totalDeposit.toLocaleString("en-PK"), ""]],
     headStyles: { fillColor: [30, 30, 30], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
     footStyles: { fillColor: [245, 166, 35], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 8 },
-    bodyStyles: { fontSize: 7.5 },
+    bodyStyles: { fontSize: 7 },
     alternateRowStyles: { fillColor: [248, 248, 248] },
     margin: { left: MARGIN, right: MARGIN },
-    columnStyles: { 5: { halign: "right" }, 6: { halign: "right" }, 7: { halign: "right" }, 8: { halign: "right" } },
+    columnStyles: { 4: { halign: "right" }, 6: { halign: "right" }, 7: { halign: "right" }, 8: { halign: "right" }, 9: { halign: "right" } },
   });
 
   doc.save(`member-ledger-${period}.pdf`);
@@ -605,21 +606,23 @@ export async function exportLedgerExcel(
     [`Member Ledger — ${hostelName}`],
     [`Period: ${period} | ${filterLabel}`],
     [],
-    ["Tenant", "Phone", "Room", "Plan", "Status", "Charged (Rs.)", "Paid (Rs.)", "Owed (Rs.)", "Deposit (Rs.)", "Last Payment"],
+    ["Tenant", "Phone", "Room", "Plan", "Package Price", "Status", "Charged (Rs.)", "incl. Food (Rs.)", "Paid (Rs.)", "Due (Rs.)", "Deposit (Rs.)", "Last Payment"],
     ...rows.map((r) => [
       r.fullName,
       r.phone ?? "",
       r.roomNumber ? `Rm ${r.roomNumber}` : "",
       r.packageLabel,
+      r.packagePrice > 0 ? `${r.packagePrice}/${r.billingType === "daily" ? "day" : "mo"}` : "",
       LEDGER_STATUS_LABELS[r.status] ?? r.status,
       r.totalCharged,
+      r.totalFoodCharge || "",
       r.totalPaid,
       r.totalOwed,
       r.securityDeposit,
       fmtDate(r.lastPaymentDate),
     ]),
     [],
-    ["", "", "", "", "Total", totalCharged, totalPaid, totalOwed, totalDeposit, ""],
+    ["", "", "", "", "", "Total", totalCharged, rows.reduce((s, r) => s + r.totalFoodCharge, 0), totalPaid, totalOwed, totalDeposit, ""],
   ];
 
   const ws = XLSX.utils.aoa_to_sheet(sheetRows);

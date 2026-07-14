@@ -246,13 +246,17 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
                         {event.sub && (
                           <p className="text-xs text-muted-foreground mt-0.5">{event.sub}</p>
                         )}
-                        {/* AC breakdown for payment events */}
-                        {event.type === "payment" && (event.acCharge ?? 0) > 0 && (
-                          <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-muted-foreground">
+                        {/* Breakdown for payment events — matches the receipt's itemization,
+                            so it's clear the total is rent + food/AC, never the deposit. */}
+                        {event.type === "payment" && (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Rent: {formatCurrency(event.rentCharge ?? 0)}
+                            {(event.foodCharge ?? 0) > 0 && <> · Food: {formatCurrency(event.foodCharge!)}</>}
                             {(event.acCharge ?? 0) > 0 && (
-                              <span>AC: {formatCurrency(event.acCharge!)}</span>
+                              <> · AC: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{formatCurrency(event.acCharge!)}</>
                             )}
-                          </div>
+                            {(event.lateFee ?? 0) > 0 && <> · Late Fee: {formatCurrency(event.lateFee!)}</>}
+                          </p>
                         )}
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">

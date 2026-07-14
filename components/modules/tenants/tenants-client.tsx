@@ -37,6 +37,7 @@ interface Props {
   hostelName?: string | null;
   waitlistEntries?: WaitlistEntry[];
   foodAddonRates?: FoodAddonRates;
+  foodMonthlyRate?: number;
 }
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
@@ -299,7 +300,7 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
 
 // ---------------------------------------------------------------------------
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate }: Props) {
   const [active, setActive] = useState(initialActive);
   const [waiting, setWaiting] = useState(initialWaiting);
   const [checkedOut, setCheckedOut] = useState(initialCheckedOut);
@@ -344,12 +345,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [foodAddonRates, setFoodAddonRates] = useState<FoodAddonRates>(
     initialFoodAddonRates ?? { food_breakfast_rate: 0, food_lunch_rate: 0, food_dinner_rate: 0, food_all_meals_rate: 0 }
   );
+  const [foodMonthlyRate, setFoodMonthlyRate] = useState<number>(initialFoodMonthlyRate ?? 0);
 
   useEffect(() => {
     if (!hostelId) return;
     const supabase = createClient();
     supabase.from("hms_package_configs")
-      .select("package_prices, security_deposit, seater_prices, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate")
+      .select("package_prices, security_deposit, seater_prices, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, food_monthly_rate")
       .eq("hostel_id", hostelId)
       .maybeSingle()
       .then(({ data }) => {
@@ -384,6 +386,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             food_dinner_rate: Number(data.food_dinner_rate ?? 0),
             food_all_meals_rate: Number(data.food_all_meals_rate ?? 0),
           });
+          setFoodMonthlyRate(Number(data.food_monthly_rate ?? 0));
         }
       });
   }, [hostelId]);
@@ -1572,10 +1575,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
               {/* Food Add-on — optional, independent of package tier. Only shown if the hostel
                   configured rates AND the selected package doesn't already bundle food. */}
-              {hasFoodAddonRates(foodAddonRates) && (
-                FOOD_INCLUSIVE_TIERS.has(approveForm.package_tier) ? (
-                  <p className="text-xs text-muted-foreground/60">Food is already included in this package.</p>
-                ) : (
+              {FOOD_INCLUSIVE_TIERS.has(approveForm.package_tier) ? (
+                <p className="text-xs text-muted-foreground/60">
+                  Food is billed automatically for this package
+                  {foodMonthlyRate > 0 && (
+                    <> — Rs. {foodMonthlyRate.toLocaleString()}/mo added on top of rent (total Rs. {(Number(approveForm.monthly_rent || 0) + foodMonthlyRate).toLocaleString()}/mo, shown as a separate line on the receipt)</>
+                  )}.
+                </p>
+              ) : hasFoodAddonRates(foodAddonRates) && (
                   <div className="space-y-1.5">
                     <Label>Add Food? <span className="text-muted-foreground font-normal text-xs">(optional)</span></Label>
                     {hasIndividualFoodRates(foodAddonRates) ? (
@@ -1642,7 +1649,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       </p>
                     )}
                   </div>
-                )
               )}
 
               {/* Billing type */}
@@ -1967,10 +1973,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {/* Food Add-on — optional, independent of package tier. Only shown if the hostel
                 configured rates AND the selected package doesn't already bundle food (avoids
                 double-charging once via the tier's flat rate and again via the add-on). */}
-            {hasFoodAddonRates(foodAddonRates) && (
-              FOOD_INCLUSIVE_TIERS.has(form.package_tier) ? (
-                <p className="text-xs text-muted-foreground/60">Food is already included in this package.</p>
-              ) : (
+            {FOOD_INCLUSIVE_TIERS.has(form.package_tier) ? (
+              <p className="text-xs text-muted-foreground/60">
+                Food is billed automatically for this package
+                {foodMonthlyRate > 0 && (
+                  <> — Rs. {foodMonthlyRate.toLocaleString()}/mo added on top of rent (total Rs. {(Number(form.monthly_rent || 0) + foodMonthlyRate).toLocaleString()}/mo, shown as a separate line on the receipt)</>
+                )}.
+              </p>
+            ) : hasFoodAddonRates(foodAddonRates) && (
                 <div className="space-y-1.5">
                   <Label>Add Food? <span className="text-muted-foreground font-normal text-xs">(optional)</span></Label>
                   {hasIndividualFoodRates(foodAddonRates) ? (
@@ -2039,7 +2049,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     </p>
                   )}
                 </div>
-              )
             )}
 
             {/* Billing type toggle */}

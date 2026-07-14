@@ -1041,6 +1041,11 @@ const LEDGER_STATUS_LABELS: Record<string, string> = {
   checked_out: "Checked Out",
 };
 
+function ledgerPackagePriceLabel(r: { packagePrice: number; billingType: "monthly" | "daily" }): string {
+  if (r.packagePrice <= 0) return "—";
+  return `${formatCurrency(r.packagePrice)}/${r.billingType === "daily" ? "day" : "mo"}`;
+}
+
 const LEDGER_PACKAGE_OPTIONS: { value: string; label: string }[] = [
   { value: "space_only", label: "Space Only" },
   { value: "space_food", label: "Space + 2 Meals" },
@@ -1074,26 +1079,29 @@ function MemberLedgerTab({
   const [drillInLoading, setDrillInLoading] = useState(false);
   const [generatingReceipt, setGeneratingReceipt] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  const fetchRows = useCallback(async (signal?: { cancelled: boolean }) => {
     setLoading(true);
-    getLedgerTenants(hostelId, from, to, {
+    const result = await getLedgerTenants(hostelId, from, to, {
       roomId: roomFilter !== "all" ? roomFilter : undefined,
       status: statusFilter,
       packageTier: packageFilter !== "all" ? packageFilter : undefined,
       hasDeposit: depositFilter || undefined,
-    }).then((result) => {
-      if (cancelled) return;
-      if (result.error) {
-        toast({ title: "Error loading ledger", description: result.error, variant: "destructive" });
-        setRows([]);
-      } else {
-        setRows(result.data ?? []);
-      }
-      setLoading(false);
     });
-    return () => { cancelled = true; };
+    if (signal?.cancelled) return;
+    if (result.error) {
+      toast({ title: "Error loading ledger", description: result.error, variant: "destructive" });
+      setRows([]);
+    } else {
+      setRows(result.data ?? []);
+    }
+    setLoading(false);
   }, [hostelId, from, to, roomFilter, statusFilter, packageFilter, depositFilter]);
+
+  useEffect(() => {
+    const signal = { cancelled: false };
+    fetchRows(signal);
+    return () => { signal.cancelled = true; };
+  }, [fetchRows]);
 
   const filteredRows = useMemo(() => {
     if (!rows) return [];
@@ -1234,6 +1242,10 @@ function MemberLedgerTab({
           </div>
 
           <div className="ml-auto flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => fetchRows()} disabled={loading} className="gap-1.5 h-8 text-xs" title="Reload — payments recorded elsewhere while this tab was open won't appear until refreshed">
+              <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
             <Button variant="outline" size="sm" onClick={handleExportPDF} disabled={!!exporting || filteredRows.length === 0} className="gap-1.5 h-8 text-xs">
               {exporting === "pdf" ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
               PDF
@@ -1277,7 +1289,10 @@ function MemberLedgerTab({
                         {r.phone && <span className="text-xs text-muted-foreground">{r.phone}</span>}
                         {r.roomNumber && <span className="text-xs text-muted-foreground">Rm {r.roomNumber}</span>}
                       </div>
-                      <p className="text-xs text-blue-400 mt-0.5">{r.packageLabel}</p>
+                      <p className="text-xs text-blue-400 mt-0.5">
+                        {r.packageLabel}
+                        {r.packagePrice > 0 && <span className="text-muted-foreground"> · {ledgerPackagePriceLabel(r)}</span>}
+                      </p>
                     </div>
                     <Badge variant={r.status === "active" ? "default" : "secondary"} className="text-xs capitalize shrink-0">
                       {LEDGER_STATUS_LABELS[r.status]}
@@ -1287,13 +1302,14 @@ function MemberLedgerTab({
                     <div>
                       <p className="text-[10px] text-muted-foreground">Charged</p>
                       <p className="text-xs font-semibold">{formatCurrency(r.totalCharged)}</p>
+                      {r.totalFoodCharge > 0 && <p className="text-[9px] text-amber">incl. {formatCurrency(r.totalFoodCharge)} food</p>}
                     </div>
                     <div>
                       <p className="text-[10px] text-muted-foreground">Paid</p>
                       <p className="text-xs font-semibold text-emerald-400">{formatCurrency(r.totalPaid)}</p>
                     </div>
                     <div>
-                      <p className="text-[10px] text-muted-foreground">Owed</p>
+                      <p className="text-[10px] text-muted-foreground">Due</p>
                       <p className={`text-xs font-semibold ${r.totalOwed > 0 ? "text-rose-400" : "text-muted-foreground"}`}>
                         {r.totalOwed > 0 ? formatCurrency(r.totalOwed) : "—"}
                       </p>
@@ -1319,10 +1335,11 @@ function MemberLedgerTab({
                     <th className="text-left pb-2 pr-3">Tenant</th>
                     <th className="text-left pb-2 pr-3">Room</th>
                     <th className="text-left pb-2 pr-3">Plan</th>
+                    <th className="text-right pb-2 pr-3">Package Price</th>
                     <th className="text-left pb-2 pr-3">Status</th>
                     <th className="text-right pb-2 pr-3">Charged</th>
                     <th className="text-right pb-2 pr-3">Paid</th>
-                    <th className="text-right pb-2 pr-3">Owed</th>
+                    <th className="text-right pb-2 pr-3">Due</th>
                     <th className="text-right pb-2 pr-3">Deposit</th>
                     <th className="text-left pb-2 pr-3">Last Payment</th>
                     <th className="text-right pb-2">&nbsp;</th>
@@ -1337,12 +1354,16 @@ function MemberLedgerTab({
                       </td>
                       <td className="py-2.5 pr-3 text-muted-foreground">{r.roomNumber ? `Rm ${r.roomNumber}` : "—"}</td>
                       <td className="py-2.5 pr-3 text-blue-400">{r.packageLabel}</td>
+                      <td className="py-2.5 pr-3 text-right text-muted-foreground">{ledgerPackagePriceLabel(r)}</td>
                       <td className="py-2.5 pr-3">
                         <Badge variant={r.status === "active" ? "default" : "secondary"} className="text-xs capitalize">
                           {LEDGER_STATUS_LABELS[r.status]}
                         </Badge>
                       </td>
-                      <td className="py-2.5 pr-3 text-right">{formatCurrency(r.totalCharged)}</td>
+                      <td className="py-2.5 pr-3 text-right">
+                        {formatCurrency(r.totalCharged)}
+                        {r.totalFoodCharge > 0 && <p className="text-[10px] text-amber font-normal">incl. {formatCurrency(r.totalFoodCharge)} food</p>}
+                      </td>
                       <td className="py-2.5 pr-3 text-right text-emerald-400">{formatCurrency(r.totalPaid)}</td>
                       <td className={`py-2.5 pr-3 text-right ${r.totalOwed > 0 ? "text-rose-400 font-semibold" : "text-muted-foreground"}`}>
                         {r.totalOwed > 0 ? formatCurrency(r.totalOwed) : "—"}
@@ -1373,7 +1394,10 @@ function MemberLedgerTab({
               <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                 {drillIn.phone && <span>{drillIn.phone}</span>}
                 {drillIn.roomNumber && <span>Room {drillIn.roomNumber}</span>}
-                <span className="text-blue-400">{drillIn.packageLabel}</span>
+                <span className="text-blue-400">
+                  {drillIn.packageLabel}
+                  {drillIn.packagePrice > 0 && ` · ${ledgerPackagePriceLabel(drillIn)}`}
+                </span>
                 <Badge variant={drillIn.status === "active" ? "default" : "secondary"} className="text-xs capitalize">
                   {LEDGER_STATUS_LABELS[drillIn.status]}
                 </Badge>
@@ -1389,7 +1413,7 @@ function MemberLedgerTab({
                   <p className="text-sm font-semibold text-emerald-400">{formatCurrency(drillIn.totalPaid)}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Owed</p>
+                  <p className="text-xs text-muted-foreground">Due</p>
                   <p className={`text-sm font-semibold ${drillIn.totalOwed > 0 ? "text-rose-400" : ""}`}>{formatCurrency(drillIn.totalOwed)}</p>
                 </div>
               </div>
@@ -1436,6 +1460,16 @@ function MemberLedgerTab({
                                 <p className="text-sm font-medium text-foreground leading-snug">{event.label}</p>
                               </div>
                               {event.sub && <p className="text-xs text-muted-foreground mt-0.5">{event.sub}</p>}
+                              {event.type === "payment" && (
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                  Rent: {formatCurrency(event.rentCharge ?? 0)}
+                                  {(event.foodCharge ?? 0) > 0 && <> · Food: {formatCurrency(event.foodCharge!)}</>}
+                                  {(event.acCharge ?? 0) > 0 && (
+                                    <> · AC: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{formatCurrency(event.acCharge!)}</>
+                                  )}
+                                  {(event.lateFee ?? 0) > 0 && <> · Late Fee: {formatCurrency(event.lateFee!)}</>}
+                                </p>
+                              )}
                             </div>
                             <div className="flex items-center gap-1.5 shrink-0">
                               <p className="text-xs text-muted-foreground whitespace-nowrap">{formatDate(event.date)}</p>

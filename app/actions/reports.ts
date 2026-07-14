@@ -512,7 +512,13 @@ export interface LedgerTenantRow {
   roomNumber: string | null;
   status: "active" | "waiting" | "checked_out";
   packageLabel: string;
+  /** The tenant's recurring rate (not a period total) — Rs/mo or Rs/day depending on billingType */
+  packagePrice: number;
+  billingType: "monthly" | "daily";
   securityDeposit: number;
+  /** Sum of food_charge across all payments in range — surfaced separately so a
+      food/breakfast add-on isn't hidden inside the combined Charged total. */
+  totalFoodCharge: number;
   totalCharged: number;
   totalPaid: number;
   totalOwed: number;
@@ -557,7 +563,7 @@ export async function getLedgerTenants(
 
   let tenantQuery = admin
     .from("hms_tenants")
-    .select("id, full_name, phone, is_active, is_waiting, package_tier, custom_package_id, security_deposit, room:hms_rooms(room_number)")
+    .select("id, full_name, phone, is_active, is_waiting, package_tier, custom_package_id, security_deposit, billing_type, monthly_rent, daily_rate, room:hms_rooms(room_number)")
     .eq("hostel_id", hostelId);
 
   if (filters.roomId) tenantQuery = tenantQuery.eq("room_id", filters.roomId);
@@ -579,7 +585,7 @@ export async function getLedgerTenants(
     tenantQuery,
     admin
       .from("hms_payments")
-      .select("tenant_id, amount, late_fee, status, payment_date")
+      .select("tenant_id, amount, late_fee, status, payment_date, food_charge")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
@@ -591,9 +597,10 @@ export async function getLedgerTenants(
   type TenantRow = {
     id: string; full_name: string; phone: string | null; is_active: boolean; is_waiting: boolean;
     package_tier: string | null; custom_package_id: string | null; security_deposit: number | null;
+    billing_type: string; monthly_rent: number | null; daily_rate: number | null;
     room: { room_number: string } | { room_number: string }[] | null;
   };
-  type PaymentRow = { tenant_id: string; amount: number; late_fee: number | null; status: string; payment_date: string | null };
+  type PaymentRow = { tenant_id: string; amount: number; late_fee: number | null; status: string; payment_date: string | null; food_charge: number | null };
 
   const paymentsByTenant: Record<string, PaymentRow[]> = {};
   ((payments ?? []) as PaymentRow[]).forEach((p) => {
@@ -607,10 +614,13 @@ export async function getLedgerTenants(
     const totalCharged = tPayments.reduce((s, p) => s + Number(p.amount) + Number(p.late_fee ?? 0), 0);
     const totalPaid = paid.reduce((s, p) => s + Number(p.amount) + Number(p.late_fee ?? 0), 0);
     const totalOwed = owed.reduce((s, p) => s + Number(p.amount), 0);
+    const totalFoodCharge = tPayments.reduce((s, p) => s + Number(p.food_charge ?? 0), 0);
     const lastPaymentDate = paid.reduce<string | null>((latest, p) => (p.payment_date && (!latest || p.payment_date > latest) ? p.payment_date : latest), null);
     const roomRel = t.room;
     const roomNumber = Array.isArray(roomRel) ? roomRel[0]?.room_number ?? null : roomRel?.room_number ?? null;
     const packageLabel = t.custom_package_id ? "Custom Package" : (LEDGER_TIER_LABELS[t.package_tier ?? ""] ?? t.package_tier ?? "Space Only");
+    const billingType = t.billing_type === "daily" ? "daily" : "monthly";
+    const packagePrice = billingType === "daily" ? Number(t.daily_rate ?? 0) : Number(t.monthly_rent ?? 0);
 
     return {
       id: t.id,
@@ -619,7 +629,10 @@ export async function getLedgerTenants(
       roomNumber,
       status: t.is_waiting ? "waiting" : t.is_active ? "active" : "checked_out",
       packageLabel,
+      packagePrice,
+      billingType,
       securityDeposit: Number(t.security_deposit ?? 0),
+      totalFoodCharge,
       totalCharged,
       totalPaid,
       totalOwed,
