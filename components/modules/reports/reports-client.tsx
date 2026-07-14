@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { getReportData, getLedgerTenants, type ReportData, type LedgerTenantRow } from "@/app/actions/reports";
-import { getTenantTimeline, createInvoiceLink, type TimelineEvent } from "@/app/actions/tenants";
+import { getTenantTimeline, createInvoiceLink, createInstallmentReceiptLink, type TimelineEvent } from "@/app/actions/tenants";
 import { EventIcon, eventDotColor } from "@/components/modules/tenants/tenant-timeline";
 import type { RevenueMonth, AgingBucket } from "@/types";
 
@@ -1165,9 +1165,12 @@ function MemberLedgerTab({
     setDrillInLoading(false);
   }
 
-  async function openReceipt(paymentId: string) {
-    setGeneratingReceipt(paymentId);
-    const result = await createInvoiceLink(paymentId);
+  async function openReceipt(paymentId: string, installmentId?: string) {
+    const key = installmentId ?? paymentId;
+    setGeneratingReceipt(key);
+    const result = installmentId
+      ? await createInstallmentReceiptLink(installmentId)
+      : await createInvoiceLink(paymentId);
     setGeneratingReceipt(null);
     if (result.error) {
       toast({ title: "Failed to open receipt", description: result.error, variant: "destructive" });
@@ -1467,21 +1470,22 @@ function MemberLedgerTab({
                                   {(event.acCharge ?? 0) > 0 && (
                                     <> · AC: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{formatCurrency(event.acCharge!)}</>
                                   )}
+                                  {(event.depositCharge ?? 0) > 0 && <> · Deposit: {formatCurrency(event.depositCharge!)}</>}
                                   {(event.lateFee ?? 0) > 0 && <> · Late Fee: {formatCurrency(event.lateFee!)}</>}
                                 </p>
                               )}
                             </div>
                             <div className="flex items-center gap-1.5 shrink-0">
                               <p className="text-xs text-muted-foreground whitespace-nowrap">{formatDate(event.date)}</p>
-                              {event.type === "payment" && event.paymentId && (
+                              {(event.type === "payment" || event.type === "partially_paid") && event.paymentId && (
                                 <button
                                   type="button"
                                   title="View Receipt"
-                                  disabled={generatingReceipt === event.paymentId}
-                                  onClick={() => openReceipt(event.paymentId!)}
+                                  disabled={generatingReceipt === (event.installmentId ?? event.paymentId)}
+                                  onClick={() => openReceipt(event.paymentId!, event.installmentId)}
                                   className="inline-flex items-center justify-center w-6 h-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors"
                                 >
-                                  {generatingReceipt === event.paymentId
+                                  {generatingReceipt === (event.installmentId ?? event.paymentId)
                                     ? <Loader2 className="w-3 h-3 animate-spin" />
                                     : <ExternalLink className="w-3 h-3" />}
                                 </button>

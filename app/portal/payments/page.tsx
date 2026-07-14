@@ -20,6 +20,7 @@ export default async function PortalPaymentsPage() {
     tenant_id: string
     for_month: string
     amount: number
+    amount_paid: number | null
     late_fee: number
     status: string
     ac_units_consumed: number | null
@@ -43,10 +44,10 @@ export default async function PortalPaymentsPage() {
   ] = await Promise.all([
     admin
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, late_fee, status, ac_units_consumed, ac_charge, tenant:hms_tenants(full_name, room_id, package_tier)")
+      .select("id, tenant_id, for_month, amount, amount_paid, late_fee, status, ac_units_consumed, ac_charge, tenant:hms_tenants(full_name, room_id, package_tier)")
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
-      .in("status", ["pending", "overdue"])
+      .in("status", ["pending", "overdue", "partially_paid"])
       .order("created_at", { ascending: false }) as unknown as Promise<{ data: RawPayment[] | null }>,
 
     admin
@@ -92,8 +93,9 @@ export default async function PortalPaymentsPage() {
     tenant_id: p.tenant_id,
     for_month: p.for_month,
     amount: Number(p.amount),
+    amountPaid: Number(p.amount_paid ?? 0),
     late_fee: Number(p.late_fee ?? 0),
-    status: p.status as "pending" | "overdue",
+    status: p.status as "pending" | "overdue" | "partially_paid",
     tenantName: p.tenant?.full_name ?? "Unknown",
     roomNumber: p.tenant?.room_id ? (roomMap[p.tenant.room_id] ?? null) : null,
     packageTier: p.tenant?.package_tier ?? null,

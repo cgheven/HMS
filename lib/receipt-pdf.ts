@@ -7,11 +7,16 @@ interface ReceiptPayment {
   receipt_number?: string | null;
   for_month: string;
   amount: number;
+  /** Set only for a partial payment — amount actually received so far (< amount + late_fee) */
+  amount_paid?: number;
   late_fee?: number;
   food_charge?: number;
   ac_charge?: number;
   ac_units_consumed?: number | null;
   ac_per_unit_rate?: number;
+  /** Deposit actually billed as part of THIS payment's amount (first month only) */
+  security_deposit_charge?: number;
+  /** Deposit to be refunded — shown only on a checkout receipt, unrelated to `amount` */
   security_deposit?: number;
   is_checkout?: boolean;
   payment_method?: string | null;
@@ -152,7 +157,7 @@ export function generateReceiptPDF(
   if (hostel.address) { addCenter(hostel.address, 7, false); nl(10); }
   if (hostel.phone) { addCenter(`Tel: ${hostel.phone}`, 7, false); nl(10); }
   nl(3); addDash(); nl(10);
-  addCenter("PAYMENT RECEIPT", 9, true); nl(10);
+  addCenter(payment.amount_paid != null ? "PARTIAL PAYMENT RECEIPT" : "PAYMENT RECEIPT", 9, true); nl(10);
   addDash(); nl(10);
 
   addKv("Receipt #", payment.receipt_number ?? "N/A"); nl(12);
@@ -174,7 +179,7 @@ export function generateReceiptPDF(
   add(ML, "Breakdown:", 8, true); nl(12);
   // Food-inclusive package tiers bundle food into monthly_rent with no separate
   // food_charge (0), so this only itemizes food when it was billed as an add-on.
-  const monthlyRent = payment.amount - (payment.ac_charge ?? 0) - (payment.food_charge ?? 0);
+  const monthlyRent = payment.amount - (payment.ac_charge ?? 0) - (payment.food_charge ?? 0) - (payment.security_deposit_charge ?? 0);
   addKv("Monthly Rent", pk(Math.max(0, monthlyRent))); nl(12);
   if ((payment.food_charge ?? 0) > 0) {
     addKv("Food Charges", pk(payment.food_charge!)); nl(11);
@@ -202,20 +207,40 @@ export function generateReceiptPDF(
     nl(2);
   }
   if ((payment.late_fee ?? 0) > 0)       { addKv("Late Fee", pk(payment.late_fee!)); nl(12); }
-  if ((payment.security_deposit ?? 0) > 0) {
-    addKv("Security Deposit", pk(payment.security_deposit!)); nl(12);
-    const depositNote = payment.is_checkout ? "(to be refunded on checkout)" : "(refundable on checkout)";
-    add(ML, depositNote, 6, false); nl(10);
+  if ((payment.security_deposit_charge ?? 0) > 0) {
+    // Actually charged as part of THIS bill (first month) — already included
+    // in `payment.amount`, so it's itemized here, not added again below.
+    addKv("Security Deposit", pk(payment.security_deposit_charge!)); nl(12);
+    add(ML, "(refundable on checkout)", 6, false); nl(10);
+  }
+  if (payment.is_checkout && (payment.security_deposit ?? 0) > 0) {
+    // Informational only — the deposit was already collected at move-in, not
+    // part of this checkout payment's amount.
+    addKv("Security Deposit Refund", pk(payment.security_deposit!)); nl(12);
+    add(ML, "(to be returned to tenant)", 6, false); nl(10);
   }
   nl(2); addDash(); nl(10);
 
-  // Security deposit is excluded from total on checkout receipts — it was collected at move-in,
-  // not as part of this payment.
-  const total = payment.amount + (payment.late_fee ?? 0) + (payment.is_checkout ? 0 : (payment.security_deposit ?? 0));
-  addKv("TOTAL PAID", pk(total), true); nl(15);
+  // Security deposit is never added on top here — either it's already inside
+  // `payment.amount` (security_deposit_charge, first month) or it's a checkout
+  // refund note that isn't part of what's being collected in this payment.
+  const total = payment.amount + (payment.late_fee ?? 0);
+
+  if (payment.amount_paid != null) {
+    // Partial payment — show what's owed, what's actually been received, and what's
+    // left, so this receipt can't be mistaken for proof the full amount was paid.
+    const remaining = Math.max(0, total - payment.amount_paid);
+    addKv("Total Due", pk(total)); nl(12);
+    addKv("Amount Received", pk(payment.amount_paid)); nl(12);
+    addKv("REMAINING BALANCE", pk(remaining), true); nl(15);
+  } else {
+    addKv("TOTAL PAID", pk(total), true); nl(15);
+  }
   addDash(); nl(10);
 
-  const wordsStr = amountInWords(total);
+  // For a partial payment, spell out what was actually received — spelling out
+  // the full amount due here would misrepresent it as fully paid.
+  const wordsStr = amountInWords(payment.amount_paid ?? total);
   // Render "In Words: <value>" on one line; wrap remainder if it overflows page width.
   // Use explicit gap rather than trailing space — PDF renderers often discard trailing
   // whitespace in text strings, making the space invisible despite correct positioning.

@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatCurrency, formatDate } from "@/lib/utils";
-import { getTenantTimeline, createInvoiceLink, type TimelineEvent } from "@/app/actions/tenants";
+import { getTenantTimeline, createInvoiceLink, createInstallmentReceiptLink, type TimelineEvent } from "@/app/actions/tenants";
 import { toast } from "@/hooks/use-toast";
 import type { Tenant, Room, PackageTier, TenantDocument } from "@/types";
 import { DocumentManager } from "./document-manager";
@@ -54,6 +54,8 @@ export function EventIcon({ type }: { type: TimelineEvent["type"] }) {
       return <Wallet className="w-4 h-4 text-blue-400" />;
     case "deposit_forfeited":
       return <Wallet className="w-4 h-4 text-rose-400" />;
+    case "partially_paid":
+      return <Banknote className="w-4 h-4 text-blue-400" />;
     case "pending":
       return <Clock className="w-4 h-4 text-amber/70" />;
     case "status_change":
@@ -72,6 +74,7 @@ export function eventDotColor(type: TimelineEvent["type"]): string {
     case "deposit_collected": return "bg-emerald-600 border-emerald-400";
     case "deposit_returned":  return "bg-blue-500 border-blue-400";
     case "deposit_forfeited": return "bg-rose-500 border-rose-400";
+    case "partially_paid": return "bg-blue-500 border-blue-400";
     case "pending":       return "bg-amber/30 border-amber/50";
     case "status_change":
     default:              return "bg-amber border-amber/60";
@@ -112,9 +115,12 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
     if (!o) onClose();
   }
 
-  async function openReceipt(paymentId: string) {
-    setGeneratingReceipt(paymentId);
-    const result = await createInvoiceLink(paymentId);
+  async function openReceipt(paymentId: string, installmentId?: string) {
+    const key = installmentId ?? paymentId;
+    setGeneratingReceipt(key);
+    const result = installmentId
+      ? await createInstallmentReceiptLink(installmentId)
+      : await createInvoiceLink(paymentId);
     setGeneratingReceipt(null);
     if (result.error) {
       toast({ title: "Failed to open receipt", description: result.error, variant: "destructive" });
@@ -246,8 +252,8 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
                         {event.sub && (
                           <p className="text-xs text-muted-foreground mt-0.5">{event.sub}</p>
                         )}
-                        {/* Breakdown for payment events — matches the receipt's itemization,
-                            so it's clear the total is rent + food/AC, never the deposit. */}
+                        {/* Breakdown for payment events — matches the receipt's itemization:
+                            rent + food/AC, plus a one-time deposit line on the first month's bill. */}
                         {event.type === "payment" && (
                           <p className="mt-1 text-xs text-muted-foreground">
                             Rent: {formatCurrency(event.rentCharge ?? 0)}
@@ -255,6 +261,7 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
                             {(event.acCharge ?? 0) > 0 && (
                               <> · AC: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{formatCurrency(event.acCharge!)}</>
                             )}
+                            {(event.depositCharge ?? 0) > 0 && <> · Deposit: {formatCurrency(event.depositCharge!)}</>}
                             {(event.lateFee ?? 0) > 0 && <> · Late Fee: {formatCurrency(event.lateFee!)}</>}
                           </p>
                         )}
@@ -263,15 +270,15 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
                         <p className="text-xs text-muted-foreground whitespace-nowrap">
                           {formatDate(event.date)}
                         </p>
-                        {event.type === "payment" && event.paymentId && (
+                        {(event.type === "payment" || event.type === "partially_paid") && event.paymentId && (
                           <button
                             type="button"
                             title="View Receipt"
-                            disabled={generatingReceipt === event.paymentId}
-                            onClick={() => openReceipt(event.paymentId!)}
+                            disabled={generatingReceipt === (event.installmentId ?? event.paymentId)}
+                            onClick={() => openReceipt(event.paymentId!, event.installmentId)}
                             className="inline-flex items-center justify-center w-6 h-6 rounded-md text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors"
                           >
-                            {generatingReceipt === event.paymentId
+                            {generatingReceipt === (event.installmentId ?? event.paymentId)
                               ? <Loader2 className="w-3 h-3 animate-spin" />
                               : <FileText className="w-3 h-3" />}
                           </button>

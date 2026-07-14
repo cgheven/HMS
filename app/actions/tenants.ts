@@ -296,7 +296,8 @@ export type TimelineEventType =
   | "deposit_forfeited"
   | "check_out"
   | "status_change"
-  | "pending";
+  | "pending"
+  | "partially_paid";
 
 const TIMELINE_TIER_LABELS: Record<string, string> = {
   space_only: "Space Only",
@@ -318,9 +319,11 @@ export interface TimelineEvent {
   rentCharge?: number;
   foodCharge?: number;
   acCharge?: number;
+  depositCharge?: number;
   acUnitsConsumed?: number;
   lateFee?: number;
   paymentId?: string;
+  installmentId?: string;
 }
 
 export async function getTenantTimeline(
@@ -330,7 +333,7 @@ export async function getTenantTimeline(
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
-    const [tenantRes, paymentsRes, tenantEventsRes, checkoutReadingRes] = await Promise.all([
+    const [tenantRes, paymentsRes, tenantEventsRes, checkoutReadingRes, installmentsRes] = await Promise.all([
       supabase
         .from("hms_tenants")
         .select("id, full_name, check_in, check_out, is_active, created_at, joining_meter_reading")
@@ -340,7 +343,7 @@ export async function getTenantTimeline(
       supabase
         .from("hms_payments")
         .select(
-          "id, for_month, amount, late_fee, payment_method, payment_date, status, food_charge, ac_charge, ac_units_consumed, payment_package_tier, created_at"
+          "id, for_month, amount, amount_paid, late_fee, payment_method, payment_date, status, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, payment_package_tier, created_at"
         )
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
@@ -359,6 +362,12 @@ export async function getTenantTimeline(
         .order("checkout_date", { ascending: false })
         .limit(1)
         .maybeSingle(),
+      supabase
+        .from("hms_payment_installments")
+        .select("id, payment_id, amount, amount_after, total_due, payment_method, payment_date, created_at")
+        .eq("tenant_id", tenantId)
+        .eq("hostel_id", hostelId)
+        .order("created_at", { ascending: true }),
     ]);
 
     if (tenantRes.error || !tenantRes.data) throw new Error("Tenant not found or access denied");
@@ -368,6 +377,12 @@ export async function getTenantTimeline(
     const payments = paymentsRes.data;
     const tenantEvents = tenantEventsRes.data ?? [];
     const checkoutReading = checkoutReadingRes.data;
+    const installmentsByPayment = new Map<string, NonNullable<typeof installmentsRes.data>>();
+    for (const inst of installmentsRes.data ?? []) {
+      const list = installmentsByPayment.get(inst.payment_id) ?? [];
+      list.push(inst);
+      installmentsByPayment.set(inst.payment_id, list);
+    }
 
     const events: TimelineEvent[] = [];
 
@@ -400,8 +415,57 @@ export async function getTenantTimeline(
       const eventDate = p.payment_date ?? p.created_at;
       const totalPaid =
         Number(p.amount) + Number(p.late_fee ?? 0);
+      const installments = installmentsByPayment.get(p.id) ?? [];
 
-      if (p.status === "paid") {
+      if ((p.status === "paid" || p.status === "partially_paid") && installments.length > 0) {
+        // One event PER actual transaction, using each installment's own immutable
+        // snapshot — a later top-up no longer collapses/erases an earlier one's
+        // own date, method and amount into a single cumulative event.
+        const foodChargeVal = p.food_charge != null ? Number(p.food_charge) : 0;
+        const acChargeVal = p.ac_charge != null ? Number(p.ac_charge) : 0;
+        const depositChargeVal = p.security_deposit_charge != null ? Number(p.security_deposit_charge) : 0;
+        const lateFeeVal = Number(p.late_fee ?? 0);
+        const rentCharge = Number(p.amount) - foodChargeVal - acChargeVal - depositChargeVal;
+
+        installments.forEach((inst) => {
+          const methodLabel = inst.payment_method
+            ? inst.payment_method.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())
+            : undefined;
+          const instAmount = Number(inst.amount);
+          const dueAfterThis = Math.max(0, Number(inst.total_due) - Number(inst.amount_after));
+          const completesPayment = dueAfterThis <= 0.01;
+
+          events.push({
+            id: `installment-${inst.id}`,
+            type: completesPayment ? "payment" : "partially_paid",
+            date: inst.payment_date ?? inst.created_at,
+            label: completesPayment
+              ? `Rs. ${instAmount.toLocaleString()} paid`
+              : `Rs. ${instAmount.toLocaleString()} received (partial)`,
+            sub: completesPayment
+              ? `${p.for_month}${methodLabel ? " · " + methodLabel : ""}`
+              : `${p.for_month}${methodLabel ? " · " + methodLabel : ""} · Rs. ${dueAfterThis.toLocaleString()} remaining of Rs. ${Number(inst.total_due).toLocaleString()}`,
+            amount: instAmount,
+            method: methodLabel,
+            forMonth: p.for_month,
+            // Rent/food/AC breakdown describes the whole bill's composition, not
+            // this one installment's share of it — only attach it to the
+            // installment that actually completes the bill (mirrors the
+            // fully-paid-only breakdown rule used elsewhere in the app).
+            rentCharge: completesPayment ? rentCharge : undefined,
+            foodCharge: completesPayment && foodChargeVal > 0 ? foodChargeVal : undefined,
+            acCharge: completesPayment && acChargeVal > 0 ? acChargeVal : undefined,
+            depositCharge: completesPayment && depositChargeVal > 0 ? depositChargeVal : undefined,
+            acUnitsConsumed: completesPayment && p.ac_units_consumed != null ? Number(p.ac_units_consumed) : undefined,
+            lateFee: completesPayment && lateFeeVal > 0 ? lateFeeVal : undefined,
+            paymentId: p.id,
+            installmentId: inst.id,
+          });
+        });
+      } else if (p.status === "paid") {
+        // Fallback for payments marked paid without an installment snapshot
+        // (pre-dates this feature, or written by a code path that doesn't
+        // record installments: manager quick-record, backfill, checkout settlement).
         const methodLabel =
           p.payment_method
             ? p.payment_method.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())
@@ -411,8 +475,9 @@ export async function getTenantTimeline(
         // isn't just rent (and never includes the deposit, which is its own event).
         const foodChargeVal = p.food_charge != null ? Number(p.food_charge) : 0;
         const acChargeVal = p.ac_charge != null ? Number(p.ac_charge) : 0;
+        const depositChargeVal = p.security_deposit_charge != null ? Number(p.security_deposit_charge) : 0;
         const lateFeeVal = Number(p.late_fee ?? 0);
-        const rentCharge = Number(p.amount) - foodChargeVal - acChargeVal;
+        const rentCharge = Number(p.amount) - foodChargeVal - acChargeVal - depositChargeVal;
         events.push({
           id: `payment-${p.id}`,
           type: "payment",
@@ -425,8 +490,29 @@ export async function getTenantTimeline(
           rentCharge,
           foodCharge: foodChargeVal > 0 ? foodChargeVal : undefined,
           acCharge: acChargeVal > 0 ? acChargeVal : undefined,
+          depositCharge: depositChargeVal > 0 ? depositChargeVal : undefined,
           acUnitsConsumed: p.ac_units_consumed != null ? Number(p.ac_units_consumed) : undefined,
           lateFee: lateFeeVal > 0 ? lateFeeVal : undefined,
+          paymentId: p.id,
+        });
+      } else if (p.status === "partially_paid") {
+        // Fallback for the same reason as above — no installment rows recorded.
+        const methodLabel =
+          p.payment_method
+            ? p.payment_method.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())
+            : undefined;
+        const amountPaidVal = Number(p.amount_paid ?? 0);
+        const fullDue = Number(p.amount) + Number(p.late_fee ?? 0);
+        const remaining = Math.max(0, fullDue - amountPaidVal);
+        events.push({
+          id: `partial-${p.id}`,
+          type: "partially_paid",
+          date: eventDate,
+          label: `Rs. ${amountPaidVal.toLocaleString()} received (partial)`,
+          sub: `${p.for_month}${methodLabel ? " · " + methodLabel : ""} · Rs. ${remaining.toLocaleString()} remaining of Rs. ${fullDue.toLocaleString()}`,
+          amount: amountPaidVal,
+          method: methodLabel,
+          forMonth: p.for_month,
           paymentId: p.id,
         });
       } else if (p.status === "waived") {
@@ -518,6 +604,7 @@ export async function getTenantTimeline(
       room_changed: 2,
       package_changed: 2,
       payment: 3,
+      partially_paid: 3,
       pending: 4,
       status_change: 5,
       deposit_returned: 6,
@@ -562,13 +649,55 @@ export async function createInvoiceLink(
       .single();
 
     if (pErr || !payment) throw new Error("Payment not found or access denied");
-    if (payment.status !== "paid") throw new Error("Cannot generate a receipt for a payment that hasn't been collected yet.");
+    // Partial payments get a receipt too (showing amount received + remaining balance) —
+    // only a payment with nothing collected at all (pending/overdue/waived) has none.
+    if (payment.status !== "paid" && payment.status !== "partially_paid") {
+      throw new Error("Cannot generate a receipt for a payment that hasn't been collected yet.");
+    }
 
     // Insert the invoice link (DB defaults token via gen_random_bytes). No
     // expires_at — receipt links are permanent, not time-boxed.
     const { data, error } = await supabase
       .from("hms_invoice_links")
       .insert({ payment_id: paymentId, hostel_id: hostelId })
+      .select("token")
+      .single();
+
+    if (error) throw new Error(error.message);
+    return { token: (data as { token: string }).token };
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// createInstallmentReceiptLink
+// A receipt scoped to ONE specific installment snapshot rather than the live,
+// mutable hms_payments row — so it keeps showing "Rs X received, Rs Y
+// remaining" exactly as it was at the time, even after later installments
+// change the payment's current cumulative state.
+// ---------------------------------------------------------------------------
+
+export async function createInstallmentReceiptLink(
+  installmentId: string
+): Promise<{ token?: string; error?: string }> {
+  try {
+    await requireOwnerOrAbove();
+    const hostelId = await resolveHostelId();
+    const supabase = await createClient();
+
+    const { data: installment, error: iErr } = await supabase
+      .from("hms_payment_installments")
+      .select("id, hostel_id")
+      .eq("id", installmentId)
+      .eq("hostel_id", hostelId)
+      .single();
+
+    if (iErr || !installment) throw new Error("Payment record not found or access denied");
+
+    const { data, error } = await supabase
+      .from("hms_invoice_links")
+      .insert({ installment_id: installmentId, hostel_id: hostelId })
       .select("token")
       .single();
 
@@ -654,22 +783,29 @@ export async function backfillTenantPaymentsAction(
     const totalAmount = baseRent + foodCharge;
     const checkInMonth = tenant.check_in.slice(0, 7);
 
-    const rows = pastMonths.map((month) => ({
-      hostel_id: hostelId,
-      tenant_id: tenantId,
-      for_month: month,
-      amount: totalAmount,
-      food_charge: foodCharge,
-      ac_charge: 0,
-      late_fee: 0,
-      status: "paid" as const,
-      payment_method: "cash" as const,
-      payment_date: lastDayOfMonth(month),
-      receipt_number: genReceiptNumber(tenant.full_name, month),
-      payment_package_tier: tenant.package_tier,
-      // Security deposit recorded on first month's payment date for reference
-      ...(month === checkInMonth ? { notes: `Security deposit: Rs ${tenant.security_deposit ?? 0} (paid on joining)` } : {}),
-    }));
+    const rows = pastMonths.map((month) => {
+      // Deposit is billed once, on the check-in month only — every later
+      // month is rent + food as before.
+      const depositCharge = month === checkInMonth ? Number(tenant.security_deposit ?? 0) : 0;
+      const monthAmount = totalAmount + depositCharge;
+      return {
+        hostel_id: hostelId,
+        tenant_id: tenantId,
+        for_month: month,
+        amount: monthAmount,
+        amount_paid: monthAmount,
+        food_charge: foodCharge,
+        ac_charge: 0,
+        security_deposit_charge: depositCharge,
+        late_fee: 0,
+        status: "paid" as const,
+        payment_method: "cash" as const,
+        payment_date: lastDayOfMonth(month),
+        receipt_number: genReceiptNumber(tenant.full_name, month),
+        payment_package_tier: tenant.package_tier,
+        ...(month === checkInMonth ? { notes: `Security deposit: Rs ${tenant.security_deposit ?? 0} (paid on joining)` } : {}),
+      };
+    });
 
     // ignoreDuplicates: never overwrite if somehow a record already exists
     const { error } = await adminDb
@@ -1000,6 +1136,12 @@ export async function checkoutTenantAction(
             // not by for_month (which can differ from checkoutMonth for pre-generated payments).
             // Store the tenant's share of units (not total room units) so the receipt shows
             // "X units × Rs. rate/unit" correctly rather than the full room consumption.
+            // This settlement always pays the payment in full — amount_paid must be
+            // set (DB defaults it to 0), or "collected" totals elsewhere would show
+            // Rs 0 for this payment despite status being "paid".
+            amount_paid: acCheckoutRecord
+              ? Number(verifiedPayment!.amount ?? 0) + acCheckoutRecord.ac_charge
+              : Number(verifiedPayment!.amount ?? 0),
             ...(acCheckoutRecord ? {
               ac_units_consumed: Math.round(acCheckoutRecord.tenant_unit_share),
               ac_charge: acCheckoutRecord.ac_charge,

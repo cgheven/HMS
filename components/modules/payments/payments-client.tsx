@@ -71,6 +71,7 @@ const statusConfig: Record<PaymentStatus, { label: string; color: string }> = {
   pending: { label: "Pending", color: "text-amber" },
   overdue: { label: "Overdue", color: "text-rose-400" },
   waived: { label: "Waived", color: "text-muted-foreground" },
+  partially_paid: { label: "Partial", color: "text-blue-400" },
 };
 
 function genReceipt(tenantName: string, month: string) {
@@ -97,11 +98,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     notes: "",
     receipt_number: "",
     ac_units_consumed: "0",
+    amount_received: "",
   });
   const [saving, setSaving] = useState(false);
   const [sendingWa, setSendingWa] = useState<string | null>(null); // paymentId
   const [generatingReceipt, setGeneratingReceipt] = useState<string | null>(null); // paymentId
-  const [postPaymentWa, setPostPaymentWa] = useState<Payment | null>(null);
+  const [postPaymentWa, setPostPaymentWa] = useState<{ payment: Payment; amountReceivedNow: number } | null>(null);
   const [acUnits, setAcUnits] = useState<Record<string, string>>({});
   const [applyingAC, setApplyingAC] = useState<string | null>(null);
   const [roomFilter, setRoomFilter] = useState<string>("all");
@@ -192,6 +194,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
   function openMarkPaid(p: Payment) {
     const tenantName = p.tenant?.full_name ?? "";
+    const remaining = Math.max(0, Number(p.amount) - Number(p.amount_paid ?? 0));
     setMarkDialog(p);
     setMarkForm({
       method: "cash",
@@ -200,6 +203,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       notes: "",
       receipt_number: genReceipt(tenantName, p.for_month),
       ac_units_consumed: p.ac_units_consumed ? String(Math.round(p.ac_units_consumed)) : "0",
+      amount_received: String(remaining),
     });
   }
 
@@ -233,6 +237,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       return;
     }
 
+    const amountReceived = parseFloat(markForm.amount_received);
+    if (!Number.isFinite(amountReceived) || amountReceived <= 0) {
+      toast({
+        title: "Invalid amount",
+        description: "Amount received must be a positive number.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setSaving(true);
     const result = await markPaymentPaidAction({
       paymentId: markDialog.id,
@@ -242,6 +256,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       notes: markForm.notes,
       receiptNumber: markForm.receipt_number,
       acUnitsConsumed: markForm.ac_units_consumed,
+      amountReceived: markForm.amount_received,
     });
 
     if (result.error) {
@@ -249,12 +264,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       setSaving(false);
       return;
     } else {
-      toast({ title: "Payment recorded! 🎉" });
-      const paidForWa = markDialog;
+      const isPartial = result.payment?.status === "partially_paid";
+      toast({ title: isPartial ? "Partial payment recorded" : "Payment recorded! 🎉" });
       setMarkDialog(null);
       setSaving(false);
       await syncMonth(selectedMonth);
-      setPostPaymentWa(paidForWa);
+      // Use the fresh post-update row (not the stale pre-update markDialog) so the
+      // share dialog and WhatsApp message reflect the actual new status/amount_paid.
+      if (result.payment) {
+        setPostPaymentWa({ payment: result.payment, amountReceivedNow: amountReceived });
+      }
       return;
     }
   }
@@ -298,7 +317,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
       const firstName = p.tenant?.full_name?.split(" ")[0] ?? "there";
       const total = Number(p.amount) + Number(p.late_fee ?? 0);
-      const totalFormatted = `Rs. ${total.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+      const isPartial = p.status === "partially_paid";
+      const amountPaidVal = Number(p.amount_paid ?? total);
+      const remaining = Math.max(0, total - amountPaidVal);
+      const amountFormatted = `Rs. ${amountPaidVal.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+      const remainingFormatted = `Rs. ${remaining.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 
       // Only on the tenant's very first month — the reading never changes, so
       // repeating it in every month's WhatsApp text afterward would just be noise.
@@ -308,12 +331,17 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         ? `AC meter reading at move-in: *${p.tenant.joining_meter_reading}* units — noted for your records.\n\n`
         : "";
 
-      const message =
-        `Assalam o Alaikum ${firstName},\n\n` +
-        `Your payment of *${totalFormatted}* for ${p.for_month} has been received.\n\n` +
-        readingLine +
-        `Download your receipt: ${receiptUrl}\n\n` +
-        `Thank you - ${hostelName}`;
+      const message = isPartial
+        ? `Assalam o Alaikum ${firstName},\n\n` +
+          `We've received *${amountFormatted}* for ${p.for_month}. *${remainingFormatted}* remains due.\n\n` +
+          readingLine +
+          `Download your receipt: ${receiptUrl}\n\n` +
+          `Thank you - ${hostelName}`
+        : `Assalam o Alaikum ${firstName},\n\n` +
+          `Your payment of *${amountFormatted}* for ${p.for_month} has been received.\n\n` +
+          readingLine +
+          `Download your receipt: ${receiptUrl}\n\n` +
+          `Thank you - ${hostelName}`;
 
       const waUrl = normPhone
         ? `https://wa.me/${normPhone}?text=${encodeURIComponent(message)}`
@@ -454,15 +482,17 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       if (q && !p.tenant?.full_name?.toLowerCase().includes(q)) return false;
       if (roomFilter !== "all" && p.tenant?.room_id !== roomFilter) return false;
       if (statusFilter === "paid") return p.status === "paid";
-      if (statusFilter === "unpaid") return p.status === "pending" || p.status === "overdue";
+      if (statusFilter === "unpaid") return p.status === "pending" || p.status === "overdue" || p.status === "partially_paid";
       return true;
     });
   }, [activePayments, roomFilter, statusFilter, search]);
 
   const stats = useMemo(() => {
     const due = activePayments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
-    const collected = activePayments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
-    const pending = activePayments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.amount)), 0);
+    const collected = activePayments.filter((p) => p.status === "paid" || p.status === "partially_paid").reduce((s, p) => s + Math.max(0, Number(p.amount_paid ?? p.amount)), 0);
+    const pending = activePayments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid").reduce((s, p) => s + Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0)), 0);
+    // AC collected/pending stay paid-only — a partial payment can't be cleanly
+    // attributed between rent and AC (which portion did it cover?).
     const acCollected = activePayments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
     const acPending = activePayments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
     return { due, collected, pending, acCollected, acPending };
@@ -507,6 +537,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       pending: "bg-amber/15 text-amber border-amber/25",
       overdue: "bg-rose-500/15 text-rose-400 border-rose-500/25",
       waived:  "bg-white/5 text-muted-foreground border-white/10",
+      partially_paid: "bg-blue-500/15 text-blue-400 border-blue-500/25",
     };
 
     const actionButtons = (
@@ -518,6 +549,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             </Button>
             <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
               <CheckCircle2 className="w-3 h-3" /> Pay
+            </Button>
+          </>
+        )}
+        {p.status === "partially_paid" && (
+          <>
+            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" disabled={sendingWa === p.id} onClick={() => sendWhatsAppReceipt(p)}>
+              {WA_ICON} Receipt
+            </Button>
+            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
+              <CheckCircle2 className="w-3 h-3" /> Collect Rest
             </Button>
           </>
         )}
@@ -548,6 +589,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             <div className="text-right shrink-0">
               <p className="text-base font-bold text-foreground">{formatCurrency(total)}</p>
               {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
+              {p.status === "partially_paid" && (
+                <p className="text-xs text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
+              )}
               <span className={`inline-flex items-center mt-1 px-2 py-0.5 rounded-full text-xs font-medium border ${statusColors[p.status]}`}>
                 {cfg.label}
               </span>
@@ -582,6 +626,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           <div className="text-right">
             <p className="text-sm font-semibold text-foreground">{formatCurrency(total)}</p>
             {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
+            {p.status === "partially_paid" && (
+              <p className="text-xs text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
+            )}
           </div>
           <div className="flex justify-center w-28">
             <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${statusColors[p.status]}`}>
@@ -673,7 +720,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     {(["all", "paid", "unpaid"] as const).map((s) => {
                       const count = s === "all" ? activePayments.length
                         : s === "paid" ? activePayments.filter(p => p.status === "paid").length
-                        : activePayments.filter(p => p.status === "pending" || p.status === "overdue").length;
+                        : activePayments.filter(p => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid").length;
                       const label = s === "all" ? "All" : s === "paid" ? "Paid" : "Unpaid";
                       const active = statusFilter === s;
                       return (
@@ -1035,7 +1082,8 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               {markDialog && (() => {
                 const food = markDialog.food_charge ?? 0;
                 const ac = markDialog.ac_charge ?? 0;
-                const baseRent = (markDialog.amount ?? 0) - food - ac;
+                const depositCharge = markDialog.security_deposit_charge ?? 0;
+                const baseRent = (markDialog.amount ?? 0) - food - ac - depositCharge;
                 const tenant = tenants.find(t => t.id === markDialog.tenant_id);
                 const deposit = tenant?.security_deposit ?? 0;
                 const mealsLabel = [tenant?.food_breakfast && "Breakfast", tenant?.food_lunch && "Lunch", tenant?.food_dinner && "Dinner"]
@@ -1055,10 +1103,31 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         <span>AC</span><span>{formatCurrency(ac)}</span>
                       </div>
                     )}
+                    {depositCharge > 0 && (
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>Security Deposit</span><span>{formatCurrency(depositCharge)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-xs font-medium text-foreground">
                       <span>Total</span><span>{formatCurrency(markDialog.amount ?? 0)}</span>
                     </div>
-                    {deposit > 0 && (
+                    {/* Total stays the fixed original bill (matches the receipt and
+                        Member Ledger's "Charged" column) — running balance shown as
+                        its own line instead of overloading what "Total" means. */}
+                    {Number(markDialog.amount_paid ?? 0) > 0 && (
+                      <>
+                        <div className="flex justify-between text-xs text-emerald-400">
+                          <span>Already Paid</span><span>-{formatCurrency(Number(markDialog.amount_paid ?? 0))}</span>
+                        </div>
+                        <div className="flex justify-between text-xs font-semibold text-amber">
+                          <span>Balance Due</span><span>{formatCurrency(Math.max(0, Number(markDialog.amount ?? 0) - Number(markDialog.amount_paid ?? 0)))}</span>
+                        </div>
+                      </>
+                    )}
+                    {/* "Deposit Held" is only shown when the deposit ISN'T part of this
+                        bill — for the first month it's already itemized above as its
+                        own line within Total, so repeating it here would double it up. */}
+                    {deposit > 0 && depositCharge === 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground border-t border-white/10 pt-1">
                         <span>Deposit Held</span><span>{formatCurrency(deposit)}</span>
                       </div>
@@ -1067,6 +1136,32 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 );
               })()}
             </div>
+
+            {/* Amount received — supports partial payments. Defaults to the full
+                remaining balance; editing it down records a partial payment instead. */}
+            {markDialog && (() => {
+              const alreadyPaid = Number(markDialog.amount_paid ?? 0);
+              const remaining = Math.max(0, Number(markDialog.amount) - alreadyPaid);
+              return (
+                <div className="space-y-1.5">
+                  <Label>Amount Received (PKR)</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={markForm.amount_received}
+                    onChange={(e) => setMarkForm({ ...markForm, amount_received: e.target.value })}
+                  />
+                  {(() => {
+                    const entered = parseFloat(markForm.amount_received);
+                    if (Number.isFinite(entered) && entered > 0 && entered < remaining) {
+                      return <p className="text-xs text-amber">Partial payment — {formatCurrency(remaining - entered)} will remain due after this.</p>;
+                    }
+                    return null;
+                  })()}
+                </div>
+              );
+            })()}
 
             {/* AC units consumed — only for space_food_ac (F-003, F-004) */}
             {markDialog?.payment_package_tier === "space_food_ac" && (
@@ -1124,21 +1219,28 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 text-center">
-              <p className="text-sm font-medium text-foreground">{postPaymentWa?.tenant?.full_name}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{postPaymentWa?.for_month}</p>
+              <p className="text-sm font-medium text-foreground">{postPaymentWa?.payment.tenant?.full_name}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{postPaymentWa?.payment.for_month}</p>
+              {/* Amount actually received THIS transaction — not the full bill total,
+                  which would misrepresent a partial payment as fully settled. */}
               <p className="text-lg font-bold text-emerald-400 mt-1">
-                {formatCurrency(Number(postPaymentWa?.amount ?? 0) + Number(postPaymentWa?.late_fee ?? 0))}
+                {formatCurrency(postPaymentWa?.amountReceivedNow ?? 0)}
               </p>
+              {postPaymentWa?.payment.status === "partially_paid" && (
+                <p className="text-xs text-blue-400 mt-1">
+                  {formatCurrency(Number(postPaymentWa.payment.amount_paid ?? 0))} received so far · {formatCurrency(Math.max(0, Number(postPaymentWa.payment.amount) + Number(postPaymentWa.payment.late_fee ?? 0) - Number(postPaymentWa.payment.amount_paid ?? 0)))} remaining
+                </p>
+              )}
             </div>
             <p className="text-sm text-muted-foreground text-center">Share the receipt with the tenant via WhatsApp?</p>
           </div>
           <DialogFooter className="flex gap-2">
             <Button variant="outline" onClick={() => setPostPaymentWa(null)}>Skip</Button>
             <Button
-              disabled={sendingWa === postPaymentWa?.id}
+              disabled={sendingWa === postPaymentWa?.payment.id}
               onClick={async () => {
                 if (postPaymentWa) {
-                  await sendWhatsAppReceipt(postPaymentWa);
+                  await sendWhatsAppReceipt(postPaymentWa.payment);
                   setPostPaymentWa(null);
                 }
               }}

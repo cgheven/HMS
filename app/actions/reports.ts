@@ -86,6 +86,7 @@ export interface ReportData {
     method: string;
     paymentDate: string | null;
     receiptNumber: string | null;
+    isPartial: boolean;
   }[];
 
   // AC analytics
@@ -184,7 +185,7 @@ export async function getReportData(
   ] = await Promise.all([
     admin
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, status, late_fee, food_charge, ac_charge, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
+      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, security_deposit_charge, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
@@ -227,10 +228,12 @@ export async function getReportData(
     tenant_id: string;
     for_month: string;
     amount: unknown;
+    amount_paid?: unknown;
     status: string;
     late_fee: unknown;
     food_charge: unknown;
     ac_charge: unknown;
+    security_deposit_charge?: unknown;
     ac_units_consumed?: unknown;
     payment_package_tier: unknown;
     payment_method: string | null;
@@ -249,10 +252,15 @@ export async function getReportData(
   ).length;
 
   // Total revenue & pending
+  // "paid" = fully settled rows only, used for breakdowns (rent/food/AC split, AC
+  // analytics) where attributing a partial payment across categories isn't
+  // well-defined. Top-level money figures (totalRevenue, pendingCollections,
+  // topTenants, overduePayments) separately account for partially_paid rows below.
   const paidPayments = payments.filter((p) => p.status === "paid");
-  const totalRevenue = paidPayments.reduce((s, p) => s + Number(p.amount) + Number(p.late_fee || 0), 0);
-  const pendingPayments = payments.filter((p) => p.status === "pending" || p.status === "overdue");
-  const pendingCollections = pendingPayments.reduce((s, p) => s + Number(p.amount), 0);
+  const collectedPayments = payments.filter((p) => p.status === "paid" || p.status === "partially_paid");
+  const totalRevenue = collectedPayments.reduce((s, p) => s + Number(p.amount_paid ?? p.amount), 0);
+  const pendingPayments = payments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid");
+  const pendingCollections = pendingPayments.reduce((s, p) => s + Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0)), 0);
 
   // Occupancy
   const totalCapacity = rooms.reduce((s, r) => s + r.capacity, 0);
@@ -262,17 +270,24 @@ export async function getReportData(
   // Revenue by month
   const revenueByMonth = monthKeys.map(({ monthKey, label }) => {
     const mPayments = payments.filter((p) => p.for_month === monthKey);
+    // rent/food/AC split stays paid-only — a partial payment can't be cleanly
+    // attributed across categories (which portion did it cover?).
     const mPaid = mPayments.filter((p) => p.status === "paid");
-    const mPending = mPayments.filter((p) => p.status === "pending" || p.status === "overdue");
+    const mCollected = mPayments.filter((p) => p.status === "paid" || p.status === "partially_paid");
+    const mPending = mPayments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid");
+    const collected = mCollected.reduce((s, p) => s + Number(p.amount_paid ?? p.amount), 0);
+    const pending = mPending.reduce((s, p) => s + Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0)), 0);
     return {
       month: label,
       monthKey,
-      rentRevenue: mPaid.reduce((s, p) => s + Math.max(0, Number(p.amount) - Number(p.food_charge || 0) - Number(p.ac_charge || 0)), 0),
+      rentRevenue: mPaid.reduce((s, p) => s + Math.max(0, Number(p.amount) - Number(p.food_charge || 0) - Number(p.ac_charge || 0) - Number(p.security_deposit_charge || 0)), 0),
       foodRevenue: mPaid.reduce((s, p) => s + Number(p.food_charge || 0), 0),
       acRevenue: mPaid.reduce((s, p) => s + Number(p.ac_charge || 0), 0),
-      total: mPaid.reduce((s, p) => s + Number(p.amount) + Number(p.late_fee || 0), 0),
-      collected: mPaid.reduce((s, p) => s + Number(p.amount) + Number(p.late_fee || 0), 0),
-      pending: mPending.reduce((s, p) => s + Number(p.amount), 0),
+      // total = collected + pending (a clean invariant) rather than re-deriving
+      // from status, which gets ambiguous once a row can be partially settled.
+      collected,
+      pending,
+      total: collected + pending,
     };
   });
 
@@ -281,27 +296,27 @@ export async function getReportData(
     const exp = expenses.filter((e) => e.date >= start && e.date <= end).reduce((s, e) => s + Number(e.amount), 0);
     const kit = kitchen.filter((k) => k.date >= start && k.date <= end).reduce((s, k) => s + Number(k.amount), 0);
     const sal = salaries.filter((s) => s.for_month === monthKey && s.status === "paid").reduce((sum, s) => sum + Number(s.amount), 0);
-    const col = payments.filter((p) => p.for_month === monthKey && p.status === "paid").reduce((s, p) => s + Number(p.amount), 0);
+    const col = payments.filter((p) => p.for_month === monthKey && (p.status === "paid" || p.status === "partially_paid")).reduce((s, p) => s + Number(p.amount_paid ?? p.amount), 0);
     return { month: label, monthKey, expenses: exp, kitchen: kit, salaries: sal, collected: col };
   });
 
   // Top tenants by total paid
   const tenantTotals: Record<string, { id: string; name: string; totalPaid: number }> = {};
-  paidPayments.forEach((p) => {
+  collectedPayments.forEach((p) => {
     const name = p.tenant?.full_name ?? "Unknown";
     if (!tenantTotals[p.tenant_id]) tenantTotals[p.tenant_id] = { id: p.tenant_id, name, totalPaid: 0 };
-    tenantTotals[p.tenant_id].totalPaid += Number(p.amount) + Number(p.late_fee || 0);
+    tenantTotals[p.tenant_id].totalPaid += Number(p.amount_paid ?? p.amount);
   });
   const topTenants = Object.values(tenantTotals)
     .sort((a, b) => b.totalPaid - a.totalPaid)
     .slice(0, 5);
 
-  // Overdue payments
+  // Overdue payments — remaining balance, not the full bill, for a partially_paid row
   const overduePayments = pendingPayments.map((p) => ({
     id: p.id,
     tenantName: p.tenant?.full_name ?? "Unknown",
     forMonth: p.for_month,
-    amount: Number(p.amount),
+    amount: Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0)),
     status: p.status,
   }));
 
@@ -352,11 +367,11 @@ export async function getReportData(
   };
 
   const methodMap: Record<string, { count: number; amount: number }> = {};
-  paidPayments.forEach((p) => {
+  collectedPayments.forEach((p) => {
     const m = p.payment_method ?? "cash";
     if (!methodMap[m]) methodMap[m] = { count: 0, amount: 0 };
     methodMap[m].count += 1;
-    methodMap[m].amount += Number(p.amount) + Number(p.late_fee || 0);
+    methodMap[m].amount += Number(p.amount_paid ?? p.amount);
   });
   const paymentMethodBreakdown = Object.entries(methodMap)
     .map(([method, { count, amount }]) => ({
@@ -367,21 +382,25 @@ export async function getReportData(
     }))
     .sort((a, b) => b.amount - a.amount);
 
-  const paidPaymentsList = paidPayments
+  // A partial payment is a real transaction (method + date) — include it here
+  // showing what was actually received, not the full bill amount.
+  const paidPaymentsList = collectedPayments
     .map((p) => {
       const roomsRaw = p.tenant?.hms_rooms;
       const roomEntry = Array.isArray(roomsRaw) ? roomsRaw[0] : roomsRaw;
+      const isPartial = p.status === "partially_paid";
       return {
         id: p.id,
         tenantName: p.tenant?.full_name ?? "Unknown",
         phone: p.tenant?.phone ?? null,
         roomNumber: (roomEntry as { room_number?: string } | null)?.room_number ?? null,
         forMonth: p.for_month,
-        amount: Number(p.amount) + Number(p.late_fee || 0),
+        amount: Number(p.amount_paid ?? p.amount),
         lateFee: Number(p.late_fee || 0),
         method: p.payment_method ?? "cash",
         paymentDate: p.payment_date,
         receiptNumber: p.receipt_number,
+        isPartial,
       };
     })
     .sort((a, b) => (b.paymentDate ?? "").localeCompare(a.paymentDate ?? ""));
@@ -585,7 +604,7 @@ export async function getLedgerTenants(
     tenantQuery,
     admin
       .from("hms_payments")
-      .select("tenant_id, amount, late_fee, status, payment_date, food_charge")
+      .select("tenant_id, amount, amount_paid, late_fee, status, payment_date, food_charge")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
@@ -600,7 +619,7 @@ export async function getLedgerTenants(
     billing_type: string; monthly_rent: number | null; daily_rate: number | null;
     room: { room_number: string } | { room_number: string }[] | null;
   };
-  type PaymentRow = { tenant_id: string; amount: number; late_fee: number | null; status: string; payment_date: string | null; food_charge: number | null };
+  type PaymentRow = { tenant_id: string; amount: number; amount_paid: number | null; late_fee: number | null; status: string; payment_date: string | null; food_charge: number | null };
 
   const paymentsByTenant: Record<string, PaymentRow[]> = {};
   ((payments ?? []) as PaymentRow[]).forEach((p) => {
@@ -609,13 +628,13 @@ export async function getLedgerTenants(
 
   const rows: LedgerTenantRow[] = ((tenants ?? []) as TenantRow[]).map((t) => {
     const tPayments = paymentsByTenant[t.id] ?? [];
-    const paid = tPayments.filter((p) => p.status === "paid");
-    const owed = tPayments.filter((p) => p.status === "pending" || p.status === "overdue");
+    const collected = tPayments.filter((p) => p.status === "paid" || p.status === "partially_paid");
+    const owed = tPayments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid");
     const totalCharged = tPayments.reduce((s, p) => s + Number(p.amount) + Number(p.late_fee ?? 0), 0);
-    const totalPaid = paid.reduce((s, p) => s + Number(p.amount) + Number(p.late_fee ?? 0), 0);
-    const totalOwed = owed.reduce((s, p) => s + Number(p.amount), 0);
+    const totalPaid = collected.reduce((s, p) => s + Number(p.amount_paid ?? p.amount), 0);
+    const totalOwed = owed.reduce((s, p) => s + Math.max(0, Number(p.amount) + Number(p.late_fee ?? 0) - Number(p.amount_paid ?? 0)), 0);
     const totalFoodCharge = tPayments.reduce((s, p) => s + Number(p.food_charge ?? 0), 0);
-    const lastPaymentDate = paid.reduce<string | null>((latest, p) => (p.payment_date && (!latest || p.payment_date > latest) ? p.payment_date : latest), null);
+    const lastPaymentDate = collected.reduce<string | null>((latest, p) => (p.payment_date && (!latest || p.payment_date > latest) ? p.payment_date : latest), null);
     const roomRel = t.room;
     const roomNumber = Array.isArray(roomRel) ? roomRel[0]?.room_number ?? null : roomRel?.room_number ?? null;
     const packageLabel = t.custom_package_id ? "Custom Package" : (LEDGER_TIER_LABELS[t.package_tier ?? ""] ?? t.package_tier ?? "Space Only");

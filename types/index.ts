@@ -4,7 +4,7 @@ export type BillStatus = "paid" | "unpaid" | "overdue";
 export type BillCategory = "electricity" | "water" | "internet" | "gas" | "maintenance" | "other";
 export type ExpenseCategory = "furniture" | "repairs" | "cleaning" | "security" | "utilities" | "other";
 export type MealType = "breakfast" | "lunch" | "dinner";
-export type PaymentStatus = "paid" | "pending" | "overdue" | "waived";
+export type PaymentStatus = "paid" | "pending" | "overdue" | "waived" | "partially_paid";
 export type PaymentMethod = "cash" | "bank_transfer" | "jazzcash" | "easypaisa" | "sadapay" | "other";
 export type ComplaintCategory = "plumbing" | "electricity" | "cleanliness" | "security" | "furniture" | "other";
 export type ComplaintPriority = "low" | "medium" | "high";
@@ -269,6 +269,7 @@ export interface Payment {
   tenant_id: string;
   for_month: string;
   amount: number;
+  amount_paid?: number;
   late_fee: number;
   payment_method: PaymentMethod | null;
   payment_date: string | null;
@@ -278,6 +279,7 @@ export interface Payment {
   food_charge?: number;
   ac_units_consumed?: number;
   ac_charge?: number;
+  security_deposit_charge?: number;
   payment_package_tier?: PackageTier | null;
   created_at: string;
   updated_at: string;

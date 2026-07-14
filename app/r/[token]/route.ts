@@ -22,7 +22,7 @@ export async function GET(
   const now = new Date().toISOString();
   const { data: link, error: linkErr } = await supabase
     .from("hms_invoice_links")
-    .select("id, payment_id, hostel_id, expires_at")
+    .select("id, payment_id, installment_id, hostel_id, expires_at")
     .eq("token", token)
     .or(`expires_at.is.null,expires_at.gt.${now}`)
     .maybeSingle();
@@ -39,6 +39,31 @@ export async function GET(
     return new NextResponse("This receipt link has expired.", { status: 410 });
   }
 
+  // An installment-scoped link resolves the payment_id from the snapshot row —
+  // both branches converge on the same payment_id below.
+  let installmentSnapshot: {
+    amount: number; amount_after: number; total_due: number; late_fee: number;
+    payment_method: string | null; payment_date: string | null; receipt_number: string | null;
+  } | null = null;
+  let paymentId = link.payment_id;
+
+  if (link.installment_id) {
+    const { data: installment, error: instErr } = await supabase
+      .from("hms_payment_installments")
+      .select("payment_id, amount, amount_after, total_due, late_fee, payment_method, payment_date, receipt_number")
+      .eq("id", link.installment_id)
+      .single();
+    if (instErr || !installment) {
+      return new NextResponse("Receipt data unavailable.", { status: 404 });
+    }
+    installmentSnapshot = installment;
+    paymentId = installment.payment_id;
+  }
+
+  if (!paymentId) {
+    return new NextResponse("Receipt data unavailable.", { status: 404 });
+  }
+
   // Fetch payment + tenant + hostel + AC rate in parallel
   const [
     { data: payment, error: pErr },
@@ -49,9 +74,9 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, late_fee, food_charge, ac_charge, ac_units_consumed, payment_method, payment_date, receipt_number, payment_package_tier, status, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
+        "id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, payment_method, payment_date, receipt_number, payment_package_tier, status, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
       )
-      .eq("id", link.payment_id)
+      .eq("id", paymentId)
       .single(),
     supabase
       .from("hms_hostels")
@@ -69,15 +94,16 @@ export async function GET(
     return new NextResponse("Receipt data unavailable.", { status: 404 });
   }
 
-  // This payment hasn't actually been collected — a receipt would misrepresent
-  // it as paid. Re-checked here (not just at link-creation time) since a link
-  // can be viewed long after creation, and older links predate this check.
-  if (payment.status !== "paid") {
+  // A plain payment-scoped link (not installment-scoped) still reflects the LIVE
+  // row, so it still needs the "has this actually been collected" guard.
+  // Installment-scoped links are always historical snapshots of money that was
+  // genuinely received, so this guard doesn't apply to them.
+  if (!installmentSnapshot && payment.status !== "paid" && payment.status !== "partially_paid") {
     return new NextResponse("This payment hasn't been collected yet — no receipt is available.", { status: 409 });
   }
 
   // Self-heal: generate + persist receipt_number on first view if it was never set.
-  if (!payment.receipt_number) {
+  if (!installmentSnapshot && !payment.receipt_number) {
     const tenantRaw = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
     const tenantName = (tenantRaw as { full_name?: string })?.full_name ?? "";
     const initials = tenantName.split(" ").map((w: string) => w[0] ?? "").join("").toUpperCase().slice(0, 2);
@@ -90,27 +116,34 @@ export async function GET(
   const tenant = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
   const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null; check_out?: string | null; joining_meter_reading?: number | null; food_breakfast?: boolean; food_lunch?: boolean; food_dinner?: boolean } | null;
 
-  const checkInMonth = tenantTyped?.check_in?.slice(0, 7);
   const checkOutMonth = tenantTyped?.check_out?.slice(0, 7);
-  // Show security deposit on move-in month (tenant pays it) AND checkout month (to be refunded).
-  const isFirstMonth = checkInMonth === payment.for_month;
   const isCheckout = !!checkOutMonth && checkOutMonth === payment.for_month;
-  const securityDeposit = (isFirstMonth || isCheckout) ? Number(tenantTyped?.security_deposit ?? 0) : 0;
+  // Deposit REFUND is shown only at checkout — informational, not part of `amount`.
+  // Deposit COLLECTION is driven by payment.security_deposit_charge below (embedded
+  // in `amount` for the tenant's first billing month), not guessed from the month here.
+  const securityDepositRefund = isCheckout ? Number(tenantTyped?.security_deposit ?? 0) : 0;
 
+  // food_charge/ac_charge/ac_units_consumed/security_deposit_charge come from the
+  // live payment row — these reflect the month's fixed bill composition and don't
+  // change between installments, so it's safe to use them even for a historical snapshot.
   const pdfBytes = generateReceiptPDF(
     {
-      receipt_number: payment.receipt_number,
+      receipt_number: installmentSnapshot?.receipt_number ?? payment.receipt_number,
       for_month: payment.for_month,
-      amount: Number(payment.amount),
-      late_fee: Number(payment.late_fee ?? 0),
+      amount: installmentSnapshot ? (installmentSnapshot.total_due - installmentSnapshot.late_fee) : Number(payment.amount),
+      amount_paid: installmentSnapshot
+        ? installmentSnapshot.amount_after
+        : (payment.status === "partially_paid" ? Number(payment.amount_paid ?? 0) : undefined),
+      late_fee: installmentSnapshot ? installmentSnapshot.late_fee : Number(payment.late_fee ?? 0),
       food_charge: Number(payment.food_charge ?? 0),
       ac_charge: Number(payment.ac_charge ?? 0),
       ac_units_consumed: payment.ac_units_consumed ? Number(payment.ac_units_consumed) : null,
       ac_per_unit_rate: pkgConfig?.ac_per_unit_rate ? Number(pkgConfig.ac_per_unit_rate) : undefined,
-      security_deposit: securityDeposit,
+      security_deposit_charge: Number(payment.security_deposit_charge ?? 0),
+      security_deposit: securityDepositRefund,
       is_checkout: isCheckout,
-      payment_method: payment.payment_method,
-      payment_date: payment.payment_date,
+      payment_method: installmentSnapshot?.payment_method ?? payment.payment_method,
+      payment_date: installmentSnapshot?.payment_date ?? payment.payment_date,
       payment_package_tier: payment.payment_package_tier,
     },
     {

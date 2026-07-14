@@ -80,7 +80,7 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("hms_tenants")
-    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, food_breakfast, food_lunch, food_dinner")
+    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, food_breakfast, food_lunch, food_dinner")
     .eq("id", tenantId)
     .eq("hostel_id", hostelId) // ensures the tenant belongs to the owner's hostel
     .single();
@@ -94,10 +94,24 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
     package_tier: PackageTier;
     check_in: string;
     check_out: string | null;
+    security_deposit: number | null;
     food_breakfast: boolean;
     food_lunch: boolean;
     food_dinner: boolean;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Internal helper: the security deposit is billed once, on the tenant's first
+// billing month only — every later month is rent + food + AC as before.
+// ---------------------------------------------------------------------------
+
+function computeDepositCharge(
+  t: { check_in: string; security_deposit?: number | null },
+  forMonth: string
+): number {
+  const isFirstBillingMonth = t.check_in && t.check_in.slice(0, 7) === forMonth;
+  return isFirstBillingMonth ? Number(t.security_deposit ?? 0) : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +133,7 @@ export async function syncMonthAction(
     const [{ data: tenants, error: tenantsErr }, { data: configData }] = await Promise.all([
       supabase
         .from("hms_tenants")
-        .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, food_breakfast, food_lunch, food_dinner")
+        .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, food_breakfast, food_lunch, food_dinner")
         .eq("hostel_id", hostelId)
         .eq("is_active", true),
       supabase
@@ -158,6 +172,7 @@ export async function syncMonthAction(
         const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
         const addonFoodCharge = configData ? calcFoodAddonCharge(t, configData) : 0;
         const foodCharge = tierFoodCharge + addonFoodCharge;
+        const depositCharge = computeDepositCharge(t, month);
 
         const existing = existingMap.get(t.id);
 
@@ -167,12 +182,13 @@ export async function syncMonthAction(
             hostel_id: hostelId,
             tenant_id: t.id,
             for_month: month,
-            amount: baseRent + foodCharge,
+            amount: baseRent + foodCharge + depositCharge,
             status: "pending" as PaymentStatus,
             payment_package_tier: tier,
             food_charge: foodCharge,
             ac_units_consumed: 0,
             ac_charge: 0,
+            security_deposit_charge: depositCharge,
           });
         } else if (existing.status === "pending") {
           // Pending row — refresh tier/amount but preserve any existing ac_charge
@@ -181,11 +197,12 @@ export async function syncMonthAction(
             hostel_id: hostelId,
             tenant_id: t.id,
             for_month: month,
-            amount: baseRent + foodCharge,
+            amount: baseRent + foodCharge + depositCharge,
             payment_package_tier: tier,
             food_charge: foodCharge,
             ac_charge: preservedAC,
             ac_units_consumed: existing.ac_units_consumed ?? 0,
+            security_deposit_charge: depositCharge,
           });
           // status stays "pending" — not included so it isn't overwritten
         }
@@ -235,6 +252,11 @@ export interface MarkPaidInput {
   notes: string;
   receiptNumber: string;
   acUnitsConsumed: string; // string from form input
+  /** Amount actually received this time (string from form input). Omit/equal to
+      the full due amount for a normal full payment; less than the due amount
+      records a partial payment (status becomes "partially_paid" until the
+      running total collected reaches the full amount). */
+  amountReceived?: string;
 }
 
 export async function markPaymentPaidAction(
@@ -264,7 +286,7 @@ export async function markPaymentPaidAction(
     // --- Fetch the existing payment row (ownership verified via hostel_id) ---
     const { data: existingPayment, error: fetchErr } = await supabase
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, food_charge, ac_charge, payment_package_tier, hostel_id")
+      .select("id, tenant_id, for_month, amount, amount_paid, food_charge, ac_charge, payment_package_tier, hostel_id")
       .eq("id", input.paymentId)
       .eq("hostel_id", hostelId) // RLS + explicit owner check
       .single();
@@ -338,17 +360,45 @@ export async function markPaymentPaidAction(
       : 0;
     const addonFoodCharge = foodConfigData ? calcFoodAddonCharge(tenantData, foodConfigData) : 0;
     const foodCharge = tierFoodCharge + addonFoodCharge;
+    const depositCharge = computeDepositCharge(tenantData, forMonth);
 
-    const newTotalAmount = baseRent + foodCharge + newAcCharge;
+    const newTotalAmount = baseRent + foodCharge + newAcCharge + depositCharge;
 
     // Final sanity: total must be non-negative
     if (newTotalAmount < 0) {
       throw new Error(`Computed total amount is negative: ${newTotalAmount}`);
     }
 
+    // --- Partial payment handling ---
+    // amount_paid accumulates across however many installments it takes to settle
+    // this month's bill. Omitting amountReceived (or entering the full remaining
+    // balance) behaves exactly like before — a single full payment.
+    const previousAmountPaid = Number(existingPayment.amount_paid ?? 0);
+    const fullAmountDue = newTotalAmount + lateFee;
+    const remainingBefore = Math.max(0, fullAmountDue - previousAmountPaid);
+
+    let amountReceivedNow: number;
+    if (input.amountReceived !== undefined && input.amountReceived.trim() !== "") {
+      amountReceivedNow = parseFloat(input.amountReceived);
+      if (!Number.isFinite(amountReceivedNow) || amountReceivedNow <= 0) {
+        throw new Error("Amount received must be a positive number");
+      }
+      assertNonNegativeFinite(amountReceivedNow, "amount_received", 9_999_999.99);
+      if (amountReceivedNow > remainingBefore + 0.01) {
+        throw new Error(
+          `Amount received (Rs. ${amountReceivedNow.toLocaleString()}) exceeds the remaining balance (Rs. ${remainingBefore.toLocaleString()}). Enter the exact remaining amount instead.`
+        );
+      }
+    } else {
+      amountReceivedNow = remainingBefore;
+    }
+
+    const newAmountPaid = previousAmountPaid + amountReceivedNow;
+    const isFullyPaid = newAmountPaid >= fullAmountDue - 0.01;
+
     // --- Build update payload ---
     const updatePayload: Record<string, unknown> = {
-      status: "paid" as PaymentStatus,
+      status: (isFullyPaid ? "paid" : "partially_paid") as PaymentStatus,
       payment_method: input.method as PaymentMethod,
       payment_date: input.date,
       late_fee: lateFee,
@@ -356,8 +406,11 @@ export async function markPaymentPaidAction(
       receipt_number: input.receiptNumber,
       // Always write the recalculated total (trigger will re-verify)
       amount: newTotalAmount,
-      // Write back canonical food_charge so any previously corrupted row is corrected
+      amount_paid: newAmountPaid,
+      // Write back canonical food_charge/security_deposit_charge so any
+      // previously corrupted row is corrected
       food_charge: foodCharge,
+      security_deposit_charge: depositCharge,
     };
 
     if (isAcTier) {
@@ -374,6 +427,32 @@ export async function markPaymentPaidAction(
       .single();
 
     if (error) throw new Error(error.message);
+
+    // Record this specific transaction as its own immutable snapshot — amount_paid
+    // on hms_payments is a running cumulative total, so without this, a second
+    // installment would erase all trace of the first one (its own date/method/
+    // amount, and any receipt generated for it would start showing the new
+    // cumulative state instead of what was true when it was generated).
+    const { error: installmentErr } = await supabase.from("hms_payment_installments").insert({
+      hostel_id: hostelId,
+      tenant_id: existingPayment.tenant_id,
+      payment_id: input.paymentId,
+      for_month: existingPayment.for_month,
+      amount: amountReceivedNow,
+      amount_before: previousAmountPaid,
+      amount_after: newAmountPaid,
+      total_due: fullAmountDue,
+      late_fee: lateFee,
+      payment_method: input.method,
+      payment_date: input.date,
+      notes: input.notes || null,
+      receipt_number: input.receiptNumber,
+    });
+    if (installmentErr) {
+      // Non-fatal — the payment itself is already recorded correctly above.
+      // Losing the per-installment snapshot only affects historical granularity.
+      console.error("[markPaymentPaidAction] Failed to record payment installment:", installmentErr.message);
+    }
 
     return { payment: data as Payment };
   } catch (err: unknown) {
@@ -557,7 +636,7 @@ export async function applyRoomACUnitsAction(
     // ── Find all active tenants in this room ─────────────────────
     const { data: allTenants } = await supabase
       .from("hms_tenants")
-      .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, food_breakfast, food_lunch, food_dinner")
+      .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, food_breakfast, food_lunch, food_dinner")
       .eq("hostel_id", hostelId)
       .eq("room_id", roomId)
       .eq("is_active", true);
@@ -774,16 +853,21 @@ export async function applyRoomACUnitsAction(
         const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
         const addonFoodCharge = pkgConfig ? calcFoodAddonCharge(t, pkgConfig) : 0;
         const foodCharge = tierFoodCharge + addonFoodCharge;
+        const depositCharge = computeDepositCharge(
+          { check_in: t.check_in, security_deposit: (t as { security_deposit?: number | null }).security_deposit },
+          forMonth
+        );
         return {
           hostel_id: hostelId,
           tenant_id: t.id,
           for_month: forMonth,
-          amount: baseRent + foodCharge,
+          amount: baseRent + foodCharge + depositCharge,
           status: "pending" as PaymentStatus,
           payment_package_tier: tier,
           food_charge: foodCharge,
           ac_units_consumed: 0,
           ac_charge: 0,
+          security_deposit_charge: depositCharge,
         };
       });
       await adminDb.from("hms_payments").insert(newRows);

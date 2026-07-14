@@ -663,9 +663,24 @@ export async function recordPaymentAsManager(
 
     const isAcTier = tenant.package_tier === "space_food_ac"
 
+    // Fetch the actual outstanding bill so the manager's entered amount is
+    // validated against it — a manager can no longer type in any number and
+    // have it silently accepted as "paid in full" regardless of the real total.
+    const { data: existingPayment } = await admin
+      .from("hms_payments")
+      .select("id, amount, amount_paid, late_fee, ac_charge, status")
+      .eq("tenant_id", tenantId)
+      .eq("hostel_id", hostelId)
+      .eq("for_month", month)
+      .in("status", ["pending", "overdue", "partially_paid"])
+      .maybeSingle()
+
+    if (!existingPayment) {
+      return { error: "No outstanding bill found for this tenant this month." }
+    }
+
+    let newAcCharge = Number(existingPayment.ac_charge ?? 0)
     const updatePayload: Record<string, unknown> = {
-      status: "paid",
-      amount,
       payment_method: method,
       payment_date: new Date().toISOString().slice(0, 10),
     }
@@ -682,21 +697,59 @@ export async function recordPaymentAsManager(
         .maybeSingle()
 
       const acUnitRate = Number(config?.ac_per_unit_rate ?? 0)
+      newAcCharge = acUnitsConsumed * acUnitRate
       updatePayload.ac_units_consumed = acUnitsConsumed
-      updatePayload.ac_charge = acUnitsConsumed * acUnitRate
+      updatePayload.ac_charge = newAcCharge
     }
+
+    // The bill's non-AC portion (rent + food + deposit, whatever it already was)
+    // stays fixed here; only the AC charge can shift, if a fresh meter reading
+    // was entered above. This mirrors what the DB trigger will recompute.
+    const nonAcPortion = Number(existingPayment.amount) - Number(existingPayment.ac_charge ?? 0)
+    const fullAmountDue = nonAcPortion + newAcCharge + Number(existingPayment.late_fee ?? 0)
+    const previousAmountPaid = Number(existingPayment.amount_paid ?? 0)
+    const remainingBefore = Math.max(0, fullAmountDue - previousAmountPaid)
+
+    if (amount > remainingBefore + 0.01) {
+      return {
+        error: `Amount collected (Rs. ${amount.toLocaleString()}) exceeds the remaining balance (Rs. ${remainingBefore.toLocaleString()}). Enter the exact remaining amount instead.`,
+      }
+    }
+
+    const newAmountPaid = previousAmountPaid + amount
+    const isFullyPaid = newAmountPaid >= fullAmountDue - 0.01
+    updatePayload.status = isFullyPaid ? "paid" : "partially_paid"
+    updatePayload.amount_paid = newAmountPaid
 
     const { error } = await admin
       .from("hms_payments")
       .update(updatePayload)
-      .eq("tenant_id", tenantId)
-      .eq("for_month", month)
+      .eq("id", existingPayment.id)
       .eq("hostel_id", hostelId)
-      .in("status", ["pending", "overdue"])
 
     if (error) return { error: error.message }
 
+    // Record this transaction as its own immutable snapshot, same as the
+    // owner-facing payment flow — so a manager-collected installment shows up
+    // in the Member Ledger/timeline as its own event, not silently merged in.
+    const { error: installmentErr } = await admin.from("hms_payment_installments").insert({
+      hostel_id: hostelId,
+      tenant_id: tenantId,
+      payment_id: existingPayment.id,
+      for_month: month,
+      amount,
+      amount_before: previousAmountPaid,
+      amount_after: newAmountPaid,
+      total_due: fullAmountDue,
+      payment_method: method,
+      payment_date: new Date().toISOString().slice(0, 10),
+    })
+    if (installmentErr) {
+      console.error("[recordPaymentAsManager] Failed to record payment installment:", installmentErr.message)
+    }
+
     revalidatePath("/portal/payments")
+    revalidatePath("/payments")
     return { error: null }
   } catch (err: unknown) {
     return { error: err instanceof Error ? err.message : "An unexpected error occurred." }

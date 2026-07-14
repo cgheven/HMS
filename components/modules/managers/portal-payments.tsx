@@ -23,8 +23,9 @@ interface PortalPaymentRow {
   tenant_id: string
   for_month: string
   amount: number
+  amountPaid: number
   late_fee: number
-  status: "pending" | "overdue"
+  status: "pending" | "overdue" | "partially_paid"
   tenantName: string
   roomNumber: string | null
   packageTier: string | null
@@ -74,8 +75,9 @@ function PayModal({
 }) {
   const isAcTier   = payment.packageTier === "space_food_ac"
   const defaultTotal = payment.amount + payment.late_fee
+  const remaining = Math.max(0, defaultTotal - payment.amountPaid)
 
-  const [amount, setAmount]   = useState(String(defaultTotal))
+  const [amount, setAmount]   = useState(String(remaining))
   const [method, setMethod]   = useState("cash")
   const [acUnits, setAcUnits] = useState("")
   const [error, setError]     = useState<string | null>(null)
@@ -87,7 +89,7 @@ function PayModal({
       : null
 
   const handleClose = () => {
-    setAmount(String(defaultTotal))
+    setAmount(String(remaining))
     setMethod("cash")
     setAcUnits("")
     setError(null)
@@ -108,7 +110,7 @@ function PayModal({
     startTransition(async () => {
       const result = await recordPaymentAsManager(payment.tenant_id, parsed, method, payment.for_month, parsedUnits)
       if (result.error) { setError(result.error); return }
-      toast({ title: "Payment recorded" })
+      toast({ title: parsed < remaining ? "Partial payment recorded" : "Payment recorded" })
       onPaid()
       handleClose()
     })
@@ -118,7 +120,7 @@ function PayModal({
     <Dialog open={open} onOpenChange={(o) => { if (!o) handleClose() }}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>Mark Paid — {payment.tenantName}</DialogTitle>
+          <DialogTitle>{payment.amountPaid > 0 ? "Collect Remaining — " : "Mark Paid — "}{payment.tenantName}</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 py-2">
@@ -127,6 +129,11 @@ function PayModal({
             <span className="font-medium">{payment.for_month}</span>
             {payment.late_fee > 0 && (
               <span className="ml-2 text-xs text-amber/70">(includes Rs. {payment.late_fee.toLocaleString()} late fee)</span>
+            )}
+            {payment.amountPaid > 0 && (
+              <p className="mt-1 text-xs text-blue-400">
+                Rs. {payment.amountPaid.toLocaleString()} already collected · Rs. {remaining.toLocaleString()} remaining of Rs. {defaultTotal.toLocaleString()}
+              </p>
             )}
           </div>
 
@@ -166,6 +173,11 @@ function PayModal({
               onChange={(e) => setAmount(e.target.value)}
               disabled={isPending}
             />
+            {Number.isFinite(Number(amount)) && Number(amount) > 0 && Number(amount) < remaining && (
+              <p className="text-xs text-blue-400">
+                Partial payment — Rs. {(remaining - Number(amount)).toLocaleString()} will remain due after this.
+              </p>
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -493,7 +505,7 @@ export function PortalPayments({
             <div className="rounded-xl border border-white/10 bg-white/[0.02] py-16 text-center">
               <CheckCircle2 className="w-10 h-10 mx-auto text-emerald-400/40 mb-3" />
               <p className="text-sm font-medium text-muted-foreground">All caught up</p>
-              <p className="text-xs text-muted-foreground/60 mt-1">No pending or overdue payments this month.</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">No pending, overdue, or partial payments this month.</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -519,6 +531,10 @@ export function PortalPayments({
                           <AlertCircle className="w-2.5 h-2.5" />
                           Overdue
                         </Badge>
+                      ) : payment.status === "partially_paid" ? (
+                        <Badge className="text-[10px] bg-blue-500/10 text-blue-400 border-blue-500/20 hover:bg-blue-500/10">
+                          Partial
+                        </Badge>
                       ) : (
                         <Badge className="text-[10px] bg-amber/10 text-amber border-amber/20 hover:bg-amber/10">
                           Pending
@@ -526,7 +542,12 @@ export function PortalPayments({
                       )}
                     </div>
                     <p className="text-sm font-semibold mt-0.5">
-                      Rs. {(payment.amount + payment.late_fee).toLocaleString()}
+                      Rs. {Math.max(0, payment.amount + payment.late_fee - payment.amountPaid).toLocaleString()}
+                      {payment.amountPaid > 0 && (
+                        <span className="ml-1.5 text-xs font-normal text-blue-400">
+                          (Rs. {payment.amountPaid.toLocaleString()} collected of Rs. {(payment.amount + payment.late_fee).toLocaleString()})
+                        </span>
+                      )}
                     </p>
                   </div>
 
@@ -536,7 +557,7 @@ export function PortalPayments({
                     className="shrink-0 bg-amber text-black hover:bg-amber/90 h-8 px-3"
                   >
                     <CreditCard className="w-3.5 h-3.5 mr-1.5" />
-                    Mark Paid
+                    {payment.amountPaid > 0 ? "Collect Rest" : "Mark Paid"}
                   </Button>
                 </div>
               ))}
