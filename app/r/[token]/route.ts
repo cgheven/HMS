@@ -49,7 +49,7 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, late_fee, food_charge, ac_charge, ac_units_consumed, payment_method, payment_date, receipt_number, payment_package_tier, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
+        "id, for_month, amount, late_fee, food_charge, ac_charge, ac_units_consumed, payment_method, payment_date, receipt_number, payment_package_tier, status, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
       )
       .eq("id", link.payment_id)
       .single(),
@@ -67,6 +67,13 @@ export async function GET(
 
   if (pErr || !payment || hErr || !hostel) {
     return new NextResponse("Receipt data unavailable.", { status: 404 });
+  }
+
+  // This payment hasn't actually been collected — a receipt would misrepresent
+  // it as paid. Re-checked here (not just at link-creation time) since a link
+  // can be viewed long after creation, and older links predate this check.
+  if (payment.status !== "paid") {
+    return new NextResponse("This payment hasn't been collected yet — no receipt is available.", { status: 409 });
   }
 
   // Self-heal: generate + persist receipt_number on first view if it was never set.

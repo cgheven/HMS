@@ -7,7 +7,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrAbove } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
-import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput } from "@/types";
+import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, TenantEventType } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -290,9 +290,21 @@ export type TimelineEventType =
   | "joined"
   | "payment"
   | "package_changed"
+  | "room_changed"
+  | "deposit_collected"
+  | "deposit_returned"
+  | "deposit_forfeited"
   | "check_out"
   | "status_change"
   | "pending";
+
+const TIMELINE_TIER_LABELS: Record<string, string> = {
+  space_only: "Space Only",
+  space_food: "Space + 2 Meals",
+  space_3meals: "Space + 3 Meals",
+  space_food_ac: "Space + Meals + AC",
+  space_meals_cooler: "Space + Meals + Cooler",
+};
 
 export interface TimelineEvent {
   id: string;
@@ -315,7 +327,7 @@ export async function getTenantTimeline(
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
-    const [tenantRes, paymentsRes] = await Promise.all([
+    const [tenantRes, paymentsRes, tenantEventsRes] = await Promise.all([
       supabase
         .from("hms_tenants")
         .select("id, full_name, check_in, check_out, is_active, created_at")
@@ -330,6 +342,12 @@ export async function getTenantTimeline(
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
         .order("created_at", { ascending: false }),
+      supabase
+        .from("hms_tenant_events")
+        .select("id, event_type, from_value, to_value, amount, notes, created_at")
+        .eq("tenant_id", tenantId)
+        .eq("hostel_id", hostelId)
+        .order("created_at", { ascending: false }),
     ]);
 
     if (tenantRes.error || !tenantRes.data) throw new Error("Tenant not found or access denied");
@@ -337,6 +355,7 @@ export async function getTenantTimeline(
 
     const tenant = tenantRes.data;
     const payments = paymentsRes.data;
+    const tenantEvents = tenantEventsRes.data ?? [];
 
     const events: TimelineEvent[] = [];
 
@@ -408,11 +427,76 @@ export async function getTenantTimeline(
       }
     }
 
-    // Sort newest first
+    // Room/plan changes and deposit events (from hms_tenant_events — captured going
+    // forward only; changes made before this table existed are not recoverable)
+    for (const e of tenantEvents) {
+      if (e.event_type === "room_changed") {
+        events.push({
+          id: `event-${e.id}`,
+          type: "room_changed",
+          date: e.created_at,
+          label: "Room changed",
+          sub: `${e.from_value ?? "None"} → ${e.to_value ?? "None"}`,
+        });
+      } else if (e.event_type === "plan_changed") {
+        const fromLabel = TIMELINE_TIER_LABELS[e.from_value ?? ""] ?? e.from_value ?? "Unknown";
+        const toLabel = TIMELINE_TIER_LABELS[e.to_value ?? ""] ?? e.to_value ?? "Unknown";
+        events.push({
+          id: `event-${e.id}`,
+          type: "package_changed",
+          date: e.created_at,
+          label: "Plan changed",
+          sub: `${fromLabel} → ${toLabel}`,
+        });
+      } else if (e.event_type === "deposit_collected") {
+        events.push({
+          id: `event-${e.id}`,
+          type: "deposit_collected",
+          date: e.created_at,
+          label: `Rs. ${Number(e.amount ?? 0).toLocaleString()} deposit collected`,
+          sub: e.notes ?? undefined,
+          amount: e.amount != null ? Number(e.amount) : undefined,
+        });
+      } else if (e.event_type === "deposit_returned") {
+        events.push({
+          id: `event-${e.id}`,
+          type: "deposit_returned",
+          date: e.created_at,
+          label: `Rs. ${Number(e.amount ?? 0).toLocaleString()} deposit returned`,
+          sub: e.notes ?? undefined,
+          amount: e.amount != null ? Number(e.amount) : undefined,
+        });
+      } else if (e.event_type === "deposit_forfeited") {
+        events.push({
+          id: `event-${e.id}`,
+          type: "deposit_forfeited",
+          date: e.created_at,
+          label: `Rs. ${Number(e.amount ?? 0).toLocaleString()} deposit forfeited`,
+          sub: e.notes ?? undefined,
+          amount: e.amount != null ? Number(e.amount) : undefined,
+        });
+      }
+    }
+
+    // Sort newest first; same-day ties broken by a logical same-day order
+    // (e.g. deposit collected reads before that day's rent payment, not after)
+    const SAME_DAY_PRIORITY: Record<TimelineEventType, number> = {
+      joined: 0,
+      deposit_collected: 1,
+      room_changed: 2,
+      package_changed: 2,
+      payment: 3,
+      pending: 4,
+      status_change: 5,
+      deposit_returned: 6,
+      deposit_forfeited: 6,
+      check_out: 7,
+    };
     events.sort((a, b) => {
       const da = new Date(a.date).getTime();
       const db = new Date(b.date).getTime();
-      return db - da;
+      if (db !== da) return db - da;
+      return SAME_DAY_PRIORITY[a.type] - SAME_DAY_PRIORITY[b.type];
     });
 
     return { events };
@@ -436,12 +520,13 @@ export async function createInvoiceLink(
     // Verify the payment belongs to the caller's hostel
     const { data: payment, error: pErr } = await supabase
       .from("hms_payments")
-      .select("id, hostel_id")
+      .select("id, hostel_id, status")
       .eq("id", paymentId)
       .eq("hostel_id", hostelId)
       .single();
 
     if (pErr || !payment) throw new Error("Payment not found or access denied");
+    if (payment.status !== "paid") throw new Error("Cannot generate a receipt for a payment that hasn't been collected yet.");
 
     // Insert the invoice link (DB defaults token via gen_random_bytes). No
     // expires_at — receipt links are permanent, not time-boxed.
@@ -642,6 +727,50 @@ export async function getACCheckoutContextAction(
 }
 
 // ---------------------------------------------------------------------------
+// logTenantEvent — Member Ledger event log (room/plan changes, deposit collection).
+// Called from the tenant create/edit flow (client-side) after a successful save,
+// since room_id/package_tier are overwritten in place with no history kept otherwise.
+// ---------------------------------------------------------------------------
+
+export async function logTenantEvent(input: {
+  tenantId: string;
+  eventType: TenantEventType;
+  fromValue?: string | null;
+  toValue?: string | null;
+  amount?: number | null;
+  notes?: string | null;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    await requireOwnerOrAbove();
+    const hostelId = await resolveHostelId();
+    const adminDb = createAdminClient();
+
+    const { data: tenant, error: tenantErr } = await adminDb
+      .from("hms_tenants")
+      .select("id")
+      .eq("id", input.tenantId)
+      .eq("hostel_id", hostelId)
+      .single();
+    if (tenantErr || !tenant) throw new Error("Tenant not found or access denied");
+
+    const { error } = await adminDb.from("hms_tenant_events").insert({
+      hostel_id: hostelId,
+      tenant_id: input.tenantId,
+      event_type: input.eventType,
+      from_value: input.fromValue ?? null,
+      to_value: input.toValue ?? null,
+      amount: input.amount ?? null,
+      notes: input.notes ?? null,
+    });
+    if (error) throw new Error("Failed to log tenant event.");
+
+    return { success: true };
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // checkoutTenantAction
 // Handles the full checkout flow: settle payment → deactivate tenant → decrement room.
 // Write order is intentional for EC-4 safety: payment first so that if tenant
@@ -660,7 +789,7 @@ export async function checkoutTenantAction(
     // Step 1: Fetch and verify tenant belongs to this hostel and is still active
     const { data: tenant, error: tenantErr } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, room_id, is_active, check_in")
+      .select("id, full_name, hostel_id, room_id, is_active, check_in, security_deposit")
       .eq("id", input.tenantId)
       .eq("hostel_id", hostelId)
       .single();
@@ -893,6 +1022,32 @@ export async function checkoutTenantAction(
       }
       // SEC-F5: sanitize — do not expose DB internals
       throw new Error("Tenant checkout failed. Please try again.");
+    }
+
+    // Step 4a: Log deposit return/forfeit event for the Member Ledger — best-effort,
+    // non-fatal (checkout itself already succeeded above).
+    if (input.depositReturned !== undefined && Number(tenant.security_deposit) > 0) {
+      const deposit = Number(tenant.security_deposit);
+      const returned = Math.max(0, Math.min(Number(input.depositReturned), deposit));
+      const depositNotes = input.depositNotes?.trim() || null;
+      if (returned > 0) {
+        await adminDb.from("hms_tenant_events").insert({
+          hostel_id: hostelId,
+          tenant_id: input.tenantId,
+          event_type: "deposit_returned",
+          amount: returned,
+          notes: depositNotes,
+        });
+      }
+      if (returned < deposit) {
+        await adminDb.from("hms_tenant_events").insert({
+          hostel_id: hostelId,
+          tenant_id: input.tenantId,
+          event_type: "deposit_forfeited",
+          amount: deposit - returned,
+          notes: depositNotes,
+        });
+      }
     }
 
     // Step 4b: Persist AC checkout reading record — stored AFTER tenant deactivation

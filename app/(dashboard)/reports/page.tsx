@@ -17,8 +17,8 @@ export default async function ReportsPage() {
 
   const now = new Date();
   const to = getMonthKey(now);
-  const from = getMonthKey(new Date(now.getFullYear(), now.getMonth() - 5, 1));
-  const label = "Last 6 Months";
+  const from = to;
+  const label = "This Month";
 
   const { data } = await getReportData(ctx.hostelId, from, to, label);
 

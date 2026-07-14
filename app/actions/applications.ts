@@ -268,7 +268,7 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     }
   }
 
-  const { error: tenantError } = await admin.from("hms_tenants").insert({
+  const { data: newTenant, error: tenantError } = await admin.from("hms_tenants").insert({
     hostel_id: app.hostel_id,
     full_name: app.full_name,
     phone: app.phone,
@@ -293,9 +293,19 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     emergency_contact: extra.emergency_contact ?? app.emergency_contact ?? null,
     emergency_phone: extra.emergency_phone ?? app.emergency_phone ?? null,
     emergency_relationship: extra.emergency_relationship ?? app.emergency_relationship ?? null,
-  });
+  }).select("id").single();
 
   if (tenantError) return { success: false, error: tenantError.message };
+
+  // Log deposit collection to the Member Ledger — best-effort, never blocks approval.
+  if (newTenant?.id && extra.security_deposit > 0) {
+    await admin.from("hms_tenant_events").insert({
+      hostel_id: app.hostel_id,
+      tenant_id: newTenant.id,
+      event_type: "deposit_collected",
+      amount: extra.security_deposit,
+    });
+  }
 
   // Mark application as approved
   await admin

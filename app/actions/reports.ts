@@ -63,14 +63,8 @@ export interface ReportData {
   totalCapacity: number;
   totalOccupied: number;
 
-  // Plan distribution (active tenants)
-  planDistribution: {
-    tier: string;
-    label: string;
-    count: number;
-    percentage: number;
-    revenue: number;
-  }[];
+  // Room options for the Member Ledger's room filter (reuses the already-fetched rooms list)
+  roomOptions: { id: string; roomNumber: string }[];
 
   // Payment method breakdown (for bank reconciliation)
   paymentMethodBreakdown: {
@@ -392,36 +386,6 @@ export async function getReportData(
     })
     .sort((a, b) => (b.paymentDate ?? "").localeCompare(a.paymentDate ?? ""));
 
-  // Plan distribution — active tenants grouped by package_tier
-  const TIER_LABELS: Record<string, string> = {
-    space_only: "Space Only",
-    space_food: "Space + 2 Meals",
-    space_3meals: "Space + 3 Meals",
-    space_food_ac: "Space + Meals + AC",
-    space_meals_cooler: "Space + Meals + Cooler",
-  };
-  const activeTenants = tenants.filter((t) => t.is_active);
-  const tierCounts: Record<string, number> = {};
-  activeTenants.forEach((t) => {
-    const tier = ((t as { package_tier?: string }).package_tier) ?? "space_only";
-    tierCounts[tier] = (tierCounts[tier] ?? 0) + 1;
-  });
-  const tierRevenue: Record<string, number> = {};
-  paidPayments.forEach((p) => {
-    const tier = (p.payment_package_tier as string) ?? "space_only";
-    tierRevenue[tier] = (tierRevenue[tier] ?? 0) + Number(p.amount) + Number(p.late_fee || 0);
-  });
-  const totalActiveTenants = activeTenants.length;
-  const planDistribution = Object.entries(tierCounts)
-    .map(([tier, count]) => ({
-      tier,
-      label: TIER_LABELS[tier] ?? tier,
-      count,
-      percentage: totalActiveTenants > 0 ? Math.round((count / totalActiveTenants) * 100) : 0,
-      revenue: tierRevenue[tier] ?? 0,
-    }))
-    .sort((a, b) => b.count - a.count);
-
   // Consolidated expense report — bills + staff salaries + general expenses + kitchen
   const bills = billsRes.data ?? [];
 
@@ -512,7 +476,7 @@ export async function getReportData(
       totalOccupied,
       acByRoom,
       acStats: { avgUnitsPerTenant, totalAcRevenue, totalAcTenants },
-      planDistribution,
+      roomOptions: rooms.map((r) => ({ id: r.id, roomNumber: r.room_number })).sort((a, b) => a.roomNumber.localeCompare(b.roomNumber)),
       paymentMethodBreakdown,
       paidPaymentsList,
       expenseReport: {
@@ -525,4 +489,143 @@ export async function getReportData(
     },
     error: null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Member Ledger — cross-tenant landing table for the Reports page.
+// Per-tenant full history (drill-in) reuses getTenantTimeline() from
+// app/actions/tenants.ts rather than duplicating event-building logic.
+// ---------------------------------------------------------------------------
+
+const LEDGER_TIER_LABELS: Record<string, string> = {
+  space_only: "Space Only",
+  space_food: "Space + 2 Meals",
+  space_3meals: "Space + 3 Meals",
+  space_food_ac: "Space + Meals + AC",
+  space_meals_cooler: "Space + Meals + Cooler",
+};
+
+export interface LedgerTenantRow {
+  id: string;
+  fullName: string;
+  phone: string | null;
+  roomNumber: string | null;
+  status: "active" | "waiting" | "checked_out";
+  packageLabel: string;
+  securityDeposit: number;
+  totalCharged: number;
+  totalPaid: number;
+  totalOwed: number;
+  lastPaymentDate: string | null;
+}
+
+export interface LedgerFilters {
+  roomId?: string;
+  status?: "active" | "waiting" | "checked_out" | "all";
+  search?: string;
+  hasDeposit?: boolean;
+  /** A PackageTier key, or "custom" for tenants on a custom package */
+  packageTier?: string;
+}
+
+export async function getLedgerTenants(
+  hostelId: string,
+  from: string,
+  to: string,
+  filters: LedgerFilters
+): Promise<{ data: LedgerTenantRow[] | null; error: string | null }> {
+  const profile = await requireOwnerOrAbove();
+  const admin = createAdminClient();
+
+  const { data: hostelRow } = await admin
+    .from("hms_hostels")
+    .select("id, owner_id")
+    .eq("id", hostelId)
+    .single();
+
+  if (!hostelRow) return { data: null, error: "Hostel not found" };
+
+  if (profile.role !== "super_admin" && hostelRow.owner_id !== profile.id) {
+    const { data: junction } = await admin
+      .from("hms_owner_hostels")
+      .select("hostel_id")
+      .eq("hostel_id", hostelId)
+      .eq("owner_id", profile.id)
+      .maybeSingle();
+    if (!junction) return { data: null, error: "Unauthorized" };
+  }
+
+  let tenantQuery = admin
+    .from("hms_tenants")
+    .select("id, full_name, phone, is_active, is_waiting, package_tier, custom_package_id, security_deposit, room:hms_rooms(room_number)")
+    .eq("hostel_id", hostelId);
+
+  if (filters.roomId) tenantQuery = tenantQuery.eq("room_id", filters.roomId);
+  if (filters.status === "active") tenantQuery = tenantQuery.eq("is_active", true).eq("is_waiting", false);
+  if (filters.status === "waiting") tenantQuery = tenantQuery.eq("is_waiting", true);
+  if (filters.status === "checked_out") tenantQuery = tenantQuery.eq("is_active", false).eq("is_waiting", false);
+  if (filters.search?.trim()) {
+    const q = filters.search.trim();
+    tenantQuery = tenantQuery.or(`full_name.ilike.%${q}%,phone.ilike.%${q}%`);
+  }
+  if (filters.hasDeposit) tenantQuery = tenantQuery.gt("security_deposit", 0);
+  if (filters.packageTier === "custom") {
+    tenantQuery = tenantQuery.not("custom_package_id", "is", null);
+  } else if (filters.packageTier) {
+    tenantQuery = tenantQuery.eq("package_tier", filters.packageTier).is("custom_package_id", null);
+  }
+
+  const [{ data: tenants, error: tenantsErr }, { data: payments, error: paymentsErr }] = await Promise.all([
+    tenantQuery,
+    admin
+      .from("hms_payments")
+      .select("tenant_id, amount, late_fee, status, payment_date")
+      .eq("hostel_id", hostelId)
+      .gte("for_month", from)
+      .lte("for_month", to),
+  ]);
+
+  if (tenantsErr) return { data: null, error: "Failed to load tenants" };
+  if (paymentsErr) return { data: null, error: "Failed to load payments" };
+
+  type TenantRow = {
+    id: string; full_name: string; phone: string | null; is_active: boolean; is_waiting: boolean;
+    package_tier: string | null; custom_package_id: string | null; security_deposit: number | null;
+    room: { room_number: string } | { room_number: string }[] | null;
+  };
+  type PaymentRow = { tenant_id: string; amount: number; late_fee: number | null; status: string; payment_date: string | null };
+
+  const paymentsByTenant: Record<string, PaymentRow[]> = {};
+  ((payments ?? []) as PaymentRow[]).forEach((p) => {
+    (paymentsByTenant[p.tenant_id] ??= []).push(p);
+  });
+
+  const rows: LedgerTenantRow[] = ((tenants ?? []) as TenantRow[]).map((t) => {
+    const tPayments = paymentsByTenant[t.id] ?? [];
+    const paid = tPayments.filter((p) => p.status === "paid");
+    const owed = tPayments.filter((p) => p.status === "pending" || p.status === "overdue");
+    const totalCharged = tPayments.reduce((s, p) => s + Number(p.amount) + Number(p.late_fee ?? 0), 0);
+    const totalPaid = paid.reduce((s, p) => s + Number(p.amount) + Number(p.late_fee ?? 0), 0);
+    const totalOwed = owed.reduce((s, p) => s + Number(p.amount), 0);
+    const lastPaymentDate = paid.reduce<string | null>((latest, p) => (p.payment_date && (!latest || p.payment_date > latest) ? p.payment_date : latest), null);
+    const roomRel = t.room;
+    const roomNumber = Array.isArray(roomRel) ? roomRel[0]?.room_number ?? null : roomRel?.room_number ?? null;
+    const packageLabel = t.custom_package_id ? "Custom Package" : (LEDGER_TIER_LABELS[t.package_tier ?? ""] ?? t.package_tier ?? "Space Only");
+
+    return {
+      id: t.id,
+      fullName: t.full_name,
+      phone: t.phone,
+      roomNumber,
+      status: t.is_waiting ? "waiting" : t.is_active ? "active" : "checked_out",
+      packageLabel,
+      securityDeposit: Number(t.security_deposit ?? 0),
+      totalCharged,
+      totalPaid,
+      totalOwed,
+      lastPaymentDate,
+    };
+  });
+
+  return { data: rows, error: null };
 }

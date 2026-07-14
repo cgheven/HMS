@@ -6,10 +6,19 @@ const Tabs = TabsPrimitive.Root;
 
 function TabsList({ className, ...props }: React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>) {
   return (
-    <TabsPrimitive.List
-      className={cn("inline-flex items-center gap-0.5 rounded-lg bg-white/5 border border-sidebar-border p-1", className)}
-      {...props}
-    />
+    <div className="relative max-w-full">
+      <TabsPrimitive.List
+        className={cn(
+          "inline-flex items-center gap-0.5 rounded-lg bg-white/5 border border-sidebar-border p-1",
+          "max-w-full overflow-x-auto scrollbar-hide",
+          className
+        )}
+        {...props}
+      />
+      {/* Edge fades hint that the tab strip scrolls horizontally when it overflows */}
+      <div className="md:hidden pointer-events-none absolute inset-y-0 left-0 w-5 bg-gradient-to-r from-background to-transparent rounded-l-lg" />
+      <div className="md:hidden pointer-events-none absolute inset-y-0 right-0 w-5 bg-gradient-to-l from-background to-transparent rounded-r-lg" />
+    </div>
   );
 }
 
@@ -17,7 +26,7 @@ function TabsTrigger({ className, ...props }: React.ComponentPropsWithoutRef<typ
   return (
     <TabsPrimitive.Trigger
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all",
+        "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all shrink-0",
         "text-muted-foreground hover:text-foreground",
         "data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm",
         "disabled:pointer-events-none disabled:opacity-50",

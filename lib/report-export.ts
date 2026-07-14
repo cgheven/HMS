@@ -1,4 +1,4 @@
-import type { ReportData } from "@/app/actions/reports";
+import type { ReportData, LedgerTenantRow } from "@/app/actions/reports";
 
 function pk(amount: number): string {
   return `Rs. ${amount.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
@@ -516,4 +516,128 @@ export async function exportExpenseReportExcel(
 
   const slug = sourceLabel === "All Sources" ? "all" : sourceLabel.toLowerCase().replace(/\s+/g, "-");
   XLSX.writeFile(wb, `expense-report-${period}-${slug}.xlsx`);
+}
+
+// ---------------------------------------------------------------------------
+// Member Ledger exports — cross-tenant landing table
+// ---------------------------------------------------------------------------
+
+const LEDGER_STATUS_LABELS: Record<string, string> = {
+  active: "Active",
+  waiting: "Waiting",
+  checked_out: "Checked Out",
+};
+
+export async function exportLedgerPDF(
+  rows: LedgerTenantRow[],
+  hostelName: string,
+  period: string,
+  filterLabel: string
+): Promise<void> {
+  const { default: jsPDF } = await import("jspdf");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { default: autoTable } = await import("jspdf-autotable") as any;
+
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const MARGIN = 14;
+  let y = 16;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.text(hostelName, MARGIN, y); y += 7;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(120, 120, 120);
+  doc.text(`Member Ledger · ${period} · ${filterLabel}   Generated: ${new Date().toLocaleDateString()}`, MARGIN, y); y += 5;
+
+  doc.setDrawColor(200, 200, 200);
+  doc.line(MARGIN, y, 196, y); y += 5;
+
+  doc.setTextColor(0, 0, 0);
+
+  const totalCharged = rows.reduce((s, r) => s + r.totalCharged, 0);
+  const totalPaid = rows.reduce((s, r) => s + r.totalPaid, 0);
+  const totalOwed = rows.reduce((s, r) => s + r.totalOwed, 0);
+  const totalDeposit = rows.reduce((s, r) => s + r.securityDeposit, 0);
+
+  autoTable(doc, {
+    startY: y,
+    head: [["Tenant", "Phone", "Room", "Plan", "Status", "Charged (Rs.)", "Paid (Rs.)", "Owed (Rs.)", "Deposit (Rs.)", "Last Payment"]],
+    body: rows.map((r) => [
+      r.fullName,
+      r.phone ?? "—",
+      r.roomNumber ? `Rm ${r.roomNumber}` : "—",
+      r.packageLabel,
+      LEDGER_STATUS_LABELS[r.status] ?? r.status,
+      r.totalCharged.toLocaleString("en-PK"),
+      r.totalPaid.toLocaleString("en-PK"),
+      r.totalOwed.toLocaleString("en-PK"),
+      r.securityDeposit > 0 ? r.securityDeposit.toLocaleString("en-PK") : "—",
+      fmtDate(r.lastPaymentDate),
+    ]),
+    foot: [["", "", "", "", "Total", totalCharged.toLocaleString("en-PK"), totalPaid.toLocaleString("en-PK"), totalOwed.toLocaleString("en-PK"), totalDeposit.toLocaleString("en-PK"), ""]],
+    headStyles: { fillColor: [30, 30, 30], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
+    footStyles: { fillColor: [245, 166, 35], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 8 },
+    bodyStyles: { fontSize: 7.5 },
+    alternateRowStyles: { fillColor: [248, 248, 248] },
+    margin: { left: MARGIN, right: MARGIN },
+    columnStyles: { 5: { halign: "right" }, 6: { halign: "right" }, 7: { halign: "right" }, 8: { halign: "right" } },
+  });
+
+  doc.save(`member-ledger-${period}.pdf`);
+}
+
+export async function exportLedgerExcel(
+  rows: LedgerTenantRow[],
+  hostelName: string,
+  period: string,
+  filterLabel: string
+): Promise<void> {
+  const XLSX = await import("xlsx");
+
+  const totalCharged = rows.reduce((s, r) => s + r.totalCharged, 0);
+  const totalPaid = rows.reduce((s, r) => s + r.totalPaid, 0);
+  const totalOwed = rows.reduce((s, r) => s + r.totalOwed, 0);
+  const totalDeposit = rows.reduce((s, r) => s + r.securityDeposit, 0);
+
+  const sheetRows = [
+    [`Member Ledger — ${hostelName}`],
+    [`Period: ${period} | ${filterLabel}`],
+    [],
+    ["Tenant", "Phone", "Room", "Plan", "Status", "Charged (Rs.)", "Paid (Rs.)", "Owed (Rs.)", "Deposit (Rs.)", "Last Payment"],
+    ...rows.map((r) => [
+      r.fullName,
+      r.phone ?? "",
+      r.roomNumber ? `Rm ${r.roomNumber}` : "",
+      r.packageLabel,
+      LEDGER_STATUS_LABELS[r.status] ?? r.status,
+      r.totalCharged,
+      r.totalPaid,
+      r.totalOwed,
+      r.securityDeposit,
+      fmtDate(r.lastPaymentDate),
+    ]),
+    [],
+    ["", "", "", "", "Total", totalCharged, totalPaid, totalOwed, totalDeposit, ""],
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(sheetRows);
+
+  const range = XLSX.utils.decode_range(ws["!ref"] ?? "A1");
+  const colWidths: number[] = [];
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+      if (!cell) continue;
+      const len = String(cell.v ?? "").length;
+      if (!colWidths[C] || colWidths[C] < len) colWidths[C] = len;
+    }
+  }
+  ws["!cols"] = colWidths.map((w) => ({ wch: Math.min(w + 2, 40) }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Member Ledger");
+
+  XLSX.writeFile(wb, `member-ledger-${period}.xlsx`);
 }

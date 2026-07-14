@@ -24,7 +24,7 @@ import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent } from "@/app/actions/tenants";
 
 interface Props {
   hostelId: string | null;
@@ -319,6 +319,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [checkoutPayDate, setCheckoutPayDate] = useState(formatDateInput(new Date()));
   const [checkoutPayMethod, setCheckoutPayMethod] = useState<string>("cash");
   const [checkoutNotes, setCheckoutNotes] = useState("");
+  const [checkoutDepositReturned, setCheckoutDepositReturned] = useState("");
   const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
   const [checkoutACReading, setCheckoutACReading] = useState("");
   const [checkoutACOpeningReading, setCheckoutACOpeningReading] = useState("");
@@ -628,6 +629,24 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     }
     if (!editing) newTenantId = (mutData as { id: string } | null)?.id ?? null;
 
+    // Log room/plan changes and deposit collection to the Member Ledger — best-effort,
+    // never blocks the save itself. `hms_tenants.room_id`/`package_tier` are overwritten
+    // in place above with no history kept, so this is the only place these are captured.
+    const ledgerTenantId = editing ? editing.id : newTenantId;
+    if (ledgerTenantId) {
+      if (editing && prevRoomId !== newRoomId) {
+        const oldRoomLabel = prevRoomId ? rooms.find((r) => r.id === prevRoomId)?.room_number ?? "Unknown" : "None";
+        const newRoomLabel = newRoomId ? rooms.find((r) => r.id === newRoomId)?.room_number ?? "Unknown" : "None";
+        logTenantEvent({ tenantId: ledgerTenantId, eventType: "room_changed", fromValue: oldRoomLabel, toValue: newRoomLabel });
+      }
+      if (editing && editing.package_tier !== payload.package_tier) {
+        logTenantEvent({ tenantId: ledgerTenantId, eventType: "plan_changed", fromValue: editing.package_tier ?? null, toValue: payload.package_tier });
+      }
+      if (!editing && payload.security_deposit > 0) {
+        logTenantEvent({ tenantId: ledgerTenantId, eventType: "deposit_collected", amount: payload.security_deposit });
+      }
+    }
+
     // Update room occupancy counts
     if (!editing && newRoomId) {
       // New active tenant — increment room occupied
@@ -701,6 +720,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutPayDate(formatDateInput(new Date()));
     setCheckoutPayMethod("cash");
     setCheckoutNotes("");
+    setCheckoutDepositReturned("");
     setCheckoutSubmitting(false);
     setCheckoutACReading("");
     setCheckoutACOpeningReading("");
@@ -719,6 +739,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutPendingPayment(null);
     setCheckoutPaymentError(null);
     setCheckoutPaymentLoading(true);
+    setCheckoutDepositReturned(t.security_deposit > 0 ? String(t.security_deposit) : "");
     setCheckoutACReading("");
     setCheckoutACOpeningReading("");
     setCheckoutACContext(null);
@@ -784,6 +805,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           }
         : undefined,
       ...(checkoutNotes.trim() ? { notes: checkoutNotes.trim() } : {}),
+      ...((checkingOut.security_deposit ?? 0) > 0 && checkoutDepositReturned.trim() !== ""
+        ? { depositReturned: Number(checkoutDepositReturned), depositNotes: checkoutNotes.trim() || undefined }
+        : {}),
       ...(acReadingNum !== undefined && Number.isFinite(acReadingNum) ? { acCheckoutReading: acReadingNum } : {}),
       ...(checkoutACContext?.prevMonthReading == null && checkoutACOpeningReading.trim() !== ""
         ? { acOpeningReading: Number(checkoutACOpeningReading) }
@@ -2328,12 +2352,28 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </>
                 )}
 
+                {/* Deposit return — logged to the Member Ledger */}
+                {(checkingOut?.security_deposit ?? 0) > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Amount returned to tenant (0 = forfeited)</p>
+                    <input
+                      type="number"
+                      min={0}
+                      max={checkingOut?.security_deposit ?? 0}
+                      value={checkoutDepositReturned}
+                      onChange={(e) => setCheckoutDepositReturned(e.target.value)}
+                      placeholder="0"
+                      className="h-8 w-full rounded-md border border-sidebar-border bg-transparent px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-amber/50"
+                    />
+                  </div>
+                )}
+
                 {/* Notes */}
                 <div className="pt-0.5">
                   <textarea
                     value={checkoutNotes}
                     onChange={(e) => setCheckoutNotes(e.target.value)}
-                    placeholder="Notes (optional) — e.g. deposit returned in cash, damage deducted, etc."
+                    placeholder="Notes (optional) — e.g. damage deducted, partial refund reason, etc."
                     rows={2}
                     className="w-full rounded-md border border-sidebar-border bg-transparent px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/40 resize-none"
                   />

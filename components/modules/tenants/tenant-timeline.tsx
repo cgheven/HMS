@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, FileText, Loader2 } from "lucide-react";
+import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, FileText, Loader2, ArrowLeftRight, Wallet } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -36,7 +36,7 @@ interface Props {
   onClose: () => void;
 }
 
-function EventIcon({ type }: { type: TimelineEvent["type"] }) {
+export function EventIcon({ type }: { type: TimelineEvent["type"] }) {
   switch (type) {
     case "joined":
       return <Home className="w-4 h-4 text-emerald-400" />;
@@ -46,6 +46,14 @@ function EventIcon({ type }: { type: TimelineEvent["type"] }) {
       return <LogOut className="w-4 h-4 text-rose-400" />;
     case "package_changed":
       return <AlertCircle className="w-4 h-4 text-blue-400" />;
+    case "room_changed":
+      return <ArrowLeftRight className="w-4 h-4 text-blue-400" />;
+    case "deposit_collected":
+      return <Wallet className="w-4 h-4 text-emerald-400" />;
+    case "deposit_returned":
+      return <Wallet className="w-4 h-4 text-blue-400" />;
+    case "deposit_forfeited":
+      return <Wallet className="w-4 h-4 text-rose-400" />;
     case "pending":
       return <Clock className="w-4 h-4 text-amber/70" />;
     case "status_change":
@@ -54,12 +62,16 @@ function EventIcon({ type }: { type: TimelineEvent["type"] }) {
   }
 }
 
-function eventDotColor(type: TimelineEvent["type"]): string {
+export function eventDotColor(type: TimelineEvent["type"]): string {
   switch (type) {
     case "joined":        return "bg-emerald-500 border-emerald-400";
     case "payment":       return "bg-emerald-600 border-emerald-400";
     case "check_out":     return "bg-rose-500 border-rose-400";
     case "package_changed": return "bg-blue-500 border-blue-400";
+    case "room_changed":  return "bg-blue-500 border-blue-400";
+    case "deposit_collected": return "bg-emerald-600 border-emerald-400";
+    case "deposit_returned":  return "bg-blue-500 border-blue-400";
+    case "deposit_forfeited": return "bg-rose-500 border-rose-400";
     case "pending":       return "bg-amber/30 border-amber/50";
     case "status_change":
     default:              return "bg-amber border-amber/60";
@@ -247,7 +259,7 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
                         <p className="text-xs text-muted-foreground whitespace-nowrap">
                           {formatDate(event.date)}
                         </p>
-                        {(event.type === "payment" || event.type === "pending") && event.paymentId && (
+                        {event.type === "payment" && event.paymentId && (
                           <button
                             type="button"
                             title="View Receipt"

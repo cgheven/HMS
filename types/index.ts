@@ -298,6 +298,23 @@ export interface CheckoutInput {
   notes?: string;
   acCheckoutReading?: number;
   acOpeningReading?: number;
+  /** Amount of the security deposit actually handed back to the tenant. 0 = fully forfeited. Omit to skip logging. */
+  depositReturned?: number;
+  depositNotes?: string;
+}
+
+export type TenantEventType = "room_changed" | "plan_changed" | "deposit_collected" | "deposit_returned" | "deposit_forfeited";
+
+export interface TenantEvent {
+  id: string;
+  tenant_id: string;
+  hostel_id: string;
+  event_type: TenantEventType;
+  from_value: string | null;
+  to_value: string | null;
+  amount: number | null;
+  notes: string | null;
+  created_at: string;
 }
 
 export interface ACCheckoutReading {
