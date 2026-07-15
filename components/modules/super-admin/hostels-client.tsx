@@ -4,21 +4,28 @@ import { useState, useTransition, useMemo } from "react";
 import {
   Building2, Plus, Search, RefreshCw, Users, Home,
   GitBranch, Trash2, Copy, Check, MessageCircle, AlertTriangle,
+  Wallet, CheckCircle2, Clock, Zap, Download, Pencil,
 } from "lucide-react";
 import {
   listAllHostels, createHostelForClient, addBranchToOwner,
   deleteHostel, deleteClient, type SuperHostelRow,
 } from "@/app/actions/super-admin";
+import {
+  getClientBilling, setClientBilling, generateInvoiceNow, markInvoiceStatus, updateInvoiceAmount,
+} from "@/app/actions/client-billing";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { cn } from "@/lib/utils";
+import { cn, formatCurrency, formatDate } from "@/lib/utils";
+import { calculateAnnualPrice } from "@/lib/pricing";
+import type { ClientBilling, PlatformInvoice } from "@/types";
 
 const emptyOwner = { ownerEmail: "", ownerName: "", ownerPhone: "" };
 
@@ -138,6 +145,159 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     });
   }
 
+  // ── Billing ────────────────────────────────────────────────────────────────
+  const [billingTarget, setBillingTarget] = useState<{ ownerId: string; ownerName: string } | null>(null);
+  const [billingBranchCount, setBillingBranchCount] = useState(1);
+  const [billingLoading, setBillingLoading] = useState(false);
+  const [billing, setBilling] = useState<ClientBilling | null>(null);
+  const [invoices, setInvoices] = useState<PlatformInvoice[]>([]);
+  const [ownerPhone, setOwnerPhone] = useState<string | null>(null);
+  const [billingForm, setBillingForm] = useState({
+    cycle: "annual" as "monthly" | "annual",
+    price: "",
+    notes: "",
+    startDate: new Date().toISOString().slice(0, 10),
+  });
+
+  async function openBilling(ownerId: string, ownerName: string, branches: number) {
+    setBillingTarget({ ownerId, ownerName });
+    setBillingBranchCount(branches);
+    setBillingLoading(true);
+    const res = await getClientBilling(ownerId);
+    if (res.error) {
+      toast({ title: "Error", description: res.error, variant: "destructive" });
+    } else {
+      setBilling(res.billing ?? null);
+      setInvoices(res.invoices ?? []);
+      setOwnerPhone(res.ownerPhone ?? null);
+      setBillingForm({
+        cycle: res.billing?.billing_cycle ?? "annual",
+        price: res.billing?.custom_price != null ? String(res.billing.custom_price) : "",
+        notes: res.billing?.pricing_notes ?? "",
+        startDate: res.billing?.next_invoice_date ?? new Date().toISOString().slice(0, 10),
+      });
+    }
+    setBillingLoading(false);
+  }
+
+  function handleSaveBilling() {
+    if (!billingTarget) return;
+    const price = parseFloat(billingForm.price);
+    if (!price || price <= 0) {
+      toast({ title: "Enter a valid price", variant: "destructive" });
+      return;
+    }
+    startTransition(async () => {
+      const res = await setClientBilling({
+        ownerId: billingTarget.ownerId,
+        billingCycle: billingForm.cycle,
+        customPrice: price,
+        pricingNotes: billingForm.notes,
+        nextInvoiceDate: billingForm.startDate,
+      });
+      if (res.error) {
+        toast({ title: "Failed to save", description: res.error, variant: "destructive" });
+      } else {
+        toast({ title: "Billing saved" });
+        openBilling(billingTarget.ownerId, billingTarget.ownerName, billingBranchCount);
+      }
+    });
+  }
+
+  function handleGenerateInvoice() {
+    if (!billingTarget) return;
+    const price = parseFloat(billingForm.price);
+    if (!price || price <= 0) {
+      toast({ title: "Enter a valid price", variant: "destructive" });
+      return;
+    }
+    startTransition(async () => {
+      // Save whatever's currently typed FIRST — otherwise this would silently generate
+      // using the last-saved price and discard any unsaved edit in the price field.
+      const saveRes = await setClientBilling({
+        ownerId: billingTarget.ownerId,
+        billingCycle: billingForm.cycle,
+        customPrice: price,
+        pricingNotes: billingForm.notes,
+        nextInvoiceDate: billingForm.startDate,
+      });
+      if (saveRes.error) {
+        toast({ title: "Failed to save", description: saveRes.error, variant: "destructive" });
+        return;
+      }
+      const res = await generateInvoiceNow(billingTarget.ownerId);
+      if (res.error) {
+        toast({ title: "Failed", description: res.error, variant: "destructive" });
+      } else if (!res.generated) {
+        toast({ title: "Not generated", description: res.reason });
+      } else {
+        toast({ title: "Saved and invoice generated" });
+        openBilling(billingTarget.ownerId, billingTarget.ownerName, billingBranchCount);
+      }
+    });
+  }
+
+  function invoicePricingInfo(inv: PlatformInvoice) {
+    const actualAnnual = inv.billing_cycle === "annual" ? Number(inv.amount) : Number(inv.amount) * 12;
+    const discount = Math.max(0, Number(inv.standard_annual_price) - actualAnnual);
+    const discountPct = Number(inv.standard_annual_price) > 0 ? (discount / Number(inv.standard_annual_price)) * 100 : 0;
+    return { actualAnnual, discount, discountPct };
+  }
+
+  // ── Correct an already-generated but unpaid invoice's amount ──────────────
+  const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
+  const [editingAmount, setEditingAmount] = useState("");
+
+  function startEditInvoice(inv: PlatformInvoice) {
+    setEditingInvoiceId(inv.id);
+    setEditingAmount(String(inv.amount));
+  }
+
+  function handleSaveInvoiceAmount(invoiceId: string) {
+    const amount = parseFloat(editingAmount);
+    if (!amount || amount <= 0) {
+      toast({ title: "Enter a valid amount", variant: "destructive" });
+      return;
+    }
+    if (!billingTarget) return;
+    startTransition(async () => {
+      const res = await updateInvoiceAmount(invoiceId, amount);
+      if (res.error) {
+        toast({ title: "Failed", description: res.error, variant: "destructive" });
+      } else {
+        toast({ title: "Invoice updated" });
+        setEditingInvoiceId(null);
+        openBilling(billingTarget.ownerId, billingTarget.ownerName, billingBranchCount);
+      }
+    });
+  }
+
+  function shareInvoiceWhatsApp(inv: PlatformInvoice) {
+    const url = `${window.location.origin}/invoice/${inv.share_token}`;
+    const msg =
+      `Assalam o Alaikum! Here's your Pulse invoice for *${inv.period_label}*:\n` +
+      `Amount: ${formatCurrency(inv.amount)}\n` +
+      `Due: ${formatDate(inv.due_date)}\n\n` +
+      `${url}`;
+    const phone = (ownerPhone ?? "").replace(/\D/g, "");
+    const waUrl = phone
+      ? `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`
+      : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+    window.open(waUrl, "_blank");
+  }
+
+  function handleToggleInvoiceStatus(invoiceId: string, current: PlatformInvoice["status"]) {
+    if (!billingTarget) return;
+    startTransition(async () => {
+      const res = await markInvoiceStatus(invoiceId, current === "paid" ? "unpaid" : "paid");
+      if (res.error) {
+        toast({ title: "Failed", description: res.error, variant: "destructive" });
+      } else {
+        openBilling(billingTarget.ownerId, billingTarget.ownerName, billingBranchCount);
+      }
+    });
+  }
+
   // ── Shared ─────────────────────────────────────────────────────────────────
   async function refresh() {
     setLoading(true);
@@ -173,6 +333,23 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     }
     return Array.from(map.values());
   }, [filtered]);
+
+  // Live discount-vs-standard-price preview while setting a client's billing —
+  // so it's visible before saving, not just after generating an invoice PDF.
+  const billingPreview = useMemo(() => {
+    const enteredPrice = parseFloat(billingForm.price);
+    if (!enteredPrice || enteredPrice <= 0) return null;
+    const standardAnnual = calculateAnnualPrice(billingBranchCount);
+    const actualAnnual = billingForm.cycle === "annual" ? enteredPrice : enteredPrice * 12;
+    const discount = Math.max(0, standardAnnual - actualAnnual);
+    const discountPct = standardAnnual > 0 ? (discount / standardAnnual) * 100 : 0;
+    return {
+      standardAnnual, actualAnnual, discount, discountPct,
+      standardMonthly: standardAnnual / 12,
+      actualMonthly: actualAnnual / 12,
+      discountMonthly: discount / 12,
+    };
+  }, [billingForm.price, billingForm.cycle, billingBranchCount]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -251,14 +428,23 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                         <p className="font-semibold text-sm truncate">{owner.owner_name ?? "—"}</p>
                         <p className="text-xs text-muted-foreground truncate mt-0.5">{owner.owner_email}</p>
                       </div>
-                      {/* Delete client */}
-                      <button
-                        onClick={() => setDeleteTarget({ type: "client", id: owner.owner_id, name: owner.owner_name ?? owner.owner_email })}
-                        className="p-1.5 rounded-lg text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors shrink-0"
-                        title="Delete client"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => openBilling(owner.owner_id, owner.owner_name ?? owner.owner_email, rows.length)}
+                          className="p-1.5 rounded-lg text-muted-foreground hover:text-amber hover:bg-amber/10 transition-colors"
+                          title="Billing"
+                        >
+                          <Wallet className="w-3.5 h-3.5" />
+                        </button>
+                        {/* Delete client */}
+                        <button
+                          onClick={() => setDeleteTarget({ type: "client", id: owner.owner_id, name: owner.owner_name ?? owner.owner_email })}
+                          className="p-1.5 rounded-lg text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                          title="Delete client"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                     <div className="flex items-center gap-3 mt-2">
                       <span className="text-[11px] text-muted-foreground">{rows.length} branch{rows.length !== 1 ? "es" : ""}</span>
@@ -471,6 +657,213 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
             <Button variant="destructive" onClick={handleDelete} disabled={isPending} className="gap-2">
               <Trash2 className="w-4 h-4" />{isPending ? "Deleting…" : "Delete"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Billing Dialog ── */}
+      <Dialog open={!!billingTarget} onOpenChange={o => !o && setBillingTarget(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Wallet className="w-4 h-4 text-amber" /> Billing</DialogTitle>
+            <DialogDescription>{billingTarget?.ownerName}</DialogDescription>
+          </DialogHeader>
+
+          {billingLoading ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">Loading…</div>
+          ) : (
+            <div className="space-y-5 py-2">
+              <div className="grid gap-3">
+                <div className="space-y-1.5">
+                  <Label>Billing Cycle</Label>
+                  <div className="flex gap-2">
+                    {(["annual", "monthly"] as const).map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setBillingForm(f => ({ ...f, cycle: c }))}
+                        className={cn(
+                          "flex-1 h-9 rounded-lg border text-sm font-medium capitalize transition-colors",
+                          billingForm.cycle === c
+                            ? "border-amber bg-amber/10 text-amber"
+                            : "border-sidebar-border text-muted-foreground hover:bg-white/5"
+                        )}
+                      >
+                        {c}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Price per {billingForm.cycle === "monthly" ? "month" : "year"} (PKR)</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      placeholder="60000"
+                      value={billingForm.price}
+                      onChange={e => setBillingForm(f => ({ ...f, price: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Billing Start Date</Label>
+                    <Input
+                      type="date"
+                      value={billingForm.startDate}
+                      onChange={e => setBillingForm(f => ({ ...f, startDate: e.target.value }))}
+                    />
+                  </div>
+                </div>
+                <p className="text-[11px] text-muted-foreground -mt-2">
+                  The next invoice generated (manually or by the daily job) will cover the {billingForm.cycle} starting from this date — set it to when the client actually started, not necessarily today.
+                </p>
+
+                {billingPreview && (
+                  <div className="rounded-lg border border-sidebar-border bg-muted/20 p-3 space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">Standard price ({billingBranchCount} branch{billingBranchCount !== 1 ? "es" : ""})</span>
+                      <span className="font-medium">
+                        {formatCurrency(billingPreview.standardAnnual)}/yr
+                        <span className="text-muted-foreground font-normal"> ({formatCurrency(billingPreview.standardMonthly)}/mo)</span>
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">This client's price</span>
+                      <span className="font-medium">
+                        {formatCurrency(billingPreview.actualAnnual)}/yr
+                        <span className="text-muted-foreground font-normal"> ({formatCurrency(billingPreview.actualMonthly)}/mo)</span>
+                      </span>
+                    </div>
+                    {billingPreview.discount > 0 ? (
+                      <div className="flex items-center justify-between text-xs pt-1 border-t border-sidebar-border/60">
+                        <span className="text-amber font-semibold">Discount you're giving</span>
+                        <span className="text-amber font-semibold">
+                          {formatCurrency(billingPreview.discount)}/yr ({formatCurrency(billingPreview.discountMonthly)}/mo) · {billingPreview.discountPct.toFixed(0)}%
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between text-xs pt-1 border-t border-sidebar-border/60">
+                        <span className="text-emerald-400 font-semibold">No discount — full standard price</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="space-y-1.5">
+                  <Label>Notes</Label>
+                  <Textarea
+                    placeholder="e.g. Early adopter, discounted for first year"
+                    value={billingForm.notes}
+                    onChange={e => setBillingForm(f => ({ ...f, notes: e.target.value }))}
+                    className="min-h-16"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Button onClick={handleSaveBilling} disabled={isPending} className="flex-1 gap-2">
+                    <Check className="w-4 h-4" /> Save
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={handleGenerateInvoice}
+                    disabled={isPending || !billing?.custom_price}
+                    className="flex-1 gap-2"
+                  >
+                    <Zap className="w-4 h-4" /> Generate Invoice Now
+                  </Button>
+                </div>
+              </div>
+
+              <div className="h-px bg-sidebar-border" />
+
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Invoice History</p>
+                {invoices.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-4 text-center">No invoices yet.</p>
+                ) : (
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                    {invoices.map((inv) => {
+                      const { actualAnnual, discount, discountPct } = invoicePricingInfo(inv);
+                      return (
+                      <div key={inv.id} className="flex items-center justify-between gap-2 rounded-lg border border-sidebar-border px-3 py-2">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium">{inv.period_label}</p>
+                          {editingInvoiceId === inv.id ? (
+                            <div className="flex items-center gap-1.5 mt-1">
+                              <Input
+                                type="number"
+                                min={0}
+                                autoFocus
+                                value={editingAmount}
+                                onChange={e => setEditingAmount(e.target.value)}
+                                onKeyDown={e => e.key === "Enter" && handleSaveInvoiceAmount(inv.id)}
+                                className="h-7 w-28 text-xs"
+                              />
+                              <Button size="sm" className="h-7 px-2" disabled={isPending} onClick={() => handleSaveInvoiceAmount(inv.id)}>
+                                <Check className="w-3 h-3" />
+                              </Button>
+                              <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setEditingInvoiceId(null)}>
+                                Cancel
+                              </Button>
+                            </div>
+                          ) : (
+                            <>
+                              <p className="text-[11px] text-muted-foreground">Due {formatDate(inv.due_date)} · {formatCurrency(inv.amount)}</p>
+                              <p className="text-[11px] text-muted-foreground">
+                                {formatCurrency(actualAnnual)}/yr ({inv.branch_count} branch{inv.branch_count !== 1 ? "es" : ""})
+                                {discount > 0 && <span className="text-amber"> · {discountPct.toFixed(0)}% discount ({formatCurrency(discount)}/yr)</span>}
+                              </p>
+                            </>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {inv.status === "unpaid" && editingInvoiceId !== inv.id && (
+                            <button
+                              onClick={() => startEditInvoice(inv)}
+                              className="p-1.5 rounded-lg border border-sidebar-border text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                              title="Correct amount"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => window.open(`${window.location.origin}/invoice/${inv.share_token}`, "_blank")}
+                            className="p-1.5 rounded-lg border border-sidebar-border text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+                            title="Download PDF"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => shareInvoiceWhatsApp(inv)}
+                            className="p-1.5 rounded-lg border border-[#25D366]/30 text-[#25D366] hover:bg-[#25D366]/10 transition-colors"
+                            title="Share on WhatsApp"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleToggleInvoiceStatus(inv.id, inv.status)}
+                            disabled={isPending}
+                            className={cn(
+                              "inline-flex items-center gap-1 whitespace-nowrap px-2 py-1 rounded-full text-xs font-medium border transition-colors",
+                              inv.status === "paid"
+                                ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/20"
+                                : "text-amber bg-amber/10 border-amber/20 hover:bg-amber/20"
+                            )}
+                          >
+                            {inv.status === "paid" ? <CheckCircle2 className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+                            {inv.status === "paid" ? "Paid" : "Unpaid"}
+                          </button>
+                        </div>
+                      </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBillingTarget(null)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

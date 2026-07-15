@@ -6,6 +6,7 @@ import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
   Employee, SalaryPayment, PackageConfig, PackageTier, UpcomingVacancy,
+  ClientBilling, PlatformInvoice,
 } from "@/types";
 
 // React cache() deduplicates within the same server request.
@@ -207,6 +208,28 @@ export async function getDashboardData() {
   };
 
   return { hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters, upcomingVacancies };
+}
+
+// Account-level (not per-branch) — billing follows the owner, not the active hostel,
+// so this deliberately does NOT depend on ctx.hostelId / the branch switcher.
+export async function getOwnerBilling() {
+  const ctx = await getAuthContext();
+  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[] };
+  const { supabase, user } = ctx;
+
+  const [{ data: billing }, { data: invoices }] = await Promise.all([
+    supabase.from("hms_client_billing").select("*").eq("owner_id", user.id).maybeSingle(),
+    supabase
+      .from("hms_platform_invoices")
+      .select("*")
+      .eq("owner_id", user.id)
+      .order("period_start", { ascending: false }),
+  ]);
+
+  return {
+    billing: (billing as ClientBilling | null) ?? null,
+    invoices: (invoices ?? []) as PlatformInvoice[],
+  };
 }
 
 export async function getRooms() {

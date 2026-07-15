@@ -604,6 +604,34 @@ export interface PlatformLead {
   sales_rep?: { id: string; name: string } | null;
 }
 
+export interface ClientBilling {
+  owner_id: string;
+  billing_cycle: "monthly" | "annual";
+  custom_price: number | null;
+  pricing_notes: string | null;
+  next_invoice_date: string | null;
+  updated_at: string;
+}
+
+export interface PlatformInvoice {
+  id: string;
+  owner_id: string;
+  amount: number;
+  billing_cycle: "monthly" | "annual";
+  period_label: string;
+  period_start: string;
+  period_end: string;
+  due_date: string;
+  status: "unpaid" | "paid" | "cancelled";
+  paid_at: string | null;
+  marked_paid_by: string | null;
+  notes: string | null;
+  created_at: string;
+  share_token: string;
+  branch_count: number;
+  standard_annual_price: number;
+}
+
 export interface LeadActivity {
   id: string;
   lead_id: string;
