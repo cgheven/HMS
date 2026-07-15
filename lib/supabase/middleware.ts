@@ -43,6 +43,7 @@ export async function updateSession(request: NextRequest) {
     isSalesLogin ||
     pathname.startsWith("/find") ||
     pathname.startsWith("/onboarding") ||
+    pathname.startsWith("/guide") ||
     pathname.startsWith("/join/") ||
     pathname.startsWith("/r/") ||
     pathname.startsWith("/partner/login") ||
