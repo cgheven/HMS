@@ -1,11 +1,13 @@
+import Link from "next/link";
 import {
   BedDouble, Wallet, TrendingDown, Banknote,
   Clock, CheckCircle2, FileWarning, ChefHat, Users, UserCog, ShieldCheck, Snowflake,
+  CalendarClock,
 } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { ExpenseChartClient as ExpenseChart } from "./expense-chart-client";
-import type { DashboardStats, Bill, Defaulter } from "@/types";
+import type { DashboardStats, Bill, Defaulter, UpcomingVacancy } from "@/types";
 
 interface Props {
   data: {
@@ -14,6 +16,7 @@ interface Props {
     upcomingBills: Bill[];
     monthlyData: { month: string; expenses: number; kitchen: number; collected: number }[];
     defaulters: Defaulter[];
+    upcomingVacancies: UpcomingVacancy[];
   } | null;
 }
 
@@ -27,7 +30,7 @@ export function DashboardClient({ data }: Props) {
     );
   }
 
-  const { stats, upcomingBills, monthlyData, defaulters } = data;
+  const { stats, upcomingBills, monthlyData, defaulters, upcomingVacancies } = data;
   const isProfit = stats.net_profit >= 0;
   const monthlyExpected = stats.monthly_collected + stats.monthly_uncollected;
   const collectionRate = monthlyExpected > 0
@@ -243,6 +246,50 @@ export function DashboardClient({ data }: Props) {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ── Upcoming Vacancies (only if any notices on file) ── */}
+      {upcomingVacancies.length > 0 && (
+        <div className="rounded-2xl border border-sidebar-border bg-card p-6 animate-fade-up animate-delay-400">
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <CalendarClock className="w-4 h-4 text-blue-400" />
+                Upcoming Vacancies
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">Seats becoming free — plan re-letting</p>
+            </div>
+            <Badge variant="secondary" className="text-xs tabular-nums">{upcomingVacancies.length}</Badge>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {upcomingVacancies.slice(0, 5).map((v, i) => (
+              <div
+                key={v.id}
+                className="flex items-center gap-3 rounded-xl bg-white/[0.03] border border-white/5 px-3 py-2.5 animate-fade-up"
+                style={{ animationDelay: `${400 + i * 60}ms` }}
+              >
+                <div className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-500/10 border border-blue-500/20 shrink-0">
+                  <span className="text-xs font-bold text-blue-400">{v.name.charAt(0).toUpperCase()}</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-foreground truncate">{v.name}</p>
+                  <p className="text-xs text-muted-foreground">{v.roomNumber ? `Rm ${v.roomNumber}` : "No room"}</p>
+                </div>
+                <p className="text-xs font-semibold text-foreground shrink-0 text-right">
+                  {v.intendedCheckoutDate ? formatDate(v.intendedCheckoutDate) : "—"}
+                </p>
+              </div>
+            ))}
+          </div>
+          {upcomingVacancies.length > 5 && (
+            <Link
+              href="/tenants"
+              className="mt-3 inline-block text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              +{upcomingVacancies.length - 5} more — view all in Tenants
+            </Link>
+          )}
         </div>
       )}
     </div>

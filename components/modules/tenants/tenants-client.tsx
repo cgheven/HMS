@@ -40,6 +40,7 @@ interface Props {
   foodAddonRates?: FoodAddonRates;
   foodMonthlyRate?: number;
   noticePeriodDays?: number;
+  currentMonthPaymentByTenant?: Record<string, { status: string; remaining: number }>;
 }
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
@@ -193,6 +194,7 @@ interface TenantRowProps {
   roomMap: Record<string, Room>;
   foodAddonRates: FoodAddonRates;
   noticePeriodDays?: number;
+  currentMonthPaymentByTenant?: Record<string, { status: string; remaining: number }>;
   onTimeline: (t: Tenant) => void;
   onCheckout: (t: Tenant) => void;
   onActivate: (t: Tenant) => void;
@@ -201,7 +203,7 @@ interface TenantRowProps {
   onGiveNotice?: (t: Tenant) => void;
 }
 
-function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foodAddonRates, noticePeriodDays = 30, onTimeline, onCheckout, onActivate, onEdit, onDelete, onGiveNotice }: TenantRowProps) {
+function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, onTimeline, onCheckout, onActivate, onEdit, onDelete, onGiveNotice }: TenantRowProps) {
   const room = t.room_id ? roomMap[t.room_id] : null;
   const foodCharge = calcFoodAddonCharge(t, foodAddonRates);
   const initials = t.full_name[0].toUpperCase();
@@ -230,7 +232,7 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
           <Badge variant="secondary" className="text-xs capitalize shrink-0">{t.type}</Badge>
           {t.billing_type === "daily" && <Badge variant="warning" className="text-xs shrink-0">Daily</Badge>}
         </div>
-        <div className="flex flex-wrap gap-x-2 gap-y-0 mt-0.5 items-center">
+        <div className="flex flex-wrap gap-x-2 gap-y-1 mt-0.5 items-center">
           {room && (
             <span className="text-xs text-muted-foreground whitespace-nowrap">
               Rm {room.room_number}{t.bed_number ? ` · ${t.bed_number}` : ""}
@@ -258,21 +260,33 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
           )}
           {t.intended_checkout_date && (() => {
             const daysNotice = computeDaysNotice(t);
-            if (daysNotice == null) return null;
-            const adequate = daysNotice >= noticePeriodDays;
+            const adequate = daysNotice != null && daysNotice >= noticePeriodDays;
+            const duePayment = currentMonthPaymentByTenant?.[t.id];
+            const showDueChip = !!duePayment
+              && ["pending", "overdue", "partially_paid"].includes(duePayment.status)
+              && duePayment.remaining > 0;
             return (
-              <span
-                className={cn(
-                  "inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border",
-                  adequate
-                    ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                    : "text-amber bg-amber/10 border-amber/20"
+              <>
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border",
+                    adequate
+                      ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                      : "text-amber bg-amber/10 border-amber/20"
+                  )}
+                  title={`Leaving ${formatDate(t.intended_checkout_date)}`}
+                >
+                  <CalendarClock className="w-2.5 h-2.5" />
+                  {t.notice_given_date && <>Notice {formatDate(t.notice_given_date)} →{" "}</>}
+                  Leaving {formatDate(t.intended_checkout_date)}
+                  {daysNotice != null && <span className="opacity-80">({daysNotice}d {adequate ? "✓" : "⚠"})</span>}
+                </span>
+                {showDueChip && (
+                  <span className="inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border text-rose-400 bg-rose-500/10 border-rose-500/20">
+                    ⚠ {formatCurrency(duePayment!.remaining)} due
+                  </span>
                 )}
-                title={`Leaving ${formatDate(t.intended_checkout_date)}`}
-              >
-                <CalendarClock className="w-2.5 h-2.5" />
-                {daysNotice}d notice {adequate ? "✓" : "⚠ short"}
-              </span>
+              </>
             );
           })()}
         </div>
@@ -349,7 +363,7 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
 
 // ---------------------------------------------------------------------------
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30 }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, currentMonthPaymentByTenant = {} }: Props) {
   const [active, setActive] = useState(initialActive);
   const [waiting, setWaiting] = useState(initialWaiting);
   const [checkedOut, setCheckedOut] = useState(initialCheckedOut);
@@ -1287,6 +1301,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   roomMap={roomMap}
                   foodAddonRates={foodAddonRates}
                   noticePeriodDays={noticePeriodDays}
+                  currentMonthPaymentByTenant={currentMonthPaymentByTenant}
                   onTimeline={setTimelineTenant}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
@@ -1316,6 +1331,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       key={t.id} t={t} showActivate
                       roomMap={roomMap}
                       foodAddonRates={foodAddonRates}
+                      noticePeriodDays={noticePeriodDays}
+                      currentMonthPaymentByTenant={currentMonthPaymentByTenant}
                       onTimeline={setTimelineTenant}
                       onCheckout={openCheckout}
                       onActivate={(tenant) => openEdit(tenant, true)}
@@ -1409,6 +1426,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   key={t.id} t={t}
                   roomMap={roomMap}
                   foodAddonRates={foodAddonRates}
+                  noticePeriodDays={noticePeriodDays}
+                  currentMonthPaymentByTenant={currentMonthPaymentByTenant}
                   onTimeline={setTimelineTenant}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}

@@ -5,7 +5,7 @@ import { getMonthRange, formatDateInput } from "@/lib/utils";
 import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
-  Employee, SalaryPayment, PackageConfig, PackageTier,
+  Employee, SalaryPayment, PackageConfig, PackageTier, UpcomingVacancy,
 } from "@/types";
 
 // React cache() deduplicates within the same server request.
@@ -112,7 +112,9 @@ export async function getDashboardData() {
     pendingPaymentsRes, allPayments6moRes, acReadingsRes,
   ] = await Promise.all([
     supabase.from("hms_rooms").select("status,monthly_rent").eq("hostel_id", hostelId),
-    supabase.from("hms_tenants").select("monthly_rent,security_deposit").eq("hostel_id", hostelId).eq("is_active", true).eq("is_waiting", false),
+    supabase.from("hms_tenants")
+      .select("id, full_name, monthly_rent, security_deposit, notice_given_date, intended_checkout_date, room:hms_rooms(room_number)")
+      .eq("hostel_id", hostelId).eq("is_active", true).eq("is_waiting", false),
     supabase.from("hms_expenses").select("amount").eq("hostel_id", hostelId).gte("date", start).lte("date", end),
     supabase.from("hms_kitchen_expenses").select("amount").eq("hostel_id", hostelId).gte("date", start).lte("date", end),
     supabase.from("hms_bills").select("id,hostel_id,title,category,amount,due_date,paid_date,status,notes,created_at").eq("hostel_id", hostelId).neq("status", "paid").order("due_date").limit(5),
@@ -154,6 +156,27 @@ export async function getDashboardData() {
     status: p.status,
   }));
 
+  type ActiveTenantRow = {
+    id: string;
+    full_name: string;
+    monthly_rent: unknown;
+    security_deposit: unknown;
+    notice_given_date: string | null;
+    intended_checkout_date: string | null;
+    room: { room_number: string } | null;
+  };
+  const activeTenantRows = ((tenants.data ?? []) as unknown) as ActiveTenantRow[];
+  const upcomingVacancies: UpcomingVacancy[] = activeTenantRows
+    .filter((t) => t.intended_checkout_date != null)
+    .sort((a, b) => (a.intended_checkout_date as string).localeCompare(b.intended_checkout_date as string))
+    .map((t) => ({
+      id: t.id,
+      name: t.full_name,
+      roomNumber: t.room?.room_number ?? null,
+      noticeGivenDate: t.notice_given_date,
+      intendedCheckoutDate: t.intended_checkout_date,
+    }));
+
   const allPayments6mo = allPayments6moRes.data ?? [];
 
   const monthlyData = ranges.map(({ month, monthKey, start: s, end: e }) => ({
@@ -183,7 +206,7 @@ export async function getDashboardData() {
     monthly_ac_units: monthlyACUnits,
   };
 
-  return { hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters };
+  return { hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters, upcomingVacancies };
 }
 
 export async function getRooms() {
@@ -202,17 +225,30 @@ export async function getTenants() {
       foodAddonRates: { food_breakfast_rate: 0, food_lunch_rate: 0, food_dinner_rate: 0, food_all_meals_rate: 0 },
       foodMonthlyRate: 0,
       noticePeriodDays: 30,
+      currentMonthPaymentByTenant: {} as Record<string, { status: string; remaining: number }>,
     };
   }
   const { supabase, hostelId } = ctx;
+  const now = new Date();
+  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-  const [{ data: tenants }, { data: rooms }, packageConfig] = await Promise.all([
+  const [{ data: tenants }, { data: rooms }, packageConfig, { data: currentMonthPayments }] = await Promise.all([
     supabase.from("hms_tenants").select("*").eq("hostel_id", hostelId).order("created_at", { ascending: false }),
     supabase.from("hms_rooms").select("*").eq("hostel_id", hostelId).order("room_number"),
     getPackageConfig(hostelId),
+    supabase.from("hms_payments").select("tenant_id,status,amount,amount_paid").eq("hostel_id", hostelId).eq("for_month", currentMonthKey),
   ]);
 
   const all = (tenants ?? []) as Tenant[];
+  const currentMonthPaymentByTenant: Record<string, { status: string; remaining: number }> = {};
+  for (const p of currentMonthPayments ?? []) {
+    if (!p.tenant_id) continue;
+    currentMonthPaymentByTenant[p.tenant_id] = {
+      status: p.status,
+      remaining: Math.max(0, Number(p.amount) - Number(p.amount_paid ?? 0)),
+    };
+  }
+
   return {
     hostelId,
     active: all.filter((t) => t.is_active && !t.is_waiting),
@@ -227,6 +263,7 @@ export async function getTenants() {
     },
     foodMonthlyRate: Number(packageConfig?.food_monthly_rate ?? 0),
     noticePeriodDays: Number(packageConfig?.notice_period_days ?? 30),
+    currentMonthPaymentByTenant,
   };
 }
 

@@ -440,6 +440,14 @@ export interface Defaulter {
   status: string;
 }
 
+export interface UpcomingVacancy {
+  id: string;
+  name: string;
+  roomNumber: string | null;
+  noticeGivenDate: string | null;
+  intendedCheckoutDate: string | null;
+}
+
 export interface RevenueMonth {
   month: string;
   monthKey: string;
