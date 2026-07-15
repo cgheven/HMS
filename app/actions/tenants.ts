@@ -19,6 +19,8 @@ async function resolveHostelId(): Promise<string> {
   return ctx.hostelId;
 }
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 // ---------------------------------------------------------------------------
 // uploadTenantPhoto
 // ---------------------------------------------------------------------------
@@ -294,6 +296,8 @@ export type TimelineEventType =
   | "deposit_collected"
   | "deposit_returned"
   | "deposit_forfeited"
+  | "notice_given"
+  | "notice_cancelled"
   | "check_out"
   | "status_change"
   | "pending"
@@ -593,6 +597,22 @@ export async function getTenantTimeline(
           sub: e.notes ?? undefined,
           amount: e.amount != null ? Number(e.amount) : undefined,
         });
+      } else if (e.event_type === "notice_given") {
+        events.push({
+          id: `event-${e.id}`,
+          type: "notice_given",
+          date: e.created_at,
+          label: "Notice given",
+          sub: e.to_value ? `Intends to check out on ${e.to_value}` : undefined,
+        });
+      } else if (e.event_type === "notice_cancelled") {
+        events.push({
+          id: `event-${e.id}`,
+          type: "notice_cancelled",
+          date: e.created_at,
+          label: "Notice cancelled",
+          sub: e.from_value ? `Was intending to check out on ${e.from_value}` : undefined,
+        });
       }
     }
 
@@ -603,6 +623,8 @@ export async function getTenantTimeline(
       deposit_collected: 1,
       room_changed: 2,
       package_changed: 2,
+      notice_given: 2,
+      notice_cancelled: 2,
       payment: 3,
       partially_paid: 3,
       pending: 4,
@@ -943,6 +965,97 @@ export async function logTenantEvent(input: {
 }
 
 // ---------------------------------------------------------------------------
+// giveTenantNoticeAction / cancelTenantNoticeAction
+// Records that a tenant has told the owner they're leaving, and the date
+// they intend to check out — reused later to pre-fill the actual checkout
+// dialog. No penalty/reminder logic; this only tracks the dates.
+// ---------------------------------------------------------------------------
+
+export async function giveTenantNoticeAction(
+  tenantId: string,
+  intendedCheckoutDate: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await requireOwnerOrAbove();
+    const hostelId = await resolveHostelId();
+    const adminDb = createAdminClient();
+
+    if (!DATE_RE.test(intendedCheckoutDate)) throw new Error("Invalid date format");
+    const dateObj = new Date(intendedCheckoutDate + "T00:00:00");
+    if (isNaN(dateObj.getTime())) throw new Error("Invalid date");
+    const today = new Date().toISOString().slice(0, 10);
+    if (intendedCheckoutDate < today) throw new Error("Intended checkout date cannot be in the past");
+
+    const { data: tenant, error: tenantErr } = await adminDb
+      .from("hms_tenants")
+      .select("id, is_active")
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+      .single();
+    if (tenantErr || !tenant) throw new Error("Tenant not found or access denied");
+    if (!tenant.is_active) throw new Error("Tenant is not active");
+
+    const noticeGivenDate = today;
+    const { error } = await adminDb
+      .from("hms_tenants")
+      .update({ notice_given_date: noticeGivenDate, intended_checkout_date: intendedCheckoutDate })
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId);
+    if (error) throw new Error("Failed to record notice.");
+
+    await adminDb.from("hms_tenant_events").insert({
+      hostel_id: hostelId,
+      tenant_id: tenantId,
+      event_type: "notice_given",
+      to_value: intendedCheckoutDate,
+    });
+
+    revalidatePath("/tenants");
+    return { success: true };
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function cancelTenantNoticeAction(
+  tenantId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await requireOwnerOrAbove();
+    const hostelId = await resolveHostelId();
+    const adminDb = createAdminClient();
+
+    const { data: tenant, error: tenantErr } = await adminDb
+      .from("hms_tenants")
+      .select("id, is_active, intended_checkout_date")
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+      .single();
+    if (tenantErr || !tenant) throw new Error("Tenant not found or access denied");
+    if (!tenant.is_active) throw new Error("Tenant is not active");
+
+    const { error } = await adminDb
+      .from("hms_tenants")
+      .update({ notice_given_date: null, intended_checkout_date: null })
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId);
+    if (error) throw new Error("Failed to cancel notice.");
+
+    await adminDb.from("hms_tenant_events").insert({
+      hostel_id: hostelId,
+      tenant_id: tenantId,
+      event_type: "notice_cancelled",
+      from_value: tenant.intended_checkout_date,
+    });
+
+    revalidatePath("/tenants");
+    return { success: true };
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // checkoutTenantAction
 // Handles the full checkout flow: settle payment → deactivate tenant → decrement room.
 // Write order is intentional for EC-4 safety: payment first so that if tenant
@@ -1184,6 +1297,8 @@ export async function checkoutTenantAction(
         is_active: false,
         is_waiting: false,
         bed_number: null,
+        notice_given_date: null,
+        intended_checkout_date: null,
       })
       .eq("id", input.tenantId)
       .eq("hostel_id", hostelId);

@@ -260,6 +260,8 @@ export interface Tenant {
   notes: string | null;
   photo_url: string | null;
   documents: TenantDocument[];
+  notice_given_date: string | null;
+  intended_checkout_date: string | null;
   created_at: string;
 }
 
@@ -305,7 +307,7 @@ export interface CheckoutInput {
   depositNotes?: string;
 }
 
-export type TenantEventType = "room_changed" | "plan_changed" | "deposit_collected" | "deposit_returned" | "deposit_forfeited";
+export type TenantEventType = "room_changed" | "plan_changed" | "deposit_collected" | "deposit_returned" | "deposit_forfeited" | "notice_given" | "notice_cancelled";
 
 export interface TenantEvent {
   id: string;
@@ -538,6 +540,7 @@ export interface PackageConfig {
   food_all_meals_rate: number;
   ac_per_unit_rate: number;
   security_deposit: number;
+  notice_period_days: number;
   package_prices: Partial<Record<PackageTier, PackagePrices>>;
   seater_prices: Partial<Record<string, { no_ac: number; ac: number; deposit_no_ac?: number; deposit_ac?: number }>>;
   created_at: string;

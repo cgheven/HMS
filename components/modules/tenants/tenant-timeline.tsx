@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, FileText, Loader2, ArrowLeftRight, Wallet } from "lucide-react";
+import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, FileText, Loader2, ArrowLeftRight, Wallet, CalendarClock } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -56,6 +56,10 @@ export function EventIcon({ type }: { type: TimelineEvent["type"] }) {
       return <Wallet className="w-4 h-4 text-rose-400" />;
     case "partially_paid":
       return <Banknote className="w-4 h-4 text-blue-400" />;
+    case "notice_given":
+      return <CalendarClock className="w-4 h-4 text-amber" />;
+    case "notice_cancelled":
+      return <CalendarClock className="w-4 h-4 text-muted-foreground" />;
     case "pending":
       return <Clock className="w-4 h-4 text-amber/70" />;
     case "status_change":
@@ -75,6 +79,8 @@ export function eventDotColor(type: TimelineEvent["type"]): string {
     case "deposit_returned":  return "bg-blue-500 border-blue-400";
     case "deposit_forfeited": return "bg-rose-500 border-rose-400";
     case "partially_paid": return "bg-blue-500 border-blue-400";
+    case "notice_given":   return "bg-amber border-amber/60";
+    case "notice_cancelled": return "bg-muted-foreground/40 border-muted-foreground/60";
     case "pending":       return "bg-amber/30 border-amber/50";
     case "status_change":
     default:              return "bg-amber border-amber/60";

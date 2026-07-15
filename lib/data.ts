@@ -201,6 +201,7 @@ export async function getTenants() {
       hostelId: null, active: [], waiting: [], checkedOut: [], rooms: [],
       foodAddonRates: { food_breakfast_rate: 0, food_lunch_rate: 0, food_dinner_rate: 0, food_all_meals_rate: 0 },
       foodMonthlyRate: 0,
+      noticePeriodDays: 30,
     };
   }
   const { supabase, hostelId } = ctx;
@@ -225,6 +226,7 @@ export async function getTenants() {
       food_all_meals_rate: Number(packageConfig?.food_all_meals_rate ?? 0),
     },
     foodMonthlyRate: Number(packageConfig?.food_monthly_rate ?? 0),
+    noticePeriodDays: Number(packageConfig?.notice_period_days ?? 30),
   };
 }
 

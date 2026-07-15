@@ -5,6 +5,7 @@ import {
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, History,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
   FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check, UtensilsCrossed,
+  CalendarClock, CalendarX,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -24,7 +25,7 @@ import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction } from "@/app/actions/tenants";
 
 interface Props {
   hostelId: string | null;
@@ -38,6 +39,7 @@ interface Props {
   waitlistEntries?: WaitlistEntry[];
   foodAddonRates?: FoodAddonRates;
   foodMonthlyRate?: number;
+  noticePeriodDays?: number;
 }
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
@@ -124,6 +126,15 @@ function getSuggestedDeposit(
   return configSecurityDeposit;
 }
 
+// Whole calendar days between notice_given_date and intended_checkout_date — the same
+// two dates the owner sees on the tenant, so this always matches what's on file.
+function computeDaysNotice(t: Tenant): number | null {
+  if (!t.notice_given_date || !t.intended_checkout_date) return null;
+  const given = new Date(t.notice_given_date + "T00:00:00");
+  const intended = new Date(t.intended_checkout_date + "T00:00:00");
+  return Math.round((intended.getTime() - given.getTime()) / 86400000);
+}
+
 function approveFormFoodFlags(form: ConvertFormData): FoodAddonFlags {
   return {
     food_breakfast: form.food_breakfast ?? false,
@@ -181,14 +192,16 @@ interface TenantRowProps {
   showActivate?: boolean;
   roomMap: Record<string, Room>;
   foodAddonRates: FoodAddonRates;
+  noticePeriodDays?: number;
   onTimeline: (t: Tenant) => void;
   onCheckout: (t: Tenant) => void;
   onActivate: (t: Tenant) => void;
   onEdit: (t: Tenant) => void;
   onDelete: (t: Tenant) => void;
+  onGiveNotice?: (t: Tenant) => void;
 }
 
-function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foodAddonRates, onTimeline, onCheckout, onActivate, onEdit, onDelete }: TenantRowProps) {
+function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foodAddonRates, noticePeriodDays = 30, onTimeline, onCheckout, onActivate, onEdit, onDelete, onGiveNotice }: TenantRowProps) {
   const room = t.room_id ? roomMap[t.room_id] : null;
   const foodCharge = calcFoodAddonCharge(t, foodAddonRates);
   const initials = t.full_name[0].toUpperCase();
@@ -243,6 +256,25 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
               <ShieldCheck className="w-3 h-3" />{t.documents.length}
             </span>
           )}
+          {t.intended_checkout_date && (() => {
+            const daysNotice = computeDaysNotice(t);
+            if (daysNotice == null) return null;
+            const adequate = daysNotice >= noticePeriodDays;
+            return (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border",
+                  adequate
+                    ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                    : "text-amber bg-amber/10 border-amber/20"
+                )}
+                title={`Leaving ${formatDate(t.intended_checkout_date)}`}
+              >
+                <CalendarClock className="w-2.5 h-2.5" />
+                {daysNotice}d notice {adequate ? "✓" : "⚠ short"}
+              </span>
+            );
+          })()}
         </div>
       </button>
 
@@ -270,6 +302,23 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
           >
             <UserCheck className="w-3.5 h-3.5 shrink-0" />
             <span className="hidden sm:inline text-xs ml-1.5">Activate</span>
+          </Button>
+        )}
+        {showCheckout && onGiveNotice && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn(
+              "h-8 px-2 border",
+              t.intended_checkout_date
+                ? "text-amber hover:text-amber hover:bg-amber/10 border-amber/20"
+                : "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 border-blue-500/20"
+            )}
+            onClick={() => onGiveNotice(t)}
+            title={t.intended_checkout_date ? "Manage Notice" : "Give Notice"}
+          >
+            {t.intended_checkout_date ? <CalendarX className="w-3.5 h-3.5 shrink-0" /> : <CalendarClock className="w-3.5 h-3.5 shrink-0" />}
+            <span className="hidden sm:inline text-xs ml-1.5">{t.intended_checkout_date ? "Notice" : "Give Notice"}</span>
           </Button>
         )}
         {showCheckout && (
@@ -300,7 +349,7 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
 
 // ---------------------------------------------------------------------------
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30 }: Props) {
   const [active, setActive] = useState(initialActive);
   const [waiting, setWaiting] = useState(initialWaiting);
   const [checkedOut, setCheckedOut] = useState(initialCheckedOut);
@@ -417,8 +466,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [editingDocs, setEditingDocs] = useState<TenantDocument[]>([]);
   const [typeFilter, setTypeFilter] = useState<"all" | "student" | "professional" | "general">("all");
   const [depositFilter, setDepositFilter] = useState(false);
+  const [noticeFilter, setNoticeFilter] = useState(false);
   const [roomFilter, setRoomFilter] = useState<string>("all"); // room_id or "all"
   const [exportLoading, setExportLoading] = useState<"excel" | "pdf" | null>(null);
+  const [noticeDialogTenant, setNoticeDialogTenant] = useState<Tenant | null>(null);
+  const [noticeDate, setNoticeDate] = useState("");
+  const [noticeSubmitting, setNoticeSubmitting] = useState(false);
 
   // Rooms with remaining capacity
   const availableRooms = useMemo(
@@ -735,7 +788,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   function openCheckout(t: Tenant) {
     const today = formatDateInput(new Date());
     setCheckingOut(t);
-    setCheckoutDate(today);
+    setCheckoutDate(t.intended_checkout_date ?? today);
     setCheckoutPayDate(today);
     setCheckoutPayAction("pay");
     setCheckoutPayMethod("cash");
@@ -866,9 +919,58 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     await reload();
   }
 
+  function openNoticeDialog(t: Tenant) {
+    setNoticeDialogTenant(t);
+    setNoticeDate(t.intended_checkout_date ?? formatDateInput(new Date()));
+  }
+
+  function closeNoticeDialog() {
+    setNoticeDialogTenant(null);
+    setNoticeDate("");
+    setNoticeSubmitting(false);
+  }
+
+  async function handleGiveNotice() {
+    if (!noticeDialogTenant || !noticeDate) return;
+    setNoticeSubmitting(true);
+    const result = await giveTenantNoticeAction(noticeDialogTenant.id, noticeDate);
+    if (!result.success) {
+      toast({ title: "Failed to record notice", description: result.error, variant: "destructive" });
+      setNoticeSubmitting(false);
+      return;
+    }
+    const today = formatDateInput(new Date());
+    setActive((prev) => prev.map((t) =>
+      t.id === noticeDialogTenant.id ? { ...t, notice_given_date: today, intended_checkout_date: noticeDate } : t
+    ));
+    toast({ title: `Notice recorded for ${noticeDialogTenant.full_name}` });
+    closeNoticeDialog();
+  }
+
+  async function handleCancelNotice() {
+    if (!noticeDialogTenant) return;
+    setNoticeSubmitting(true);
+    const result = await cancelTenantNoticeAction(noticeDialogTenant.id);
+    if (!result.success) {
+      toast({ title: "Failed to cancel notice", description: result.error, variant: "destructive" });
+      setNoticeSubmitting(false);
+      return;
+    }
+    setActive((prev) => prev.map((t) =>
+      t.id === noticeDialogTenant.id ? { ...t, notice_given_date: null, intended_checkout_date: null } : t
+    ));
+    toast({ title: `Notice cancelled for ${noticeDialogTenant.full_name}` });
+    closeNoticeDialog();
+  }
+
   function filterList(list: Tenant[]) {
     let result = typeFilter !== "all" ? list.filter((t) => t.type === typeFilter) : list;
     if (depositFilter) result = result.filter((t) => Number(t.security_deposit) > 0);
+    if (noticeFilter && tab === "active") {
+      result = result
+        .filter((t) => t.intended_checkout_date != null)
+        .sort((a, b) => (a.intended_checkout_date ?? "").localeCompare(b.intended_checkout_date ?? ""));
+    }
     if (roomFilter !== "all") result = result.filter((t) => t.room_id === roomFilter);
     if (search) {
       const q = search.toLowerCase();
@@ -1078,6 +1180,24 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             </span>
           </button>
 
+          {tab === "active" && (
+            <button
+              onClick={() => setNoticeFilter((v) => !v)}
+              className={cn(
+                "px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap",
+                noticeFilter
+                  ? "bg-amber/15 border-amber/30 text-amber"
+                  : "border-sidebar-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40"
+              )}
+            >
+              <CalendarClock className="w-3 h-3 shrink-0" />
+              Notice Given
+              <span className="opacity-50 tabular-nums">
+                ({active.filter((t) => t.intended_checkout_date != null).length})
+              </span>
+            </button>
+          )}
+
           {/* Room filter — dropdown */}
           {(() => {
             const allTenants = [...active, ...waiting, ...checkedOut];
@@ -1166,11 +1286,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   key={t.id} t={t} showCheckout
                   roomMap={roomMap}
                   foodAddonRates={foodAddonRates}
+                  noticePeriodDays={noticePeriodDays}
                   onTimeline={setTimelineTenant}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}
                   onDelete={setDeleteTenant}
+                  onGiveNotice={openNoticeDialog}
                 />
               ))}
               </div>
@@ -2182,6 +2304,28 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
           {/* UX-F6: disable all options (not footer) while submission is in flight */}
           <div className={cn("space-y-5 py-1", checkoutSubmitting && "pointer-events-none opacity-50")}>
+            {/* Notice on file — shown so the owner can see it while confirming checkout */}
+            {checkingOut?.intended_checkout_date && (() => {
+              const daysNotice = computeDaysNotice(checkingOut);
+              const adequate = daysNotice != null && daysNotice >= noticePeriodDays;
+              return (
+                <div className={cn(
+                  "rounded-xl border p-3 flex items-center justify-between gap-2",
+                  adequate ? "border-emerald-500/20 bg-emerald-500/5" : "border-amber/20 bg-amber/5"
+                )}>
+                  <div className="flex items-center gap-1.5 text-sm">
+                    <CalendarClock className="w-3.5 h-3.5 shrink-0" />
+                    <span>Notice on file: leaving {formatDate(checkingOut.intended_checkout_date)}</span>
+                  </div>
+                  {daysNotice != null && (
+                    <span className={cn("text-xs font-medium whitespace-nowrap", adequate ? "text-emerald-400" : "text-amber")}>
+                      {daysNotice}d notice {adequate ? "✓" : "⚠ short"}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Section 1 — Departure Date */}
             <div className="space-y-1.5">
               {/* UX-F7: link label to input with id/htmlFor */}
@@ -2489,6 +2633,74 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               {checkoutSubmitting
                 ? <><Loader2 className="w-4 h-4 animate-spin" /> Processing…</>
                 : <><LogOut className="w-4 h-4" /> Confirm Check Out</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Give / Cancel Notice Dialog */}
+      <Dialog open={!!noticeDialogTenant} onOpenChange={(open) => { if (!open) closeNoticeDialog(); }}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CalendarClock className="w-4 h-4 text-amber" />
+              {noticeDialogTenant?.intended_checkout_date ? "Manage Notice" : "Give Notice"}
+            </DialogTitle>
+            <DialogDescription>{noticeDialogTenant?.full_name}</DialogDescription>
+          </DialogHeader>
+
+          <div className={cn("space-y-4 py-1", noticeSubmitting && "pointer-events-none opacity-50")}>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="notice-date">Intended checkout date</Label>
+                {noticeDialogTenant?.intended_checkout_date && (
+                  <span className="text-xs text-muted-foreground">
+                    On file: {formatDate(noticeDialogTenant.intended_checkout_date)}
+                  </span>
+                )}
+              </div>
+              <Input
+                id="notice-date"
+                type="date"
+                value={noticeDate}
+                onChange={(e) => setNoticeDate(e.target.value)}
+                min={formatDateInput(new Date())}
+              />
+            </div>
+
+            {noticeDate && (() => {
+              const today = formatDateInput(new Date());
+              const daysNotice = Math.round((new Date(noticeDate + "T00:00:00").getTime() - new Date(today + "T00:00:00").getTime()) / 86400000);
+              const adequate = daysNotice >= noticePeriodDays;
+              return (
+                <p className={cn("text-sm rounded-lg border px-3 py-2", adequate ? "text-emerald-400 border-emerald-500/20 bg-emerald-500/5" : "text-amber border-amber/20 bg-amber/5")}>
+                  {daysNotice} days notice {adequate ? "✓ meets" : "⚠ short of"} the {noticePeriodDays}-day policy
+                </p>
+              );
+            })()}
+          </div>
+
+          <DialogFooter>
+            {noticeDialogTenant?.intended_checkout_date && (
+              <Button
+                variant="ghost"
+                onClick={handleCancelNotice}
+                disabled={noticeSubmitting}
+                className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10"
+              >
+                {noticeSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarX className="w-4 h-4" />}
+                Cancel Notice
+              </Button>
+            )}
+            <Button variant="ghost" onClick={closeNoticeDialog} disabled={noticeSubmitting}>Close</Button>
+            <Button
+              onClick={handleGiveNotice}
+              disabled={noticeSubmitting || !noticeDate}
+              className="gap-2 bg-amber hover:bg-amber/90 text-background"
+            >
+              {noticeSubmitting
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
+                : <><CalendarClock className="w-4 h-4" /> {noticeDialogTenant?.intended_checkout_date ? "Update Notice" : "Save Notice"}</>}
             </Button>
           </DialogFooter>
         </DialogContent>
