@@ -27,7 +27,7 @@ import { toast } from "@/hooks/use-toast";
 import { LEAD_SOURCES, LEAD_SOURCE_OTHER } from "@/lib/lead-sources";
 import { LEAD_STATUS_CONFIG as STATUS_CONFIG, LEAD_STATUS_ORDER as STATUS_ORDER, followUpUrgency, parseDateOnly } from "@/lib/lead-status";
 import { LEAD_PRIORITY_CONFIG as PRIORITY_CONFIG, LEAD_PRIORITY_ORDER as PRIORITY_ORDER } from "@/lib/lead-priority";
-import { formatDate, formatDateTime } from "@/lib/utils";
+import { formatDate, formatDateTime, formatCurrency } from "@/lib/utils";
 import type { PlatformLead, LeadStatus, LeadPriority, LeadActivity, LeadActivityType, SalesRep } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -694,6 +694,9 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
                           <td className="px-4 py-3 hidden md:table-cell">
                             <p className="text-sm">{lead.city ?? "—"}</p>
                             <p className="text-xs text-muted-foreground">{lead.branch_count} branch{lead.branch_count !== 1 ? "es" : ""}</p>
+                            {lead.quoted_annual_price != null && (
+                              <p className="text-xs text-emerald-400 font-medium">{formatCurrency(lead.quoted_annual_price)}/yr</p>
+                            )}
                           </td>
                           <td className="px-4 py-3">
                             <select
@@ -993,6 +996,16 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
                   <div>
                     <p className="text-xs text-muted-foreground">Branches</p>
                     <p className="font-medium">{detailLead.branch_count}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Hostel Type</p>
+                    <p className="font-medium capitalize">{detailLead.hostel_type ?? "—"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Quoted Annual Price</p>
+                    <p className="font-medium text-emerald-400">
+                      {detailLead.quoted_annual_price != null ? `${formatCurrency(detailLead.quoted_annual_price)}/yr` : "—"}
+                    </p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Source</p>

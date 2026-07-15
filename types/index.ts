@@ -588,6 +588,8 @@ export interface PlatformLead {
   email: string | null;
   city: string | null;
   branch_count: number;
+  hostel_type: string | null;
+  quoted_annual_price: number | null;
   notes: string | null;
   status: LeadStatus;
   converted_hostel_id: string | null;

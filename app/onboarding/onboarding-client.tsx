@@ -3,17 +3,24 @@ import { useState } from "react";
 import Link from "next/link";
 import {
   Home, Building2, CheckCircle2, Phone, Mail, MapPin,
-  MessageSquare, Users, Loader2, ChevronRight,
+  MessageSquare, Users, Loader2, ChevronRight, Tag,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { submitOnboarding } from "@/app/actions/onboarding";
+import { calculateAnnualPrice } from "@/lib/pricing";
+import { formatCurrency } from "@/lib/utils";
+import { LEAD_SOURCES, LEAD_SOURCE_OTHER } from "@/lib/lead-sources";
 
-const BRANCH_OPTIONS = [
-  { value: 1, label: "1 branch" },
-  { value: 3, label: "2 – 5 branches" },
-  { value: 6, label: "6+ branches" },
+const HOSTEL_TYPES = [
+  { value: "boys",   label: "Boys Only" },
+  { value: "girls",  label: "Girls Only" },
+  { value: "mixed",  label: "Mixed" },
+  { value: "family", label: "Family" },
 ];
 
 const FEATURES = [
@@ -31,20 +38,26 @@ export function OnboardingClient() {
     email: "",
     city: "",
     branch_count: 1,
+    hostel_type: "",
+    source: "",
     message: "",
     // honeypot — hidden from real users, bots fill it
     website_url: "",
   });
+  const [otherSource, setOtherSource] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const annualPrice = calculateAnnualPrice(form.branch_count);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
 
-    const result = await submitOnboarding(form);
+    const resolvedSource = form.source === LEAD_SOURCE_OTHER ? otherSource.trim() : form.source;
+    const result = await submitOnboarding({ ...form, source: resolvedSource || undefined });
 
     setSubmitting(false);
     if (!result.success) {
@@ -267,27 +280,86 @@ export function OnboardingClient() {
                 </div>
               </div>
 
-              {/* Branch count */}
+              {/* Branch count + live price */}
               <div className="space-y-2">
-                <Label className="flex items-center gap-1.5">
+                <Label htmlFor="branch_count" className="flex items-center gap-1.5">
                   <Building2 className="w-3.5 h-3.5 text-muted-foreground" />
                   Number of Branches
                 </Label>
-                <div className="flex gap-2">
-                  {BRANCH_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      onClick={() => setForm({ ...form, branch_count: opt.value })}
-                      className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                        form.branch_count === opt.value
-                          ? "bg-amber/10 border-amber/30 text-amber"
-                          : "border-sidebar-border text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
+                <Input
+                  id="branch_count"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={form.branch_count}
+                  onChange={(e) => setForm({ ...form, branch_count: Math.max(1, parseInt(e.target.value, 10) || 1) })}
+                  required
+                />
+                <div className="rounded-lg border border-amber/20 bg-amber/5 px-4 py-3 flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Estimated annual price</span>
+                  <span className="text-lg font-semibold text-amber tabular-nums">{formatCurrency(annualPrice)}/year</span>
+                </div>
+                {form.branch_count >= 10 && (
+                  <p className="text-xs text-emerald-400">
+                    First 9 branches at Rs 60,000/year, every branch from the 10th onward at Rs 36,000/year.
+                  </p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Hostel type */}
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-1.5">
+                    <Home className="w-3.5 h-3.5 text-muted-foreground" />
+                    Hostel Type <span className="text-muted-foreground/50 text-xs font-normal">(optional)</span>
+                  </Label>
+                  <div className="flex flex-wrap gap-2">
+                    {HOSTEL_TYPES.map((t) => (
+                      <button
+                        key={t.value}
+                        type="button"
+                        onClick={() => setForm({ ...form, hostel_type: form.hostel_type === t.value ? "" : t.value })}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                          form.hostel_type === t.value
+                            ? "bg-amber/10 border-amber/30 text-amber"
+                            : "border-sidebar-border text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Hear about us */}
+                <div className="space-y-1.5">
+                  <Label htmlFor="source" className="flex items-center gap-1.5">
+                    <Tag className="w-3.5 h-3.5 text-muted-foreground" />
+                    How did you hear about us? <span className="text-muted-foreground/50 text-xs font-normal">(optional)</span>
+                  </Label>
+                  <Select
+                    value={form.source || "__none"}
+                    onValueChange={(v) => setForm({ ...form, source: v === "__none" ? "" : v })}
+                  >
+                    <SelectTrigger id="source">
+                      <SelectValue placeholder="Select one" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none">—</SelectItem>
+                      {LEAD_SOURCES.map((s) => (
+                        <SelectItem key={s} value={s}>{s}</SelectItem>
+                      ))}
+                      <SelectItem value={LEAD_SOURCE_OTHER}>{LEAD_SOURCE_OTHER}...</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {form.source === LEAD_SOURCE_OTHER && (
+                    <Input
+                      placeholder="Tell us where"
+                      value={otherSource}
+                      onChange={(e) => setOtherSource(e.target.value)}
+                      className="mt-1.5"
+                    />
+                  )}
                 </div>
               </div>
 

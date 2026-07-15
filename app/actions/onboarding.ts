@@ -1,5 +1,6 @@
 "use server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { calculateAnnualPrice } from "@/lib/pricing";
 import { headers } from "next/headers";
 
 export interface OnboardingFormData {
@@ -9,10 +10,14 @@ export interface OnboardingFormData {
   email?: string;
   city?: string;
   branch_count: number;
+  hostel_type?: string;
+  source?: string;
   message?: string;
   // honeypot — must be empty
   website_url?: string;
 }
+
+const VALID_HOSTEL_TYPES = ["boys", "girls", "mixed", "family"];
 
 export async function submitOnboarding(
   formData: OnboardingFormData
@@ -39,6 +44,11 @@ export async function submitOnboarding(
       : parseInt(String(formData.branch_count), 10) || 1;
 
   if (branchCount < 1) return { success: false, error: "Branch count must be at least 1." };
+
+  const hostelType = formData.hostel_type?.trim();
+  if (hostelType && !VALID_HOSTEL_TYPES.includes(hostelType)) {
+    return { success: false, error: "Invalid hostel type." };
+  }
 
   // --- Get client IP from headers (use rightmost entry set by trusted proxy, not client) ---
   let ipAddress: string | null = null;
@@ -82,9 +92,12 @@ export async function submitOnboarding(
       email: formData.email?.trim() || null,
       city: formData.city?.trim() || null,
       branch_count: branchCount,
+      hostel_type: hostelType || null,
+      source: formData.source?.trim() || null,
       notes: formData.message?.trim() || null,
       status: "new",
       ip_address: ipAddress,
+      quoted_annual_price: calculateAnnualPrice(branchCount),
     });
 
     if (error) {
