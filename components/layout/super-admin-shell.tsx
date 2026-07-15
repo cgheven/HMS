@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Crown, LayoutDashboard, Building2, Inbox, Search,
-  Menu, X, LogOut, Users2,
+  Menu, X, LogOut, Users2, ShieldCheck,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
@@ -15,6 +15,7 @@ const superAdminNav = [
   { href: "/super-admin/leads",     label: "Client Leads",     icon: Inbox },
   { href: "/super-admin/sales-team", label: "Sales Team",      icon: Users2 },
   { href: "/super-admin/directory", label: "Public Directory", icon: Search },
+  { href: "/super-admin/audit",     label: "Audit Trail",      icon: ShieldCheck },
 ];
 
 function SuperAdminSidebar({
