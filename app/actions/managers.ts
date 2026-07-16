@@ -6,6 +6,7 @@ import { requireOwnerOrAbove } from "@/lib/auth"
 import { getAuthContext } from "@/lib/data"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { requireManagerPermission } from "@/lib/manager-auth"
+import { logActivity } from "@/lib/audit"
 import type { Manager, StaffPermission } from "@/types"
 
 function getPrevMonth(forMonth: string): string {
@@ -89,6 +90,15 @@ export async function createManager(
     permissions: (data.permissions ?? []).map((p: { permission: string }) => p.permission as StaffPermission),
     hostels: (data.hostels ?? []).map((h: { hostel: { id: string; name: string } }) => h.hostel).filter(Boolean),
   }
+
+  await logActivity({
+    hostel_id: null,
+    actor_id: ownerId,
+    action: "manager.invite",
+    entity: "manager",
+    entity_id: data.id,
+    meta: { name: name.trim() },
+  })
 
   return { manager, error: null }
 }

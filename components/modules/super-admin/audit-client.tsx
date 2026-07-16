@@ -1,11 +1,19 @@
 "use client";
 import { useState, useMemo } from "react";
-import { RefreshCw, Search, ShieldCheck, User, Building2, LogIn, Crown, Users2 } from "lucide-react";
-import { listAuditLogs, listLoginLogs, type LoginLogWithProfile } from "@/app/actions/super-admin-audit";
+import {
+  RefreshCw, Search, ShieldCheck, User, Building2, LogIn, Crown, Users2,
+  Activity, Users, Wallet, Receipt, UtensilsCrossed, Briefcase, MessageSquareWarning, Snowflake,
+  Grid3x3,
+} from "lucide-react";
+import {
+  listAuditLogs, listLoginLogs, listClientActivity, listActivityFeed,
+  type LoginLogWithProfile,
+} from "@/app/actions/super-admin-audit";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/hooks/use-toast";
-import type { AuditLog } from "@/types";
+import { formatCurrency } from "@/lib/utils";
+import { FEATURE_KEYS, type AuditLog, type ClientActivityRow, type FeatureKey, type ActivityFeedEvent } from "@/types";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,6 +49,35 @@ function describeAction(log: AuditLog): string {
   }
 }
 
+function describeActivity(event: ActivityFeedEvent): string {
+  const m = event.meta ?? {};
+  switch (event.action) {
+    case "tenant.create": return `Added tenant "${m.full_name ?? ""}"`;
+    case "kitchen_expense.create": return `Logged kitchen expense "${m.title ?? ""}" (${formatCurrency(Number(m.amount ?? 0))})`;
+    case "expense.create": return `Added expense "${m.title ?? ""}" (${formatCurrency(Number(m.amount ?? 0))})`;
+    case "employee.create": return `Added staff member "${m.full_name ?? ""}"${m.role ? ` (${m.role})` : ""}`;
+    case "complaint.create": return `Filed complaint "${m.title ?? ""}"`;
+    case "payment.paid": return `Recorded a payment of ${formatCurrency(Number(m.amount ?? 0))}${m.tenant_name ? ` from ${m.tenant_name}` : ""}`;
+    case "ac_reading.submit": return `Submitted an AC meter reading (${m.total_units ?? 0} units)`;
+    case "manager.invite": return `Invited manager "${m.name ?? ""}"`;
+    default: return `${event.action} on ${event.entity}`;
+  }
+}
+
+function activityEntityIcon(entity: string): typeof User {
+  switch (entity) {
+    case "tenant": return Users;
+    case "payment": return Wallet;
+    case "expense": return Receipt;
+    case "kitchen_expense": return UtensilsCrossed;
+    case "employee": return Briefcase;
+    case "complaint": return MessageSquareWarning;
+    case "ac_reading": return Snowflake;
+    case "manager": return Users2;
+    default: return Activity;
+  }
+}
+
 function actionBadge(action: string): { label: string; cls: string } {
   if (action.includes("delete")) return { label: "Delete", cls: "bg-rose-500/10 text-rose-400 border-rose-500/20" };
   if (action.includes("update")) return { label: "Update", cls: "bg-blue-500/10 text-blue-400 border-blue-500/20" };
@@ -64,6 +101,31 @@ function roleBadge(role: string | null): { label: string; cls: string; icon: typ
   }
 }
 
+const FEATURE_COLUMNS: { key: FeatureKey; label: string; icon: typeof User }[] = [
+  { key: "tenants", label: "Tenants", icon: Users },
+  { key: "payments", label: "Payments", icon: Wallet },
+  { key: "expenses", label: "Expenses", icon: Receipt },
+  { key: "kitchen", label: "Kitchen", icon: UtensilsCrossed },
+  { key: "staff", label: "Staff", icon: Briefcase },
+  { key: "complaints", label: "Complaints", icon: MessageSquareWarning },
+  { key: "acBilling", label: "AC Billing", icon: Snowflake },
+  { key: "team", label: "Team", icon: Users2 },
+];
+
+// Shows the raw count (not just a yes/no dot) so volume is visible at a glance —
+// a branch with 2 tenants and one with 170 both "used" the feature, but that's a
+// very different outreach conversation. Color still layers in recency on top.
+function featureCellColor(entry: { count: number; lastUsedAt: string | null }): string {
+  if (entry.count === 0) return "text-muted-foreground/30";
+  if (entry.lastUsedAt && isWithinDays(entry.lastUsedAt, 7)) return "text-emerald-400";
+  if (entry.lastUsedAt && isWithinDays(entry.lastUsedAt, 30)) return "text-amber";
+  return "text-muted-foreground";
+}
+
+function featuresUsedCount(row: ClientActivityRow): number {
+  return FEATURE_KEYS.filter((k) => row.features[k].count > 0).length;
+}
+
 function StatTile({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-2xl border border-sidebar-border bg-card px-5 py-4">
@@ -78,14 +140,18 @@ function StatTile({ label, value }: { label: string; value: number | string }) {
 interface Props {
   initialLogs: AuditLog[];
   initialLoginLogs: LoginLogWithProfile[];
+  initialActivity: ClientActivityRow[];
+  initialFeed: ActivityFeedEvent[];
 }
 
-type Tab = "actions" | "logins";
+type Tab = "feed" | "activity" | "actions" | "logins";
 
-export function SuperAdminAuditClient({ initialLogs, initialLoginLogs }: Props) {
-  const [tab, setTab]           = useState<Tab>("logins");
+export function SuperAdminAuditClient({ initialLogs, initialLoginLogs, initialActivity, initialFeed }: Props) {
+  const [tab, setTab]           = useState<Tab>("feed");
   const [logs, setLogs]         = useState<AuditLog[]>(initialLogs);
   const [loginLogs, setLoginLogs] = useState<LoginLogWithProfile[]>(initialLoginLogs);
+  const [activity, setActivity] = useState<ClientActivityRow[]>(initialActivity);
+  const [feed, setFeed]         = useState<ActivityFeedEvent[]>(initialFeed);
   const [search, setSearch]     = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
@@ -95,10 +161,18 @@ export function SuperAdminAuditClient({ initialLogs, initialLoginLogs }: Props) 
       const { logs: fresh, error } = await listAuditLogs();
       if (error) toast({ title: "Failed to refresh", description: error, variant: "destructive" });
       else setLogs(fresh ?? []);
-    } else {
+    } else if (tab === "logins") {
       const { logs: fresh, error } = await listLoginLogs();
       if (error) toast({ title: "Failed to refresh", description: error, variant: "destructive" });
       else setLoginLogs(fresh ?? []);
+    } else if (tab === "activity") {
+      const { rows: fresh, error } = await listClientActivity();
+      if (error) toast({ title: "Failed to refresh", description: error, variant: "destructive" });
+      else setActivity(fresh ?? []);
+    } else {
+      const { events: fresh, error } = await listActivityFeed();
+      if (error) toast({ title: "Failed to refresh", description: error, variant: "destructive" });
+      else setFeed(fresh ?? []);
     }
     setRefreshing(false);
   }
@@ -123,6 +197,37 @@ export function SuperAdminAuditClient({ initialLogs, initialLoginLogs }: Props) 
     );
   }, [loginLogs, search]);
 
+  const sortedActivity = useMemo(() => {
+    const q = search.toLowerCase();
+    const filtered = !search
+      ? activity
+      : activity.filter((r) =>
+          r.hostelName.toLowerCase().includes(q) ||
+          (r.ownerName ?? "").toLowerCase().includes(q) ||
+          r.ownerEmail.toLowerCase().includes(q)
+        );
+    // Least-active branches first — the ones most worth a proactive outreach call.
+    return [...filtered].sort((a, b) => featuresUsedCount(a) - featuresUsedCount(b));
+  }, [activity, search]);
+
+  const filteredFeed = useMemo(() => {
+    if (!search) return feed;
+    const q = search.toLowerCase();
+    return feed.filter((e) =>
+      (e.hostelName ?? "").toLowerCase().includes(q) ||
+      (e.ownerName ?? "").toLowerCase().includes(q) ||
+      (e.actorName ?? "").toLowerCase().includes(q) ||
+      (e.actorEmail ?? "").toLowerCase().includes(q) ||
+      describeActivity(e).toLowerCase().includes(q)
+    );
+  }, [feed, search]);
+
+  const feedStats = useMemo(() => ({
+    today: feed.filter((e) => isToday(e.createdAt)).length,
+    thisWeek: feed.filter((e) => isWithinDays(e.createdAt, 7)).length,
+    activeBranches: new Set(feed.filter((e) => isWithinDays(e.createdAt, 7)).map((e) => e.hostelId).filter(Boolean)).size,
+  }), [feed]);
+
   const loginStats = useMemo(() => ({
     total: loginLogs.length,
     uniqueUsers: new Set(loginLogs.map((l) => l.email)).size,
@@ -135,6 +240,19 @@ export function SuperAdminAuditClient({ initialLogs, initialLoginLogs }: Props) 
     uniqueAdmins: new Set(logs.map((l) => l.actor_email)).size,
   }), [logs]);
 
+  const activityStats = useMemo(() => {
+    const total = activity.length;
+    const needsOutreach = activity.filter((r) => {
+      const used = featuresUsedCount(r);
+      const loginStale = !r.lastLogin || !isWithinDays(r.lastLogin, 30);
+      return used <= 2 || loginStale;
+    }).length;
+    const avgUsed = total > 0
+      ? activity.reduce((sum, r) => sum + featuresUsedCount(r), 0) / total
+      : 0;
+    return { total, needsOutreach, avgUsed: avgUsed.toFixed(1) };
+  }, [activity]);
+
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       {/* Header */}
@@ -142,7 +260,7 @@ export function SuperAdminAuditClient({ initialLogs, initialLoginLogs }: Props) 
         <div>
           <h1 className="text-3xl font-serif font-normal tracking-tight">Audit Trail</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Who logged in, and what admins changed — across the whole platform.
+            Who did what, when, and on which branch — plus logins and admin changes.
           </p>
         </div>
         <Button variant="outline" onClick={refresh} disabled={refreshing} className="gap-2 w-full sm:w-auto">
@@ -153,7 +271,19 @@ export function SuperAdminAuditClient({ initialLogs, initialLoginLogs }: Props) 
 
       {/* Stat tiles */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {tab === "logins" ? (
+        {tab === "feed" ? (
+          <>
+            <StatTile label="Events today" value={feedStats.today} />
+            <StatTile label="Events this week" value={feedStats.thisWeek} />
+            <StatTile label="Active branches (7d)" value={feedStats.activeBranches} />
+          </>
+        ) : tab === "activity" ? (
+          <>
+            <StatTile label="Total branches" value={activityStats.total} />
+            <StatTile label="Needs outreach" value={activityStats.needsOutreach} />
+            <StatTile label="Avg. features used" value={`${activityStats.avgUsed}/${FEATURE_KEYS.length}`} />
+          </>
+        ) : tab === "logins" ? (
           <>
             <StatTile label="Logins recorded" value={loginStats.total} />
             <StatTile label="Unique users" value={loginStats.uniqueUsers} />
@@ -170,6 +300,28 @@ export function SuperAdminAuditClient({ initialLogs, initialLoginLogs }: Props) 
 
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-white/[0.03] border border-sidebar-border rounded-xl w-fit">
+        <button
+          onClick={() => { setTab("feed"); setSearch(""); }}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            tab === "feed"
+              ? "bg-amber/10 text-amber"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <Activity className="w-3.5 h-3.5" />
+          Activity Feed
+        </button>
+        <button
+          onClick={() => { setTab("activity"); setSearch(""); }}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            tab === "activity"
+              ? "bg-amber/10 text-amber"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <Grid3x3 className="w-3.5 h-3.5" />
+          Client Activity
+        </button>
         <button
           onClick={() => { setTab("logins"); setSearch(""); }}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -198,12 +350,136 @@ export function SuperAdminAuditClient({ initialLogs, initialLoginLogs }: Props) 
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <Input
-          placeholder={tab === "actions" ? "Search by admin, action…" : "Search by name, email, role…"}
+          placeholder={
+            tab === "actions" ? "Search by admin, action…"
+            : tab === "logins" ? "Search by name, email, role…"
+            : tab === "feed" ? "Search by branch, actor, event…"
+            : "Search by branch, client name, email…"
+          }
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="pl-9"
         />
       </div>
+
+      {/* Activity Feed Table */}
+      {tab === "feed" && (
+        <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
+          {filteredFeed.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
+              <Activity className="w-10 h-10 opacity-20" />
+              <p className="text-sm font-medium">{search ? "No matching events" : "No activity yet"}</p>
+              <p className="text-xs">Events appear here as clients add tenants, record payments, and use other features.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-sidebar-border bg-white/[0.02]">
+                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Time</th>
+                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Branch</th>
+                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Actor</th>
+                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Event</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-sidebar-border">
+                  {filteredFeed.map((event) => {
+                    const Icon = activityEntityIcon(event.entity);
+                    return (
+                      <tr key={event.id} className="hover:bg-white/[0.02] transition-colors">
+                        <td className="px-4 py-3 shrink-0">
+                          <span className="text-xs text-muted-foreground whitespace-nowrap" title={new Date(event.createdAt).toLocaleString()}>
+                            {timeAgo(event.createdAt)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <p className="text-sm text-foreground/90 truncate max-w-[180px]">{event.hostelName ?? "—"}</p>
+                          {event.ownerName && (
+                            <p className="text-xs text-muted-foreground truncate max-w-[180px]">{event.ownerName}</p>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <p className="text-sm text-foreground/90 truncate max-w-[180px]">{event.actorName || event.actorEmail || "Unknown"}</p>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-foreground/90 max-w-md">
+                          <div className="flex items-center gap-1.5">
+                            <Icon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                            {describeActivity(event)}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Client Activity Table */}
+      {tab === "activity" && (
+        <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
+          {sortedActivity.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
+              <Activity className="w-10 h-10 opacity-20" />
+              <p className="text-sm font-medium">{search ? "No matching branches" : "No branches yet"}</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-sidebar-border bg-white/[0.02]">
+                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Branch</th>
+                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Owner Login</th>
+                    {FEATURE_COLUMNS.map(({ key, label, icon: Icon }) => (
+                      <th key={key} className="text-center text-xs font-medium text-muted-foreground px-2 py-3" title={label}>
+                        <Icon className="w-3.5 h-3.5 mx-auto" />
+                      </th>
+                    ))}
+                    <th className="text-center text-xs font-medium text-muted-foreground px-4 py-3">Used</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-sidebar-border">
+                  {sortedActivity.map((row) => (
+                    <tr key={row.hostelId} className="hover:bg-white/[0.02] transition-colors">
+                      <td className="px-4 py-3">
+                        <p className="text-sm text-foreground/90 truncate max-w-[200px]">{row.hostelName}</p>
+                        <p className="text-xs text-muted-foreground truncate max-w-[200px]">
+                          {row.ownerName || row.ownerEmail}
+                        </p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="text-xs text-muted-foreground whitespace-nowrap" title={row.lastLogin ? new Date(row.lastLogin).toLocaleString() : "Never logged in"}>
+                          {row.lastLogin ? timeAgo(row.lastLogin) : "Never"}
+                        </span>
+                      </td>
+                      {FEATURE_COLUMNS.map(({ key, label }) => {
+                        const entry = row.features[key];
+                        const tooltip = entry.count === 0
+                          ? `${label}: never used`
+                          : `${label}: ${entry.count} total, last used ${entry.lastUsedAt ? timeAgo(entry.lastUsedAt) : "?"}`;
+                        return (
+                          <td key={key} className="px-2 py-3 text-center" title={tooltip}>
+                            <span className={`text-xs font-semibold tabular-nums ${featureCellColor(entry)}`}>
+                              {entry.count > 0 ? entry.count : "–"}
+                            </span>
+                          </td>
+                        );
+                      })}
+                      <td className="px-4 py-3 text-center">
+                        <span className="text-xs font-medium text-foreground/80 whitespace-nowrap">
+                          {featuresUsedCount(row)}/{FEATURE_KEYS.length}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Login History Table */}
       {tab === "logins" && (

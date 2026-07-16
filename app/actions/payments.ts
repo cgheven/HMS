@@ -19,6 +19,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
+import { logActivity } from "@/lib/audit";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -452,6 +453,23 @@ export async function markPaymentPaidAction(
       // Non-fatal — the payment itself is already recorded correctly above.
       // Losing the per-installment snapshot only affects historical granularity.
       console.error("[markPaymentPaidAction] Failed to record payment installment:", installmentErr.message);
+    }
+
+    const ctx = await getAuthContext();
+    if (ctx?.user) {
+      await logActivity({
+        hostel_id: hostelId,
+        actor_id: ctx.user.id,
+        action: "payment.paid",
+        entity: "payment",
+        entity_id: input.paymentId,
+        meta: {
+          tenant_name: (data as { tenant?: { full_name?: string } }).tenant?.full_name ?? null,
+          amount: amountReceivedNow,
+          for_month: existingPayment.for_month,
+          method: input.method,
+        },
+      });
     }
 
     return { payment: data as Payment };
@@ -924,6 +942,16 @@ export async function applyRoomACUnitsAction(
     revalidatePath("/payments");
     revalidatePath("/dashboard");
     const first = tenantBilling[0];
+
+    await logActivity({
+      hostel_id: hostelId,
+      actor_id: ctx.user.id,
+      action: "ac_reading.submit",
+      entity: "ac_reading",
+      entity_id: roomId,
+      meta: { for_month: forMonth, meter_reading: reading, total_units: units, tenant_count: eligible.length },
+    });
+
     return {
       success: true,
       eligibleCount: eligible.length,

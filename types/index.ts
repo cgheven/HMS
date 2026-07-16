@@ -632,6 +632,43 @@ export interface PlatformInvoice {
   standard_annual_price: number;
 }
 
+export const FEATURE_KEYS = [
+  "tenants", "payments", "expenses", "kitchen", "staff", "complaints", "acBilling", "team",
+] as const;
+export type FeatureKey = (typeof FEATURE_KEYS)[number];
+
+// One row per BRANCH (hostel), not per owner — a client's branches can vary
+// wildly in how much they're actually used, and that's exactly the signal
+// worth surfacing for outreach (a rolled-up owner average hides a dead branch).
+export interface ClientActivityRow {
+  hostelId: string;
+  hostelName: string;
+  ownerId: string;
+  ownerName: string | null;
+  ownerEmail: string;
+  lastLogin: string | null;
+  features: Record<FeatureKey, { count: number; lastUsedAt: string | null }>;
+}
+
+// Raw chronological event — who did what, when, on which branch. Backed by
+// hms_activity_log: automatic via DB trigger for client-side inserts (tenants,
+// kitchen, expenses, staff, complaints), or an explicit logActivity() call for
+// the handful of actions that run server-side (payments, AC billing, managers).
+export interface ActivityFeedEvent {
+  id: string;
+  hostelId: string | null;
+  hostelName: string | null;
+  ownerName: string | null;
+  actorId: string | null;
+  actorName: string | null;
+  actorEmail: string | null;
+  action: string;
+  entity: string;
+  entityId: string | null;
+  meta: Record<string, unknown> | null;
+  createdAt: string;
+}
+
 export interface LeadActivity {
   id: string;
   lead_id: string;
