@@ -208,7 +208,8 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
   const foodCharge = calcFoodAddonCharge(t, foodAddonRates);
   const initials = t.full_name[0].toUpperCase();
   return (
-    <div className="flex items-center gap-3 px-3 py-3.5 sm:px-4 sm:py-3 rounded-xl hover:bg-white/[0.03] transition-colors">
+    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 px-3 py-3.5 sm:px-4 sm:py-3 rounded-xl hover:bg-white/[0.03] transition-colors">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
       <button
         type="button"
         onClick={() => onTimeline(t)}
@@ -258,41 +259,45 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
               <ShieldCheck className="w-3 h-3" />{t.documents.length}
             </span>
           )}
-          {t.intended_checkout_date && (() => {
-            const daysNotice = computeDaysNotice(t);
-            const adequate = daysNotice != null && daysNotice >= noticePeriodDays;
-            const duePayment = currentMonthPaymentByTenant?.[t.id];
-            const showDueChip = !!duePayment
-              && ["pending", "overdue", "partially_paid"].includes(duePayment.status)
-              && duePayment.remaining > 0;
-            return (
-              <>
-                <span
-                  className={cn(
-                    "inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border",
-                    adequate
-                      ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                      : "text-amber bg-amber/10 border-amber/20"
-                  )}
-                  title={`Leaving ${formatDate(t.intended_checkout_date)}`}
-                >
-                  <CalendarClock className="w-2.5 h-2.5" />
-                  {t.notice_given_date && <>Notice {formatDate(t.notice_given_date)} →{" "}</>}
-                  Leaving {formatDate(t.intended_checkout_date)}
-                  {daysNotice != null && <span className="opacity-80">({daysNotice}d {adequate ? "✓" : "⚠"})</span>}
-                </span>
-                {showDueChip && (
-                  <span className="inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border text-rose-400 bg-rose-500/10 border-rose-500/20">
-                    ⚠ {formatCurrency(duePayment!.remaining)} due
-                  </span>
-                )}
-              </>
-            );
-          })()}
         </div>
+        {t.intended_checkout_date && (() => {
+          const daysNotice = computeDaysNotice(t);
+          const adequate = daysNotice != null && daysNotice >= noticePeriodDays;
+          const duePayment = currentMonthPaymentByTenant?.[t.id];
+          const showDueChip = !!duePayment
+            && ["pending", "overdue", "partially_paid"].includes(duePayment.status)
+            && duePayment.remaining > 0;
+          return (
+            <div className="flex flex-wrap gap-1.5 mt-1 items-center">
+              <span
+                className={cn(
+                  "inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border",
+                  adequate
+                    ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                    : "text-amber bg-amber/10 border-amber/20"
+                )}
+                title={t.notice_given_date ? `Notice given ${formatDate(t.notice_given_date)} — leaving ${formatDate(t.intended_checkout_date)}` : `Leaving ${formatDate(t.intended_checkout_date)}`}
+              >
+                <CalendarClock className="w-2.5 h-2.5 shrink-0" />
+                {t.notice_given_date && <span className="hidden sm:inline">Notice {formatDate(t.notice_given_date)} →{" "}</span>}
+                Leaving {formatDate(t.intended_checkout_date)}
+                {daysNotice != null && <span className="opacity-80">({daysNotice}d {adequate ? "✓" : "⚠"})</span>}
+              </span>
+              {showDueChip && (
+                <span className="inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border text-rose-400 bg-rose-500/10 border-rose-500/20">
+                  ⚠ {formatCurrency(duePayment!.remaining)} due
+                </span>
+              )}
+            </div>
+          );
+        })()}
       </button>
+      </div>
 
-      <div className="text-right shrink-0 hidden md:block">
+      <div className="flex items-center justify-end gap-3 sm:contents">
+      {/* Fixed width, else the column re-sizes per row (Rs 30,000 vs Rs 19,000)
+          and drifts horizontally, breaking alignment down the list. */}
+      <div className="text-right shrink-0 hidden md:block w-28">
         {t.billing_type === "daily"
           ? <p className="text-sm font-semibold text-foreground">{formatCurrency(t.daily_rate)}<span className="text-xs text-muted-foreground font-normal">/day</span></p>
           : <p className="text-sm font-semibold text-foreground">{formatCurrency(t.monthly_rent + foodCharge)}<span className="text-xs text-muted-foreground font-normal">/mo</span></p>
@@ -323,7 +328,9 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
             variant="ghost"
             size="sm"
             className={cn(
-              "h-8 px-2 border",
+              // Fixed width so "Notice" and "Give Notice" occupy the same space —
+              // otherwise the label swap shifts every column to its left.
+              "h-8 px-2 border sm:w-[112px]",
               t.intended_checkout_date
                 ? "text-amber hover:text-amber hover:bg-amber/10 border-amber/20"
                 : "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 border-blue-500/20"
@@ -356,6 +363,7 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
         <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => onDelete(t)}>
           <Trash2 className="w-3.5 h-3.5" />
         </Button>
+      </div>
       </div>
     </div>
   );

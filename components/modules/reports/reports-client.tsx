@@ -301,9 +301,9 @@ export function ReportsClient(props: Props) {
             {/* 4 KPI cards */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {[
-                { label: "Total Revenue", value: formatCurrency(d.totalRevenue), icon: TrendingUp, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
+                { label: "Collected", value: formatCurrency(d.totalRevenue), icon: TrendingUp, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
                 { label: "Net Profit", value: formatCurrency(totalNetProfit), icon: Banknote, color: totalNetProfit >= 0 ? "text-emerald-400" : "text-rose-400", bg: totalNetProfit >= 0 ? "bg-emerald-500/10 border-emerald-500/20" : "bg-rose-500/10 border-rose-500/20" },
-                { label: "Pending Collections", value: formatCurrency(d.pendingCollections), icon: AlertTriangle, color: "text-amber", bg: "bg-amber/10 border-amber/20" },
+                { label: "Pending (this period)", value: formatCurrency(d.pendingCollections), icon: AlertTriangle, color: "text-amber", bg: "bg-amber/10 border-amber/20" },
                 { label: "New Tenants", value: String(d.newTenants), icon: Users, color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/20" },
               ].map(({ label, value, icon: Icon, color, bg }) => (
                 <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5">
@@ -320,6 +320,94 @@ export function ReportsClient(props: Props) {
               ))}
             </div>
 
+            {/* Money Owed — ignores the date filter on purpose, so debt older
+                than the selected range can't hide. */}
+            {d.receivablesAging && d.receivablesAging.totalOwed > 0 && (() => {
+              const a = d.receivablesAging;
+              const buckets = [
+                { label: "This month", sub: "Not late yet", amount: a.current, tone: "text-foreground", bar: "bg-muted-foreground/30" },
+                { label: "1 month late", sub: "", amount: a.late1Month, tone: "text-amber", bar: "bg-amber" },
+                { label: "2 months late", sub: "", amount: a.late2Months, tone: "text-orange-400", bar: "bg-orange-400" },
+                { label: "3+ months late", sub: "At risk", amount: a.late3PlusMonths, tone: "text-rose-400", bar: "bg-rose-400" },
+              ];
+              const max = Math.max(...buckets.map((b) => b.amount), 1);
+              return (
+                <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2 px-5 py-4 border-b border-sidebar-border">
+                    <div>
+                      <p className="text-sm font-semibold">Money Owed To You</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        All unpaid rent, across every month — not just the selected period
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xl font-bold leading-tight">{formatCurrency(a.totalOwed)}</p>
+                      {a.totalLate > 0 && (
+                        <p className="text-xs text-rose-400 mt-0.5">{formatCurrency(a.totalLate)} is late</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-5 p-5 lg:grid-cols-2">
+                    <div className="space-y-2.5">
+                      {buckets.map((b) => (
+                        <div key={b.label}>
+                          <div className="flex items-baseline justify-between gap-2 mb-1">
+                            <span className="text-xs text-muted-foreground">
+                              {b.label}
+                              {b.sub && <span className="ml-1.5 opacity-60">{b.sub}</span>}
+                            </span>
+                            <span className={cn("text-sm font-semibold tabular-nums", b.tone)}>
+                              {formatCurrency(b.amount)}
+                            </span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
+                            <div className={cn("h-full rounded-full", b.bar)} style={{ width: `${(b.amount / max) * 100}%` }} />
+                          </div>
+                        </div>
+                      ))}
+                      <p className="text-xs text-muted-foreground pt-1.5">
+                        <span className="text-foreground font-medium">{a.activeDebtors}</span> of {a.activeTenants} current tenants owe you money
+                      </p>
+                      {a.formerDebtors > 0 && (
+                        <p className="text-xs text-rose-400">
+                          {a.formerDebtors} former {a.formerDebtors === 1 ? "tenant has" : "tenants have"} checked out still owing{" "}
+                          <span className="font-semibold">{formatCurrency(a.formerDebtorsOwed)}</span>
+                        </p>
+                      )}
+                    </div>
+
+                    {a.topDebtors.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2.5">Who to chase first</p>
+                        <div className="space-y-1.5">
+                          {a.topDebtors.map((t) => (
+                            <div key={t.id} className="flex items-center justify-between gap-3 rounded-lg border border-sidebar-border px-3 py-2">
+                              <div className="min-w-0">
+                                <p className="text-sm truncate flex items-center gap-1.5">
+                                  {t.name}
+                                  {!t.isActive && (
+                                    <span className="shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium border text-rose-400 bg-rose-500/10 border-rose-500/20">
+                                      Left
+                                    </span>
+                                  )}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {t.monthsUnpaid} unpaid {t.monthsUnpaid === 1 ? "month" : "months"} · since {t.oldestMonth}
+                                </p>
+                              </div>
+                              <span className="text-sm font-semibold text-rose-400 tabular-nums shrink-0">
+                                {formatCurrency(t.owed)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </TabsContent>
 
           {/* ── REVENUE TAB ──────────────────────────────────────────────── */}

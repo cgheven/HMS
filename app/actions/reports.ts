@@ -121,6 +121,32 @@ export interface ReportData {
     unpaidBillsTotal: number;
     pendingSalariesTotal: number;
   };
+
+  // Receivables aging — deliberately IGNORES the selected date range. Its whole
+  // purpose is surfacing debt older than whatever window the user is looking at,
+  // which every other metric here would hide.
+  receivablesAging: {
+    current: number;      // this month — not late yet
+    late1Month: number;
+    late2Months: number;
+    late3PlusMonths: number;
+    totalOwed: number;
+    totalLate: number;    // everything except `current`
+    activeDebtors: number;
+    activeTenants: number;
+    // Tenants who already checked out but never settled — this money is far
+    // harder to recover, so it's kept separate rather than blended into the rest.
+    formerDebtors: number;
+    formerDebtorsOwed: number;
+    topDebtors: {
+      id: string;
+      name: string;
+      owed: number;
+      monthsUnpaid: number;
+      oldestMonth: string;
+      isActive: boolean;
+    }[];
+  };
 }
 
 export async function getReportData(
@@ -174,6 +200,9 @@ export async function getReportData(
   const fullStart = monthKeys[0]?.start ?? from;
   const fullEnd = monthKeys[monthKeys.length - 1]?.end ?? to;
 
+  const now = new Date();
+  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+
   const [
     paymentsRes,
     expensesRes,
@@ -182,6 +211,7 @@ export async function getReportData(
     tenantsRes,
     roomsRes,
     billsRes,
+    agingRes,
   ] = await Promise.all([
     admin
       .from("hms_payments")
@@ -221,6 +251,14 @@ export async function getReportData(
       .eq("hostel_id", hostelId)
       .gte("due_date", fullStart)
       .lte("due_date", fullEnd),
+    // No date filter by design — see receivablesAging on ReportData. Capped at
+    // for_month <= current month so pre-billed future months aren't called "owed".
+    admin
+      .from("hms_payments")
+      .select("tenant_id, for_month, amount, amount_paid, late_fee, tenant:hms_tenants(full_name, is_active)")
+      .eq("hostel_id", hostelId)
+      .in("status", ["pending", "overdue", "partially_paid"])
+      .lte("for_month", currentMonthKey),
   ]);
 
   type PaymentRow = {
@@ -475,6 +513,63 @@ export async function getReportData(
   const unpaidBillsTotal = billRows.filter((r) => r.status !== "paid").reduce((s, r) => s + r.amount, 0);
   const pendingSalariesTotal = salaryRows.filter((r) => r.status !== "paid").reduce((s, r) => s + r.amount, 0);
 
+  // ── Receivables aging ──────────────────────────────────────────────────────
+  // "How late" is derived from for_month vs the current month: the DB has no
+  // overdue concept — every unpaid row is `pending` whether it's days or months
+  // old — so age is the only way to tell a slow payer from a real debtor.
+  type AgingRow = {
+    tenant_id: string;
+    for_month: string;
+    amount: unknown;
+    amount_paid?: unknown;
+    late_fee: unknown;
+    tenant: { full_name: string; is_active: boolean } | { full_name: string; is_active: boolean }[] | null;
+  };
+  const agingRows = (agingRes.data ?? []) as unknown as AgingRow[];
+
+  function monthsBetween(fromKey: string, toKey: string): number {
+    const [fy, fm] = fromKey.split("-").map(Number);
+    const [ty, tm] = toKey.split("-").map(Number);
+    return (ty - fy) * 12 + (tm - fm);
+  }
+
+  const aging = { current: 0, late1Month: 0, late2Months: 0, late3PlusMonths: 0 };
+  const debtorMap = new Map<string, { name: string; owed: number; months: number; oldestMonth: string; isActive: boolean }>();
+
+  for (const r of agingRows) {
+    const owed = Number(r.amount ?? 0) + Number(r.late_fee ?? 0) - Number(r.amount_paid ?? 0);
+    if (owed <= 0) continue;
+
+    const age = monthsBetween(r.for_month, currentMonthKey);
+    if (age <= 0) aging.current += owed;
+    else if (age === 1) aging.late1Month += owed;
+    else if (age === 2) aging.late2Months += owed;
+    else aging.late3PlusMonths += owed;
+
+    const tenantRel = Array.isArray(r.tenant) ? r.tenant[0] : r.tenant;
+    const existing = debtorMap.get(r.tenant_id);
+    if (existing) {
+      existing.owed += owed;
+      existing.months += 1;
+      if (r.for_month < existing.oldestMonth) existing.oldestMonth = r.for_month;
+    } else {
+      debtorMap.set(r.tenant_id, {
+        name: tenantRel?.full_name ?? "Unknown",
+        owed,
+        months: 1,
+        oldestMonth: r.for_month,
+        isActive: tenantRel?.is_active ?? false,
+      });
+    }
+  }
+
+  const totalOwed = aging.current + aging.late1Month + aging.late2Months + aging.late3PlusMonths;
+  const allDebtors = [...debtorMap.entries()].map(([id, d]) => ({
+    id, name: d.name, owed: d.owed, monthsUnpaid: d.months, oldestMonth: d.oldestMonth, isActive: d.isActive,
+  }));
+  const formerDebtorList = allDebtors.filter((d) => !d.isActive);
+  const topDebtors = [...allDebtors].sort((a, b) => b.owed - a.owed).slice(0, 5);
+
   return {
     data: {
       hostelId,
@@ -504,6 +599,16 @@ export async function getReportData(
         grandTotal,
         unpaidBillsTotal,
         pendingSalariesTotal,
+      },
+      receivablesAging: {
+        ...aging,
+        totalOwed,
+        totalLate: aging.late1Month + aging.late2Months + aging.late3PlusMonths,
+        activeDebtors: allDebtors.filter((d) => d.isActive).length,
+        activeTenants: tenants.filter((t) => t.is_active).length,
+        formerDebtors: formerDebtorList.length,
+        formerDebtorsOwed: formerDebtorList.reduce((s, d) => s + d.owed, 0),
+        topDebtors,
       },
     },
     error: null,
