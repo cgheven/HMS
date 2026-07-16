@@ -36,7 +36,7 @@ export async function getClientBilling(ownerId: string): Promise<{
     await requireSuperAdmin();
     const admin = createAdminClient();
 
-    const [billingRes, invoicesRes, profileRes] = await Promise.all([
+    const [billingRes, invoicesRes, profileRes, hostelsRes] = await Promise.all([
       admin.from("hms_client_billing").select("*").eq("owner_id", ownerId).maybeSingle(),
       admin
         .from("hms_platform_invoices")
@@ -44,15 +44,26 @@ export async function getClientBilling(ownerId: string): Promise<{
         .eq("owner_id", ownerId)
         .order("period_start", { ascending: false }),
       admin.from("hms_profiles").select("phone").eq("id", ownerId).maybeSingle(),
+      admin
+        .from("hms_hostels")
+        .select("phone, whatsapp")
+        .eq("owner_id", ownerId)
+        .order("created_at", { ascending: true }),
     ]);
 
     if (billingRes.error) throw billingRes.error;
     if (invoicesRes.error) throw invoicesRes.error;
 
+    // The owner's own profile phone is often never captured at signup — fall back
+    // to whichever branch has a WhatsApp/phone number on file so sharing still works.
+    const fallbackPhone = hostelsRes.data?.find((h) => h.whatsapp)?.whatsapp
+      ?? hostelsRes.data?.find((h) => h.phone)?.phone
+      ?? null;
+
     return {
       billing: (billingRes.data as ClientBilling | null) ?? null,
       invoices: (invoicesRes.data ?? []) as PlatformInvoice[],
-      ownerPhone: profileRes.data?.phone ?? null,
+      ownerPhone: profileRes.data?.phone || fallbackPhone,
     };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to load billing" };
@@ -210,5 +221,37 @@ export async function updateInvoiceAmount(invoiceId: string, amount: number): Pr
     return {};
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to update invoice" };
+  }
+}
+
+// ── updateOwnerPhone ──────────────────────────────────────────────────────────
+// Most owners never had a phone captured at creation (the field is optional and
+// there's no settings UI to add one later), which silently breaks the "Share on
+// WhatsApp" invoice button — it falls back to a contact-less wa.me link with no
+// recipient. This lets the admin backfill it right where the WhatsApp button lives.
+
+export async function updateOwnerPhone(ownerId: string, phone: string): Promise<{ error?: string }> {
+  try {
+    const caller = await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const { error } = await admin
+      .from("hms_profiles")
+      .update({ phone: phone.trim() || null })
+      .eq("id", ownerId);
+    if (error) throw error;
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: "super_admin.update_owner_phone",
+      entity: "profile",
+      entity_id: ownerId,
+      meta: {},
+    });
+
+    return {};
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to update phone" };
   }
 }

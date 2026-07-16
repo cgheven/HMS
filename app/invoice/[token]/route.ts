@@ -27,7 +27,7 @@ export async function GET(
   // at generation time in lib/invoice-generation.ts) — not recomputed live, so an
   // old invoice stays an accurate historical record even if branches change later.
   const [{ data: profile }, { data: authUser }] = await Promise.all([
-    admin.from("hms_profiles").select("full_name").eq("id", invoice.owner_id).maybeSingle(),
+    admin.from("hms_profiles").select("full_name, phone").eq("id", invoice.owner_id).maybeSingle(),
     admin.auth.admin.getUserById(invoice.owner_id),
   ]);
 
@@ -47,6 +47,7 @@ export async function GET(
     {
       owner_name: profile?.full_name ?? "Client",
       owner_email: authUser?.user?.email ?? null,
+      owner_phone: profile?.phone ?? null,
     }
   );
 

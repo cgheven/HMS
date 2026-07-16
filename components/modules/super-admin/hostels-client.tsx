@@ -12,6 +12,7 @@ import {
 } from "@/app/actions/super-admin";
 import {
   getClientBilling, setClientBilling, generateInvoiceNow, markInvoiceStatus, updateInvoiceAmount,
+  updateOwnerPhone,
 } from "@/app/actions/client-billing";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,14 @@ import { calculateAnnualPrice } from "@/lib/pricing";
 import type { ClientBilling, PlatformInvoice } from "@/types";
 
 const emptyOwner = { ownerEmail: "", ownerName: "", ownerPhone: "" };
+
+// wa.me needs a full international number — a local "03XX…" number (how Pakistani
+// numbers are normally typed/stored) has to become "923XX…", or the chat never opens.
+function toWhatsAppPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  return digits.startsWith("0") ? `92${digits.slice(1)}` : digits;
+}
 
 interface Credentials { name: string; email: string; password: string; phone: string; branches: number }
 interface Props { initialHostels: SuperHostelRow[] }
@@ -66,9 +75,8 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
       `You have *${c.branches} branch${c.branches > 1 ? "es" : ""}* provisioned. ` +
       `You can rename them from Settings after logging in.\n\n` +
       `Welcome aboard! 🏠`;
-    // Strip non-digits from phone, then open directly to that chat.
-    // Falls back to contact picker if no phone was provided.
-    const phone = c.phone.replace(/\D/g, "");
+    // Open directly to that chat. Falls back to contact picker if no phone was provided.
+    const phone = toWhatsAppPhone(c.phone);
     const url = phone
       ? `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`
       : `https://wa.me/?text=${encodeURIComponent(msg)}`;
@@ -152,6 +160,8 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
   const [billing, setBilling] = useState<ClientBilling | null>(null);
   const [invoices, setInvoices] = useState<PlatformInvoice[]>([]);
   const [ownerPhone, setOwnerPhone] = useState<string | null>(null);
+  const [phoneInput, setPhoneInput] = useState("");
+  const [savingPhone, setSavingPhone] = useState(false);
   const [billingForm, setBillingForm] = useState({
     cycle: "annual" as "monthly" | "annual",
     price: "",
@@ -170,6 +180,7 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
       setBilling(res.billing ?? null);
       setInvoices(res.invoices ?? []);
       setOwnerPhone(res.ownerPhone ?? null);
+      setPhoneInput(res.ownerPhone ?? "");
       setBillingForm({
         cycle: res.billing?.billing_cycle ?? "annual",
         price: res.billing?.custom_price != null ? String(res.billing.custom_price) : "",
@@ -272,17 +283,34 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     });
   }
 
+  function handleSavePhone() {
+    if (!billingTarget) return;
+    setSavingPhone(true);
+    startTransition(async () => {
+      const res = await updateOwnerPhone(billingTarget.ownerId, phoneInput);
+      if (res.error) {
+        toast({ title: "Failed", description: res.error, variant: "destructive" });
+      } else {
+        setOwnerPhone(phoneInput.trim() || null);
+        toast({ title: "Phone saved" });
+      }
+      setSavingPhone(false);
+    });
+  }
+
   function shareInvoiceWhatsApp(inv: PlatformInvoice) {
+    const phone = toWhatsAppPhone(ownerPhone ?? "");
+    if (!phone) {
+      toast({ title: "No phone on file", description: "Add the client's phone number above, then share again.", variant: "destructive" });
+      return;
+    }
     const url = `${window.location.origin}/invoice/${inv.share_token}`;
     const msg =
-      `Assalam o Alaikum! Here's your Pulse invoice for *${inv.period_label}*:\n` +
-      `Amount: ${formatCurrency(inv.amount)}\n` +
-      `Due: ${formatDate(inv.due_date)}\n\n` +
+      `Assalam o Alaikum ${billingTarget?.ownerName ?? ""}! Here's your Pulse invoice for *${inv.period_label}*:\n` +
+      `Amount: ${formatCurrency(inv.amount)}\n\n` +
+      `Please pay at your earliest convenience.\n\n` +
       `${url}`;
-    const phone = (ownerPhone ?? "").replace(/\D/g, "");
-    const waUrl = phone
-      ? `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`
-      : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+    const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
     window.open(waUrl, "_blank");
   }
 
@@ -663,7 +691,7 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
 
       {/* ── Billing Dialog ── */}
       <Dialog open={!!billingTarget} onOpenChange={o => !o && setBillingTarget(null)}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto scrollbar-thin">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><Wallet className="w-4 h-4 text-amber" /> Billing</DialogTitle>
             <DialogDescription>{billingTarget?.ownerName}</DialogDescription>
@@ -674,6 +702,27 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
           ) : (
             <div className="space-y-5 py-2">
               <div className="grid gap-3">
+                <div className="space-y-1.5">
+                  <Label>Client Phone (for WhatsApp)</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="+92 300 1234567"
+                      value={phoneInput}
+                      onChange={e => setPhoneInput(e.target.value)}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={isPending || savingPhone || phoneInput === (ownerPhone ?? "")}
+                      onClick={handleSavePhone}
+                    >
+                      <Check className="w-4 h-4" />
+                    </Button>
+                  </div>
+                  {!ownerPhone && (
+                    <p className="text-[11px] text-amber">No phone on file — WhatsApp sharing won't work until one is added.</p>
+                  )}
+                </div>
                 <div className="space-y-1.5">
                   <Label>Billing Cycle</Label>
                   <div className="flex gap-2">
@@ -780,7 +829,7 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                 {invoices.length === 0 ? (
                   <p className="text-sm text-muted-foreground py-4 text-center">No invoices yet.</p>
                 ) : (
-                  <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                  <div className="space-y-1.5">
                     {invoices.map((inv) => {
                       const { actualAnnual, discount, discountPct } = invoicePricingInfo(inv);
                       return (
