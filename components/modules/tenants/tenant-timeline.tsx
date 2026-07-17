@@ -54,6 +54,8 @@ export function EventIcon({ type }: { type: TimelineEvent["type"] }) {
       return <Wallet className="w-4 h-4 text-blue-400" />;
     case "deposit_forfeited":
       return <Wallet className="w-4 h-4 text-rose-400" />;
+    case "deposit_applied":
+      return <Wallet className="w-4 h-4 text-amber" />;
     case "partially_paid":
       return <Banknote className="w-4 h-4 text-blue-400" />;
     case "notice_given":
@@ -78,6 +80,7 @@ export function eventDotColor(type: TimelineEvent["type"]): string {
     case "deposit_collected": return "bg-emerald-600 border-emerald-400";
     case "deposit_returned":  return "bg-blue-500 border-blue-400";
     case "deposit_forfeited": return "bg-rose-500 border-rose-400";
+    case "deposit_applied": return "bg-amber border-amber/60";
     case "partially_paid": return "bg-blue-500 border-blue-400";
     case "notice_given":   return "bg-amber border-amber/60";
     case "notice_cancelled": return "bg-muted-foreground/40 border-muted-foreground/60";

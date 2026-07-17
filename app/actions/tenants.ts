@@ -7,7 +7,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrAbove } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
-import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, TenantEventType } from "@/types";
+import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, CheckoutSettlement, TenantEventType } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -296,6 +296,7 @@ export type TimelineEventType =
   | "deposit_collected"
   | "deposit_returned"
   | "deposit_forfeited"
+  | "deposit_applied"
   | "notice_given"
   | "notice_cancelled"
   | "check_out"
@@ -597,6 +598,15 @@ export async function getTenantTimeline(
           sub: e.notes ?? undefined,
           amount: e.amount != null ? Number(e.amount) : undefined,
         });
+      } else if (e.event_type === "deposit_applied") {
+        events.push({
+          id: `event-${e.id}`,
+          type: "deposit_applied",
+          date: e.created_at,
+          label: `Rs. ${Number(e.amount ?? 0).toLocaleString()} deposit applied to dues`,
+          sub: e.notes ?? undefined,
+          amount: e.amount != null ? Number(e.amount) : undefined,
+        });
       } else if (e.event_type === "notice_given") {
         events.push({
           id: `event-${e.id}`,
@@ -629,9 +639,11 @@ export async function getTenantTimeline(
       partially_paid: 3,
       pending: 4,
       status_change: 5,
-      deposit_returned: 6,
-      deposit_forfeited: 6,
-      check_out: 7,
+      // Dues are cleared from the deposit before whatever is left is settled up.
+      deposit_applied: 6,
+      deposit_returned: 7,
+      deposit_forfeited: 7,
+      check_out: 8,
     };
     events.sort((a, b) => {
       // Compare by calendar day, not exact millisecond timestamp — events logged
@@ -858,6 +870,13 @@ export async function getACCheckoutContextAction(
   perUnitRate: number;
   activeTenantCount: number;
   priorCheckoutUnits: number[];
+  /**
+   * Arrival point of everyone still in the room, so the preview can segment the month
+   * the way the server does. unitsAtJoin is already an offset; joiningMeterReading is
+   * absolute and only set for tenants who arrived THIS month — the caller subtracts
+   * whichever opening reading is in play, which may be one the operator is still typing.
+   */
+  joiners: { tenantId: string; unitsAtJoin: number | null; joiningMeterReading: number | null }[];
   error?: string;
 }> {
   try {
@@ -869,7 +888,7 @@ export async function getACCheckoutContextAction(
     const prevDate = new Date(y, m - 2, 1);
     const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
 
-    const [{ data: prevRecord }, { data: config }, { data: tenants }, { data: priorCheckouts }] = await Promise.all([
+    const [{ data: prevRecord }, { data: config }, { data: tenants }, { data: priorCheckouts }, { data: joinRows }] = await Promise.all([
       adminDb
         .from("hms_room_ac_readings")
         .select("meter_reading, total_units")
@@ -884,7 +903,7 @@ export async function getACCheckoutContextAction(
         .maybeSingle(),
       adminDb
         .from("hms_tenants")
-        .select("id")
+        .select("id, check_in, joining_meter_reading")
         .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
         .eq("is_active", true),
@@ -897,9 +916,27 @@ export async function getACCheckoutContextAction(
         .eq("room_id", roomId)
         .eq("hostel_id", hostelId)
         .eq("for_month", checkoutMonth),
+      adminDb
+        .from("hms_room_ac_join_readings")
+        .select("tenant_id, units_at_join")
+        .eq("room_id", roomId)
+        .eq("hostel_id", hostelId)
+        .eq("for_month", checkoutMonth),
     ]);
 
     const priorCheckoutUnits = (priorCheckouts ?? []).map(r => Number(r.units_consumed));
+
+    const joiners = (tenants ?? []).map(t => {
+      const manual = (joinRows ?? []).find(j => j.tenant_id === t.id);
+      return {
+        tenantId: t.id,
+        unitsAtJoin: manual ? Number(manual.units_at_join) : null,
+        joiningMeterReading:
+          !manual && t.joining_meter_reading != null && (t.check_in as string | null)?.slice(0, 7) === checkoutMonth
+            ? Number(t.joining_meter_reading)
+            : null,
+      };
+    });
 
     return {
       prevMonthReading: prevRecord?.meter_reading != null ? Number(prevRecord.meter_reading) : null,
@@ -907,6 +944,7 @@ export async function getACCheckoutContextAction(
       perUnitRate: Number(config?.ac_per_unit_rate ?? 0),
       activeTenantCount: (tenants ?? []).length + priorCheckoutUnits.length,
       priorCheckoutUnits,
+      joiners,
     };
   } catch (err: unknown) {
     return {
@@ -915,6 +953,7 @@ export async function getACCheckoutContextAction(
       perUnitRate: 0,
       activeTenantCount: 0,
       priorCheckoutUnits: [],
+      joiners: [],
       error: err instanceof Error ? err.message : "Failed to load AC context",
     };
   }
@@ -1065,7 +1104,7 @@ export async function cancelTenantNoticeAction(
 
 export async function checkoutTenantAction(
   input: CheckoutInput
-): Promise<{ success: boolean; error?: string; warning?: string }> {
+): Promise<{ success: boolean; error?: string; warning?: string; settlement?: CheckoutSettlement }> {
   try {
     await requireOwnerOrAbove();
     const hostelId = await resolveHostelId();
@@ -1074,7 +1113,7 @@ export async function checkoutTenantAction(
     // Step 1: Fetch and verify tenant belongs to this hostel and is still active
     const { data: tenant, error: tenantErr } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, room_id, is_active, check_in, security_deposit")
+      .select("id, full_name, hostel_id, room_id, is_active, check_in, security_deposit, joining_meter_reading")
       .eq("id", input.tenantId)
       .eq("hostel_id", hostelId)
       .single();
@@ -1102,7 +1141,7 @@ export async function checkoutTenantAction(
 
     // Step 2: Verify payment belongs to this tenant and hostel (prevents IDOR)
     let paymentAlreadySettled = false;
-    let verifiedPayment: { id: string; tenant_id: string; hostel_id: string; status: string; for_month: string; amount: number | null } | null = null;
+    let verifiedPayment: { id: string; tenant_id: string; hostel_id: string; status: string; for_month: string; amount: number | null; late_fee: number | null; amount_paid: number | null } | null = null;
     if (input.paymentSettlement) {
       // SEC-F4: Runtime action validation — TypeScript enums are erased at runtime
       if (!new Set(["pay", "waive"]).has(input.paymentSettlement.action as string)) {
@@ -1111,7 +1150,7 @@ export async function checkoutTenantAction(
 
       const { data: payment, error: payErr } = await adminDb
         .from("hms_payments")
-        .select("id, tenant_id, hostel_id, status, for_month, amount")
+        .select("id, tenant_id, hostel_id, status, for_month, amount, late_fee, amount_paid")
         .eq("id", input.paymentSettlement.paymentId)
         .eq("tenant_id", input.tenantId)
         .eq("hostel_id", hostelId)
@@ -1133,6 +1172,9 @@ export async function checkoutTenantAction(
       }
     }
 
+    // Set when Step 3a pulls in an AC-only charge the dialog never had a chance to show.
+    let adoptedACOnlyPayment = false;
+
     // Step 3a: AC checkout billing — compute partial AC charge if meter reading provided.
     // Runs before payment settlement so the charge is included in the payment being settled.
     let acCheckoutRecord: {
@@ -1149,14 +1191,15 @@ export async function checkoutTenantAction(
       const prevDate = new Date(cy, cm - 2, 1);
       const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
 
-      const [{ data: prevRecord }, { data: pkgConfig }, { data: roomInfo }, { data: activeTenantsInRoom }, { data: priorCheckoutsData }] = await Promise.all([
+      const [{ data: prevRecord }, { data: pkgConfig }, { data: roomInfo }, { data: activeTenantsInRoom }, { data: priorCheckoutsData }, { data: joinRowsData }] = await Promise.all([
         adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
         adminDb.from("hms_package_configs").select("ac_per_unit_rate").eq("hostel_id", hostelId).maybeSingle(),
         adminDb.from("hms_rooms").select("has_ac").eq("id", tenant.room_id).eq("hostel_id", hostelId).single(),
-        adminDb.from("hms_tenants").select("id").eq("hostel_id", hostelId).eq("room_id", tenant.room_id).eq("is_active", true),
+        adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", tenant.room_id).eq("is_active", true),
         // Fetch prior checkout unit offsets (reading - prevMonthReading) so we can use them
         // as segment boundaries — same format as the month-end billing algorithm.
         adminDb.from("hms_room_ac_checkout_readings").select("units_consumed").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth),
+        adminDb.from("hms_room_ac_join_readings").select("tenant_id, units_at_join").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth),
       ]);
 
       if (roomInfo?.has_ac) {
@@ -1181,51 +1224,116 @@ export async function checkoutTenantAction(
         if (perUnitRate > 0 && totalStart > 0) {
           const units = reading - prevReading;
 
+          // The unit offset at which each tenant still in the room arrived. Month-end
+          // billing honours these; checkout used to ignore them and split flatly, so a
+          // departing tenant was diluted by people who had not moved in yet — and the
+          // difference was billed to nobody. Same precedence as month-end: a hand-typed
+          // entry beats the reading captured at check-in.
+          const joinOffsetOf = (t: { id: string; check_in: string | null; joining_meter_reading: number | null }) => {
+            const manual = (joinRowsData ?? []).find(j => j.tenant_id === t.id);
+            if (manual) return Math.max(0, Math.round(Number(manual.units_at_join)));
+            if (t.joining_meter_reading != null && t.check_in?.slice(0, 7) === checkoutMonth) {
+              return Math.max(0, Math.round(Number(t.joining_meter_reading) - prevReading));
+            }
+            return 0; // already here when the month opened
+          };
+          // The departing tenant is still is_active at this point, so they are in here.
+          const activeJoinOffsets = (activeTenantsInRoom ?? []).map(joinOffsetOf);
+          const myJoinOffset = joinOffsetOf({
+            id: tenant.id,
+            check_in: (tenant.check_in as string | null) ?? null,
+            joining_meter_reading: (tenant as { joining_meter_reading?: number | null }).joining_meter_reading ?? null,
+          });
+
           // Segment-based share calculation — mirrors the month-end billing algorithm.
-          // Prior checkout offsets create boundaries within [0, units]. Each segment is
-          // divided only among tenants who were still present during that segment.
-          const boundaries = [
+          // Checkout and join offsets both create boundaries within [0, units]. Each
+          // segment is divided only among tenants actually in the room for it.
+          const boundaries = Array.from(new Set([
             0,
-            ...priorUnitsOffsets.filter(u => u > 0 && u < units).sort((a, b) => a - b),
+            ...priorUnitsOffsets.filter(u => u > 0 && u < units),
+            ...activeJoinOffsets.filter(u => u > 0 && u < units),
             units,
-          ];
+          ])).sort((a, b) => a - b);
+
           let tenantUnitShare = 0;
           for (let i = 0; i < boundaries.length - 1; i++) {
             const segStart = boundaries[i];
             const segEnd = boundaries[i + 1];
-            const checkoutsBeforeSeg = priorUnitsOffsets.filter(u => u <= segStart).length;
-            const tenantsInSeg = totalStart - checkoutsBeforeSeg;
-            if (tenantsInSeg > 0) tenantUnitShare += (segEnd - segStart) / tenantsInSeg;
+            const segUnits = segEnd - segStart;
+            if (segUnits <= 0) continue;
+            const activesPresent = activeJoinOffsets.filter(u => u <= segStart).length;
+            const departedPresent = priorUnitsOffsets.filter(u => u >= segEnd).length;
+            const tenantsInSeg = activesPresent + departedPresent;
+            // Nothing owed for units burned before this tenant moved in.
+            if (tenantsInSeg > 0 && myJoinOffset <= segStart) {
+              tenantUnitShare += segUnits / tenantsInSeg;
+            }
           }
 
-          const ac_charge = Math.round(tenantUnitShare * perUnitRate);
+          // Round to whole units FIRST, then price them. ac_charge has to equal
+          // ac_units_consumed × rate — markPaymentPaidAction re-derives it that way and
+          // rejects the payment otherwise, and the receipt itemises "N units × Rs rate".
+          const tenantUnits = Math.round(tenantUnitShare);
+          const ac_charge = Math.round(tenantUnits * perUnitRate);
           // units_consumed = total room units — stored as billing breakpoint for month-end algorithm.
           acCheckoutRecord = { units_consumed: units, tenant_count: totalStart, ac_charge, prevReading, tenant_unit_share: tenantUnitShare };
 
-          const tenantUnits = Math.round(tenantUnitShare);
-
           if (!input.paymentSettlement) {
-            // No settlement selected — find any pending payment for this month and update it.
-            // We fetch first to get the current amount so we can add the AC charge to it.
-            const { data: pendingPayment } = await adminDb
+            // The dialog only offers a settle choice for dues it could already see when
+            // it opened, so an AC charge computed here has to find its own home. Left
+            // unclaimed it either strands as fresh debt on a tenant who has walked out,
+            // or — when the month is already settled — disappears without a trace.
+            // One row per tenant-month (unique index), so: reuse it, or create it.
+            const { data: monthRow } = await adminDb
               .from("hms_payments")
-              .select("id, amount")
+              .select("id, tenant_id, hostel_id, status, for_month, amount, late_fee, amount_paid")
               .eq("tenant_id", input.tenantId)
               .eq("hostel_id", hostelId)
               .eq("for_month", checkoutMonth)
-              .in("status", ["pending", "overdue"])
               .maybeSingle();
-            if (pendingPayment) {
-              await adminDb.from("hms_payments")
-                .update({
-                  ac_units_consumed: tenantUnits,
-                  ac_charge,
-                  amount: Number(pendingPayment.amount ?? 0) + ac_charge,
-                  updated_at: new Date().toISOString(),
+
+            const adopt = (row: typeof monthRow) => {
+              if (!row) return;
+              verifiedPayment = {
+                ...row,
+                late_fee: Number(row.late_fee ?? 0),
+                amount_paid: Number(row.amount_paid ?? 0),
+              };
+              adoptedACOnlyPayment = true;
+            };
+
+            if (monthRow) {
+              const owedAfterAC =
+                Number(monthRow.amount ?? 0) + Number(monthRow.late_fee ?? 0) + ac_charge
+                - Number(monthRow.amount_paid ?? 0);
+              if (owedAfterAC > 0) {
+                // Settled in Step 3 — which also writes the AC fields and the new amount.
+                adopt(monthRow);
+              } else {
+                await adminDb.from("hms_payments")
+                  .update({
+                    ac_units_consumed: tenantUnits,
+                    ac_charge,
+                    amount: Number(monthRow.amount ?? 0) + ac_charge,
+                    updated_at: new Date().toISOString(),
+                  })
+                  .eq("id", monthRow.id);
+              }
+            } else if (ac_charge > 0) {
+              // Checked in and out inside the same month, before billing ever ran.
+              const { data: created } = await adminDb
+                .from("hms_payments")
+                .insert({
+                  hostel_id: hostelId,
+                  tenant_id: input.tenantId,
+                  for_month: checkoutMonth,
+                  amount: 0,
+                  status: "pending",
                 })
-                .eq("id", pendingPayment.id);
+                .select("id, tenant_id, hostel_id, status, for_month, amount, late_fee, amount_paid")
+                .single();
+              adopt(created);
             }
-            // Non-fatal if no pending payment exists for this month
           }
           // When settlement IS provided, AC fields are merged into the Step 3 settlement
           // update below — targeting the exact payment ID avoids the for_month mismatch
@@ -1236,40 +1344,66 @@ export async function checkoutTenantAction(
 
     // Step 3: Settle payment FIRST (before deactivating tenant — EC-4 safety)
     // Skip if already in the target state (SEC-F2 idempotent retry path)
-    if (input.paymentSettlement && !paymentAlreadySettled) {
-      if (input.paymentSettlement.action === "pay") {
+
+    // Deposit settlement, computed server-side from the tenant's real held deposit.
+    // The client used to draw "Deposit (applied) − Rs X / covers all dues" in its
+    // summary and then send nothing about it, so the deduction never happened: dues
+    // stayed pending and the deposit was refunded on top. The deduction is decided
+    // here now — the client's figure is a preview, never an input.
+    const heldDeposit = Number(tenant.security_deposit ?? 0);
+    const settleAction = input.paymentSettlement?.action ?? (adoptedACOnlyPayment ? "pay" : null);
+    // Everything the row bills once the checkout AC charge is folded in.
+    const grossDue = verifiedPayment
+      ? Number(verifiedPayment.amount ?? 0)
+        + Number(verifiedPayment.late_fee ?? 0)
+        + (acCheckoutRecord?.ac_charge ?? 0)
+      : 0;
+    // Net of anything already paid — a month that was settled before an AC charge
+    // showed up at checkout only owes the AC charge, not the rent all over again.
+    const totalDue = Math.max(0, grossDue - Number(verifiedPayment?.amount_paid ?? 0));
+    // Dues come out of the deposit first; only the shortfall is real cash the
+    // operator has to collect at the door.
+    const depositApplied = settleAction === "pay" ? Math.min(heldDeposit, totalDue) : 0;
+    const cashCollected = settleAction === "pay" ? totalDue - depositApplied : 0;
+    const depositRemaining = heldDeposit - depositApplied;
+
+    if (verifiedPayment && settleAction && !paymentAlreadySettled) {
+      if (settleAction === "pay") {
         const { error: payUpdateErr } = await adminDb
           .from("hms_payments")
           .update({
             status: "paid" as PaymentStatus,
-            payment_date: input.paymentSettlement.paymentDate ?? new Date().toISOString().split("T")[0],
-            payment_method: (input.paymentSettlement.paymentMethod ?? null) as PaymentMethod | null,
-            receipt_number: genReceiptNumber(tenant.full_name, verifiedPayment?.for_month ?? ""),
+            // An already-paid row picking up a checkout AC charge keeps its original
+            // receipt and method — that money really was collected, back then, that way.
+            ...(verifiedPayment.status === "paid" ? {} : {
+              payment_date: input.paymentSettlement?.paymentDate ?? new Date().toISOString().split("T")[0],
+              payment_method: (input.paymentSettlement?.paymentMethod ?? null) as PaymentMethod | null,
+              receipt_number: genReceiptNumber(tenant.full_name, verifiedPayment.for_month ?? ""),
+            }),
             // Merge AC fields here so the correct payment row is always targeted by ID,
             // not by for_month (which can differ from checkoutMonth for pre-generated payments).
             // Store the tenant's share of units (not total room units) so the receipt shows
             // "X units × Rs. rate/unit" correctly rather than the full room consumption.
-            // This settlement always pays the payment in full — amount_paid must be
-            // set (DB defaults it to 0), or "collected" totals elsewhere would show
-            // Rs 0 for this payment despite status being "paid".
-            amount_paid: acCheckoutRecord
-              ? Number(verifiedPayment!.amount ?? 0) + acCheckoutRecord.ac_charge
-              : Number(verifiedPayment!.amount ?? 0),
+            // The row ends fully settled — amount_paid is everything it bills, and
+            // deposit_applied records how much of that came from the deposit rather than
+            // fresh cash, so revenue reporting can tell the two apart.
+            amount_paid: grossDue,
+            deposit_applied: depositApplied,
             ...(acCheckoutRecord ? {
               ac_units_consumed: Math.round(acCheckoutRecord.tenant_unit_share),
               ac_charge: acCheckoutRecord.ac_charge,
               // Add AC charge to base amount so PDF formula (monthlyRent = amount - ac_charge) stays correct
-              amount: Number(verifiedPayment!.amount ?? 0) + acCheckoutRecord.ac_charge,
+              amount: Number(verifiedPayment.amount ?? 0) + acCheckoutRecord.ac_charge,
             } : {}),
             ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
             updated_at: new Date().toISOString(),
           })
-          .eq("id", input.paymentSettlement.paymentId)
+          .eq("id", verifiedPayment.id)
           .eq("hostel_id", hostelId);
 
         // SEC-F5: sanitize — do not propagate raw DB error strings to client
         if (payUpdateErr) throw new Error("Failed to record payment. Please try again.");
-      } else if (input.paymentSettlement.action === "waive") {
+      } else if (settleAction === "waive") {
         const { error: waiveErr } = await adminDb
           .from("hms_payments")
           .update({
@@ -1281,7 +1415,7 @@ export async function checkoutTenantAction(
             ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
             updated_at: new Date().toISOString(),
           })
-          .eq("id", input.paymentSettlement.paymentId)
+          .eq("id", verifiedPayment.id)
           .eq("hostel_id", hostelId);
 
         // SEC-F5: sanitize — do not propagate raw DB error strings to client
@@ -1317,27 +1451,45 @@ export async function checkoutTenantAction(
       throw new Error("Tenant checkout failed. Please try again.");
     }
 
-    // Step 4a: Log deposit return/forfeit event for the Member Ledger — best-effort,
-    // non-fatal (checkout itself already succeeded above).
-    if (input.depositReturned !== undefined && Number(tenant.security_deposit) > 0) {
-      const deposit = Number(tenant.security_deposit);
-      const returned = Math.max(0, Math.min(Number(input.depositReturned), deposit));
-      const depositNotes = input.depositNotes?.trim() || null;
-      if (returned > 0) {
+    // Step 4a: Log the deposit's fate to the Member Ledger — best-effort, non-fatal
+    // (checkout itself already succeeded above). Three ways it can go, and every rupee
+    // must land in exactly one of them: applied to dues, handed back, or kept.
+    const depositNotes = input.depositNotes?.trim() || null;
+
+    if (depositApplied > 0) {
+      await adminDb.from("hms_tenant_events").insert({
+        hostel_id: hostelId,
+        tenant_id: input.tenantId,
+        event_type: "deposit_applied",
+        amount: depositApplied,
+        notes: depositNotes,
+      });
+    }
+
+    // `returned` is bounded by what survives the dues deduction, not by the original
+    // deposit — otherwise a stale client figure could refund money already spent on
+    // the tenant's own bill. Anything short of the remainder is a forfeit (damages etc).
+    let returnedAmount = 0;
+    let forfeitedAmount = 0;
+    if (input.depositReturned !== undefined && heldDeposit > 0) {
+      returnedAmount = Math.max(0, Math.min(Number(input.depositReturned), depositRemaining));
+      forfeitedAmount = depositRemaining - returnedAmount;
+
+      if (returnedAmount > 0) {
         await adminDb.from("hms_tenant_events").insert({
           hostel_id: hostelId,
           tenant_id: input.tenantId,
           event_type: "deposit_returned",
-          amount: returned,
+          amount: returnedAmount,
           notes: depositNotes,
         });
       }
-      if (returned < deposit) {
+      if (forfeitedAmount > 0) {
         await adminDb.from("hms_tenant_events").insert({
           hostel_id: hostelId,
           tenant_id: input.tenantId,
           event_type: "deposit_forfeited",
-          amount: deposit - returned,
+          amount: forfeitedAmount,
           notes: depositNotes,
         });
       }
@@ -1398,7 +1550,17 @@ export async function checkoutTenantAction(
     revalidatePath("/payments");
     revalidatePath("/dashboard");
 
-    return { success: true, ...(acReadingWarning ? { warning: acReadingWarning } : {}) };
+    return {
+      success: true,
+      ...(acReadingWarning ? { warning: acReadingWarning } : {}),
+      settlement: {
+        duesSettled: settleAction === "pay" ? totalDue : 0,
+        depositApplied,
+        cashCollected,
+        depositReturned: returnedAmount,
+        depositForfeited: forfeitedAmount,
+      },
+    };
   } catch (err: unknown) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }

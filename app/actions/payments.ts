@@ -577,6 +577,16 @@ function calcBaseRentServer(
   return days * Number(t.daily_rate);
 }
 
+// ac_charge MUST always equal ac_units_consumed × rate. markPaymentPaidAction
+// re-derives the charge that way and refuses to accept a payment that disagrees
+// ("Amount received exceeds the remaining balance"), and receipts itemise it as
+// "N units × Rs rate/unit". Splitting a room rarely lands on whole units, so each
+// share is rounded to whole units first and the charge is derived from that —
+// never computed on its own, which is how the two drifted apart.
+function applyUnitRate(rows: { tenantUnits: number; charge: number }[], perUnitRate: number): void {
+  for (const r of rows) r.charge = Math.round(r.tenantUnits * perUnitRate);
+}
+
 // ---------------------------------------------------------------------------
 // applyRoomACUnitsAction
 // Splits total AC units across all eligible AC-tier tenants in a room and
@@ -654,7 +664,7 @@ export async function applyRoomACUnitsAction(
     // ── Find all active tenants in this room ─────────────────────
     const { data: allTenants } = await supabase
       .from("hms_tenants")
-      .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, food_breakfast, food_lunch, food_dinner")
+      .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
       .eq("hostel_id", hostelId)
       .eq("room_id", roomId)
       .eq("is_active", true);
@@ -685,9 +695,36 @@ export async function applyRoomACUnitsAction(
     // A tenant on the 1st with units_at_join=0 produces equal split (the duplicate 0 is deduplicated by
     // the Set, leaving one segment [0,total] where they are present for the full range).
     // A tenant on the 1st with units_at_join=10 correctly assigns those 10 units to whoever came first.
-    const joinReadings = (joinReadingsRaw ?? []).filter(r =>
+    const manualJoinReadings = (joinReadingsRaw ?? []).filter(r =>
       eligible.some(t => t.id === r.tenant_id)
     ) as { tenant_id: string; units_at_join: number }[];
+
+    // Check-in captures a meter reading on the tenant, but only a hand-typed entry under
+    // "Mid-Month Joiners" ever became a breakpoint — so someone who moved in on the 20th
+    // was billed from unit 0, for AC burned before they arrived. Derive the breakpoint
+    // from what check-in already recorded.
+    //
+    // Derived here rather than stored at check-in on purpose: units_at_join is an offset
+    // from the month's opening reading, and that opening is often only known now, when
+    // the operator types it. Storing it earlier bakes in a baseline that may not survive.
+    //
+    // Scoped to tenants who joined THIS month — anyone from an earlier month was present
+    // from the first unit, and giving them a breakpoint would wrongly excuse them.
+    const manualIds = new Set(manualJoinReadings.map(r => r.tenant_id));
+    const derivedJoinReadings = eligible
+      .filter(t =>
+        !manualIds.has(t.id) &&                       // a typed entry is a correction — it wins
+        t.joining_meter_reading != null &&
+        typeof t.check_in === "string" &&
+        t.check_in.slice(0, 7) === forMonth
+      )
+      .map(t => ({
+        tenant_id: t.id,
+        units_at_join: Math.max(0, Math.round(Number(t.joining_meter_reading) - prevReading)),
+      }));
+
+    const joinReadings = [...manualJoinReadings, ...derivedJoinReadings]
+      .sort((a, b) => a.units_at_join - b.units_at_join);
 
     // Checkout segments: departed tenants who paid at checkout — their tenure is now breakpoints.
     // Sorted by meter_reading ascending = chronological departure order.
@@ -762,32 +799,27 @@ export async function applyRoomACUnitsAction(
         tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
       } else {
         const totalAccumulated = [...accumulated.values()].reduce((s, v) => s + v, 0);
-        const totalActiveCharge = Math.round(totalAccumulated * perUnitRate);
-        const rows = eligible.map(t => {
-          const tu = accumulated.get(t.id) ?? 0;
-          return {
-            id: t.id,
-            tenantUnits: Math.round(tu),
-            charge: totalAccumulated > 0 ? Math.max(0, Math.round((tu / totalAccumulated) * totalActiveCharge)) : 0,
-          };
-        });
-        const sumChargesExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.charge, 0);
-        if (rows.length > 0) rows[rows.length - 1].charge = Math.max(0, totalActiveCharge - sumChargesExceptLast);
+        const rows = eligible.map(t => ({
+          id: t.id,
+          tenantUnits: Math.round(accumulated.get(t.id) ?? 0),
+          charge: 0,
+        }));
         const sumUnitsExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
         if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, Math.round(totalAccumulated) - sumUnitsExceptLast);
+        applyUnitRate(rows, perUnitRate);
         tenantBilling = rows;
       }
     } else if (joinReadings.length === 0) {
       // ── Equal split: units are integers, last tenant absorbs remainder ──
-      const baseCharge = n > 1 ? Math.floor(totalCharge / n) : totalCharge;
-      const lastCharge = totalCharge - baseCharge * (n - 1);
       const baseUnits = n > 1 ? Math.floor(units / n) : units;
       const lastUnits = units - baseUnits * (n - 1);
-      tenantBilling = eligible.map((t, idx) => ({
+      const rows = eligible.map((t, idx) => ({
         id: t.id,
         tenantUnits: idx === n - 1 ? lastUnits : baseUnits,
-        charge: idx === n - 1 ? lastCharge : baseCharge,
+        charge: 0,
       }));
+      applyUnitRate(rows, perUnitRate);
+      tenantBilling = rows;
     } else {
       // ── Segment billing ──────────────────────────────────────
       proRatedCount = joinReadings.length;
@@ -827,18 +859,14 @@ export async function applyRoomACUnitsAction(
         if (assignedUnits === 0) {
           tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
         } else {
-          const rows = eligible.map(t => {
-            const tu = accumulated.get(t.id) ?? 0;
-            return {
-              id: t.id,
-              tenantUnits: Math.round(tu),
-              charge: Math.max(0, Math.round((tu / assignedUnits) * assignedCharge)),
-            };
-          });
-          const sumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.charge, 0);
-          if (rows.length > 0) rows[rows.length - 1].charge = Math.max(0, assignedCharge - sumExceptLast);
+          const rows = eligible.map(t => ({
+            id: t.id,
+            tenantUnits: Math.round(accumulated.get(t.id) ?? 0),
+            charge: 0,
+          }));
           const unitSumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
           if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, Math.round(assignedUnits) - unitSumExceptLast);
+          applyUnitRate(rows, perUnitRate);
           tenantBilling = rows;
         }
       }

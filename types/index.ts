@@ -302,12 +302,25 @@ export interface CheckoutInput {
   notes?: string;
   acCheckoutReading?: number;
   acOpeningReading?: number;
-  /** Amount of the security deposit actually handed back to the tenant. 0 = fully forfeited. Omit to skip logging. */
+  /**
+   * Cash handed back to the tenant, out of whatever is left after outstanding dues
+   * are settled from the deposit. Anything short of that remainder is a forfeit
+   * (damages, etc). Omit to skip the return/forfeit split entirely.
+   */
   depositReturned?: number;
   depositNotes?: string;
 }
 
-export type TenantEventType = "room_changed" | "plan_changed" | "deposit_collected" | "deposit_returned" | "deposit_forfeited" | "notice_given" | "notice_cancelled";
+/** What checkoutTenantAction actually did with the money, so the UI can confirm it rather than guess. */
+export interface CheckoutSettlement {
+  duesSettled: number;
+  depositApplied: number;
+  cashCollected: number;
+  depositReturned: number;
+  depositForfeited: number;
+}
+
+export type TenantEventType = "room_changed" | "plan_changed" | "deposit_collected" | "deposit_returned" | "deposit_forfeited" | "deposit_applied" | "notice_given" | "notice_cancelled";
 
 export interface TenantEvent {
   id: string;

@@ -59,29 +59,58 @@ const SELECTABLE_TIERS: { tier: PackageTier; label: string }[] = [
   { tier: "space_meals_cooler", label: "Space + Meals + Cooler" },
 ];
 
-// Segment-based AC charge calculation — mirrors the month-end billing algorithm.
-// priorCheckoutUnits: units_consumed values of tenants who already checked out this month.
-// Each is a boundary at which the tenant count dropped by 1.
+// Segment-based AC charge preview — must mirror checkoutTenantAction exactly, or the
+// dialog quotes one number and the tenant is billed another.
+// priorCheckoutUnits: units_consumed of tenants who already left this month — each is a
+//   boundary where the head count dropped.
+// activeJoinOffsets: arrival offset of everyone still in the room (including whoever is
+//   leaving), so nobody is charged for units burned before they moved in.
 function computeACSegmentCharge(
   units: number,
   priorCheckoutUnits: number[],
-  totalStart: number,
+  activeJoinOffsets: number[],
+  myJoinOffset: number,
   rate: number,
 ): number {
-  if (units <= 0 || totalStart <= 0 || rate <= 0) return 0;
-  const boundaries = [
+  if (units <= 0 || rate <= 0 || activeJoinOffsets.length === 0) return 0;
+  const boundaries = Array.from(new Set([
     0,
-    ...priorCheckoutUnits.filter(u => u > 0 && u < units).sort((a, b) => a - b),
+    ...priorCheckoutUnits.filter(u => u > 0 && u < units),
+    ...activeJoinOffsets.filter(u => u > 0 && u < units),
     units,
-  ];
+  ])).sort((a, b) => a - b);
+
   let share = 0;
   for (let i = 0; i < boundaries.length - 1; i++) {
     const segStart = boundaries[i];
-    const checkoutsBefore = priorCheckoutUnits.filter(u => u <= segStart).length;
-    const tenants = totalStart - checkoutsBefore;
-    if (tenants > 0) share += (boundaries[i + 1] - segStart) / tenants;
+    const segEnd = boundaries[i + 1];
+    const segUnits = segEnd - segStart;
+    if (segUnits <= 0) continue;
+    const activesPresent = activeJoinOffsets.filter(u => u <= segStart).length;
+    const departedPresent = priorCheckoutUnits.filter(u => u >= segEnd).length;
+    const tenants = activesPresent + departedPresent;
+    if (tenants > 0 && myJoinOffset <= segStart) share += segUnits / tenants;
   }
-  return Math.round(share * rate);
+  // Whole units first, then price them — same order as the server, or the quote here
+  // and the charge recorded there disagree by the rounding.
+  return Math.round(Math.round(share) * rate);
+}
+
+// Resolve each tenant's arrival offset against the opening reading currently in play —
+// which may be one the operator is still typing, so it can't be precomputed server-side.
+function acJoinOffsets(
+  joiners: { tenantId: string; unitsAtJoin: number | null; joiningMeterReading: number | null }[] | undefined,
+  prevReading: number,
+): { all: number[]; byTenant: Record<string, number> } {
+  const byTenant: Record<string, number> = {};
+  for (const j of joiners ?? []) {
+    byTenant[j.tenantId] = j.unitsAtJoin != null
+      ? Math.max(0, Math.round(j.unitsAtJoin))
+      : j.joiningMeterReading != null
+        ? Math.max(0, Math.round(j.joiningMeterReading - prevReading))
+        : 0;
+  }
+  return { all: Object.values(byTenant), byTenant };
 }
 
 function getPkgPrice(prices: Partial<Record<PackageTier, { no_ac: number; ac: number }>>, tier: PackageTier, hasAc: boolean): string {
@@ -401,6 +430,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     perUnitRate: number;
     activeTenantCount: number;
     priorCheckoutUnits: number[];
+    joiners: { tenantId: string; unitsAtJoin: number | null; joiningMeterReading: number | null }[];
   } | null>(null);
   const [checkoutACContextLoading, setCheckoutACContextLoading] = useState(false);
   const [shareReceipt, setShareReceipt] = useState<{ name: string; phone: string | null; token: string } | null>(null);
@@ -817,7 +847,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutPendingPayment(null);
     setCheckoutPaymentError(null);
     setCheckoutPaymentLoading(true);
-    setCheckoutDepositReturned(t.security_deposit > 0 ? String(t.security_deposit) : "");
+    // Left to the checkoutMath effect, which nets the dues off first.
+    setCheckoutDepositReturned("");
     setCheckoutACReading("");
     setCheckoutACOpeningReading("");
     setCheckoutACContext(null);
@@ -883,8 +914,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           }
         : undefined,
       ...(checkoutNotes.trim() ? { notes: checkoutNotes.trim() } : {}),
-      ...((checkingOut.security_deposit ?? 0) > 0 && checkoutDepositReturned.trim() !== ""
-        ? { depositReturned: Number(checkoutDepositReturned), depositNotes: checkoutNotes.trim() || undefined }
+      // Always send the deposit decision when one is held. Gating this on a non-empty
+      // box let an untouched field mean "say nothing", which is how 12 departed tenants
+      // ended up with deposits that were never returned, forfeited, or even recorded.
+      ...((checkingOut.security_deposit ?? 0) > 0
+        ? {
+            depositReturned: checkoutDepositReturned.trim() !== "" ? Number(checkoutDepositReturned) : 0,
+            depositNotes: checkoutNotes.trim() || undefined,
+          }
         : {}),
       ...(acReadingNum !== undefined && Number.isFinite(acReadingNum) ? { acCheckoutReading: acReadingNum } : {}),
       ...(checkoutACContext?.prevMonthReading == null && checkoutACOpeningReading.trim() !== ""
@@ -911,16 +948,28 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       toast({ title: "Warning", description: result.warning, variant: "destructive" });
     }
 
+    // Report what the server actually recorded, not what the dialog predicted — the
+    // two silently disagreeing is the whole reason this flow was broken.
+    const s = result.settlement;
+    const settlementLines = s
+      ? [
+          s.depositApplied > 0 ? `${formatCurrency(s.depositApplied)} deposit applied to dues` : null,
+          s.cashCollected > 0 ? `${formatCurrency(s.cashCollected)} collected` : null,
+          s.depositReturned > 0 ? `${formatCurrency(s.depositReturned)} refunded` : null,
+          s.depositForfeited > 0 ? `${formatCurrency(s.depositForfeited)} forfeited` : null,
+        ].filter(Boolean).join(" · ")
+      : "";
+
     // If payment was collected, generate receipt link and open share dialog
     if (collectedPaymentId) {
       const linkResult = await createInvoiceLink(collectedPaymentId);
       if (linkResult.token) {
         setShareReceipt({ name, phone, token: linkResult.token });
       } else {
-        toast({ title: `${name} checked out`, description: "Payment collected." });
+        toast({ title: `${name} checked out`, description: settlementLines || "Payment collected." });
       }
     } else {
-      toast({ title: `${name} has been checked out successfully.` });
+      toast({ title: `${name} has been checked out`, description: settlementLines || undefined });
     }
 
     reload(); // refresh room occupancy counts in background
@@ -1006,6 +1055,54 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   }
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
+
+  // Checkout money math — the deposit pays the tenant's dues down first, and only
+  // what survives that is refundable. Lives here rather than inside the summary box
+  // because the refund input needs the same numbers; keeping two copies is exactly
+  // how the displayed deduction drifted away from what was actually recorded.
+  // The server recomputes all of this from the real deposit — this is a preview.
+  const checkoutMath = useMemo(() => {
+    const deposit = checkingOut?.security_deposit ?? 0;
+    const basePending = checkoutPendingPayment?.amount ?? 0;
+
+    const acReading = checkoutACReading.trim() !== "" ? Number(checkoutACReading) : NaN;
+    const acPrev = checkoutACContext?.prevMonthReading
+      ?? (checkoutACOpeningReading.trim() !== "" ? Number(checkoutACOpeningReading) : null)
+      ?? 0;
+    const acRate = checkoutACContext?.perUnitRate ?? 0;
+    const acCount = checkoutACContext?.activeTenantCount ?? 0;
+    const roomHasAC = !!(checkingOut?.room_id && roomMap[checkingOut.room_id]?.has_ac);
+    const joinOffsets = acJoinOffsets(checkoutACContext?.joiners, acPrev);
+    const estimatedACCharge = (
+      roomHasAC && Number.isFinite(acReading) && acReading > acPrev && acRate > 0 && acCount > 0
+    ) ? computeACSegmentCharge(
+          acReading - acPrev,
+          checkoutACContext?.priorCheckoutUnits ?? [],
+          joinOffsets.all,
+          checkingOut ? (joinOffsets.byTenant[checkingOut.id] ?? 0) : 0,
+          acRate,
+        ) : 0;
+
+    const pending = basePending + estimatedACCharge;
+    // "waive" forgives the dues outright, so there is nothing for the deposit to cover.
+    const collecting = pending > 0 && checkoutPayAction === "pay";
+    const applied = collecting && deposit > 0 ? Math.min(deposit, pending) : 0;
+    const refundable = deposit - applied;
+
+    return {
+      deposit, basePending, estimatedACCharge, pending, collecting, applied, refundable,
+      toCollect: Math.max(0, pending - applied),
+      depositCoversAll: collecting && applied >= pending,
+    };
+  }, [checkingOut, checkoutPendingPayment, checkoutACReading, checkoutACOpeningReading, checkoutACContext, checkoutPayAction, roomMap]);
+
+  // Keep the refund box pinned to what is actually left after dues. Without this the
+  // operator has to notice the deduction and subtract by hand — and the old default
+  // (the full deposit) meant the standard path applied the deposit AND refunded it.
+  useEffect(() => {
+    if (!checkingOut || checkingOut.security_deposit <= 0) return;
+    setCheckoutDepositReturned(String(checkoutMath.refundable));
+  }, [checkingOut, checkoutMath.refundable]);
 
   function getCurrentFilteredList() {
     const map: Record<string, Tenant[]> = { active, waiting, checkedout: checkedOut };
@@ -2411,20 +2508,20 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       className="h-9 w-full rounded-lg border border-sidebar-border bg-transparent px-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50"
                     />
                     {(() => {
+                      // Reuse checkoutMath rather than recomputing — a second copy of this
+                      // sum is how the summary drifted from what actually got charged.
                       const reading = Number(checkoutACReading);
-                      const prevFromRecord = checkoutACContext?.prevMonthReading;
-                      const prevFromOpening = checkoutACOpeningReading.trim() !== "" ? Number(checkoutACOpeningReading) : null;
-                      const prev = prevFromRecord ?? prevFromOpening ?? 0;
+                      const prev = checkoutACContext?.prevMonthReading
+                        ?? (checkoutACOpeningReading.trim() !== "" ? Number(checkoutACOpeningReading) : null)
+                        ?? 0;
                       const rate = checkoutACContext?.perUnitRate ?? 0;
                       const count = checkoutACContext?.activeTenantCount ?? 0;
-                      const priorUnits = checkoutACContext?.priorCheckoutUnits ?? [];
                       if (!checkoutACReading || !Number.isFinite(reading) || reading <= prev || rate <= 0 || count <= 0) return null;
                       const units = reading - prev;
-                      const charge = computeACSegmentCharge(units, priorUnits, count, rate);
                       return (
                         <p className="text-xs text-emerald-400">
-                          {units.toLocaleString()} units ÷ {count} tenant{count > 1 ? "s" : ""} × PKR {rate.toLocaleString()}/unit = est.{" "}
-                          <span className="font-medium">PKR {charge.toLocaleString()}</span>
+                          {units.toLocaleString()} room unit{units === 1 ? "" : "s"} · {count} tenant{count > 1 ? "s" : ""} sharing × PKR {rate.toLocaleString()}/unit = your share est.{" "}
+                          <span className="font-medium">PKR {checkoutMath.estimatedACCharge.toLocaleString()}</span>
                         </p>
                       );
                     })()}
@@ -2535,11 +2632,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 {/* Deposit return — logged to the Member Ledger */}
                 {(checkingOut?.security_deposit ?? 0) > 0 && (
                   <div className="space-y-1">
-                    <p className="text-xs text-muted-foreground">Amount returned to tenant (0 = forfeited)</p>
+                    <p className="text-xs text-muted-foreground">
+                      {checkoutMath.applied > 0
+                        ? <>Refund to tenant — {formatCurrency(checkoutMath.applied)} of the deposit goes to dues, leaving {formatCurrency(checkoutMath.refundable)}</>
+                        : <>Refund to tenant (0 = fully forfeited)</>}
+                    </p>
                     <input
                       type="number"
                       min={0}
-                      max={checkingOut?.security_deposit ?? 0}
+                      max={checkoutMath.refundable}
                       value={checkoutDepositReturned}
                       onChange={(e) => setCheckoutDepositReturned(e.target.value)}
                       placeholder="0"
@@ -2564,26 +2665,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {/* Live summary */}
             <div className="pt-3 border-t border-sidebar-border/60">
               {(() => {
-                const deposit = checkingOut?.security_deposit ?? 0;
-                const basePending = checkoutPendingPayment?.amount ?? 0;
-
-                // Estimated AC charge from current meter reading inputs
-                const acReading = checkoutACReading.trim() !== "" ? Number(checkoutACReading) : NaN;
-                const acPrev = checkoutACContext?.prevMonthReading
-                  ?? (checkoutACOpeningReading.trim() !== "" ? Number(checkoutACOpeningReading) : null)
-                  ?? 0;
-                const acRate = checkoutACContext?.perUnitRate ?? 0;
-                const acCount = checkoutACContext?.activeTenantCount ?? 0;
-                const roomHasAC = !!(checkingOut?.room_id && roomMap[checkingOut.room_id]?.has_ac);
-                const estimatedACCharge = (
-                  roomHasAC && Number.isFinite(acReading) && acReading > acPrev && acRate > 0 && acCount > 0
-                ) ? computeACSegmentCharge(acReading - acPrev, checkoutACContext?.priorCheckoutUnits ?? [], acCount, acRate) : 0;
-
-                const pending = basePending + estimatedACCharge;
-                const collecting = pending > 0 && checkoutPayAction === "pay";
-                const applied    = collecting && deposit > 0 ? Math.min(deposit, pending) : 0;
-                const toCollect  = Math.max(0, pending - applied);
-                const depositCoversAll = collecting && applied >= pending;
+                const { deposit, basePending, estimatedACCharge, pending, collecting, applied, refundable, toCollect } = checkoutMath;
+                const refunding = Number(checkoutDepositReturned || 0);
+                const forfeiting = Math.max(0, refundable - refunding);
 
                 if (pending === 0 && deposit === 0) {
                   return <p className="text-sm text-muted-foreground">No financial transactions to record</p>;
@@ -2614,30 +2698,48 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     {deposit > 0 && (
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">
-                          Deposit{collecting ? <span className="ml-1 text-xs">(applied)</span> : null}
+                          Deposit held{applied > 0 ? <span className="ml-1 text-xs">(− {formatCurrency(applied)} to dues)</span> : null}
                         </span>
-                        <span className={collecting ? "text-emerald-400" : ""}>
-                          {collecting ? `− ${formatCurrency(applied)}` : formatCurrency(deposit)}
+                        <span className={applied > 0 ? "text-emerald-400" : ""}>
+                          {formatCurrency(deposit)}
                         </span>
                       </div>
                     )}
                     <div className="border-t border-sidebar-border/40" />
-                    {depositCoversAll ? (
-                      <div className="flex justify-between text-sm font-semibold">
-                        <span className="text-emerald-400">Deposit covers all dues</span>
-                        <span className="text-emerald-400">—</span>
-                      </div>
-                    ) : collecting ? (
-                      <div className="flex justify-between text-sm font-semibold">
-                        <span className="text-amber">Collect from tenant</span>
-                        <span className="text-amber">{formatCurrency(toCollect)}</span>
-                      </div>
-                    ) : checkoutPayAction === "waive" ? (
+
+                    {collecting && (
+                      toCollect > 0 ? (
+                        <div className="flex justify-between text-sm font-semibold">
+                          <span className="text-amber">Collect from tenant</span>
+                          <span className="text-amber">{formatCurrency(toCollect)}</span>
+                        </div>
+                      ) : (
+                        <div className="flex justify-between text-sm font-semibold">
+                          <span className="text-emerald-400">Deposit covers all dues</span>
+                          <span className="text-emerald-400">—</span>
+                        </div>
+                      )
+                    )}
+                    {checkoutPayAction === "waive" && basePending > 0 && (
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">Balance waived</span>
                         <span className="text-muted-foreground">—</span>
                       </div>
-                    ) : null}
+                    )}
+                    {deposit > 0 && (
+                      <>
+                        <div className="flex justify-between text-sm font-semibold">
+                          <span className="text-sky-400">Refund to tenant</span>
+                          <span className="text-sky-400">{formatCurrency(refunding)}</span>
+                        </div>
+                        {forfeiting > 0 && (
+                          <div className="flex justify-between text-xs">
+                            <span className="text-muted-foreground">Kept by hostel (forfeited)</span>
+                            <span className="text-muted-foreground">{formatCurrency(forfeiting)}</span>
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 );
               })()}
