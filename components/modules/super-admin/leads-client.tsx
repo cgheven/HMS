@@ -5,9 +5,9 @@ import { isToday, startOfDay, addDays, subDays } from "date-fns";
 import {
   Inbox, RefreshCw, Search, Eye, CheckCircle2, Plus, PhoneCall, MapPin,
   Presentation, StickyNote, ArrowRightLeft, MessageCircle, Mail, Send, User,
-  Calendar, AlertCircle, Trash2, Flag, MailCheck,
+  Calendar, AlertCircle, Trash2, Flag, MailCheck, Pencil,
 } from "lucide-react";
-import { listLeadsForAdmin, createLead, assignLead, updateLeadStage, setLeadFollowUpDate, setLeadPriority, deleteLead, sendFollowUpDigestEmail, logLeadActivity, listLeadActivities } from "@/app/actions/leads";
+import { listLeadsForAdmin, createLead, updateLead, assignLead, updateLeadStage, setLeadFollowUpDate, setLeadPriority, deleteLead, sendFollowUpDigestEmail, logLeadActivity, listLeadActivities } from "@/app/actions/leads";
 import { createHostelForClient } from "@/app/actions/super-admin";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
 import { LEAD_SOURCES, LEAD_SOURCE_OTHER } from "@/lib/lead-sources";
+import { PK_CITIES, CITY_OTHER } from "@/lib/cities";
 import { LEAD_STATUS_CONFIG as STATUS_CONFIG, LEAD_STATUS_ORDER as STATUS_ORDER, followUpUrgency, parseDateOnly } from "@/lib/lead-status";
 import { LEAD_PRIORITY_CONFIG as PRIORITY_CONFIG, LEAD_PRIORITY_ORDER as PRIORITY_ORDER } from "@/lib/lead-priority";
 import { formatDate, formatDateTime, formatCurrency } from "@/lib/utils";
@@ -94,12 +95,27 @@ const emptyAddLeadForm = {
   phone: "",
   email: "",
   city: "",
+  cityCustom: "",
   branch_count: "1",
   source: "",
   sourceCustom: "",
   notes: "",
   assigned_to: "",
 };
+
+// A stored value that isn't one of the presets (an older free-typed city, a custom
+// source) has to come back as "Other" + the original text, or opening the edit dialog
+// would silently blank it and saving would wipe it.
+function toPresetField(
+  stored: string | null | undefined,
+  presets: readonly string[],
+  otherKey: string,
+): { value: string; custom: string } {
+  if (!stored) return { value: "", custom: "" };
+  return presets.includes(stored)
+    ? { value: stored, custom: "" }
+    : { value: otherKey, custom: stored };
+}
 
 interface Props {
   initialLeads: PlatformLead[];
@@ -125,10 +141,11 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
   const [convertLeadId, setConvertLeadId] = useState<string | null>(null);
   const [convertForm, setConvertForm] = useState(emptyConvertForm);
 
-  // Add Lead dialog state
+  // Add / Edit Lead dialog state — one dialog, two modes. editLeadId null = adding.
   const [addLeadOpen, setAddLeadOpen] = useState(false);
   const [addLeadForm, setAddLeadForm] = useState(emptyAddLeadForm);
   const [addLeadSubmitting, setAddLeadSubmitting] = useState(false);
+  const [editLeadId, setEditLeadId] = useState<string | null>(null);
 
   // Delete confirmation state
   const [deleteConfirm, setDeleteConfirm] = useState<{ open: boolean; lead: PlatformLead | null }>({ open: false, lead: null });
@@ -317,6 +334,34 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
     });
   }
 
+  function openAddLead() {
+    setEditLeadId(null);
+    setAddLeadForm(emptyAddLeadForm);
+    setAddLeadOpen(true);
+  }
+
+  function openEditLead(lead: PlatformLead) {
+    const city = toPresetField(lead.city, PK_CITIES, CITY_OTHER);
+    const source = toPresetField(lead.source, LEAD_SOURCES, LEAD_SOURCE_OTHER);
+    setEditLeadId(lead.id);
+    setAddLeadForm({
+      business_name: lead.business_name ?? "",
+      owner_name: lead.owner_name ?? "",
+      phone: lead.phone ?? "",
+      email: lead.email ?? "",
+      city: city.value,
+      cityCustom: city.custom,
+      branch_count: String(lead.branch_count ?? 1),
+      source: source.value,
+      sourceCustom: source.custom,
+      notes: lead.notes ?? "",
+      // Assignment has its own action (and its own audit trail) — the per-row
+      // "Assigned" select still owns it, so editing here must not touch it.
+      assigned_to: lead.assigned_to ?? "",
+    });
+    setAddLeadOpen(true);
+  }
+
   function handleAddLead() {
     if (!addLeadForm.business_name.trim() || !addLeadForm.owner_name.trim() || !addLeadForm.phone.trim()) {
       toast({ title: "Missing required fields", description: "Business name, owner name, and phone are required.", variant: "destructive" });
@@ -326,27 +371,46 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
     const source = addLeadForm.source === LEAD_SOURCE_OTHER
       ? addLeadForm.sourceCustom.trim() || undefined
       : addLeadForm.source || undefined;
+    const city = addLeadForm.city === CITY_OTHER
+      ? addLeadForm.cityCustom.trim() || undefined
+      : addLeadForm.city || undefined;
+    const isEdit = editLeadId !== null;
+
     startTransition(async () => {
-      const res = await createLead({
-        business_name: addLeadForm.business_name,
-        owner_name: addLeadForm.owner_name,
-        phone: addLeadForm.phone,
-        email: addLeadForm.email || undefined,
-        city: addLeadForm.city || undefined,
-        branch_count: Number(addLeadForm.branch_count) || 1,
-        source,
-        notes: addLeadForm.notes || undefined,
-        assigned_to: addLeadForm.assigned_to || null,
-      });
+      const res = isEdit
+        ? await updateLead(editLeadId, {
+            business_name: addLeadForm.business_name,
+            owner_name: addLeadForm.owner_name,
+            phone: addLeadForm.phone,
+            email: addLeadForm.email || undefined,
+            city,
+            branch_count: Number(addLeadForm.branch_count) || 1,
+            source,
+            notes: addLeadForm.notes || undefined,
+          })
+        : await createLead({
+            business_name: addLeadForm.business_name,
+            owner_name: addLeadForm.owner_name,
+            phone: addLeadForm.phone,
+            email: addLeadForm.email || undefined,
+            city,
+            branch_count: Number(addLeadForm.branch_count) || 1,
+            source,
+            notes: addLeadForm.notes || undefined,
+            assigned_to: addLeadForm.assigned_to || null,
+          });
       setAddLeadSubmitting(false);
       if ("error" in res) {
-        toast({ title: "Failed to add lead", description: res.error, variant: "destructive" });
+        toast({ title: isEdit ? "Failed to save changes" : "Failed to add lead", description: res.error, variant: "destructive" });
         return;
       }
-      setLeads((prev) => [res.lead, ...prev]);
+      setLeads((prev) => isEdit
+        ? prev.map((l) => (l.id === editLeadId ? res.lead : l))
+        : [res.lead, ...prev]);
       setAddLeadOpen(false);
       setAddLeadForm(emptyAddLeadForm);
-      toast({ title: "Lead added" });
+      setEditLeadId(null);
+      toast({ title: isEdit ? "Lead updated" : "Lead added" });
     });
   }
 
@@ -386,7 +450,15 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
 
   const filtered = useMemo(() => {
     let list = leads;
-    if (statusFilter !== "all") list = list.filter((l) => l.status === statusFilter);
+    if (statusFilter !== "all") {
+      list = list.filter((l) => l.status === statusFilter);
+    } else {
+      // "All" means every lead still worth working, not every row ever created.
+      // Rejected leads are dead — they pad the counts, and because the follow-up
+      // digest is built from this list, they were being emailed reminders too.
+      // The Rejected chip is where they live.
+      list = list.filter((l) => l.status !== "rejected");
+    }
     if (ownerFilter === OWNER_MINE) {
       list = list.filter((l) => !l.assigned_to && l.created_by === adminUserId);
     } else if (ownerFilter === OWNER_UNCLAIMED) {
@@ -469,7 +541,9 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
   }
 
   const counts = useMemo(() => {
-    const map: Record<string, number> = { all: leads.length };
+    // "all" counts what the All tab actually shows — rejected excluded, or the
+    // badge promises rows the table won't display.
+    const map: Record<string, number> = { all: leads.filter((l) => l.status !== "rejected").length };
     for (const l of leads) {
       map[l.status] = (map[l.status] ?? 0) + 1;
     }
@@ -491,7 +565,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button size="sm" className="gap-2" onClick={() => setAddLeadOpen(true)}>
+            <Button size="sm" className="gap-2" onClick={openAddLead}>
               <Plus className="w-4 h-4" />
               <span className="hidden sm:inline">Add Lead</span>
             </Button>
@@ -796,6 +870,15 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
                               <Button
                                 variant="ghost"
                                 size="sm"
+                                className="h-7 w-7 p-0 text-muted-foreground hover:text-amber"
+                                onClick={() => openEditLead(lead)}
+                                title="Edit Lead"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
                                 className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-400"
                                 onClick={() => setDeleteConfirm({ open: true, lead })}
                                 title="Delete Lead"
@@ -815,14 +898,20 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
         </Card>
       </div>
 
-      {/* Add Lead Dialog */}
-      <Dialog open={addLeadOpen} onOpenChange={(o) => { setAddLeadOpen(o); if (!o) setAddLeadForm(emptyAddLeadForm); }}>
+      {/* Add / Edit Lead Dialog */}
+      <Dialog open={addLeadOpen} onOpenChange={(o) => { setAddLeadOpen(o); if (!o) { setAddLeadForm(emptyAddLeadForm); setEditLeadId(null); } }}>
         <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto scrollbar-thin">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Plus className="w-4 h-4 text-amber" /> Add Lead
+              {editLeadId
+                ? <><Pencil className="w-4 h-4 text-amber" /> Edit Lead</>
+                : <><Plus className="w-4 h-4 text-amber" /> Add Lead</>}
             </DialogTitle>
-            <DialogDescription>Manually log a lead sourced from a cold call, referral, or walk-in.</DialogDescription>
+            <DialogDescription>
+              {editLeadId
+                ? "Fix any details that were recorded incorrectly. Status, priority, and assignment are changed from the table."
+                : "Manually log a lead sourced from a cold call, referral, or walk-in."}
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-2">
             <div className="grid grid-cols-2 gap-3">
@@ -862,11 +951,21 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>City</Label>
-                <Input
-                  placeholder="Lahore"
-                  value={addLeadForm.city}
-                  onChange={(e) => setAddLeadForm({ ...addLeadForm, city: e.target.value })}
-                />
+                <Select
+                  value={addLeadForm.city || "__none"}
+                  onValueChange={(v) => setAddLeadForm({ ...addLeadForm, city: v === "__none" ? "" : v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select city" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">—</SelectItem>
+                    {PK_CITIES.map((c) => (
+                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                    ))}
+                    <SelectItem value={CITY_OTHER}>{CITY_OTHER}...</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-1.5">
                 <Label>Branches</Label>
@@ -897,24 +996,38 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-1.5">
-                <Label>Assign To</Label>
-                <Select
-                  value={addLeadForm.assigned_to || "__unassigned"}
-                  onValueChange={(v) => setAddLeadForm({ ...addLeadForm, assigned_to: v === "__unassigned" ? "" : v })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__unassigned">Unassigned</SelectItem>
-                    {assignableReps.map((rep) => (
-                      <SelectItem key={rep.id} value={rep.id}>{rep.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              {/* Assignment is owned by the per-row select, which logs an activity —
+                  offering it here too would let a reassignment slip through unlogged. */}
+              {!editLeadId && (
+                <div className="space-y-1.5">
+                  <Label>Assign To</Label>
+                  <Select
+                    value={addLeadForm.assigned_to || "__unassigned"}
+                    onValueChange={(v) => setAddLeadForm({ ...addLeadForm, assigned_to: v === "__unassigned" ? "" : v })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__unassigned">Unassigned</SelectItem>
+                      {assignableReps.map((rep) => (
+                        <SelectItem key={rep.id} value={rep.id}>{rep.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
+            {addLeadForm.city === CITY_OTHER && (
+              <div className="space-y-1.5">
+                <Label>Custom City</Label>
+                <Input
+                  placeholder="e.g. Jamshoro, Mirpur..."
+                  value={addLeadForm.cityCustom}
+                  onChange={(e) => setAddLeadForm({ ...addLeadForm, cityCustom: e.target.value })}
+                />
+              </div>
+            )}
             {addLeadForm.source === LEAD_SOURCE_OTHER && (
               <div className="space-y-1.5">
                 <Label>Custom Source</Label>
@@ -942,8 +1055,10 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
               disabled={addLeadSubmitting || !addLeadForm.business_name.trim() || !addLeadForm.owner_name.trim() || !addLeadForm.phone.trim()}
               className="gap-2"
             >
-              <Plus className="w-4 h-4" />
-              {addLeadSubmitting ? "Adding..." : "Add Lead"}
+              {editLeadId ? <Pencil className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+              {addLeadSubmitting
+                ? (editLeadId ? "Saving..." : "Adding...")
+                : (editLeadId ? "Save Changes" : "Add Lead")}
             </Button>
           </DialogFooter>
         </DialogContent>

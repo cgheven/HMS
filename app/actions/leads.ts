@@ -217,6 +217,92 @@ export async function createLead(
   }
 }
 
+// ── updateLead ───────────────────────────────────────────────────────────────────
+// Correct a lead's details after the fact — typos, a phone taken down wrong, a city
+// that was never right. Deliberately excludes status/priority/follow-up/assignment:
+// those each have their own action that logs an activity trail, and quietly changing
+// them here would bypass it.
+
+export interface UpdateLeadInput {
+  business_name: string;
+  owner_name: string;
+  phone: string;
+  email?: string;
+  city?: string;
+  branch_count?: number;
+  notes?: string;
+  source?: string;
+}
+
+export async function updateLead(
+  leadId: string,
+  input: UpdateLeadInput
+): Promise<{ lead: PlatformLead } | { error: string }> {
+  const caller = await resolveCaller();
+  if (!caller) return { error: "Unauthorized" };
+
+  // A rep may only fix their own leads; admins may fix any.
+  if (caller.kind === "rep" && !(await isLeadAssignedToRep(leadId, caller.salesRepId))) {
+    return { error: "You can only edit leads assigned to you" };
+  }
+
+  const businessName = input.business_name.trim();
+  const ownerName = input.owner_name.trim();
+  const phone = input.phone.trim();
+  if (businessName.length < 2) return { error: "Business name must be at least 2 characters." };
+  if (ownerName.length < 2) return { error: "Owner name must be at least 2 characters." };
+  if (phone.length < 7) return { error: "Phone number is too short." };
+  if (input.email?.trim() && !EMAIL_RE.test(input.email.trim())) {
+    return { error: "Enter a valid email address." };
+  }
+
+  const branchCount = Number.isFinite(input.branch_count) && (input.branch_count as number) >= 1
+    ? Math.floor(input.branch_count as number)
+    : 1;
+
+  try {
+    const admin = createAdminClient();
+    const { data, error } = await admin
+      .from("hms_platform_leads")
+      .update({
+        business_name: businessName,
+        owner_name: ownerName,
+        phone,
+        email: input.email?.trim() || null,
+        city: input.city?.trim() || null,
+        branch_count: branchCount,
+        notes: input.notes?.trim() || null,
+        source: input.source?.trim() || null,
+      })
+      .eq("id", leadId)
+      .select("*, sales_rep:hms_sales_reps(id,name)")
+      .single();
+
+    if (error) throw error;
+    if (!data) return { error: "Lead not found" };
+
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    await writeAuditLog({
+      actor_id: caller.userId,
+      actor_email: user?.email ?? "",
+      action: "lead.update",
+      entity: "platform_lead",
+      entity_id: leadId,
+      meta: { business_name: businessName },
+    });
+
+    revalidatePath("/super-admin/leads");
+    revalidatePath("/sales");
+    return { lead: data as PlatformLead };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to update lead" };
+  }
+}
+
 // ── assignLead ──────────────────────────────────────────────────────────────────
 
 export async function assignLead(

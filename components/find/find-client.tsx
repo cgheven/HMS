@@ -11,15 +11,12 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { joinWaitlist } from "@/app/actions/public";
+import { PK_CITIES } from "@/lib/cities";
 import type { PublicHostel, HostelType } from "@/types";
 
 // ── Marquee animation ─────────────────────────────────────────────────────────
 
-const MARQUEE_CITIES = [
-  "Karachi", "Lahore", "Islamabad", "Peshawar", "Quetta",
-  "Rawalpindi", "Faisalabad", "Multan", "Hyderabad", "Sialkot",
-  "Gujranwala", "Bahawalpur", "Sukkur", "Abbottabad", "Mardan",
-];
+const MARQUEE_CITIES = PK_CITIES;
 
 // ── Type config ───────────────────────────────────────────────────────────────
 
