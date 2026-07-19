@@ -79,8 +79,8 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     const phone = toWhatsAppPhone(c.phone);
     const url = phone
       ? `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`
-      : `https://wa.me/?text=${encodeURIComponent(msg)}`;
-    window.open(url, "_blank");
+      : `https://api.whatsapp.com/send?text=${encodeURIComponent(msg)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
   }
 
   function handleCreate() {

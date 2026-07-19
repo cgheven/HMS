@@ -367,12 +367,24 @@ function LoginModal({
     if (!credentials) return ""
     const origin = typeof window !== "undefined" ? window.location.origin : ""
     return (
-      `*HMS Manager Login Credentials*\n\n` +
-      `Login URL: ${origin}/login\n` +
+      `Assalam o Alaikum ${manager.name},\n\n` +
+      `Here are your login details for Pulse:\n\n` +
+      `Login: ${origin}/login\n` +
       `Mobile Number: ${credentials.phone}\n` +
       `Password: ${credentials.password}\n\n` +
       `_Please keep this confidential._`
     )
+  }
+
+  // wa.me REQUIRES the number in the path — "wa.me/?text=" is not a supported
+  // format and silently fails to open a compose window on most platforms, which
+  // is why this button appeared to do nothing. Pakistani numbers are stored as
+  // 03xx…, so strip formatting and swap the leading 0 for the 92 country code.
+  // api.whatsapp.com/send is the documented phone-less fallback.
+  const getWhatsAppUrl = () => {
+    const text = encodeURIComponent(getWhatsAppMessage())
+    const digits = (credentials?.phone ?? manager.phone ?? "").replace(/\D/g, "").replace(/^0/, "92")
+    return digits ? `https://wa.me/${digits}?text=${text}` : `https://api.whatsapp.com/send?text=${text}`
   }
 
   return (
@@ -466,13 +478,10 @@ function LoginModal({
             </p>
 
             <Button
-              onClick={() => {
-                const msg = getWhatsAppMessage()
-                window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, "_blank")
-              }}
+              onClick={() => window.open(getWhatsAppUrl(), "_blank", "noopener,noreferrer")}
               className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
             >
-              Share via WhatsApp
+              Send to {manager.phone || "WhatsApp"}
             </Button>
           </div>
         )}

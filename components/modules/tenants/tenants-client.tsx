@@ -2898,7 +2898,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   onClick={() => {
                     const url = waPhone
                       ? `https://wa.me/${waPhone}?text=${waMsg}`
-                      : `https://wa.me/?text=${waMsg}`;
+                      : `https://api.whatsapp.com/send?text=${waMsg}`;
                     window.open(url, "_blank", "noopener,noreferrer");
                   }}
                 >
@@ -2946,7 +2946,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             const waMsg = encodeURIComponent(`Hi! Please fill out this application form to apply for a room at ${hostelName ?? "our hostel"}:\n${formUrl}`);
             const waUrl = normPhone.length >= 10
               ? `https://wa.me/${normPhone}?text=${waMsg}`
-              : `https://wa.me/?text=${waMsg}`;
+              : `https://api.whatsapp.com/send?text=${waMsg}`;
             return (
               <div className="space-y-4 py-1">
                 {/* Form URL display */}

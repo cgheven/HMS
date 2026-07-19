@@ -382,9 +382,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           `Download your receipt: ${receiptUrl}\n\n` +
           `Thank you - ${hostelName}`;
 
+      // wa.me needs the number in the path; the phone-less form is
+      // api.whatsapp.com/send, not "wa.me/?text=" (which opens nothing).
       const waUrl = normPhone
         ? `https://wa.me/${normPhone}?text=${encodeURIComponent(message)}`
-        : `https://wa.me/?text=${encodeURIComponent(message)}`;
+        : `https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`;
 
       window.open(waUrl, "_blank", "noopener,noreferrer");
       toast({ title: "WhatsApp opened", description: "Receipt link copied into the chat." });
