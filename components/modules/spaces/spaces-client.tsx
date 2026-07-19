@@ -42,6 +42,8 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null }: Pro
   const [filtered, setFiltered] = useState<Room[]>(initialRooms);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | RoomStatus>("all");
+  const [roomFilter, setRoomFilter] = useState("all");
+  const [floorFilter, setFloorFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Room | null>(null);
   const [form, setForm] = useState(emptyRoom);
@@ -58,13 +60,32 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null }: Pro
   ];
 
   useEffect(() => {
+    // Picking a specific room is an explicit "show me this one" — it wins over
+    // the other filters, so a room can never be selected and then hidden by a
+    // status or floor left set from earlier.
+    if (roomFilter !== "all") {
+      // Deleting the selected room would otherwise leave the page permanently
+      // empty with no obvious cause.
+      if (!rooms.some((r) => r.id === roomFilter)) {
+        setRoomFilter("all");
+        return;
+      }
+      setFiltered(rooms.filter((r) => r.id === roomFilter));
+      return;
+    }
     const q = search.toLowerCase();
     setFiltered(rooms.filter((r) => {
       if (statusFilter !== "all" && r.status !== statusFilter) return false;
+      if (floorFilter !== "all" && String(r.floor ?? "") !== floorFilter) return false;
       if (!q) return true;
       return r.room_number.toLowerCase().includes(q) || r.type.includes(q);
     }));
-  }, [search, statusFilter, rooms]);
+  }, [search, statusFilter, roomFilter, floorFilter, rooms]);
+
+  // Floors present in this branch, numerically ordered.
+  const floors = Array.from(
+    new Set(rooms.filter((r) => r.floor != null).map((r) => String(r.floor)))
+  ).sort((a, b) => Number(a) - Number(b));
 
   async function reload() {
     if (!hostelId) return;
@@ -219,11 +240,36 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null }: Pro
         ))}
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-3">
-        <div className="relative max-w-sm w-full">
+      <div className="flex flex-col lg:flex-row gap-3">
+        <div className="relative w-full lg:max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input placeholder="Search rooms..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
         </div>
+
+        <Select value={roomFilter} onValueChange={setRoomFilter}>
+          <SelectTrigger className="h-10 w-full lg:w-44"><SelectValue placeholder="All Rooms" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Rooms</SelectItem>
+            {rooms.map((r) => (
+              <SelectItem key={r.id} value={r.id}>
+                Room {r.room_number}{r.floor != null ? ` · Floor ${r.floor}` : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {floors.length > 0 && (
+          <Select value={floorFilter} onValueChange={setFloorFilter}>
+            <SelectTrigger className="h-10 w-full lg:w-36"><SelectValue placeholder="All Floors" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Floors</SelectItem>
+              {floors.map((f) => (
+                <SelectItem key={f} value={f}>Floor {f}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+
         <div className="flex gap-2 flex-wrap">
           {(["all", "available", "occupied"] as const).map((s) => {
             const counts: Record<string, number> = { all: rooms.length, available: stats.available, occupied: stats.occupied };
@@ -251,8 +297,17 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null }: Pro
         </div>
       </div>
 
+      {roomFilter !== "all" && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>Showing one room.</span>
+          <button type="button" onClick={() => setRoomFilter("all")} className="text-amber hover:text-amber/80 font-medium">
+            Show all rooms
+          </button>
+        </div>
+      )}
+
       {filtered.length === 0 ? (
-        <Card><CardContent className="flex flex-col items-center justify-center py-16 text-muted-foreground"><BedDouble className="w-10 h-10 mb-3 opacity-30" /><p className="font-medium">{search || statusFilter !== "all" ? "No rooms match" : "No rooms yet"}</p></CardContent></Card>
+        <Card><CardContent className="flex flex-col items-center justify-center py-16 text-muted-foreground"><BedDouble className="w-10 h-10 mb-3 opacity-30" /><p className="font-medium">{search || statusFilter !== "all" || roomFilter !== "all" || floorFilter !== "all" ? "No rooms match" : "No rooms yet"}</p></CardContent></Card>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filtered.map((room) => {

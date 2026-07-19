@@ -19,7 +19,7 @@ import { unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
-import { requireOwnerOrAbove, requireOwnerOrPartnerTier } from "@/lib/auth";
+import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { logActivity } from "@/lib/audit";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
@@ -651,11 +651,14 @@ export async function applyRoomACUnitsAction(
 }> {
   try {
     // ── Auth & ownership guard ──────────────────────────────────
-    // Owner-only: AC billing management was never part of the partner feature's
-    // scope, and this action writes via the admin client (bypasses RLS), so this
-    // guard is the only thing standing between "any authenticated user with a
-    // resolvable hostel" and a write here — no RLS backstop for this one.
-    await requireOwnerOrAbove();
+    // Standard tier: reading the meter and billing the month's units is routine
+    // branch operations, the same class as recording a payment. read_only stays
+    // out. This action writes via the admin client (bypasses RLS), so this guard
+    // is the only thing standing between "any authenticated user with a
+    // resolvable hostel" and a write here — no RLS backstop for this one. The
+    // roomId is re-scoped to ctx.hostelId below, so a partner cannot bill a room
+    // belonging to another branch.
+    await requireOwnerOrPartnerTier("standard");
     const ctx = await getAuthContext();
     if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
     const { hostelId } = ctx;
@@ -1053,9 +1056,10 @@ export async function saveACJoinReadingAction(
   openingReading?: number
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    // Owner-only — same reasoning as applyRoomACUnitsAction: admin-client write,
-    // no RLS backstop, and AC billing management isn't part of the partner scope.
-    await requireOwnerOrAbove();
+    // Standard tier — same reasoning as applyRoomACUnitsAction: admin-client
+    // write with no RLS backstop, roomId and tenantId both re-scoped to
+    // ctx.hostelId below.
+    await requireOwnerOrPartnerTier("standard");
     const ctx = await getAuthContext();
     if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
     const { hostelId } = ctx;

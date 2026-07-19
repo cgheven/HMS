@@ -741,7 +741,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         <TabsList>
           <TabsTrigger value="monthly"><Banknote className="w-3.5 h-3.5" /> Monthly View</TabsTrigger>
           <TabsTrigger value="history"><Clock className="w-3.5 h-3.5" /> All History</TabsTrigger>
-          {acRooms.length > 0 && !isPartner && (
+          {acRooms.length > 0 && (
             <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> AC Billing</TabsTrigger>
           )}
         </TabsList>
@@ -980,16 +980,18 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                             disabled={acTenantCount === 0}
                             className="w-28 h-9 text-sm text-center disabled:opacity-40"
                           />
-                          <Button
-                            size="sm"
-                            className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
-                            variant="ghost"
-                            disabled={applyingAC === room.id || !currentInput || acTenantCount === 0}
-                            onClick={() => applyACUnits(room.id)}
-                          >
-                            {applyingAC === room.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
-                            Apply
-                          </Button>
+                          {canRecordPayment && (
+                            <Button
+                              size="sm"
+                              className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
+                              variant="ghost"
+                              disabled={applyingAC === room.id || !currentInput || acTenantCount === 0}
+                              onClick={() => applyACUnits(room.id)}
+                            >
+                              {applyingAC === room.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                              Apply
+                            </Button>
+                          )}
                         </div>
                         {consumptionPreview != null && (
                           <p className="text-[10px] text-amber/70">{consumptionPreview} units consumed</p>
@@ -1034,20 +1036,22 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                                   onChange={e => setJoinUnits(prev => ({ ...prev, [joinKey]: e.target.value }))}
                                   className="w-28 h-9 text-sm text-center"
                                 />
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  disabled={savingJoin === tenant.id || !joinUnits[joinKey]}
-                                  onClick={() => handleSaveJoinReading(room.id, tenant.id)}
-                                  className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
-                                >
-                                  {savingJoin === tenant.id
-                                    ? <Loader2 className="w-3 h-3 animate-spin" />
-                                    : isSaved
-                                    ? <CheckCircle2 className="w-3 h-3" />
-                                    : <Zap className="w-3 h-3" />}
-                                  {savingJoin !== tenant.id && (isSaved ? "Saved" : "Save")}
-                                </Button>
+                                {canRecordPayment && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={savingJoin === tenant.id || !joinUnits[joinKey]}
+                                    onClick={() => handleSaveJoinReading(room.id, tenant.id)}
+                                    className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
+                                  >
+                                    {savingJoin === tenant.id
+                                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                                      : isSaved
+                                      ? <CheckCircle2 className="w-3 h-3" />
+                                      : <Zap className="w-3 h-3" />}
+                                    {savingJoin !== tenant.id && (isSaved ? "Saved" : "Save")}
+                                  </Button>
+                                )}
                               </div>
                             </div>
                           );
