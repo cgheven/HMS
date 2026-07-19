@@ -13,18 +13,22 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
-import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier } from "@/types";
+import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier, StaffPermission } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import {
   syncMonthAction,
   markPaymentPaidAction,
-  markPaymentOverdueAction,
   loadHistoryAction,
   applyRoomACUnitsAction,
   saveACJoinReadingAction,
 } from "@/app/actions/payments";
 import { createInvoiceLink } from "@/app/actions/tenants";
 import { recordPaymentAsPartner } from "@/app/actions/partner";
+import {
+  recordPaymentAsManager,
+  applyRoomACUnitsAsManager,
+  saveACJoinReadingAsManager,
+} from "@/app/actions/managers";
 
 interface TenantRow {
   id: string;
@@ -63,6 +67,11 @@ interface Props {
   // standard+; late fee / receipt number overrides and AC billing management
   // stay owner-only (the partner write path doesn't support them).
   partnerTier?: PartnerTier | null;
+  // null/undefined = not a manager (owner or partner path — untouched).
+  // A non-null array puts the page in manager mode: identical UI, but every
+  // write is routed through the createAdminClient()-backed manager actions and
+  // gated on the collect_payments permission.
+  managerPermissions?: StaffPermission[] | null;
 }
 
 const methodLabels: Record<PaymentMethod, string> = {
@@ -88,9 +97,17 @@ function genReceipt(tenantName: string, month: string) {
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, acReadings = [], acJoinReadings = [], prevMonthACReadings = [], partnerTier = null }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, acReadings = [], acJoinReadings = [], prevMonthACReadings = [], partnerTier = null, managerPermissions = null }: Props) {
   const isPartner = !!partnerTier;
-  const canRecordPayment = !partnerTier || partnerTier !== "read_only";
+  const isManager = !!managerPermissions;
+  const canCollect = managerPermissions?.includes("collect_payments") ?? false;
+  // Owners (no partnerTier, no managerPermissions) short-circuit on the first
+  // operand exactly as before — this stays true for them unconditionally.
+  const canRecordPayment = isManager ? canCollect : (!partnerTier || partnerTier !== "read_only");
+  // Managers get the same reduced dialog as partners: the manager write action
+  // has no late-fee / receipt-number / back-dating override, so those inputs are
+  // hidden rather than silently dropped.
+  const hideOverrides = isPartner || isManager;
   const router = useRouter();
   const [selectedMonth, setSelectedMonth] = useState(initialMonth);
   const [payments, setPayments] = useState<Payment[]>(initialPayments);
@@ -158,13 +175,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }, [acJoinReadings, prevMonthACReadings]);
 
   // All payment mutations go through Server Actions — not the browser Supabase client
-  const syncMonth = useCallback(async (month: string) => {
+  // Returns the freshly-synced rows so callers can read back the row they just
+  // mutated (the manager write action doesn't echo it). Owners ignored the
+  // return value before and still do — behaviour is unchanged for them.
+  const syncMonth = useCallback(async (month: string): Promise<Payment[] | null> => {
     const result = await syncMonthAction(month);
     if (result.error) {
       toast({ title: "Failed to sync payments", description: result.error, variant: "destructive" });
-    } else if (result.payments) {
-      setPayments(result.payments);
+      return null;
     }
+    if (result.payments) {
+      setPayments(result.payments);
+      return result.payments;
+    }
+    return null;
   }, []);
 
   // No auto-sync on mount — server already called getPaymentsPageData(defaultMonth)
@@ -256,6 +280,42 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
     setSaving(true);
 
+    if (isManager) {
+      if (!canCollect) {
+        toast({ title: "Not allowed", description: "You don't have permission to collect payments.", variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+      const result = await recordPaymentAsManager(
+        markDialog.tenant_id,
+        amountReceived,
+        markForm.method,
+        markDialog.for_month,
+        isAcTier ? parseInt(markForm.ac_units_consumed, 10) : undefined,
+      );
+      if (result.error) {
+        toast({ title: "Error", description: result.error, variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+      const remainingBefore = Math.max(0, Number(markDialog.amount) + Number(markDialog.late_fee ?? 0) - Number(markDialog.amount_paid ?? 0));
+      const isPartial = amountReceived < remainingBefore - 0.01;
+      toast({ title: isPartial ? "Partial payment recorded" : "Payment recorded! 🎉" });
+      const paymentId = markDialog.id;
+      setMarkDialog(null);
+      setSaving(false);
+      // recordPaymentAsManager returns only { error } — it does not echo the
+      // updated row like recordPaymentAsPartner does. Rather than drop the
+      // post-payment WhatsApp receipt step (the whole point of this page for a
+      // manager), re-read the row from the fresh sync result.
+      const fresh = await syncMonth(selectedMonth);
+      const updated = fresh?.find((p) => p.id === paymentId);
+      if (updated) {
+        setPostPaymentWa({ payment: updated, amountReceivedNow: amountReceived });
+      }
+      return;
+    }
+
     if (isPartner) {
       // recordPaymentAsPartner doesn't accept a late-fee/receipt-number override
       // (both fields are hidden in the dialog for partners, so nothing typed is
@@ -315,16 +375,6 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       }
       return;
     }
-  }
-
-  async function markOverdue(p: Payment) {
-    const result = await markPaymentOverdueAction(p.id);
-    if (result.error) {
-      toast({ title: "Error", description: result.error, variant: "destructive" });
-      return;
-    }
-    toast({ title: "Marked as overdue" });
-    await syncMonth(selectedMonth);
   }
 
   async function openReceipt(paymentId: string) {
@@ -425,6 +475,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }
 
   async function handleSaveJoinReading(roomId: string, tenantId: string) {
+    if (!canRecordPayment) return;
     const key = `${tenantId}_${selectedMonth}`;
     const raw = joinUnits[key] ?? "";
     const value = parseFloat(raw);
@@ -437,9 +488,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
     setSavingJoin(tenantId);
     try {
-      const result = await saveACJoinReadingAction(roomId, selectedMonth, tenantId, value, openingReading);
-      if (!result.success) {
-        toast({ title: "Error saving join reading", description: result.error, variant: "destructive" });
+      // The manager action reports success as `error: null`; the owner action
+      // uses `success`. Normalise to a single error string either way.
+      const err = isManager
+        ? (await saveACJoinReadingAsManager(roomId, selectedMonth, tenantId, value, openingReading)).error
+        : await (async () => {
+            const r = await saveACJoinReadingAction(roomId, selectedMonth, tenantId, value, openingReading);
+            return r.success ? null : (r.error ?? "Failed to save join reading.");
+          })();
+      if (err) {
+        toast({ title: "Error saving join reading", description: err, variant: "destructive" });
       } else {
         toast({ title: "Join reading saved" });
         router.refresh();
@@ -450,6 +508,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }
 
   async function applyACUnits(roomId: string) {
+    if (!canRecordPayment) return;
     const meterReading = Number(acUnits[roomId] ?? "");
     if (!Number.isFinite(meterReading) || meterReading < 0) return;
     const prevReading = prevMonthACReadings.find(r => r.room_id === roomId)?.meter_reading;
@@ -457,9 +516,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
     setApplyingAC(roomId);
     try {
-      const result = await applyRoomACUnitsAction(roomId, selectedMonth, meterReading, openingReading);
+      // Same normalisation as the join-reading path: the manager action signals
+      // success with `error: null` and exposes no proRatedCount/unassignedUnits.
+      const result = isManager
+        ? await (async () => {
+            const r = await applyRoomACUnitsAsManager(roomId, selectedMonth, meterReading, openingReading);
+            return { ...r, success: !r.error, proRatedCount: undefined as number | undefined, unassignedUnits: undefined as number | undefined };
+          })()
+        : await applyRoomACUnitsAction(roomId, selectedMonth, meterReading, openingReading);
       if (!result.success) {
-        toast({ title: "AC Billing Error", description: result.error, variant: "destructive" });
+        toast({ title: "AC Billing Error", description: result.error ?? "Failed to apply AC units.", variant: "destructive" });
       } else {
         const derivedUnits = result.derivedUnits ?? 0;
         const cleared = derivedUnits === 0;
@@ -1243,7 +1309,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 </SelectContent>
               </Select>
             </div>
-            {isPartner ? (
+            {hideOverrides ? (
               <p className="text-xs text-muted-foreground/70">
                 Recorded with today&apos;s date. Late fee and receipt number overrides aren&apos;t available here — ask the owner if either is needed.
               </p>

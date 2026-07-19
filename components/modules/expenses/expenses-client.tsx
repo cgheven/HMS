@@ -1,6 +1,8 @@
 "use client";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { Plus, Receipt, Search, Edit2, Trash2, TrendingDown, Filter, Download, X } from "lucide-react";
+import { addExpenseAsManager } from "@/app/actions/managers";
 import * as XLSX from "xlsx";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -14,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
-import type { Expense, ExpenseCategory, PartnerTier } from "@/types";
+import type { Expense, ExpenseCategory, PartnerTier, StaffPermission } from "@/types";
 
 const categories: ExpenseCategory[] = ["furniture", "repairs", "cleaning", "security", "utilities", "other"];
 const categoryColors: Record<ExpenseCategory, "info" | "warning" | "success" | "secondary" | "default" | "outline"> = { furniture: "info", repairs: "warning", cleaning: "success", security: "secondary", utilities: "default", other: "outline" };
@@ -62,13 +64,18 @@ const CHIP_STYLES: Record<ExpenseCategory, string> = {
   other:     "bg-white/5       border-white/10      text-muted-foreground hover:bg-white/10",
 };
 
-interface Props { hostelId: string | null; initialExpenses: Expense[]; defaultMonth: string; partnerTier?: PartnerTier | null; }
+interface Props { hostelId: string | null; initialExpenses: Expense[]; defaultMonth: string; partnerTier?: PartnerTier | null; managerPermissions?: StaffPermission[] | null; }
 
 // Module-level cache — persists across month switches within the session
 const expenseCache = new Map<string, Expense[]>();
 
-export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partnerTier = null }: Props) {
+export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partnerTier = null, managerPermissions = null }: Props) {
+  const router = useRouter();
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
+  const isManager = !!managerPermissions;
+  const canAddExpense = managerPermissions?.includes("add_expenses") ?? false;
+  const canAdd = isManager ? canAddExpense : canStandardTier;
+  const canEditDelete = isManager ? false : canStandardTier;
   const [expenses, setExpenses] = useState<Expense[]>(initialExpenses);
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("all");
@@ -91,7 +98,20 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
     return list;
   }, [search, filterCat, customFrom, customTo, expenses]);
 
+  // Managers have no RLS read access — the browser client returns nothing for
+  // them, so their list is refetched server-side and arrives as a new prop.
+  useEffect(() => {
+    if (isManager) setExpenses(initialExpenses);
+  }, [isManager, initialExpenses]);
+
   async function loadMonth(month: string) {
+    if (isManager) {
+      const params = new URLSearchParams(window.location.search);
+      params.set("month", month);
+      router.replace(`${window.location.pathname}?${params.toString()}`);
+      router.refresh();
+      return;
+    }
     if (!hostelId) return;
     const cacheKey = `${hostelId}:${month}`;
     if (expenseCache.has(cacheKey)) {
@@ -114,6 +134,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
   }
 
   async function reload() {
+    if (isManager) { router.refresh(); return; }
     if (!hostelId) return;
     // Invalidate cache for current month so mutations reflect immediately
     expenseCache.delete(`${hostelId}:${monthFilter}`);
@@ -121,7 +142,27 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
   }
 
   async function handleSave() {
-    if (!hostelId || !form.title || !form.amount) return;
+    if (!form.title || !form.amount) return;
+
+    if (isManager) {
+      // Managers never reach the edit branch — Edit is hidden for them — and
+      // the write goes through the admin-client action, which resolves the
+      // hostel id server-side from the manager's active branch.
+      setSaving(true);
+      const result = await addExpenseAsManager(form.category, parseFloat(form.amount), form.title, form.date, form.notes);
+      if (result.error) {
+        toast({ title: "Error", description: result.error, variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+      toast({ title: "Added" });
+      setDialogOpen(false);
+      await reload();
+      setSaving(false);
+      return;
+    }
+
+    if (!hostelId) return;
     setSaving(true);
     const supabase = createClient();
     const payload = { hostel_id: hostelId, title: form.title, amount: parseFloat(form.amount), category: form.category, date: form.date, notes: form.notes || null };
@@ -186,7 +227,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
         <div><h1 className="text-3xl font-serif font-normal tracking-tight">Expenses</h1><p className="text-muted-foreground text-sm mt-1">Track hostel expenditures</p></div>
         <div className="flex gap-2 w-full sm:w-auto">
           <Button variant="outline" onClick={exportToExcel} disabled={filtered.length === 0} className="gap-2 flex-1 sm:flex-none"><Download className="w-4 h-4" /> Export Excel</Button>
-          {canStandardTier && (
+          {canAdd && (
             <Button onClick={() => { setEditing(null); setForm(emptyForm); setDialogOpen(true); }} className="gap-2 flex-1 sm:flex-none"><Plus className="w-4 h-4" /> Add Expense</Button>
           )}
         </div>
@@ -203,7 +244,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
       </div>
 
       {/* Quick Add */}
-      {canStandardTier && (
+      {canAdd && (
       <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
         <div className="flex items-center gap-2">
           <Plus className="w-3.5 h-3.5 text-muted-foreground" />
@@ -255,7 +296,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
-                <thead><tr className="border-b bg-muted/30"><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Title</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden sm:table-cell">Category</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">Date</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">Amount</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">{canStandardTier ? "Actions" : ""}</th></tr></thead>
+                <thead><tr className="border-b bg-muted/30"><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Title</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden sm:table-cell">Category</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">Date</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">Amount</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">{canEditDelete ? "Actions" : ""}</th></tr></thead>
                 <tbody className="divide-y">
                   {filtered.map((exp) => (
                     <tr key={exp.id} className="hover:bg-muted/20 transition-colors">
@@ -264,7 +305,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
                       <td className="px-4 py-3 text-sm text-muted-foreground hidden md:table-cell">{formatDate(exp.date)}</td>
                       <td className="px-4 py-3 text-right font-semibold text-sm">{formatCurrency(exp.amount)}</td>
                       <td className="px-4 py-3 text-right"><div className="flex items-center justify-end gap-1">
-                        {canStandardTier && (<>
+                        {canEditDelete && (<>
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(exp); setForm({ title: exp.title, amount: exp.amount.toString(), category: exp.category, date: exp.date, notes: exp.notes ?? "" }); setDialogOpen(true); }}><Edit2 className="w-3.5 h-3.5" /></Button>
                           <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteId(exp.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
                         </>)}

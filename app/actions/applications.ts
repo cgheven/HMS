@@ -3,9 +3,49 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { sendApplicationEmail } from "@/lib/email";
 import type { ApplicationStatus, PackageTier, Profile } from "@/types";
+
+/**
+ * Who is acting on an application. Managers reach this module through the
+ * reused owner Tenants page; they hold no hms_owner_hostels row and
+ * getAuthContext() gives them no hostelId, so they need their own branch.
+ * Gated on add_members because approving an application IS adding a tenant,
+ * and always scoped to the manager's own server-resolved active branch.
+ * Every non-manager falls through to the untouched owner/partner path.
+ */
+type ApplicationActor =
+  | { kind: "manager"; hostelId: string; profileId: string | null }
+  | { kind: "profile"; profile: Profile };
+
+async function resolveApplicationActor(
+  minTier: "read_only" | "standard"
+): Promise<ApplicationActor> {
+  const mgr = await getManagerContext();
+  if (mgr) {
+    if (!mgr.permissions.has("add_members")) throw new Error("Access denied");
+    if (!mgr.activeHostel) throw new Error("Unauthorized: no active hostel");
+    return {
+      kind: "manager",
+      hostelId: mgr.activeHostel.id,
+      // hms_tenant_applications.reviewed_by FKs hms_profiles(id); a manager's
+      // profile id is their auth user id.
+      profileId: mgr.manager.supabase_user_id,
+    };
+  }
+  return { kind: "profile", profile: await requireOwnerOrPartnerTier(minTier) };
+}
+
+async function actorHasAccess(actor: ApplicationActor, hostelId: string): Promise<boolean> {
+  if (actor.kind === "manager") return actor.hostelId === hostelId;
+  return hasHostelAccess(actor.profile, hostelId);
+}
+
+function actorId(actor: ApplicationActor): string | null {
+  return actor.kind === "manager" ? actor.profileId : actor.profile.id;
+}
 
 /**
  * Partners never appear in hms_owner_hostels — their branch access lives in
@@ -147,7 +187,7 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
 }
 
 export async function listApplications(hostelId: string) {
-  const profile = await requireOwnerOrPartnerTier("read_only");
+  const actor = await resolveApplicationActor("read_only");
 
   const admin = createAdminClient();
   const { data: hostel } = await admin
@@ -158,7 +198,7 @@ export async function listApplications(hostelId: string) {
 
   if (!hostel) notFound();
 
-  if (!(await hasHostelAccess(profile, hostelId))) {
+  if (!(await actorHasAccess(actor, hostelId))) {
     return { applications: [], error: "Unauthorized" };
   }
 
@@ -176,7 +216,7 @@ export async function updateApplicationStatus(
   appId: string,
   status: ApplicationStatus
 ) {
-  const profile = await requireOwnerOrPartnerTier("standard");
+  const actor = await resolveApplicationActor("standard");
   const admin = createAdminClient();
 
   const { data: app } = await admin
@@ -187,7 +227,7 @@ export async function updateApplicationStatus(
 
   if (!app) return { success: false, error: "Application not found" };
 
-  if (!(await hasHostelAccess(profile, app.hostel_id))) {
+  if (!(await actorHasAccess(actor, app.hostel_id))) {
     return { success: false, error: "Unauthorized" };
   }
 
@@ -196,7 +236,7 @@ export async function updateApplicationStatus(
     .update({
       status,
       reviewed_at: new Date().toISOString(),
-      reviewed_by: profile.id,
+      reviewed_by: actorId(actor),
     })
     .eq("id", appId);
 
@@ -226,7 +266,7 @@ export interface ConvertFormData {
 }
 
 export async function convertToTenant(appId: string, extra: ConvertFormData) {
-  const profile = await requireOwnerOrPartnerTier("standard");
+  const actor = await resolveApplicationActor("standard");
   const admin = createAdminClient();
 
   // Fetch application
@@ -238,7 +278,7 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
 
   if (!app) return { success: false, error: "Application not found" };
 
-  if (!(await hasHostelAccess(profile, app.hostel_id))) {
+  if (!(await actorHasAccess(actor, app.hostel_id))) {
     return { success: false, error: "Unauthorized" };
   }
 
@@ -307,7 +347,7 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     .update({
       status: "approved",
       reviewed_at: new Date().toISOString(),
-      reviewed_by: profile.id,
+      reviewed_by: actorId(actor),
     })
     .eq("id", appId);
 

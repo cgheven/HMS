@@ -1,5 +1,6 @@
 "use client";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, History,
@@ -20,13 +21,14 @@ import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates, type FoodAddonFlags } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
-import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
 import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction } from "@/app/actions/tenants";
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
+import { addTenantAsManager } from "@/app/actions/managers";
 
 interface Props {
   hostelId: string | null;
@@ -48,6 +50,17 @@ interface Props {
   // rather than something rushed in here. Checkout has full parity (shares the
   // exact same performTenantCheckout as the owner path) and is wired for Full tier.
   partnerTier?: PartnerTier | null;
+  // null/undefined = not a manager (owner or partner — unchanged behaviour).
+  // A non-null array puts the page in manager mode: the full list, stats, search,
+  // filters and timeline stay visible, but every money-settling or record-rewriting
+  // control (Edit / Checkout / Delete / Give Notice / Activate) is hidden, and Add
+  // requires the "add_members" permission. Writes go through addTenantAsManager,
+  // which re-resolves the branch server-side.
+  managerPermissions?: StaffPermission[] | null;
+  // Server-seeded pricing config. Only the portal passes this — managers can't
+  // read hms_package_configs from the browser, so without it every suggested
+  // rent and deposit in the Add Tenant dialog would be blank.
+  initialPackageConfig?: PackageConfig | null;
 }
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
@@ -234,7 +247,10 @@ interface TenantRowProps {
   foodAddonRates: FoodAddonRates;
   noticePeriodDays?: number;
   currentMonthPaymentByTenant?: Record<string, { status: string; remaining: number }>;
-  onTimeline: (t: Tenant) => void;
+  // Omitted for managers: getTenantTimeline() resolves the branch through
+  // getAuthContext(), which yields no hostelId for a manager, so the dialog
+  // would open permanently empty. Undefined hides the control entirely.
+  onTimeline?: (t: Tenant) => void;
   onCheckout: (t: Tenant) => void;
   onActivate: (t: Tenant) => void;
   onEdit: (t: Tenant) => void;
@@ -251,8 +267,9 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
       <div className="flex items-center gap-3 min-w-0 flex-1">
       <button
         type="button"
-        onClick={() => onTimeline(t)}
-        className="w-9 h-9 rounded-full shrink-0 overflow-hidden border border-amber/20 bg-amber/10 flex items-center justify-center hover:opacity-80 transition-opacity"
+        disabled={!onTimeline}
+        onClick={() => onTimeline?.(t)}
+        className="w-9 h-9 rounded-full shrink-0 overflow-hidden border border-amber/20 bg-amber/10 flex items-center justify-center hover:opacity-80 transition-opacity disabled:hover:opacity-100 disabled:cursor-default"
       >
         {t.photo_url ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -264,8 +281,9 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
 
       <button
         type="button"
-        onClick={() => onTimeline(t)}
-        className="flex-1 min-w-0 text-left"
+        disabled={!onTimeline}
+        onClick={() => onTimeline?.(t)}
+        className="flex-1 min-w-0 text-left disabled:cursor-default"
       >
         <div className="flex items-center gap-1.5 min-w-0">
           <p className="text-sm font-medium text-foreground truncate">{t.full_name}</p>
@@ -393,9 +411,11 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
             <span className="hidden sm:inline text-xs ml-1.5">Check Out</span>
           </Button>
         )}
-        <Button variant="ghost" size="icon" className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground" title="History" onClick={() => onTimeline(t)}>
-          <History className="w-3.5 h-3.5" />
-        </Button>
+        {onTimeline && (
+          <Button variant="ghost" size="icon" className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground" title="History" onClick={() => onTimeline(t)}>
+            <History className="w-3.5 h-3.5" />
+          </Button>
+        )}
         {showEdit && (
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEdit(t)}>
             <Edit2 className="w-3.5 h-3.5" />
@@ -414,10 +434,18 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
 
 // ---------------------------------------------------------------------------
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, currentMonthPaymentByTenant = {}, partnerTier = null }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null }: Props) {
   const isPartner = !!partnerTier;
   const canFullTier = !partnerTier || partnerTier === "full";
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
+  const router = useRouter();
+  const isManager = !!managerPermissions;
+  const canAddAsManager = managerPermissions?.includes("add_members") ?? false;
+  // Every flag below collapses to its pre-existing value when isManager is false,
+  // so the owner and partner paths are untouched.
+  const canAdd = isManager ? canAddAsManager : canStandardTier;
+  const canMutateRow = canFullTier && !isManager;
+  const canNotice = canStandardTier && !isManager;
   const [active, setActive] = useState(initialActive);
   const [waiting, setWaiting] = useState(initialWaiting);
   const [checkedOut, setCheckedOut] = useState(initialCheckedOut);
@@ -465,49 +493,62 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   );
   const [foodMonthlyRate, setFoodMonthlyRate] = useState<number>(initialFoodMonthlyRate ?? 0);
 
+  // Single place that maps an hms_package_configs row onto the pricing state,
+  // so the server-seeded (manager) and browser-fetched (owner/partner) paths
+  // can never drift apart.
+  const applyPackageConfig = useCallback((data: Record<string, unknown>) => {
+    if (data.package_prices) {
+      const raw = data.package_prices as Record<string, unknown>;
+      setPkgPrices(raw as Partial<Record<PackageTier, PackagePrices>>);
+      const custom = (raw._custom ?? []) as Array<{
+        id: string; name: string; no_ac: number; ac: number;
+        deposit_no_ac?: number; deposit_ac?: number;
+      }>;
+      setCustomPackages(custom
+        .filter((c) => c.name)
+        .map((c) => ({
+          id: c.id,
+          name: c.name,
+          no_ac: c.no_ac ?? 0,
+          ac: c.ac ?? 0,
+          deposit_no_ac: c.deposit_no_ac ?? 0,
+          deposit_ac: c.deposit_ac ?? 0,
+        })));
+    }
+    if (data.security_deposit) setConfigSecurityDeposit(Number(data.security_deposit));
+    if (data.seater_prices) setSeaterPrices(data.seater_prices as SeaterPrices);
+    setFoodAddonRates({
+      food_breakfast_rate: Number(data.food_breakfast_rate ?? 0),
+      food_lunch_rate: Number(data.food_lunch_rate ?? 0),
+      food_dinner_rate: Number(data.food_dinner_rate ?? 0),
+      food_all_meals_rate: Number(data.food_all_meals_rate ?? 0),
+    });
+    setFoodMonthlyRate(Number(data.food_monthly_rate ?? 0));
+  }, []);
+
   useEffect(() => {
     if (!hostelId) return;
+
+    // Managers have no RLS grant on hms_package_configs (by design — migration
+    // 051), so this browser-client read returns nothing for them and every
+    // suggested rate silently falls back to 0 / a hardcoded 10000 deposit. The
+    // portal fetches the config server-side with the admin client and hands it
+    // in, so seed from that instead of fetching.
+    if (initialPackageConfig) {
+      applyPackageConfig(initialPackageConfig as unknown as Record<string, unknown>);
+      return;
+    }
+
     const supabase = createClient();
     supabase.from("hms_package_configs")
       .select("package_prices, security_deposit, seater_prices, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, food_monthly_rate")
       .eq("hostel_id", hostelId)
       .maybeSingle()
       .then(({ data }) => {
-        if (data?.package_prices) {
-          const raw = data.package_prices as Record<string, unknown>;
-          setPkgPrices(raw as Partial<Record<PackageTier, PackagePrices>>);
-          const custom = (raw._custom ?? []) as Array<{
-            id: string; name: string; no_ac: number; ac: number;
-            deposit_no_ac?: number; deposit_ac?: number;
-          }>;
-          setCustomPackages(custom
-            .filter((c) => c.name)
-            .map((c) => ({
-              id: c.id,
-              name: c.name,
-              no_ac: c.no_ac ?? 0,
-              ac: c.ac ?? 0,
-              deposit_no_ac: c.deposit_no_ac ?? 0,
-              deposit_ac: c.deposit_ac ?? 0,
-            })));
-        }
-        if (data?.security_deposit) {
-          setConfigSecurityDeposit(Number(data.security_deposit));
-        }
-        if (data?.seater_prices) {
-          setSeaterPrices(data.seater_prices as SeaterPrices);
-        }
-        if (data) {
-          setFoodAddonRates({
-            food_breakfast_rate: Number(data.food_breakfast_rate ?? 0),
-            food_lunch_rate: Number(data.food_lunch_rate ?? 0),
-            food_dinner_rate: Number(data.food_dinner_rate ?? 0),
-            food_all_meals_rate: Number(data.food_all_meals_rate ?? 0),
-          });
-          setFoodMonthlyRate(Number(data.food_monthly_rate ?? 0));
-        }
+        if (data) applyPackageConfig(data as Record<string, unknown>);
       });
-  }, [hostelId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostelId, initialPackageConfig]);
   const [timelineTenant, setTimelineTenant] = useState<Tenant | null>(null);
   const [appActionLoading, setAppActionLoading] = useState<string | null>(null);
   const [approvingApp, setApprovingApp] = useState<TenantApplication | null>(null);
@@ -549,6 +590,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   );
 
   async function reload() {
+    // A manager's client SDK session has no RLS grants — this query returns
+    // nothing and would silently blank the list. Re-render the server component
+    // instead, which refetches through the admin-client portal data layer.
+    if (isManager) { router.refresh(); return; }
     if (!hostelId) return;
     const supabase = createClient();
     const [{ data: tenants }, { data: rms }] = await Promise.all([
@@ -563,6 +608,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   }
 
   async function reloadApplications() {
+    // Same RLS blind spot as reload() — a manager read here returns [] and
+    // would wipe the applications list that was server-rendered.
+    if (isManager) { router.refresh(); return; }
     if (!hostelId) return;
     const supabase = createClient();
     const { data } = await supabase
@@ -688,7 +736,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   }
 
   async function handleSave() {
-    if (!hostelId || !form.full_name) return;
+    if ((!hostelId && !isManager) || !form.full_name) return;
     if (!form.is_waiting && !form.check_in) return;
     if (form.cnic && !/^\d{5}-\d{7}-\d$/.test(form.cnic)) {
       toast({ title: "Invalid CNIC", description: "Format must be XXXXX-XXXXXXX-X (13 digits)", variant: "destructive" });
@@ -726,6 +774,25 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       food_lunch: form.food_lunch,
       food_dinner: form.food_dinner,
     };
+
+    if (isManager) {
+      // Managers only ever reach the create path — Edit is hidden for them — and the
+      // action re-resolves the branch server-side, so hostel_id/is_active are dropped.
+      const { hostel_id: _mHostelId, is_active: _mIsActive, ...managerPayload } = payload;
+      const result = await addTenantAsManager(managerPayload);
+      if (result.error) {
+        toast({ title: "Error", description: result.error, variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+      toast({ title: form.is_waiting ? "Added to waiting list" : "Tenant added" });
+      setDialogOpen(false);
+      // Managers have no RLS grants, so the client-SDK reload() below would come back
+      // empty and blank the list. A full reload re-runs the server page, which reads
+      // through the admin client.
+      window.location.reload();
+      return;
+    }
 
     if (isPartner) {
       // The partner write action does everything the rest of this function
@@ -1227,14 +1294,19 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           <p className="text-muted-foreground text-sm mt-1">Manage hostel residents</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-          <Button
-            variant="outline"
-            onClick={() => { if (hostelSlug) setShareLinkDialog(true); else toast({ title: "No form link yet", description: "Contact support to set up your hostel slug.", variant: "destructive" }); }}
-            className="gap-2 h-9 text-sm flex-1 sm:flex-none"
-          >
-            <Link2 className="w-4 h-4" /> Share Application Form
-          </Button>
-          {canStandardTier && (
+          {/* Applications are an owner-only surface and the portal never passes
+              hostelSlug, so for a manager this button could only ever produce
+              the "No form link yet" error toast. */}
+          {!isManager && (
+            <Button
+              variant="outline"
+              onClick={() => { if (hostelSlug) setShareLinkDialog(true); else toast({ title: "No form link yet", description: "Contact support to set up your hostel slug.", variant: "destructive" }); }}
+              className="gap-2 h-9 text-sm flex-1 sm:flex-none"
+            >
+              <Link2 className="w-4 h-4" /> Share Application Form
+            </Button>
+          )}
+          {canAdd && (
             <Button onClick={openAdd} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold flex-1 sm:flex-none">
               <Plus className="w-4 h-4" /> Add Tenant
             </Button>
@@ -1425,13 +1497,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               <div className="divide-y divide-sidebar-border/50">
                 {filterList(active).map((t) => (
                 <TenantRow
-                  key={t.id} t={t} showCheckout={canFullTier}
-                  showEdit={canFullTier} showDelete={canFullTier} showGiveNotice={canStandardTier}
+                  key={t.id} t={t} showCheckout={canMutateRow}
+                  showEdit={canMutateRow} showDelete={canMutateRow} showGiveNotice={canNotice}
                   roomMap={roomMap}
                   foodAddonRates={foodAddonRates}
                   noticePeriodDays={noticePeriodDays}
                   currentMonthPaymentByTenant={currentMonthPaymentByTenant}
-                  onTimeline={setTimelineTenant}
+                  onTimeline={isManager ? undefined : setTimelineTenant}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}
@@ -1457,13 +1529,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <div className="divide-y divide-sidebar-border/50">
                   {filterList(waiting).map((t) => (
                     <TenantRow
-                      key={t.id} t={t} showActivate={canFullTier}
-                      showEdit={canFullTier} showDelete={canFullTier}
+                      key={t.id} t={t} showActivate={canMutateRow}
+                      showEdit={canMutateRow} showDelete={canMutateRow}
                       roomMap={roomMap}
                       foodAddonRates={foodAddonRates}
                       noticePeriodDays={noticePeriodDays}
                       currentMonthPaymentByTenant={currentMonthPaymentByTenant}
-                      onTimeline={setTimelineTenant}
+                      onTimeline={isManager ? undefined : setTimelineTenant}
                       onCheckout={openCheckout}
                       onActivate={(tenant) => openEdit(tenant, true)}
                       onEdit={openEdit}
@@ -1515,7 +1587,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                               {new Date(entry.created_at).toLocaleDateString("en-PK", { day: "numeric", month: "short", year: "numeric" })}
                             </p>
                           </div>
-                          {canStandardTier && (
+                          {canNotice && (
                             <button
                               onClick={async () => {
                                 const supabase = createClient();
@@ -1557,12 +1629,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 {filterList(checkedOut).map((t) => (
                 <TenantRow
                   key={t.id} t={t}
-                  showEdit={canFullTier} showDelete={canFullTier}
+                  showEdit={canMutateRow} showDelete={canMutateRow}
                   roomMap={roomMap}
                   foodAddonRates={foodAddonRates}
                   noticePeriodDays={noticePeriodDays}
                   currentMonthPaymentByTenant={currentMonthPaymentByTenant}
-                  onTimeline={setTimelineTenant}
+                  onTimeline={isManager ? undefined : setTimelineTenant}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}
@@ -1671,7 +1743,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                             </span>
                           </td>
                           <td className="px-4 py-3 text-right">
-                            {app.status === "pending" && canStandardTier && (
+                            {app.status === "pending" && canAdd && (
                               <div className="flex items-center justify-end gap-1">
                                 <Button
                                   variant="ghost"
@@ -2053,14 +2125,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             )}
 
-            {/* Photo picker */}
-            {hostelId && (
+            {/* Managers have no hostelId client-side; uploadTenantPhoto resolves
+                their active branch server-side and ignores this prop. */}
+            {(hostelId || isManager) && (
               <div className="space-y-1.5">
                 <Label>Photo</Label>
                 <PhotoPicker
                   value={form.photo_url || null}
                   onChange={(url) => setForm({ ...form, photo_url: url })}
-                  hostelId={hostelId}
+                  hostelId={hostelId ?? ""}
                   initials={form.full_name ? form.full_name.trim().charAt(0) : "?"}
                 />
               </div>
@@ -2411,8 +2484,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             <div className="space-y-1.5"><Label>Notes</Label><Input placeholder="Any additional notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
           </div>
 
-          {/* Documents — only shown when editing an existing tenant */}
-          {editing && (
+          {/* Documents — only shown when editing an existing tenant. Hidden for
+              managers, whose document actions are owner/partner-gated. */}
+          {editing && !isManager && (
             <div className="pt-2 border-t border-sidebar-border">
               <DocumentManager
                 tenantId={editing.id}

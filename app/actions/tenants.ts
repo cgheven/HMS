@@ -6,6 +6,7 @@ import { unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrAbove, requireOwnerOrPartnerTier } from "@/lib/auth";
+import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
@@ -19,6 +20,24 @@ async function resolveHostelId(): Promise<string> {
   const ctx = await getAuthContext();
   if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
   return ctx.hostelId;
+}
+
+// Resolves the caller's active hostel for the two receipt/invoice share-link
+// actions, whoever the caller is. Managers have no RLS grant and no hostelId
+// from getAuthContext(), so they need their own branch — but only with
+// collect_payments, and only ever scoped to their own active branch. The
+// owner/partner path below is reached unchanged for every non-manager.
+async function resolveShareLinkHostelId(): Promise<string> {
+  const mgr = await getManagerContext();
+  if (mgr) {
+    if (!mgr.permissions.has("collect_payments")) {
+      throw new Error("Access denied");
+    }
+    if (!mgr.activeHostel) throw new Error("Unauthorized: no active hostel");
+    return mgr.activeHostel.id;
+  }
+  await requireOwnerOrPartnerTier("read_only");
+  return resolveHostelId();
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -67,12 +86,23 @@ export async function uploadTenantPhoto(
   formData: FormData
 ): Promise<{ url?: string; error?: string }> {
   try {
-    await requireOwnerOrPartnerTier("standard");
+    // Managers have no RLS grant and no hostelId from getAuthContext(), so the
+    // owner checks below would reject them. They get the same upload as long as
+    // they can add members, and the client-supplied hostelId is discarded in
+    // favour of their server-resolved active branch.
+    const mgr = await getManagerContext();
+    if (mgr) {
+      if (!mgr.permissions.has("add_members")) throw new Error("Access denied");
+      if (!mgr.activeHostel) throw new Error("Unauthorized: no active hostel");
+      hostelId = mgr.activeHostel.id;
+    } else {
+      await requireOwnerOrPartnerTier("standard");
 
-    // Verify caller owns this hostelId
-    const ownedHostelId = await resolveHostelId();
-    if (ownedHostelId !== hostelId) {
-      throw new Error("Forbidden: hostel does not belong to you");
+      // Verify caller owns this hostelId
+      const ownedHostelId = await resolveHostelId();
+      if (ownedHostelId !== hostelId) {
+        throw new Error("Forbidden: hostel does not belong to you");
+      }
     }
 
     const file = formData.get("file") as File | null;
@@ -688,8 +718,7 @@ export async function createInvoiceLink(
     // shareable link — it's the same class of action as Reports' exports,
     // not a mutation of tenant/payment state. Admin client because partners
     // have no write RLS grant on hms_invoice_links.
-    await requireOwnerOrPartnerTier("read_only");
-    const hostelId = await resolveHostelId();
+    const hostelId = await resolveShareLinkHostelId();
     const supabase = createAdminClient();
 
     // Verify the payment belongs to the caller's hostel
@@ -736,8 +765,7 @@ export async function createInstallmentReceiptLink(
 ): Promise<{ token?: string; error?: string }> {
   try {
     // Same rationale as createInvoiceLink above — read_only, admin client.
-    await requireOwnerOrPartnerTier("read_only");
-    const hostelId = await resolveHostelId();
+    const hostelId = await resolveShareLinkHostelId();
     const supabase = createAdminClient();
 
     const { data: installment, error: iErr } = await supabase

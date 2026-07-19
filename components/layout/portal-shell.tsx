@@ -86,12 +86,6 @@ function PortalSidebar({
           </button>
         </div>
 
-        {/* Manager identity */}
-        <div className="px-4 py-3 border-b border-sidebar-border/50 bg-white/[0.02]">
-          <p className="text-sm font-semibold text-foreground truncate">{manager.name}</p>
-          <p className="text-xs text-muted-foreground mt-0.5">Manager</p>
-        </div>
-
         {/* Nav */}
         <nav className="flex-1 py-3 px-2.5 overflow-y-auto">
           <p className="text-[10px] font-bold text-muted-foreground/70 uppercase tracking-widest px-3 mb-1 mt-1">

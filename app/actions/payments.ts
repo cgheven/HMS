@@ -20,6 +20,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { getManagerContext } from "@/lib/manager-auth";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { logActivity } from "@/lib/audit";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
@@ -73,6 +74,24 @@ async function resolveHostelId(): Promise<string> {
   const ctx = await getAuthContext();
   if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
   return ctx.hostelId;
+}
+
+// Read-scope resolution for the two payment READ actions (syncMonthAction and
+// loadHistoryAction) that the manager portal reuses verbatim. Managers have no
+// RLS grant and getAuthContext() gives them no hostelId, so they get their own
+// branch — only with collect_payments, and only ever scoped to their own
+// server-resolved active branch. Every non-manager falls through to the
+// untouched owner/partner path. getManagerContext() is React-cached and returns
+// null immediately for anyone without an hms_managers row.
+async function resolvePaymentsReadScope(): Promise<{ hostelId: string; isManager: boolean }> {
+  const mgr = await getManagerContext();
+  if (mgr) {
+    if (!mgr.permissions.has("collect_payments")) throw new Error("Access denied");
+    if (!mgr.activeHostel) throw new Error("Unauthorized: no active hostel");
+    return { hostelId: mgr.activeHostel.id, isManager: true };
+  }
+  await requireOwnerOrPartnerTier("read_only");
+  return { hostelId: await resolveHostelId(), isManager: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -132,10 +151,12 @@ export async function syncMonthAction(
     // it's safe for any partner tier — and it has to run for all of them,
     // since the Payments page is otherwise empty until someone with write
     // access happens to load it first for this branch/month.
-    await requireOwnerOrPartnerTier("read_only");
+    // Managers reuse this action through the same PaymentsClient; the helper
+    // runs requireOwnerOrPartnerTier("read_only") + resolveHostelId() unchanged
+    // for every non-manager caller.
+    const { hostelId } = await resolvePaymentsReadScope();
     if (!MONTH_RE.test(month)) throw new Error(`Invalid month format: "${month}"`);
 
-    const hostelId = await resolveHostelId();
     // Admin client: partners have no write RLS grant on hms_payments (the
     // hybrid architecture keeps their writes on the service role instead of
     // opening new RLS policies), so this has to run as admin for everyone,
@@ -566,8 +587,10 @@ export async function markPaymentOverdueAction(
 
 export async function loadHistoryAction(forMonth: string): Promise<{ payments?: Payment[]; error?: string }> {
   try {
-    const hostelId = await resolveHostelId();
-    const supabase = await createClient();
+    // Managers have no RLS grant at all, so their read must go through the
+    // service role. Owners/partners keep the RLS client exactly as before.
+    const { hostelId, isManager } = await resolvePaymentsReadScope();
+    const supabase = isManager ? createAdminClient() : await createClient();
 
     const { data, error } = await supabase
       .from("hms_payments")

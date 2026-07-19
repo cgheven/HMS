@@ -187,7 +187,7 @@ export async function recordPaymentAsPartner(
     const hostelId = await requirePartnerHostelId("standard");
     const admin = createAdminClient();
 
-    const VALID_METHODS = new Set(["cash", "bank_transfer", "jazzcash", "easypaisa", "other"]);
+    const VALID_METHODS = new Set(["cash", "bank_transfer", "jazzcash", "easypaisa", "sadapay", "other"]);
     if (!VALID_METHODS.has(method)) return { error: "Invalid payment method." };
     if (!Number.isFinite(amount) || amount <= 0) return { error: "Invalid payment amount." };
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { error: "Invalid month." };

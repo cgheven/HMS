@@ -2,11 +2,14 @@
 
 import { randomBytes } from "crypto"
 import { revalidatePath } from "next/cache"
+import { unstable_rethrow } from "next/navigation"
 import { requireOwnerOrAbove } from "@/lib/auth"
 import { getAuthContext } from "@/lib/data"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { requireManagerPermission } from "@/lib/manager-auth"
 import { logActivity } from "@/lib/audit"
+import { backfillTenantPaymentsAction } from "@/app/actions/tenants"
+import type { PartnerTenantPayload } from "@/app/actions/partner"
 import type { Manager, StaffPermission } from "@/types"
 
 function getPrevMonth(forMonth: string): string {
@@ -502,6 +505,7 @@ export async function applyRoomACUnitsAsManager(
       currentReading: reading,
     }
   } catch (err: unknown) {
+    unstable_rethrow(err)
     return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
   }
 }
@@ -565,78 +569,145 @@ export async function saveACJoinReadingAsManager(
     revalidatePath("/portal/payments")
     return { error: null }
   } catch (err: unknown) {
+    unstable_rethrow(err)
     return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
   }
 }
 
-export async function addTenantAsManager(formData: {
-  name: string
-  phone: string
-  roomId: string | null
-  monthlyRent: number
-  checkIn: string
-}): Promise<{ error: string | null }> {
+// Full field parity with the owner's add tenant form — a manager holding
+// add_members fills in exactly the same 25 fields, so this mirrors
+// addTenantAsPartner rather than carrying a reduced subset of its own.
+export type ManagerTenantPayload = PartnerTenantPayload
+
+function validateManagerTenantPayload(payload: ManagerTenantPayload): string | null {
+  if (!payload.full_name?.trim() || payload.full_name.trim().length < 2) {
+    return "Full name must be at least 2 characters."
+  }
+  if (!payload.is_waiting && !payload.check_in) return "Check-in date is required."
+  if (payload.cnic && !/^\d{5}-\d{7}-\d$/.test(payload.cnic)) {
+    return "Invalid CNIC format. Must be XXXXX-XXXXXXX-X."
+  }
+  // Back-dated check-ins are rejected rather than silently accepted. The owner
+  // flow generates arrears rows via backfillTenantPaymentsAction, but that
+  // action requires full owner/partner tier, so for a manager it always no-ops
+  // — the tenant would be created months in the past owing nothing, and the
+  // branch would under-report receivables with nobody aware.
+  if (!payload.is_waiting && payload.check_in) {
+    const now = new Date()
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+    if (payload.check_in.slice(0, 7) < currentMonth) {
+      return "Check-in date can't be in a previous month. Ask the owner to add a back-dated tenant so past dues are billed correctly."
+    }
+  }
+  return null
+}
+
+export async function addTenantAsManager(
+  payload: ManagerTenantPayload
+): Promise<{ error: string | null; tenantId?: string }> {
   try {
     const ctx = await requireManagerPermission("add_members")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
-    const name = formData.name.trim()
-    const phone = formData.phone.trim()
-    if (!name || name.length < 2) return { error: "Full name must be at least 2 characters." }
-    if (!phone) return { error: "Phone number is required." }
-    if (!formData.monthlyRent || formData.monthlyRent <= 0) return { error: "Monthly rent must be greater than 0." }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(formData.checkIn)) return { error: "Invalid check-in date." }
+    const validationError = validateManagerTenantPayload(payload)
+    if (validationError) return { error: validationError }
 
-    const insertData: Record<string, unknown> = {
-      hostel_id: hostelId,
-      full_name: name,
-      phone,
-      type: "general",
-      check_in: formData.checkIn,
-      billing_type: "monthly",
-      package_tier: "space_only",
-      monthly_rent: formData.monthlyRent,
-      daily_rate: 0,
-      security_deposit: 0,
-      is_active: true,
-      is_waiting: false,
-      documents: [],
-    }
-
-    if (formData.roomId) {
-      const { data: room } = await admin
+    const roomId = payload.is_waiting ? null : payload.room_id
+    let room: { id: string; capacity: number; occupied: number } | null = null
+    if (roomId) {
+      const { data: r } = await admin
         .from("hms_rooms")
         .select("id, capacity, occupied, status")
-        .eq("id", formData.roomId)
+        .eq("id", roomId)
         .eq("hostel_id", hostelId)
         .single()
+      if (!r) return { error: "Invalid room selection." }
+      if (r.status === "maintenance") return { error: "Selected room is under maintenance." }
+      if (r.occupied >= r.capacity) return { error: "Selected room is at full capacity." }
+      room = r
+    }
 
-      if (!room) return { error: "Invalid room selection." }
-      if (room.status === "maintenance") return { error: "Selected room is under maintenance." }
-      if (room.occupied >= room.capacity) return { error: "Selected room is at full capacity." }
+    const billingType = payload.billing_type === "daily" ? "daily" : "monthly"
+    const insertData: Record<string, unknown> = {
+      hostel_id: hostelId,
+      full_name: payload.full_name.trim(),
+      phone: payload.phone?.trim() || null,
+      email: payload.email?.trim() || null,
+      cnic: payload.cnic || null,
+      type: payload.type,
+      package_tier: payload.package_tier,
+      custom_package_id: payload.custom_package_id || null,
+      room_id: roomId,
+      bed_number: payload.bed_number || null,
+      check_in: payload.is_waiting ? new Date().toISOString().slice(0, 10) : payload.check_in,
+      check_out: billingType === "daily" && payload.check_out ? payload.check_out : null,
+      billing_type: billingType,
+      monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
+      daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
+      security_deposit: Number(payload.security_deposit) || 0,
+      joining_meter_reading: payload.joining_meter_reading ?? null,
+      emergency_contact: payload.emergency_contact || null,
+      emergency_relationship: payload.emergency_relationship || null,
+      emergency_phone: payload.emergency_phone || null,
+      notes: payload.notes || null,
+      is_waiting: payload.is_waiting,
+      is_active: !payload.is_waiting,
+      photo_url: payload.photo_url || null,
+      food_breakfast: !!payload.food_breakfast,
+      food_lunch: !!payload.food_lunch,
+      food_dinner: !!payload.food_dinner,
+    }
 
-      insertData.room_id = formData.roomId
+    const { data: created, error: insErr } = await admin
+      .from("hms_tenants")
+      .insert(insertData)
+      .select("id")
+      .single()
+    if (insErr) return { error: insErr.message }
+    const tenantId = created.id as string
 
-      const { error: insErr } = await admin.from("hms_tenants").insert(insertData)
-      if (insErr) return { error: insErr.message }
-
+    if (room && roomId) {
+      const newOccupied = room.occupied + 1
       await admin
         .from("hms_rooms")
-        .update({
-          occupied: room.occupied + 1,
-          status: room.occupied + 1 >= room.capacity ? "occupied" : "available",
-        })
-        .eq("id", formData.roomId)
+        .update({ occupied: newOccupied, status: newOccupied >= room.capacity ? "occupied" : "available" })
+        .eq("id", roomId)
         .eq("hostel_id", hostelId)
-    } else {
-      const { error: insErr } = await admin.from("hms_tenants").insert(insertData)
-      if (insErr) return { error: insErr.message }
+    }
+
+    // Ledger entry — best-effort, mirrors the owner/partner flow exactly.
+    const depositAmount = insertData.security_deposit as number
+    if (depositAmount > 0) {
+      await admin.from("hms_tenant_events").insert({
+        hostel_id: hostelId,
+        tenant_id: tenantId,
+        event_type: "deposit_collected",
+        amount: depositAmount,
+      })
+    }
+
+    // Best-effort backfill for a historical check-in date. It re-authorizes
+    // internally against the owner/partner path, so it silently no-ops for a
+    // manager — same graceful degradation the partner flow already has, and it
+    // never blocks tenant creation either way.
+    if (!payload.is_waiting && payload.check_in) {
+      const checkInMonth = payload.check_in.slice(0, 7)
+      const now = new Date()
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+      if (checkInMonth < currentMonth) {
+        try {
+          await backfillTenantPaymentsAction(tenantId)
+        } catch {
+          // ignore — tenant is already created
+        }
+      }
     }
 
     revalidatePath("/portal/tenants")
-    return { error: null }
+    return { error: null, tenantId }
   } catch (err: unknown) {
+    unstable_rethrow(err)
     return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
   }
 }
@@ -653,7 +724,7 @@ export async function recordPaymentAsManager(
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
-    const VALID_METHODS = new Set(["cash", "bank_transfer", "jazzcash", "easypaisa", "other"])
+    const VALID_METHODS = new Set(["cash", "bank_transfer", "jazzcash", "easypaisa", "sadapay", "other"])
     if (!VALID_METHODS.has(method)) return { error: "Invalid payment method." }
     if (!Number.isFinite(amount) || amount <= 0) return { error: "Invalid payment amount." }
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { error: "Invalid month." }
@@ -762,6 +833,7 @@ export async function recordPaymentAsManager(
     revalidatePath("/payments")
     return { error: null }
   } catch (err: unknown) {
+    unstable_rethrow(err)
     return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
   }
 }
@@ -771,6 +843,7 @@ export async function addExpenseAsManager(
   amount: number,
   description: string,
   date: string,
+  notes?: string,
 ): Promise<{ error: string | null }> {
   try {
     const ctx = await requireManagerPermission("add_expenses")
@@ -789,7 +862,10 @@ export async function addExpenseAsManager(
       amount,
       category,
       date,
-      notes: null,
+      // Was hardcoded null while the reused owner form still rendered a Notes
+      // textarea — a manager's explanation of the expense was accepted and then
+      // silently dropped from the financial record.
+      notes: notes?.trim() || null,
     })
 
     if (error) return { error: error.message }
@@ -797,6 +873,7 @@ export async function addExpenseAsManager(
     revalidatePath("/portal/expenses")
     return { error: null }
   } catch (err: unknown) {
+    unstable_rethrow(err)
     return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
   }
 }

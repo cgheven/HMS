@@ -1,24 +1,24 @@
 import { requireManagerPermission } from "@/lib/manager-auth"
-import { createAdminClient } from "@/lib/supabase/admin"
-import { PortalAddMember } from "@/components/modules/managers/portal-add-member"
+import { getManagerTenants } from "@/lib/portal-data"
+import { TenantsClient } from "@/components/modules/tenants/tenants-client"
 
 export default async function PortalTenantsPage() {
-  const ctx = await requireManagerPermission("add_members")
-  const hostelId = ctx.activeHostel.id
+  const [ctx, data] = await Promise.all([
+    requireManagerPermission("add_members"),
+    getManagerTenants(),
+  ])
 
-  const admin = createAdminClient()
-  const { data: rooms } = await admin
-    .from("hms_rooms")
-    .select("id, room_number, capacity, occupied")
-    .eq("hostel_id", hostelId)
-    .neq("status", "maintenance")
-    .order("room_number")
-
+  // Applications and the waitlist come from getManagerTenants (admin client,
+  // scoped to the manager's branch). hostelSlug stays null: the public signup
+  // link is an account-level surface a manager has no business resharing.
   return (
-    <PortalAddMember
-      key={hostelId}
-      hostelId={hostelId}
-      rooms={(rooms ?? []) as { id: string; room_number: string; capacity: number; occupied: number }[]}
+    <TenantsClient
+      key={data.hostelId ?? ""}
+      {...data}
+      hostelSlug={null}
+      hostelName={ctx.activeHostel.name}
+      managerPermissions={Array.from(ctx.permissions)}
+      initialPackageConfig={data.packageConfig}
     />
   )
 }
