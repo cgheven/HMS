@@ -58,7 +58,7 @@ export function HostelSwitcher({ activeHostel, hostels }: Props) {
           <Home className="w-3.5 h-3.5 text-amber" />
         </div>
         <span className="font-semibold text-sm truncate text-foreground">
-          {optimisticName ?? activeHostel?.name ?? "My Hostel"}
+          {optimisticName ?? activeHostel?.name ?? "No branch assigned"}
         </span>
       </div>
     );
@@ -76,7 +76,7 @@ export function HostelSwitcher({ activeHostel, hostels }: Props) {
         disabled={isPending}
       >
         <span className="truncate max-w-[220px]">
-          {optimisticName ?? activeHostel?.name ?? "My Hostel"}
+          {optimisticName ?? activeHostel?.name ?? "No branch assigned"}
         </span>
         {isPending ? (
           <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin shrink-0" />

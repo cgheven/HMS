@@ -1,5 +1,5 @@
-import Link from "next/link"
 import { ShieldOff } from "lucide-react"
+import { PortalSignOutLink } from "./sign-out-link"
 
 export default function AccessDeniedPage() {
   return (
@@ -19,12 +19,7 @@ export default function AccessDeniedPage() {
           <p>Ask them to assign you to a branch and enable the permissions you need.</p>
         </div>
 
-        <Link
-          href="/login"
-          className="inline-block mt-6 text-sm text-amber/80 hover:text-amber underline-offset-4 hover:underline transition-colors"
-        >
-          Sign out and return to login
-        </Link>
+        <PortalSignOutLink />
       </div>
     </div>
   )
