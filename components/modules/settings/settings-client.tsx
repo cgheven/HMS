@@ -1355,13 +1355,13 @@ export function SettingsClient() {
                     <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Seater</span>
                   </div>
                   <div className="bg-card px-2 py-2 text-center">
-                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Rent (Std)</span>
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Rent (Non-AC)</span>
                   </div>
                   <div className="bg-card px-2 py-2 text-center">
                     <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Rent (AC)</span>
                   </div>
                   <div className="bg-card px-2 py-2 text-center">
-                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (Std)</span>
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (Non-AC)</span>
                   </div>
                   <div className="bg-card px-2 py-2 text-center">
                     <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (AC)</span>

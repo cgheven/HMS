@@ -1,3 +1,5 @@
+import type { SeaterPrices } from "@/lib/seater-pricing";
+
 export type SpaceType = "student" | "professional" | "general";
 export type RoomStatus = "available" | "occupied" | "maintenance";
 export type BillStatus = "paid" | "unpaid" | "overdue";
@@ -801,4 +803,86 @@ export interface PartnerContext {
   userId: string
   branches: PartnerBranch[]
   activeBranch: PartnerBranch
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding intake (hms_onboarding_submissions.data)
+// ---------------------------------------------------------------------------
+
+/**
+ * The owner's answers for their whole setup, captured before any account
+ * exists. Every field outside `owner.name`/`owner.email` and a branch name is
+ * optional — the wizard lets each step be skipped, and provisioning falls back
+ * to the same DB defaults a hand-created hostel would get.
+ *
+ * `config` is filled once and applied to every branch. A branch that genuinely
+ * differs carries its own `overrides`, which shadow `config` for that branch
+ * only; anything absent from `overrides` still inherits.
+ */
+export interface OnboardingBranchConfig {
+  hostel_type: HostelType | null
+  amenities: string[]
+  food_closed_on_sundays: boolean
+  ac_per_unit_rate: string
+  security_deposit: string
+  notice_period_days: string
+  food_breakfast_rate: string
+  food_lunch_rate: string
+  food_dinner_rate: string
+  food_all_meals_rate: string
+  seater_prices: SeaterPrices
+  payment_methods: PaymentMethodAccount[]
+}
+
+export interface OnboardingBranch {
+  name: string
+  city: string
+  area: string
+  address: string
+  phone: string
+  total_capacity: string
+  /** Present only when the owner ticked "customise this branch". */
+  overrides?: Partial<OnboardingBranchConfig>
+}
+
+export interface OnboardingPartner {
+  name: string
+  email: string
+  phone: string
+  tier: PartnerTier
+  /** Which branches this partner gets access to, by index into `branches`. */
+  branchIndexes: number[]
+}
+
+export interface OnboardingData {
+  owner: { name: string; email: string; phone: string }
+  branches: OnboardingBranch[]
+  config: OnboardingBranchConfig
+  partners: OnboardingPartner[]
+  /** Highest step the owner has reached, so a resumed link reopens in place. */
+  furthestStep?: number
+}
+
+export const EMPTY_ONBOARDING_CONFIG: OnboardingBranchConfig = {
+  hostel_type: null,
+  amenities: [],
+  food_closed_on_sundays: false,
+  ac_per_unit_rate: "",
+  security_deposit: "",
+  notice_period_days: "30",
+  food_breakfast_rate: "",
+  food_lunch_rate: "",
+  food_dinner_rate: "",
+  food_all_meals_rate: "",
+  seater_prices: {},
+  payment_methods: [],
+}
+
+export const EMPTY_ONBOARDING_BRANCH: OnboardingBranch = {
+  name: "",
+  city: "",
+  area: "",
+  address: "",
+  phone: "",
+  total_capacity: "",
 }

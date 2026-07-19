@@ -122,6 +122,90 @@ export async function sendWaitlistEmail(data: WaitlistEmailData): Promise<void> 
   });
 }
 
+// ─── Onboarding form submitted (SuperAdmin notification) ─────────────────────
+// Fired when a prospect completes the setup wizard at /onboarding/<token>.
+// Every value here is unauthenticated user input, so it all goes through esc()
+// before it reaches the HTML.
+
+interface OnboardingSubmittedEmailData {
+  ownerName: string;
+  ownerEmail: string;
+  ownerPhone: string;
+  branches: { name: string; city: string; area: string; total_capacity: string }[];
+  partnerCount: number;
+  acRate: string;
+  securityDeposit: string;
+  noticeDays: string;
+}
+
+const ONBOARDING_NOTIFY_TO =
+  process.env.ONBOARDING_NOTIFY_EMAIL ?? "musabkhan.queries@gmail.com";
+
+export async function sendOnboardingSubmittedEmail(
+  data: OnboardingSubmittedEmailData
+): Promise<void> {
+  const branchRows = data.branches
+    .map((b, i) => {
+      const location = [b.area, b.city].filter(Boolean).join(", ");
+      return `<tr>
+        <td style="padding:8px 0;border-top:1px solid #27272a;font-size:13px;color:#e5e5e5;">
+          <span style="color:#f59e0b;font-weight:600;">${i + 1}.</span>
+          <span style="font-weight:600;">${esc(b.name)}</span>
+          ${location ? `<span style="color:#a1a1aa;"> — ${esc(location)}</span>` : ""}
+          ${b.total_capacity ? `<span style="color:#71717a;"> · ${esc(b.total_capacity)} beds</span>` : ""}
+        </td>
+      </tr>`;
+    })
+    .join("");
+
+  const n = data.branches.length;
+  const creates = [
+    "1 owner login",
+    `${n} branch${n === 1 ? "" : "es"}`,
+    `${n} pricing config${n === 1 ? "" : "s"}`,
+    ...(data.partnerCount > 0 ? [`${data.partnerCount} partner login${data.partnerCount === 1 ? "" : "s"}`] : []),
+  ].join(" · ");
+
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">New Hostel Setup Submitted</h2>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
+      <strong style="color:#f59e0b;">${esc(data.ownerName)}</strong> completed the onboarding form and is ready to provision.
+    </p>
+
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      ${row("Owner", esc(data.ownerName))}
+      ${row("Email", esc(data.ownerEmail))}
+      ${row("WhatsApp", esc(data.ownerPhone))}
+      ${row("AC per unit", `Rs. ${esc(data.acRate)}`)}
+      ${row("Deposit", `Rs. ${esc(data.securityDeposit)}`)}
+      ${row("Notice period", `${esc(data.noticeDays)} days`)}
+    </table>
+
+    <p style="margin:24px 0 4px;font-size:13px;font-weight:600;color:#e5e5e5;">
+      Branches (${n})
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0">${branchRows}</table>
+
+    <div style="margin:24px 0 0;padding:12px 14px;background:#1c1917;border:1px solid #3f2d17;border-radius:8px;">
+      <div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">
+        Provisioning will create
+      </div>
+      <div style="font-size:13px;color:#e5e5e5;">${esc(creates)}</div>
+    </div>
+
+    <p style="margin:24px 0 0;">
+      <a href="${SITE_URL}/super-admin/onboarding" style="display:inline-block;background:#f59e0b;color:#0f0f11;font-size:13px;font-weight:600;padding:10px 18px;border-radius:8px;text-decoration:none;">Review &amp; Provision</a>
+    </p>
+  `;
+
+  await resend.emails.send({
+    from: FROM,
+    to: ONBOARDING_NOTIFY_TO,
+    subject: `New hostel setup — ${data.ownerName} (${n} branch${n === 1 ? "" : "es"})`,
+    html: baseHtml("New Hostel Setup", body),
+  });
+}
+
 // ─── Lead follow-up digest (SuperAdmin + sales rep notification) ──────────────
 // Sent daily by the /api/cron/lead-followups job and on-demand from the
 // SuperAdmin leads page ("Send Follow-up Email"). Routing (who gets which leads,
