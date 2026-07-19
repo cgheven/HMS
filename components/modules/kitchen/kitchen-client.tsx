@@ -15,7 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
-import type { KitchenExpense } from "@/types";
+import type { KitchenExpense, PartnerTier } from "@/types";
 
 // ── Quick-add chips (page-level) ─────────────────────────
 const QUICK_DAILY: { label: string; cat: string }[] = [
@@ -113,11 +113,18 @@ type SelectedItem = { id: string; title: string; quantity: string; amount: strin
 
 const emptyGroceryForm = { title: "", quantity: "", amount: "", notes: "" };
 
-interface Props { hostelId: string | null; initialItems: KitchenExpense[]; defaultMonth: string; }
+interface Props {
+  hostelId: string | null;
+  initialItems: KitchenExpense[];
+  defaultMonth: string;
+  partnerTier?: PartnerTier | null;
+}
 
 const kitchenCache = new Map<string, KitchenExpense[]>();
 
-export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
+export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTier = null }: Props) {
+  const canStandardTier = !partnerTier || partnerTier !== "read_only";
+
   const [items, setItems]           = useState<KitchenExpense[]>(initialItems);
   const [monthFilter, setMonthFilter] = useState(defaultMonth);
   const [loadingMonth, setLoadingMonth] = useState(false);
@@ -287,11 +294,20 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
       type: "monthly_grocery",
       notes: groceryForm.notes || null,
     };
-    const { error } = groceryEditing
-      ? await supabase.from("hms_kitchen_expenses").update(payload).eq("id", groceryEditing.id)
-      : await supabase.from("hms_kitchen_expenses").insert(payload);
+    if (groceryEditing) {
+      const { data, error } = await supabase.from("hms_kitchen_expenses").update(payload).eq("id", groceryEditing.id).select("id");
+      setSavingGrocery(false);
+      if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+      if (!data || data.length === 0) {
+        toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+        return;
+      }
+      toast({ title: "Updated" }); setGroceryOpen(false); reload();
+      return;
+    }
+    const { error } = await supabase.from("hms_kitchen_expenses").insert(payload);
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: groceryEditing ? "Updated" : "Grocery item added" }); setGroceryOpen(false); reload(); }
+    else { toast({ title: "Grocery item added" }); setGroceryOpen(false); reload(); }
     setSavingGrocery(false);
   }
 
@@ -306,20 +322,28 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
     if (!hostelId || !editing || !editForm.title || !editForm.amount) return;
     setSavingEdit(true);
     const supabase = createClient();
-    const { error } = await supabase.from("hms_kitchen_expenses").update({
+    const { data, error } = await supabase.from("hms_kitchen_expenses").update({
       title: editForm.title, quantity: editForm.quantity || null,
       amount: parseFloat(editForm.amount), date: editForm.date, notes: editForm.notes || null,
-    }).eq("id", editing.id);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: "Updated" }); setEditOpen(false); reload(); }
+    }).eq("id", editing.id).select("id");
     setSavingEdit(false);
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Updated" }); setEditOpen(false); reload();
   }
 
   async function handleDelete(id: string) {
     const supabase = createClient();
-    const { error } = await supabase.from("hms_kitchen_expenses").delete().eq("id", id);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: "Deleted" }); reload(); }
+    const { data, error } = await supabase.from("hms_kitchen_expenses").delete().eq("id", id).select("id");
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Deleted" }); reload();
   }
 
   // ── Derived data ──────────────────────────────────────
@@ -375,7 +399,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
           <p className="text-muted-foreground text-sm mt-1">Track daily and monthly grocery expenses</p>
         </div>
         <div className="flex gap-2">
-          {activeTab === "daily" ? (
+          {!canStandardTier ? null : activeTab === "daily" ? (
             <Button onClick={openAdd} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold w-full sm:w-auto">
               <Plus className="w-4 h-4" /> Add Daily Entry
             </Button>
@@ -422,24 +446,26 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
         {/* ── Daily tab ────────────────────────────────── */}
         <TabsContent value="daily" className="space-y-4">
           {/* Quick Add */}
-          <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <Plus className="w-3.5 h-3.5 text-muted-foreground" />
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
-              <span className="text-xs text-muted-foreground/50">— tap to open form pre-filled</span>
+          {canStandardTier && (
+            <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Plus className="w-3.5 h-3.5 text-muted-foreground" />
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
+                <span className="text-xs text-muted-foreground/50">— tap to open form pre-filled</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {QUICK_DAILY.map((item) => (
+                  <button
+                    key={item.label}
+                    onClick={() => quickDailyItem(item.label)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${DAILY_CHIP[item.cat]}`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {QUICK_DAILY.map((item) => (
-                <button
-                  key={item.label}
-                  onClick={() => quickDailyItem(item.label)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${DAILY_CHIP[item.cat]}`}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          )}
 
           {loadingMonth ? (
             <div className="space-y-4">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-28 bg-white/5 rounded-xl animate-pulse" />)}</div>
@@ -467,10 +493,12 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
                             {item.quantity && <p className="text-xs text-muted-foreground">{item.quantity}</p>}
                           </div>
                           <span className="font-semibold text-sm shrink-0">{formatCurrency(item.amount)}</span>
-                          <div className="flex gap-1 shrink-0">
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(item)}><Edit2 className="w-3 h-3" /></Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(item.id)}><Trash2 className="w-3 h-3" /></Button>
-                          </div>
+                          {canStandardTier && (
+                            <div className="flex gap-1 shrink-0">
+                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(item)}><Edit2 className="w-3 h-3" /></Button>
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(item.id)}><Trash2 className="w-3 h-3" /></Button>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -484,24 +512,26 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
         {/* ── Monthly Grocery tab ───────────────────────── */}
         <TabsContent value="grocery" className="space-y-4">
           {/* Quick Add */}
-          <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <Plus className="w-3.5 h-3.5 text-muted-foreground" />
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
-              <span className="text-xs text-muted-foreground/50">— tap to open form pre-filled</span>
+          {canStandardTier && (
+            <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Plus className="w-3.5 h-3.5 text-muted-foreground" />
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
+                <span className="text-xs text-muted-foreground/50">— tap to open form pre-filled</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {QUICK_GROCERY.map((item) => (
+                  <button
+                    key={item.label}
+                    onClick={() => quickGroceryItem(item.label)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${GROCERY_CHIP[item.cat]}`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {QUICK_GROCERY.map((item) => (
-                <button
-                  key={item.label}
-                  onClick={() => quickGroceryItem(item.label)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${GROCERY_CHIP[item.cat]}`}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          )}
 
           {loadingMonth ? (
             <div className="h-40 bg-white/5 rounded-xl animate-pulse" />
@@ -532,10 +562,12 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth }: Props) {
                         {item.notes && <p className="text-xs text-muted-foreground italic">{item.notes}</p>}
                       </div>
                       <span className="font-bold text-sm text-blue-400 shrink-0">{formatCurrency(item.amount)}</span>
-                      <div className="flex gap-1 shrink-0">
-                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openGroceryEdit(item)}><Edit2 className="w-3 h-3" /></Button>
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(item.id)}><Trash2 className="w-3 h-3" /></Button>
-                      </div>
+                      {canStandardTier && (
+                        <div className="flex gap-1 shrink-0">
+                          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openGroceryEdit(item)}><Edit2 className="w-3 h-3" /></Button>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(item.id)}><Trash2 className="w-3 h-3" /></Button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

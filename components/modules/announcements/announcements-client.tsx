@@ -10,16 +10,18 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { formatDate } from "@/lib/utils";
-import type { Announcement } from "@/types";
+import type { Announcement, PartnerTier } from "@/types";
 
 interface Props {
   hostelId: string | null;
   announcements: Announcement[];
+  partnerTier?: PartnerTier | null;
 }
 
 const emptyForm = { title: "", content: "", is_pinned: false };
 
-export function AnnouncementsClient({ hostelId, announcements: initial }: Props) {
+export function AnnouncementsClient({ hostelId, announcements: initial, partnerTier = null }: Props) {
+  const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const [announcements, setAnnouncements] = useState<Announcement[]>(initial);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -53,15 +55,17 @@ export function AnnouncementsClient({ hostelId, announcements: initial }: Props)
 
   async function togglePin(a: Announcement) {
     const supabase = createClient();
-    const { error } = await supabase.from("hms_announcements").update({ is_pinned: !a.is_pinned }).eq("id", a.id);
+    const { data, error } = await supabase.from("hms_announcements").update({ is_pinned: !a.is_pinned }).eq("id", a.id).select("id");
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) { toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" }); return; }
     await reload();
   }
 
   async function handleDelete(id: string) {
     const supabase = createClient();
-    const { error } = await supabase.from("hms_announcements").delete().eq("id", id);
+    const { data, error } = await supabase.from("hms_announcements").delete().eq("id", id).select("id");
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) { toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" }); return; }
     toast({ title: "Deleted" });
     await reload();
   }
@@ -76,9 +80,11 @@ export function AnnouncementsClient({ hostelId, announcements: initial }: Props)
           <h1 className="text-3xl font-serif font-normal tracking-tight">Announcements</h1>
           <p className="text-muted-foreground text-sm mt-1">Hostel notices & updates</p>
         </div>
-        <Button onClick={() => { setForm(emptyForm); setDialogOpen(true); }} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold w-full sm:w-auto">
-          <Plus className="w-4 h-4" /> New Announcement
-        </Button>
+        {canStandardTier && (
+          <Button onClick={() => { setForm(emptyForm); setDialogOpen(true); }} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold w-full sm:w-auto">
+            <Plus className="w-4 h-4" /> New Announcement
+          </Button>
+        )}
       </div>
 
       {announcements.length === 0 && (
@@ -106,14 +112,16 @@ export function AnnouncementsClient({ hostelId, announcements: initial }: Props)
                   <p className="text-sm text-muted-foreground mt-2 leading-relaxed">{a.content}</p>
                   <p className="text-xs text-muted-foreground/60 mt-2">{formatDate(a.created_at)}</p>
                 </div>
-                <div className="flex gap-1 shrink-0">
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-amber hover:bg-amber/10" onClick={() => togglePin(a)}>
-                    <PinOff className="w-3.5 h-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(a.id)}>
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
-                </div>
+                {canStandardTier && (
+                  <div className="flex gap-1 shrink-0">
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-amber hover:bg-amber/10" onClick={() => togglePin(a)}>
+                      <PinOff className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(a.id)}>
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -132,14 +140,16 @@ export function AnnouncementsClient({ hostelId, announcements: initial }: Props)
                   <p className="text-sm text-muted-foreground mt-2 leading-relaxed">{a.content}</p>
                   <p className="text-xs text-muted-foreground/60 mt-2">{formatDate(a.created_at)}</p>
                 </div>
-                <div className="flex gap-1 shrink-0">
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-amber hover:bg-amber/10" onClick={() => togglePin(a)}>
-                    <Pin className="w-3.5 h-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(a.id)}>
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
-                </div>
+                {canStandardTier && (
+                  <div className="flex gap-1 shrink-0">
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-amber hover:bg-amber/10" onClick={() => togglePin(a)}>
+                      <Pin className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(a.id)}>
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
           ))}

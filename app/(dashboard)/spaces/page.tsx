@@ -1,7 +1,7 @@
-import { getRooms } from "@/lib/data";
+import { getRooms, getAuthContext } from "@/lib/data";
 import { SpacesClient } from "@/components/modules/spaces/spaces-client";
 
 export default async function SpacesPage() {
-  const { hostelId, rooms } = await getRooms();
-  return <SpacesClient key={hostelId ?? ''} hostelId={hostelId} initialRooms={rooms} />;
+  const [{ hostelId, rooms }, ctx] = await Promise.all([getRooms(), getAuthContext()]);
+  return <SpacesClient key={hostelId ?? ''} hostelId={hostelId} initialRooms={rooms} partnerTier={ctx?.partnerTier} />;
 }

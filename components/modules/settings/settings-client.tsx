@@ -11,9 +11,11 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
 import { getOwnedHostels, switchActiveHostel, renameBranch } from "@/app/actions/branches";
-import { listPartners, createPartner, removePartner } from "@/app/actions/partners";
-import type { PartnerRow } from "@/app/actions/partners";
-import type { HostelType, Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier } from "@/types";
+import { listPartners, createPartner, removePartner, updatePartnerTier, getExistingPartnersForOwner, addPartnerToHostel } from "@/app/actions/partners";
+import type { PartnerRow, ExistingPartnerOption } from "@/app/actions/partners";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { PARTNER_TIER_LABELS } from "@/lib/partner-tier-labels";
+import type { HostelType, Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier, PartnerTier } from "@/types";
 import { DEFAULT_FORM_CONFIG } from "@/types";
 import { savePaymentRecoverySettings } from "@/app/actions/settings";
 import { DEFAULT_REMINDER_TEMPLATE, formatAccounts, buildReminderMessage } from "@/lib/whatsapp-reminder";
@@ -52,10 +54,25 @@ function emptyPriceForm(): PkgPriceForm {
 }
 
 export function SettingsClient() {
-  const { profile, hostel } = useHostelContext();
+  const { profile, hostel, partnerTier } = useHostelContext();
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const hostelId = hostel?.id ?? null;
+  // Branch-scoped cards are shown to partners; the Branches and Partners cards
+  // are not. Those two are account-level — creating branches on the owner's
+  // account, and adding/removing/re-tiering partners (which would let a partner
+  // escalate their own access or remove the owner's other partners).
+  const isPartner = profile?.role === "partner";
+  // Branch configuration (hostel row, package configs) is full-tier only at the
+  // DB level — below that the card renders read-only instead of letting a save
+  // silently affect zero rows. Your Profile is never gated: it writes the
+  // caller's own row.
+  const canFullTier = !partnerTier || partnerTier === "full";
+  const readOnlyNote = (
+    <p className="text-xs text-muted-foreground/70">
+      View only — your access level doesn&apos;t allow changing this. Ask the owner if it needs updating.
+    </p>
+  );
 
   // Branches state
   type OwnedHostel = Hostel & { is_primary: boolean };
@@ -72,12 +89,19 @@ export function SettingsClient() {
   const [partners, setPartners] = useState<PartnerRow[]>([]);
   const [loadingPartners, setLoadingPartners] = useState(false);
   const [showAddPartner, setShowAddPartner] = useState(false);
-  const [partnerForm, setPartnerForm] = useState({ name: "", email: "", phone: "", password: "" });
+  const [partnerMode, setPartnerMode] = useState<"new" | "existing">("new");
+  const [partnerForm, setPartnerForm] = useState({ name: "", email: "", phone: "", password: "", tier: "read_only" as PartnerTier });
   const [showPartnerPassword, setShowPartnerPassword] = useState(false);
   const [creatingPartner, setCreatingPartner] = useState(false);
   const [removingPartner, setRemovingPartner] = useState<string | null>(null);
+  const [updatingTierFor, setUpdatingTierFor] = useState<string | null>(null);
+  // Other branches' partners this owner can attach to the current branch
+  const [existingPartners, setExistingPartners] = useState<ExistingPartnerOption[]>([]);
+  const [selectedExistingPartnerId, setSelectedExistingPartnerId] = useState("");
+  const [existingPartnerTier, setExistingPartnerTier] = useState<PartnerTier>("read_only");
+  const [addingExistingPartner, setAddingExistingPartner] = useState(false);
   // lastCreatedPartner holds credentials for WhatsApp share — cleared on dialog close
-  const [lastCreatedPartner, setLastCreatedPartner] = useState<{ name: string; email: string; password: string } | null>(null);
+  const [lastCreatedPartner, setLastCreatedPartner] = useState<{ name: string; email: string; phone: string; password: string } | null>(null);
 
   const [hostelForm, setHostelForm] = useState({
     name: "", address: "", city: "", area: "", phone: "", whatsapp: "", email: "", total_capacity: "",
@@ -237,12 +261,16 @@ export function SettingsClient() {
 
   async function fetchPartners(id: string) {
     setLoadingPartners(true);
-    const result = await listPartners(id);
+    const [result, existingResult] = await Promise.all([
+      listPartners(id),
+      getExistingPartnersForOwner(id),
+    ]);
     if (result.error) {
       toast({ title: "Failed to load partners", description: result.error, variant: "destructive" });
     } else {
       setPartners(result.partners ?? []);
     }
+    setExistingPartners(existingResult.partners ?? []);
     setLoadingPartners(false);
   }
 
@@ -262,8 +290,26 @@ export function SettingsClient() {
     }
     toast({ title: "Partner added", description: `${partnerForm.name} now has access.` });
     // Store credentials for WhatsApp share before clearing the form
-    setLastCreatedPartner({ name: partnerForm.name, email: partnerForm.email, password: partnerForm.password });
-    setPartnerForm({ name: "", email: "", phone: "", password: "" });
+    setLastCreatedPartner({ name: partnerForm.name, email: partnerForm.email, phone: partnerForm.phone, password: partnerForm.password });
+    setPartnerForm({ name: "", email: "", phone: "", password: "", tier: "read_only" });
+    setShowAddPartner(false);
+    await fetchPartners(hostelId);
+  }
+
+  async function handleAddExistingPartner(e: React.FormEvent) {
+    e.preventDefault();
+    if (!hostelId || !selectedExistingPartnerId) return;
+    setAddingExistingPartner(true);
+    const result = await addPartnerToHostel(selectedExistingPartnerId, hostelId, existingPartnerTier);
+    setAddingExistingPartner(false);
+    if (result.error) {
+      toast({ title: "Failed to add partner", description: result.error, variant: "destructive" });
+      return;
+    }
+    const added = existingPartners.find((p) => p.partnerId === selectedExistingPartnerId);
+    toast({ title: "Partner added", description: `${added?.name ?? "Partner"} now has access to this branch.` });
+    setSelectedExistingPartnerId("");
+    setExistingPartnerTier("read_only");
     setShowAddPartner(false);
     await fetchPartners(hostelId);
   }
@@ -281,10 +327,36 @@ export function SettingsClient() {
     if (hostelId) await fetchPartners(hostelId);
   }
 
-  function buildWhatsAppLink(partner: { name: string; email: string }) {
+  async function handleUpdatePartnerTier(partnershipId: string, tier: PartnerTier) {
+    const previous = partners;
+    setPartners((prev) => prev.map((p) => (p.partnership_id === partnershipId ? { ...p, tier } : p)));
+    setUpdatingTierFor(partnershipId);
+    const result = await updatePartnerTier(partnershipId, tier);
+    setUpdatingTierFor(null);
+    if (result.error) {
+      setPartners(previous);
+      toast({ title: "Failed to update access", description: result.error, variant: "destructive" });
+      return;
+    }
+    toast({ title: "Access updated", description: `Now set to ${PARTNER_TIER_LABELS[tier]}.` });
+  }
+
+  function buildWhatsAppLink(partner: { name: string; email: string; phone?: string | null; password?: string }) {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const msg = `Assalam o Alaikum ${partner.name},\n\nYour partner access for *${hostel?.name ?? "the hostel"}* has been set up.\n\nLogin URL: ${origin}/partner/login\nEmail: ${partner.email}\n\nPlease ask the hostel owner for your password.\n\nYou can view tenants and payments for your hostel.\n\nWelcome aboard!`;
-    return `https://wa.me/?text=${encodeURIComponent(msg)}`;
+    const credentialsLine = partner.password
+      ? `Email: ${partner.email}\nPassword: ${partner.password}`
+      : `Email: ${partner.email}\n\nPlease ask the hostel owner for your password.`;
+    const msg = `Assalam o Alaikum ${partner.name},\n\nYour partner access for *${hostel?.name ?? "the hostel"}* has been set up.\n\nLogin URL: ${origin}/login\n${credentialsLine}\n\nWelcome aboard!`;
+    const encoded = encodeURIComponent(msg);
+    const normalizedPhone = partner.phone?.trim()
+      ? partner.phone.replace(/\D/g, "").replace(/^0/, "92")
+      : "";
+    // wa.me requires a phone number in the path — without one it fails to open
+    // a compose window on most platforms. api.whatsapp.com/send is the
+    // officially documented endpoint for a phone-less "pick any contact" share.
+    return normalizedPhone
+      ? `https://wa.me/${normalizedPhone}?text=${encoded}`
+      : `https://api.whatsapp.com/send?text=${encoded}`;
   }
 
   async function handleSwitchBranch(branchId: string) {
@@ -322,9 +394,12 @@ export function SettingsClient() {
 
 
   useEffect(() => {
-    fetchBranches();
+    // Branches/Partners cards are owner-only, and both actions are guarded
+    // owner-only server-side — fetching them as a partner is a wasted round
+    // trip that can only come back as an error.
+    if (!isPartner) fetchBranches();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isPartner]);
 
   useEffect(() => {
     if (hostel) {
@@ -349,7 +424,7 @@ export function SettingsClient() {
       setCoverImageUrl(hostel.cover_image_url ?? null);
       fetchWaitlist(hostel.id);
       fetchPackageConfig(hostel.id);
-      fetchPartners(hostel.id);
+      if (!isPartner) fetchPartners(hostel.id);
       if (hostel.form_config) {
         setFormConfig({ ...DEFAULT_FORM_CONFIG, ...(hostel.form_config as FormConfig) });
       }
@@ -365,7 +440,7 @@ export function SettingsClient() {
     if (!hostelId) return;
     setSavingHostel(true);
     const supabase = createClient();
-    const { error } = await supabase.from("hms_hostels").update({
+    const { data, error } = await supabase.from("hms_hostels").update({
       name: hostelForm.name,
       address: hostelForm.address || null,
       city: hostelForm.city || null,
@@ -374,10 +449,14 @@ export function SettingsClient() {
       whatsapp: hostelForm.whatsapp || null,
       email: hostelForm.email || null,
       total_capacity: parseInt(hostelForm.total_capacity) || 0,
-    }).eq("id", hostelId);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else toast({ title: "Hostel settings saved" });
+    }).eq("id", hostelId).select("id");
     setSavingHostel(false);
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Hostel settings saved" });
   }
 
   async function saveListing(e: React.FormEvent) {
@@ -402,15 +481,19 @@ export function SettingsClient() {
         .replace(/^-+|-+$/g, "");
       updatePayload.slug = base || hostelId.slice(0, 8);
     }
-    const { error } = await supabase.from("hms_hostels").update(updatePayload).eq("id", hostelId);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else toast({
+    const { data, error } = await supabase.from("hms_hostels").update(updatePayload).eq("id", hostelId).select("id");
+    setSavingListing(false);
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    toast({
       title: listingForm.listing_enabled ? "Listing published" : "Listing hidden",
       description: listingForm.listing_enabled
         ? "Your hostel is now visible on the public directory. The application form link is now active."
         : "Your hostel has been removed from the public directory.",
     });
-    setSavingListing(false);
   }
 
   async function uploadCoverImage(e: React.ChangeEvent<HTMLInputElement>) {
@@ -436,12 +519,15 @@ export function SettingsClient() {
       return;
     }
     const { data: { publicUrl } } = supabase.storage.from("hostel-covers").getPublicUrl(path);
-    const { error: updateErr } = await supabase
+    const { data: updated, error: updateErr } = await supabase
       .from("hms_hostels")
       .update({ cover_image_url: publicUrl })
-      .eq("id", hostelId);
+      .eq("id", hostelId)
+      .select("id");
     if (updateErr) {
       toast({ title: "Error", description: updateErr.message, variant: "destructive" });
+    } else if (!updated || updated.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
     } else {
       setCoverImageUrl(publicUrl);
       toast({ title: "Cover image updated" });
@@ -457,7 +543,12 @@ export function SettingsClient() {
     await Promise.all(["jpg", "jpeg", "png", "webp"].map((ext) =>
       supabase.storage.from("hostel-covers").remove([`${hostelId}/cover.${ext}`])
     ));
-    await supabase.from("hms_hostels").update({ cover_image_url: null }).eq("id", hostelId);
+    const { data, error } = await supabase.from("hms_hostels").update({ cover_image_url: null }).eq("id", hostelId).select("id");
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
     setCoverImageUrl(null);
     toast({ title: "Cover image removed" });
   }
@@ -467,10 +558,14 @@ export function SettingsClient() {
     if (!profile) return;
     setSavingProfile(true);
     const supabase = createClient();
-    const { error } = await supabase.from("hms_profiles").update({ full_name: profileForm.full_name }).eq("id", profile.id);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else toast({ title: "Profile updated" });
+    const { data, error } = await supabase.from("hms_profiles").update({ full_name: profileForm.full_name }).eq("id", profile.id).select("id");
     setSavingProfile(false);
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not saved", description: "Your profile could not be updated. Please try again.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Profile updated" });
   }
 
   async function savePackageConfig(e: React.FormEvent) {
@@ -510,7 +605,7 @@ export function SettingsClient() {
       }
     }
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("hms_package_configs")
       .upsert(
         {
@@ -527,10 +622,15 @@ export function SettingsClient() {
           updated_at:           new Date().toISOString(),
         },
         { onConflict: "hostel_id" }
-      );
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else toast({ title: "Package pricing saved" });
+      )
+      .select("hostel_id");
     setSavingPackage(false);
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Package pricing saved" });
   }
 
   async function saveFormConfig(e: React.FormEvent) {
@@ -538,13 +638,18 @@ export function SettingsClient() {
     if (!hostelId) return;
     setSavingFormConfig(true);
     const supabase = createClient();
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("hms_hostels")
       .update({ form_config: formConfig })
-      .eq("id", hostelId);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else toast({ title: "Form fields saved" });
+      .eq("id", hostelId)
+      .select("id");
     setSavingFormConfig(false);
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Form fields saved" });
   }
 
   function toggleAmenity(a: string) {
@@ -569,6 +674,7 @@ export function SettingsClient() {
         </CardHeader>
         <CardContent>
           <form onSubmit={saveHostel} className="space-y-4">
+            <fieldset disabled={!canFullTier} className="space-y-4 min-w-0">
             <div className="space-y-1.5">
               <Label>Hostel Name *</Label>
               <Input placeholder="My Hostel" value={hostelForm.name} onChange={(e) => setHostelForm({ ...hostelForm, name: e.target.value })} required />
@@ -607,9 +713,12 @@ export function SettingsClient() {
                 <Input type="number" placeholder="0" min="0" value={hostelForm.total_capacity} onChange={(e) => setHostelForm({ ...hostelForm, total_capacity: e.target.value })} />
               </div>
             </div>
-            <Button type="submit" disabled={savingHostel} className="gap-2">
-              {savingHostel ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save Hostel
-            </Button>
+            </fieldset>
+            {canFullTier ? (
+              <Button type="submit" disabled={savingHostel} className="gap-2">
+                {savingHostel ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save Hostel
+              </Button>
+            ) : readOnlyNote}
           </form>
         </CardContent>
       </Card>
@@ -632,6 +741,7 @@ export function SettingsClient() {
         </CardHeader>
         <CardContent>
           <form onSubmit={saveListing} className="space-y-5">
+            <fieldset disabled={!canFullTier} className="space-y-5 min-w-0">
             {/* Toggle */}
             <div className="flex items-center justify-between p-4 rounded-xl border border-sidebar-border bg-white/[0.02]">
               <div>
@@ -801,10 +911,13 @@ export function SettingsClient() {
               </>
             )}
 
-            <Button type="submit" disabled={savingListing} className="gap-2">
-              {savingListing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Save Listing
-            </Button>
+            </fieldset>
+            {canFullTier ? (
+              <Button type="submit" disabled={savingListing} className="gap-2">
+                {savingListing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                Save Listing
+              </Button>
+            ) : readOnlyNote}
           </form>
         </CardContent>
       </Card>
@@ -824,6 +937,7 @@ export function SettingsClient() {
         </CardHeader>
         <CardContent>
           <form onSubmit={saveFormConfig} className="space-y-4">
+            <fieldset disabled={!canFullTier} className="space-y-4 min-w-0">
             {(
               [
                 { key: "email",              label: "Email Address",        description: "Tenant's email for correspondence" },
@@ -886,10 +1000,13 @@ export function SettingsClient() {
               Disabled fields won&apos;t appear on the form. Required fields must be filled before submission.
             </p>
 
-            <Button type="submit" disabled={savingFormConfig} className="gap-2">
-              {savingFormConfig ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Save Form Fields
-            </Button>
+            </fieldset>
+            {canFullTier ? (
+              <Button type="submit" disabled={savingFormConfig} className="gap-2">
+                {savingFormConfig ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                Save Form Fields
+              </Button>
+            ) : readOnlyNote}
           </form>
         </CardContent>
       </Card>
@@ -919,7 +1036,7 @@ export function SettingsClient() {
             People waiting for a bed at this hostel — {waitlist.length} {waitlist.length === 1 ? "person" : "people"}
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
           {waitlist.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground">
               <Clock className="w-8 h-8 opacity-20" />
@@ -977,6 +1094,7 @@ export function SettingsClient() {
         </CardHeader>
         <CardContent>
           <form onSubmit={savePackageConfig} className="space-y-6">
+            <fieldset disabled={!canFullTier} className="space-y-6 min-w-0">
 
             {/* Per-package price table */}
             <div className="rounded-lg border border-border overflow-hidden">
@@ -1296,14 +1414,20 @@ export function SettingsClient() {
               <p className="text-xs text-muted-foreground">Leave a deposit blank to fall back to the Default Security Deposit below.</p>
             </div>
 
-            <Button type="submit" disabled={savingPackage || !packageLoaded} className="gap-2">
-              {savingPackage ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Save Package Pricing
-            </Button>
+            </fieldset>
+            {canFullTier ? (
+              <Button type="submit" disabled={savingPackage || !packageLoaded} className="gap-2">
+                {savingPackage ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                Save Package Pricing
+              </Button>
+            ) : readOnlyNote}
           </form>
         </CardContent>
       </Card>
 
+      {/* Branches + Partners — account-level, owner-only. A partner manages
+          their branch, not the account's branch list or partner roster. */}
+      {!isPartner && (<>
       <Separator />
 
       {/* Branches */}
@@ -1480,7 +1604,7 @@ export function SettingsClient() {
             </div>
           </div>
           <CardDescription>
-            Grant partners read-only access to view tenants and payments — {partners.length} {partners.length === 1 ? "partner" : "partners"} active
+            Grant partners branch-scoped access — from read-only up to full owner-equal rights — {partners.length} {partners.length === 1 ? "partner" : "partners"} active
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -1525,90 +1649,175 @@ export function SettingsClient() {
           {/* Add partner inline form */}
           {showAddPartner && (
             <div className="rounded-xl border border-amber/20 bg-amber/[0.04] p-4">
-              <p className="text-sm font-medium text-foreground mb-3">New Partner</p>
-              <form onSubmit={handleCreatePartner} className="space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label>Full Name *</Label>
-                    <Input
-                      placeholder="Ahmed Khan"
-                      value={partnerForm.name}
-                      onChange={(e) => setPartnerForm({ ...partnerForm, name: e.target.value })}
-                      required
-                      autoFocus
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Phone *</Label>
-                    <Input
-                      placeholder="+92 300 0000000"
-                      value={partnerForm.phone}
-                      onChange={(e) => setPartnerForm({ ...partnerForm, phone: e.target.value })}
-                      required
-                    />
-                  </div>
+              {existingPartners.length > 0 && (
+                <div className="flex gap-1 p-0.5 mb-3 rounded-lg bg-white/5 w-fit">
+                  <button
+                    type="button"
+                    onClick={() => setPartnerMode("new")}
+                    className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${partnerMode === "new" ? "bg-amber text-background" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    New Partner
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPartnerMode("existing")}
+                    className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${partnerMode === "existing" ? "bg-amber text-background" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    Existing Partner
+                  </button>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label>Email *</Label>
-                    <Input
-                      type="email"
-                      placeholder="partner@example.com"
-                      value={partnerForm.email}
-                      onChange={(e) => setPartnerForm({ ...partnerForm, email: e.target.value })}
-                      required
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Password * (min 8 chars)</Label>
-                    <div className="relative">
+              )}
+
+              {partnerMode === "new" ? (
+                <form onSubmit={handleCreatePartner} className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label>Full Name *</Label>
                       <Input
-                        type={showPartnerPassword ? "text" : "password"}
-                        placeholder="Min 8 characters"
-                        value={partnerForm.password}
-                        onChange={(e) => setPartnerForm({ ...partnerForm, password: e.target.value })}
+                        placeholder="Ahmed Khan"
+                        value={partnerForm.name}
+                        onChange={(e) => setPartnerForm({ ...partnerForm, name: e.target.value })}
                         required
-                        minLength={8}
-                        className="pr-9"
+                        autoFocus
                       />
-                      <button
-                        type="button"
-                        onClick={() => setShowPartnerPassword((p) => !p)}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                        tabIndex={-1}
-                      >
-                        {showPartnerPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                      </button>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Phone *</Label>
+                      <Input
+                        placeholder="+92 300 0000000"
+                        value={partnerForm.phone}
+                        onChange={(e) => setPartnerForm({ ...partnerForm, phone: e.target.value })}
+                        required
+                      />
                     </div>
                   </div>
-                </div>
-                <p className="text-xs text-muted-foreground/70">
-                  The partner will get read-only access to tenants and payments.
-                  Share their credentials via WhatsApp after creation — the password will not be shown again.
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => { setShowAddPartner(false); setPartnerForm({ name: "", email: "", phone: "", password: "" }); }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    type="submit"
-                    size="sm"
-                    disabled={creatingPartner || !partnerForm.name.trim() || !partnerForm.email.trim() || !partnerForm.phone.trim() || partnerForm.password.length < 8}
-                    className="gap-1.5 bg-amber text-background hover:bg-amber/90 font-semibold"
-                  >
-                    {creatingPartner ? (
-                      <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Creating…</>
-                    ) : (
-                      <><Plus className="w-3.5 h-3.5" /> Add Partner</>
-                    )}
-                  </Button>
-                </div>
-              </form>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label>Email *</Label>
+                      <Input
+                        type="email"
+                        placeholder="partner@example.com"
+                        value={partnerForm.email}
+                        onChange={(e) => setPartnerForm({ ...partnerForm, email: e.target.value })}
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Password * (min 8 chars)</Label>
+                      <div className="relative">
+                        <Input
+                          type={showPartnerPassword ? "text" : "password"}
+                          placeholder="Min 8 characters"
+                          value={partnerForm.password}
+                          onChange={(e) => setPartnerForm({ ...partnerForm, password: e.target.value })}
+                          required
+                          minLength={8}
+                          className="pr-9"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPartnerPassword((p) => !p)}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                          tabIndex={-1}
+                        >
+                          {showPartnerPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5 sm:w-1/2 sm:pr-1.5">
+                    <Label>Access level</Label>
+                    <Select value={partnerForm.tier} onValueChange={(v) => setPartnerForm({ ...partnerForm, tier: v as PartnerTier })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="read_only">Read-only — view only</SelectItem>
+                        <SelectItem value="standard">Standard — tenants, payments &amp; expenses</SelectItem>
+                        <SelectItem value="full">Full — equal to owner on this branch</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <p className="text-xs text-muted-foreground/70">
+                    {partnerForm.tier === "read_only" && "The partner will get read-only access to tenants and payments."}
+                    {partnerForm.tier === "standard" && "The partner will be able to add tenants, record payments and log expenses on this branch."}
+                    {partnerForm.tier === "full" && "The partner will have full, owner-equal access on this branch, including checkout and tenant edits."}
+                    {" "}Share their credentials via WhatsApp after creation — the password will not be shown again.
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => { setShowAddPartner(false); setPartnerForm({ name: "", email: "", phone: "", password: "", tier: "read_only" }); }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="submit"
+                      size="sm"
+                      disabled={creatingPartner || !partnerForm.name.trim() || !partnerForm.email.trim() || !partnerForm.phone.trim() || partnerForm.password.length < 8}
+                      className="gap-1.5 bg-amber text-background hover:bg-amber/90 font-semibold"
+                    >
+                      {creatingPartner ? (
+                        <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Creating…</>
+                      ) : (
+                        <><Plus className="w-3.5 h-3.5" /> Add Partner</>
+                      )}
+                    </Button>
+                  </div>
+                </form>
+              ) : (
+                <form onSubmit={handleAddExistingPartner} className="space-y-3">
+                  <div className="space-y-1.5">
+                    <Label>Partner *</Label>
+                    <Select value={selectedExistingPartnerId} onValueChange={setSelectedExistingPartnerId}>
+                      <SelectTrigger><SelectValue placeholder="Select a partner from another branch" /></SelectTrigger>
+                      <SelectContent>
+                        {existingPartners.map((p) => (
+                          <SelectItem key={p.partnerId} value={p.partnerId}>
+                            {p.name} ({p.email}) — on {p.linkedHostelNames.join(", ")}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5 sm:w-1/2 sm:pr-1.5">
+                    <Label>Access level</Label>
+                    <Select value={existingPartnerTier} onValueChange={(v) => setExistingPartnerTier(v as PartnerTier)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="read_only">Read-only — view only</SelectItem>
+                        <SelectItem value="standard">Standard — tenants, payments &amp; expenses</SelectItem>
+                        <SelectItem value="full">Full — equal to owner on this branch</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <p className="text-xs text-muted-foreground/70">
+                    Attaches this partner to the current branch with the access level above. Their existing access on other branches is unchanged.
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => { setShowAddPartner(false); setSelectedExistingPartnerId(""); setExistingPartnerTier("read_only"); }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="submit"
+                      size="sm"
+                      disabled={addingExistingPartner || !selectedExistingPartnerId}
+                      className="gap-1.5 bg-amber text-background hover:bg-amber/90 font-semibold"
+                    >
+                      {addingExistingPartner ? (
+                        <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Adding…</>
+                      ) : (
+                        <><Plus className="w-3.5 h-3.5" /> Add to Branch</>
+                      )}
+                    </Button>
+                  </div>
+                </form>
+              )}
             </div>
           )}
 
@@ -1622,7 +1831,7 @@ export function SettingsClient() {
             <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground">
               <Handshake className="w-8 h-8 opacity-20" />
               <p className="text-sm">No partners yet</p>
-              <p className="text-xs">Add a partner to give them read-only access</p>
+              <p className="text-xs">Add a partner and choose their access level for this branch</p>
             </div>
           ) : partners.length > 0 ? (
             <div className="rounded-xl border border-sidebar-border overflow-hidden">
@@ -1642,9 +1851,6 @@ export function SettingsClient() {
                       <p className="text-sm font-medium text-foreground truncate">
                         {p.full_name ?? "Unknown"}
                       </p>
-                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                        Partner
-                      </span>
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
                       <p className="text-xs text-muted-foreground truncate">{p.email}</p>
@@ -1654,10 +1860,26 @@ export function SettingsClient() {
                     </div>
                   </div>
 
+                  {/* Access tier */}
+                  <div className="shrink-0 w-[104px]">
+                    <Select
+                      value={p.tier}
+                      onValueChange={(v) => handleUpdatePartnerTier(p.partnership_id, v as PartnerTier)}
+                      disabled={updatingTierFor === p.partnership_id}
+                    >
+                      <SelectTrigger className="h-7 text-xs px-2"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="read_only">Read-only</SelectItem>
+                        <SelectItem value="standard">Standard</SelectItem>
+                        <SelectItem value="full">Full</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
                   {/* Actions */}
                   <div className="flex items-center gap-1.5 shrink-0">
                     <a
-                      href={buildWhatsAppLink({ name: p.full_name ?? "Partner", email: p.email })}
+                      href={buildWhatsAppLink({ name: p.full_name ?? "Partner", email: p.email, phone: p.phone })}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#25D366]/10 border border-[#25D366]/25 text-[#25D366] text-xs font-medium hover:bg-[#25D366]/15 transition-colors"
@@ -1689,6 +1911,7 @@ export function SettingsClient() {
           ) : null}
         </CardContent>
       </Card>
+      </>)}
 
       <Separator />
 
@@ -1704,6 +1927,7 @@ export function SettingsClient() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
+          <fieldset disabled={!canFullTier} className="space-y-6 min-w-0">
 
           {/* Payment Methods */}
           <div className="space-y-3">
@@ -1817,10 +2041,13 @@ export function SettingsClient() {
             )}
           </div>
 
-          <Button onClick={saveRecoverySettings} disabled={savingRecovery} className="gap-2">
-            {savingRecovery ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            Save Recovery Settings
-          </Button>
+          </fieldset>
+          {canFullTier ? (
+            <Button onClick={saveRecoverySettings} disabled={savingRecovery} className="gap-2">
+              {savingRecovery ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              Save Recovery Settings
+            </Button>
+          ) : readOnlyNote}
         </CardContent>
       </Card>
 

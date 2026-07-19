@@ -2,9 +2,36 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireOwnerOrAbove } from "@/lib/auth";
+import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { getAuthContext } from "@/lib/data";
 import { sendApplicationEmail } from "@/lib/email";
-import type { ApplicationStatus, PackageTier } from "@/types";
+import type { ApplicationStatus, PackageTier, Profile } from "@/types";
+
+/**
+ * Partners never appear in hms_owner_hostels — their branch access lives in
+ * hms_partnerships, which getAuthContext() already resolves into ctx.hostelId.
+ */
+async function hasHostelAccess(profile: Profile, hostelId: string): Promise<boolean> {
+  if (profile.role === "super_admin") return true;
+  if (profile.role === "partner") {
+    const ctx = await getAuthContext();
+    return ctx?.hostelId === hostelId;
+  }
+  const admin = createAdminClient();
+  const { data: hostel } = await admin
+    .from("hms_hostels")
+    .select("owner_id")
+    .eq("id", hostelId)
+    .single();
+  if (hostel?.owner_id === profile.id) return true;
+  const { data: junction } = await admin
+    .from("hms_owner_hostels")
+    .select("hostel_id")
+    .eq("hostel_id", hostelId)
+    .eq("owner_id", profile.id)
+    .maybeSingle();
+  return !!junction;
+}
 
 interface ApplicationInput {
   full_name: string;
@@ -120,30 +147,19 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
 }
 
 export async function listApplications(hostelId: string) {
-  const profile = await requireOwnerOrAbove();
+  const profile = await requireOwnerOrPartnerTier("read_only");
 
-  // Verify ownership
   const admin = createAdminClient();
   const { data: hostel } = await admin
     .from("hms_hostels")
-    .select("id, owner_id")
+    .select("id")
     .eq("id", hostelId)
     .single();
 
   if (!hostel) notFound();
 
-  // For non-super-admin check ownership
-  if (profile.role !== "super_admin") {
-    if (hostel.owner_id !== profile.id) {
-      // Check junction table
-      const { data: junction } = await admin
-        .from("hms_owner_hostels")
-        .select("hostel_id")
-        .eq("hostel_id", hostelId)
-        .eq("owner_id", profile.id)
-        .maybeSingle();
-      if (!junction) return { applications: [], error: "Unauthorized" };
-    }
+  if (!(await hasHostelAccess(profile, hostelId))) {
+    return { applications: [], error: "Unauthorized" };
   }
 
   const { data, error } = await admin
@@ -160,7 +176,7 @@ export async function updateApplicationStatus(
   appId: string,
   status: ApplicationStatus
 ) {
-  const profile = await requireOwnerOrAbove();
+  const profile = await requireOwnerOrPartnerTier("standard");
   const admin = createAdminClient();
 
   const { data: app } = await admin
@@ -171,23 +187,8 @@ export async function updateApplicationStatus(
 
   if (!app) return { success: false, error: "Application not found" };
 
-  // Verify ownership
-  if (profile.role !== "super_admin") {
-    const { data: hostel } = await admin
-      .from("hms_hostels")
-      .select("owner_id")
-      .eq("id", app.hostel_id)
-      .single();
-
-    if (!hostel || hostel.owner_id !== profile.id) {
-      const { data: junction } = await admin
-        .from("hms_owner_hostels")
-        .select("hostel_id")
-        .eq("hostel_id", app.hostel_id)
-        .eq("owner_id", profile.id)
-        .maybeSingle();
-      if (!junction) return { success: false, error: "Unauthorized" };
-    }
+  if (!(await hasHostelAccess(profile, app.hostel_id))) {
+    return { success: false, error: "Unauthorized" };
   }
 
   const { error } = await admin
@@ -201,18 +202,6 @@ export async function updateApplicationStatus(
 
   if (error) return { success: false, error: error.message };
   return { success: true };
-}
-
-export async function getApplicationDocUrl(
-  path: string
-): Promise<{ url?: string; error?: string }> {
-  await requireOwnerOrAbove();
-  const admin = createAdminClient();
-  const { data, error } = await admin.storage
-    .from("application-docs")
-    .createSignedUrl(path, 3600);
-  if (error || !data?.signedUrl) return { error: error?.message ?? "Could not generate URL." };
-  return { url: data.signedUrl };
 }
 
 export interface ConvertFormData {
@@ -237,7 +226,7 @@ export interface ConvertFormData {
 }
 
 export async function convertToTenant(appId: string, extra: ConvertFormData) {
-  const profile = await requireOwnerOrAbove();
+  const profile = await requireOwnerOrPartnerTier("standard");
   const admin = createAdminClient();
 
   // Fetch application
@@ -249,23 +238,8 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
 
   if (!app) return { success: false, error: "Application not found" };
 
-  // Verify hostel ownership
-  if (profile.role !== "super_admin") {
-    const { data: hostel } = await admin
-      .from("hms_hostels")
-      .select("owner_id")
-      .eq("id", app.hostel_id)
-      .single();
-
-    if (!hostel || hostel.owner_id !== profile.id) {
-      const { data: junction } = await admin
-        .from("hms_owner_hostels")
-        .select("hostel_id")
-        .eq("hostel_id", app.hostel_id)
-        .eq("owner_id", profile.id)
-        .maybeSingle();
-      if (!junction) return { success: false, error: "Unauthorized" };
-    }
+  if (!(await hasHostelAccess(profile, app.hostel_id))) {
+    return { success: false, error: "Unauthorized" };
   }
 
   const { data: newTenant, error: tenantError } = await admin.from("hms_tenants").insert({
@@ -296,6 +270,26 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
   }).select("id").single();
 
   if (tenantError) return { success: false, error: tenantError.message };
+
+  // Occupancy must move with the tenant insert on the server: partners cannot
+  // write hms_rooms from the browser (RLS), and a blocked update there affects
+  // 0 rows silently, leaving the room advertising a bed that is already taken.
+  const assignedRoomId = extra.is_waiting ? null : extra.room_id;
+  if (assignedRoomId) {
+    const { data: room } = await admin
+      .from("hms_rooms")
+      .select("capacity, occupied")
+      .eq("id", assignedRoomId)
+      .eq("hostel_id", app.hostel_id)
+      .maybeSingle();
+    if (room) {
+      const newOcc = room.occupied + 1;
+      await admin
+        .from("hms_rooms")
+        .update({ occupied: newOcc, status: newOcc >= room.capacity ? "occupied" : "available" })
+        .eq("id", assignedRoomId);
+    }
+  }
 
   // Log deposit collection to the Member Ledger — best-effort, never blocks approval.
   if (newTenant?.id && extra.security_deposit > 0) {

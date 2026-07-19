@@ -1,7 +1,7 @@
-import { getComplaints } from "@/lib/data";
+import { getComplaints, getAuthContext } from "@/lib/data";
 import { ComplaintsClient } from "@/components/modules/complaints/complaints-client";
 
 export default async function ComplaintsPage() {
-  const data = await getComplaints();
-  return <ComplaintsClient key={data.hostelId ?? ''} {...data} />;
+  const [data, ctx] = await Promise.all([getComplaints(), getAuthContext()]);
+  return <ComplaintsClient key={data.hostelId ?? ''} {...data} partnerTier={ctx?.partnerTier} />;
 }

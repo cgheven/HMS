@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, capitalize } from "@/lib/utils";
-import type { Room, RoomStatus, SpaceType } from "@/types";
+import type { PartnerTier, Room, RoomStatus, SpaceType } from "@/types";
 
 const statusColors: Record<RoomStatus, "success" | "info" | "warning"> = { available: "success", occupied: "info", maintenance: "warning" };
 const emptyRoom = { room_number: "", floor: "", type: "general" as SpaceType, capacity: "1", status: "available" as RoomStatus, has_ac: false, has_cooler: false };
@@ -34,9 +34,10 @@ function roomToSlots(room: Room): PhotoSlot[] {
   return PHOTO_FIELDS.map((f) => ({ file: null, preview: room[f] ?? null, cleared: false }));
 }
 
-interface Props { hostelId: string | null; initialRooms: Room[]; }
+interface Props { hostelId: string | null; initialRooms: Room[]; partnerTier?: PartnerTier | null; }
 
-export function SpacesClient({ hostelId, initialRooms }: Props) {
+export function SpacesClient({ hostelId, initialRooms, partnerTier = null }: Props) {
+  const canFullTier = !partnerTier || partnerTier === "full";
   const [rooms, setRooms] = useState<Room[]>(initialRooms);
   const [filtered, setFiltered] = useState<Room[]>(initialRooms);
   const [search, setSearch] = useState("");
@@ -129,8 +130,9 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
 
     let roomId: string;
     if (editing) {
-      const { error } = await supabase.from("hms_rooms").update(payload).eq("id", editing.id);
+      const { data: updated, error } = await supabase.from("hms_rooms").update(payload).eq("id", editing.id).select("id");
       if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); setSaving(false); return; }
+      if (!updated || updated.length === 0) { toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" }); setSaving(false); return; }
       roomId = editing.id;
     } else {
       const { data: inserted, error } = await supabase.from("hms_rooms").insert(payload).select("id").single();
@@ -167,7 +169,9 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
     }));
 
     if (Object.keys(dbUpdate).length > 0) {
-      await supabase.from("hms_rooms").update(dbUpdate).eq("id", roomId);
+      const { data: photoUpdated, error: photoError } = await supabase.from("hms_rooms").update(dbUpdate).eq("id", roomId).select("id");
+      if (photoError) { toast({ title: "Error", description: photoError.message, variant: "destructive" }); setSaving(false); return; }
+      if (!photoUpdated || photoUpdated.length === 0) { toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" }); setSaving(false); return; }
     }
 
     toast({ title: editing ? "Room updated" : "Room added" });
@@ -180,8 +184,9 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
     const supabase = createClient();
     // Fetch photo paths before deleting the row so we can clean up storage
     const { data: room } = await supabase.from("hms_rooms").select("photo_path,photo_path_2,photo_path_3,photo_path_4,photo_path_5").eq("id", id).single();
-    const { error } = await supabase.from("hms_rooms").delete().eq("id", id);
+    const { data: deleted, error } = await supabase.from("hms_rooms").delete().eq("id", id).select("id");
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!deleted || deleted.length === 0) { toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" }); return; }
     if (room) {
       const urls = [room.photo_path, room.photo_path_2, room.photo_path_3, room.photo_path_4, room.photo_path_5].filter(Boolean) as string[];
       const paths = urls.map((url) => url.split("/room-photos/")[1]).filter(Boolean);
@@ -200,7 +205,7 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div><h1 className="text-3xl font-serif font-normal tracking-tight">Spaces</h1><p className="text-muted-foreground text-sm mt-1">Manage rooms and occupancy</p></div>
-        <Button onClick={openAdd} className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" /> Add Room</Button>
+        {canFullTier && <Button onClick={openAdd} className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" /> Add Room</Button>}
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -285,10 +290,12 @@ export function SpacesClient({ hostelId, initialRooms }: Props) {
                       {room.has_cooler && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">Cooler</span>}
                     </div>
                   )}
-                  <div className="flex gap-2 pt-2">
-                    <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={() => openEdit(room)}><Edit2 className="w-3 h-3" /> Edit</Button>
-                    <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(room.id)}><Trash2 className="w-3 h-3" /></Button>
-                  </div>
+                  {canFullTier && (
+                    <div className="flex gap-2 pt-2">
+                      <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={() => openEdit(room)}><Edit2 className="w-3 h-3" /> Edit</Button>
+                      <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(room.id)}><Trash2 className="w-3 h-3" /></Button>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             );

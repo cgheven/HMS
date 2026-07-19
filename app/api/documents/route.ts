@@ -1,15 +1,23 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireOwnerOrAbove } from "@/lib/auth";
+import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { getAuthContext } from "@/lib/data";
 
 const ALLOWED_BUCKETS = new Set(["application-docs", "tenant-documents"]);
 
 export async function GET(req: NextRequest) {
+  // read_only: viewing a tenant's CNIC/lease scan is a read, available to any
+  // active tier. Previously requireOwnerOrAbove(), which redirects partners and
+  // surfaced here as a 401 — partners could not open their own branch's
+  // documents at all.
+  let ctx;
   try {
-    await requireOwnerOrAbove();
+    await requireOwnerOrPartnerTier("read_only");
+    ctx = await getAuthContext();
   } catch {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  if (!ctx?.hostelId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const path = req.nextUrl.searchParams.get("path");
   if (!path) return NextResponse.json({ error: "Missing path" }, { status: 400 });
@@ -26,6 +34,32 @@ export async function GET(req: NextRequest) {
   }
 
   const admin = createAdminClient();
+
+  // The signed URL below is minted with the service role, which bypasses the
+  // storage.objects policies entirely — so this route is the ONLY thing
+  // deciding who may read the object, and objectPath is caller-supplied. Both
+  // buckets encode the owning entity as the first path segment
+  // (application-docs/<hostelId>/..., tenant-documents/<tenantId>/...); resolve
+  // it back to a hostel and require it to match the caller's active branch.
+  // Without this, any authenticated user could read any tenant's CNIC, passport
+  // or lease scan from any hostel on the platform by supplying its path.
+  const scopeId = objectPath.split("/")[0];
+  if (!scopeId) return NextResponse.json({ error: "Invalid path" }, { status: 400 });
+
+  if (bucket === "application-docs") {
+    if (scopeId !== ctx.hostelId) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+  } else {
+    const { data: tenant } = await admin
+      .from("hms_tenants")
+      .select("hostel_id")
+      .eq("id", scopeId)
+      .maybeSingle();
+    if (!tenant || tenant.hostel_id !== ctx.hostelId) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+  }
   const { data, error } = await admin.storage
     .from(bucket)
     .createSignedUrl(objectPath, 60); // 60-second URL — only used server-side

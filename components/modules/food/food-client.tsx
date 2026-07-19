@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { formatDateInput } from "@/lib/utils";
-import type { FoodItem, MealType } from "@/types";
+import type { FoodItem, MealType, PartnerTier } from "@/types";
 
 const mealTypes: MealType[] = ["breakfast", "lunch", "dinner"];
 const mealLabel: Record<MealType, string> = { breakfast: "Breakfast", lunch: "Lunch", dinner: "Dinner" };
@@ -54,11 +54,12 @@ const emptyForm = () => ({
   notes: "",
 });
 
-interface Props { hostelId: string | null; initialItems: FoodItem[]; initialMonth: string; }
+interface Props { hostelId: string | null; initialItems: FoodItem[]; initialMonth: string; partnerTier?: PartnerTier | null; }
 
 const monthCache = new Map<string, FoodItem[]>();
 
-export function FoodClient({ hostelId, initialItems, initialMonth }: Props) {
+export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier = null }: Props) {
+  const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const [monthItems, setMonthItems] = useState<FoodItem[]>(initialItems);
   const [monthFilter, setMonthFilter] = useState(initialMonth);
   const [loadingMonth, setLoadingMonth] = useState(false);
@@ -130,16 +131,24 @@ export function FoodClient({ hostelId, initialItems, initialMonth }: Props) {
     setEditingItemId(null);
     if (!text || text === item.item_name) return;
     const supabase = createClient();
-    const { error } = await supabase.from("hms_food_items").update({ item_name: text }).eq("id", item.id);
+    const { data, error } = await supabase.from("hms_food_items").update({ item_name: text }).eq("id", item.id).select("id");
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
     setMonthItems((prev) => prev.map((i) => i.id === item.id ? { ...i, item_name: text } : i));
     invalidateMonthCache();
   }
 
   async function deleteItem(id: string) {
     const supabase = createClient();
-    const { error } = await supabase.from("hms_food_items").delete().eq("id", id);
+    const { data, error } = await supabase.from("hms_food_items").delete().eq("id", id).select("id");
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
     setMonthItems((prev) => prev.filter((i) => i.id !== id));
     invalidateMonthCache();
   }
@@ -154,16 +163,22 @@ export function FoodClient({ hostelId, initialItems, initialMonth }: Props) {
       unit_cost: form.unit_cost ? parseFloat(form.unit_cost) : null,
       notes: form.notes || null,
     };
-    const { error } = editing
-      ? await supabase.from("hms_food_items").update(payload).eq("id", editing.id)
-      : await supabase.from("hms_food_items").insert(payload);
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); }
-    else {
-      toast({ title: editing ? "Updated" : "Added" });
-      setDialogOpen(false);
-      invalidateMonthCache();
-      if (form.date.startsWith(monthFilter)) loadMonth(monthFilter);
+    if (editing) {
+      const { data, error } = await supabase.from("hms_food_items").update(payload).eq("id", editing.id).select("id");
+      if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); setSaving(false); return; }
+      if (!data || data.length === 0) {
+        toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+    } else {
+      const { error } = await supabase.from("hms_food_items").insert(payload);
+      if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); setSaving(false); return; }
     }
+    toast({ title: editing ? "Updated" : "Added" });
+    setDialogOpen(false);
+    invalidateMonthCache();
+    if (form.date.startsWith(monthFilter)) loadMonth(monthFilter);
     setSaving(false);
   }
 
@@ -185,12 +200,14 @@ export function FoodClient({ hostelId, initialItems, initialMonth }: Props) {
           <h1 className="text-3xl font-serif font-normal tracking-tight">Food List</h1>
           <p className="text-muted-foreground text-sm mt-1">Monthly meal planner</p>
         </div>
-        <Button
-          onClick={() => { setEditing(null); setForm(emptyForm()); setDialogOpen(true); }}
-          className="gap-2 w-full sm:w-auto"
-        >
-          <Plus className="w-4 h-4" /> Add Item
-        </Button>
+        {canStandardTier && (
+          <Button
+            onClick={() => { setEditing(null); setForm(emptyForm()); setDialogOpen(true); }}
+            className="gap-2 w-full sm:w-auto"
+          >
+            <Plus className="w-4 h-4" /> Add Item
+          </Button>
+        )}
       </div>
 
       {/* Month navigation */}
@@ -263,9 +280,9 @@ export function FoodClient({ hostelId, initialItems, initialMonth }: Props) {
                       return (
                         <td
                           key={meal}
-                          className="px-3 py-2 align-top group/cell cursor-pointer"
+                          className={`px-3 py-2 align-top group/cell ${canStandardTier ? "cursor-pointer" : ""}`}
                           onClick={() => {
-                            if (!isAddingHere && !editingItemId) {
+                            if (canStandardTier && !isAddingHere && !editingItemId) {
                               setAddingMeal({ date, meal });
                               setAddingText("");
                               setTimeout(() => addInputRef.current?.focus(), 40);
@@ -289,19 +306,21 @@ export function FoodClient({ hostelId, initialItems, initialMonth }: Props) {
                                   />
                                 ) : (
                                   <span
-                                    className="flex-1 text-xs text-foreground/80 leading-relaxed hover:text-foreground cursor-text"
-                                    onClick={() => { setEditingItemId(item.id); setEditingText(item.item_name); }}
+                                    className={`flex-1 text-xs text-foreground/80 leading-relaxed ${canStandardTier ? "hover:text-foreground cursor-text" : ""}`}
+                                    onClick={() => { if (canStandardTier) { setEditingItemId(item.id); setEditingText(item.item_name); } }}
                                     title={item.item_name}
                                   >
                                     {item.item_name}
                                   </span>
                                 )}
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); deleteItem(item.id); }}
-                                  className="opacity-0 group-hover/item:opacity-100 shrink-0 p-0.5 rounded hover:bg-rose-500/10 text-muted-foreground/30 hover:text-rose-400 transition-all"
-                                >
-                                  <X className="w-2.5 h-2.5" />
-                                </button>
+                                {canStandardTier && (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); deleteItem(item.id); }}
+                                    className="opacity-0 group-hover/item:opacity-100 shrink-0 p-0.5 rounded hover:bg-rose-500/10 text-muted-foreground/30 hover:text-rose-400 transition-all"
+                                  >
+                                    <X className="w-2.5 h-2.5" />
+                                  </button>
+                                )}
                               </div>
                             ))}
 
@@ -321,7 +340,7 @@ export function FoodClient({ hostelId, initialItems, initialMonth }: Props) {
                                 />
                               </div>
                             ) : (
-                              cellItems.length === 0 && (
+                              canStandardTier && cellItems.length === 0 && (
                                 <span className="text-[10px] text-transparent group-hover/cell:text-muted-foreground/30 transition-colors select-none pointer-events-none">
                                   + add
                                 </span>

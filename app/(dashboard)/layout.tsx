@@ -6,11 +6,9 @@ import { DashboardShell } from "@/components/layout/dashboard-shell";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const ctx = await getAuthContext();
-  // F-002: require authenticated user with owner or super_admin role.
-  // Partner users must be redirected to the partner portal.
+  // F-002: require authenticated user with owner, partner, or super_admin role.
   if (!ctx?.user) redirect("/login");
   if (ctx.profile?.role === "super_admin") redirect("/super-admin");
-  if (ctx.profile?.role === "partner") redirect("/partner");
 
   // Defense-in-depth: an auth user linked to hms_sales_reps must never reach the
   // owner dashboard, independent of hms_profiles.role — this closes the gap even
@@ -23,10 +21,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
     .maybeSingle();
   if (salesRep) redirect("/sales");
 
-  if (ctx.profile?.role !== "owner") redirect("/login");
+  if (!["owner", "partner"].includes(ctx.profile?.role ?? "")) redirect("/login");
+  // A partner with no active branch (all partnerships removed) has nothing to see here.
+  if (ctx.profile?.role === "partner" && !ctx.hostel) redirect("/login");
 
   return (
-    <HostelProvider profile={ctx.profile} hostel={ctx.hostel} hostels={ctx.hostels ?? []}>
+    <HostelProvider profile={ctx.profile} hostel={ctx.hostel} hostels={ctx.hostels ?? []} partnerTier={ctx.partnerTier}>
       <DashboardShell>{children}</DashboardShell>
     </HostelProvider>
   );

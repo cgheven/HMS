@@ -36,10 +36,7 @@ export default function LoginPage() {
       .from("hms_profiles")
       .select("role")
       .single();
-    const home =
-      profile?.role === "super_admin" ? "/super-admin"
-      : profile?.role === "partner" ? "/partner"
-      : "/dashboard";
+    const home = profile?.role === "super_admin" ? "/super-admin" : "/dashboard";
     router.push(home);
     router.refresh();
   }

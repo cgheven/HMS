@@ -12,7 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { formatDate, capitalize } from "@/lib/utils";
-import type { Complaint, ComplaintCategory, ComplaintPriority, ComplaintStatus, Tenant, Room } from "@/types";
+import type { Complaint, ComplaintCategory, ComplaintPriority, ComplaintStatus, Tenant, Room, PartnerTier } from "@/types";
 
 type TenantRow = Pick<Tenant, "id" | "full_name">;
 type RoomRow = Pick<Room, "id" | "room_number">;
@@ -22,6 +22,7 @@ interface Props {
   complaints: Complaint[];
   tenants: TenantRow[];
   rooms: RoomRow[];
+  partnerTier?: PartnerTier | null;
 }
 
 const categoryIcons: Record<ComplaintCategory, string> = {
@@ -46,7 +47,8 @@ const emptyForm = {
   priority: "medium" as ComplaintPriority, tenant_id: "", room_id: "",
 };
 
-export function ComplaintsClient({ hostelId, complaints: initial, tenants, rooms }: Props) {
+export function ComplaintsClient({ hostelId, complaints: initial, tenants, rooms, partnerTier = null }: Props) {
+  const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const [complaints, setComplaints] = useState<Complaint[]>(initial);
   const [tab, setTab] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -87,8 +89,12 @@ export function ComplaintsClient({ hostelId, complaints: initial, tenants, rooms
 
   async function updateStatus(c: Complaint, status: ComplaintStatus) {
     const supabase = createClient();
-    const { error } = await supabase.from("hms_complaints").update({ status }).eq("id", c.id);
+    const { data, error } = await supabase.from("hms_complaints").update({ status }).eq("id", c.id).select("id");
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
     await reload();
   }
 
@@ -96,20 +102,27 @@ export function ComplaintsClient({ hostelId, complaints: initial, tenants, rooms
     if (!resolveDialog) return;
     setSaving(true);
     const supabase = createClient();
-    const { error } = await supabase.from("hms_complaints").update({
+    const { data, error } = await supabase.from("hms_complaints").update({
       status: "resolved",
       resolution_notes: resolutionNotes || null,
       resolved_at: new Date().toISOString(),
-    }).eq("id", resolveDialog.id);
+    }).eq("id", resolveDialog.id).select("id");
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); }
+    else if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+    }
     else { toast({ title: "Complaint resolved" }); setResolveDialog(null); setResolutionNotes(""); await reload(); }
     setSaving(false);
   }
 
   async function handleDelete(id: string) {
     const supabase = createClient();
-    const { error } = await supabase.from("hms_complaints").delete().eq("id", id);
+    const { data, error } = await supabase.from("hms_complaints").delete().eq("id", id).select("id");
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
     toast({ title: "Deleted" });
     await reload();
   }
@@ -154,6 +167,7 @@ export function ComplaintsClient({ hostelId, complaints: initial, tenants, rooms
             </div>
           </div>
         </div>
+        {canStandardTier && (
         <div className="flex items-center gap-2 mt-3 pt-3 border-t border-sidebar-border">
           {c.status === "open" && (
             <Button variant="ghost" size="sm" className="h-7 text-xs text-amber hover:bg-amber/10 border border-amber/20" onClick={() => updateStatus(c, "in_progress")}>
@@ -171,6 +185,7 @@ export function ComplaintsClient({ hostelId, complaints: initial, tenants, rooms
             </Button>
           </div>
         </div>
+        )}
       </div>
     );
   }
@@ -182,9 +197,11 @@ export function ComplaintsClient({ hostelId, complaints: initial, tenants, rooms
           <h1 className="text-3xl font-serif font-normal tracking-tight">Complaints</h1>
           <p className="text-muted-foreground text-sm mt-1">Maintenance requests & issues</p>
         </div>
-        <Button onClick={() => { setForm(emptyForm); setDialogOpen(true); }} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold w-full sm:w-auto">
-          <Plus className="w-4 h-4" /> Log Complaint
-        </Button>
+        {canStandardTier && (
+          <Button onClick={() => { setForm(emptyForm); setDialogOpen(true); }} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold w-full sm:w-auto">
+            <Plus className="w-4 h-4" /> Log Complaint
+          </Button>
+        )}
       </div>
 
       {/* Stats */}

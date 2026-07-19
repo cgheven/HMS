@@ -6,7 +6,7 @@ import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
   Employee, SalaryPayment, PackageConfig, PackageTier, UpcomingVacancy,
-  ClientBilling, PlatformInvoice,
+  ClientBilling, PlatformInvoice, PartnerTier,
 } from "@/types";
 
 // React cache() deduplicates within the same server request.
@@ -22,15 +22,44 @@ export const getAuthContext = cache(async () => {
   const activeHostelId =
     cookieStore.get("hms_active_hostel")?.value ?? null;
 
-  const [{ data: profile }, { data: hostelData }, { data: junctionData }] = await Promise.all([
+  // All four run in parallel regardless of role — whichever path doesn't apply
+  // (owner queries for a partner, or vice versa) comes back empty and cheap,
+  // rather than adding a second sequential round-trip to check role first.
+  const [{ data: profile }, { data: hostelData }, { data: junctionData }, { data: partnerships }] = await Promise.all([
     supabase.from("hms_profiles").select("*").eq("id", user.id).single(),
     supabase.from("hms_hostels").select("*").eq("owner_id", user.id).order("created_at"),
-    // Also fetch hostels via the junction table for multi-owner / partner scenarios
+    // Also fetch hostels via the junction table for multi-owner scenarios
     supabase
       .from("hms_owner_hostels")
       .select("hostel_id, is_primary")
       .eq("owner_id", user.id),
+    // Partner path: branch access lives in hms_partnerships, not hms_owner_hostels
+    supabase
+      .from("hms_partnerships")
+      .select("hostel_id, tier, hostel:hms_hostels(*)")
+      .eq("partner_id", user.id)
+      .eq("is_active", true),
   ]);
+
+  if (profile?.role === "partner") {
+    type PartnershipRow = { hostel_id: string; tier: PartnerTier; hostel: Hostel | null };
+    const rows = ((partnerships ?? []) as unknown as PartnershipRow[]).filter((r) => r.hostel !== null);
+    const hostels = rows.map((r) => r.hostel as Hostel);
+    const tierByHostel = new Map(rows.map((r) => [r.hostel_id, r.tier]));
+
+    const hostel: Hostel | null =
+      (activeHostelId && hostels.find((h) => h.id === activeHostelId)) || hostels[0] || null;
+
+    return {
+      supabase,
+      user,
+      profile: profile as Profile | null,
+      hostel,
+      hostels,
+      hostelId: (hostel?.id ?? null) as string | null,
+      partnerTier: (hostel ? tierByHostel.get(hostel.id) ?? null : null) as PartnerTier | null,
+    };
+  }
 
   // Build the merged hostel list: direct owner_id rows + junction rows (de-duped)
   const directHostels = (hostelData ?? []) as Hostel[];
@@ -81,6 +110,7 @@ export const getAuthContext = cache(async () => {
     hostel,
     hostels,
     hostelId: (hostel?.id ?? null) as string | null,
+    partnerTier: null as PartnerTier | null,
   };
 });
 

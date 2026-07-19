@@ -787,3 +787,18 @@ export interface ManagerContext {
   hostels: { id: string; name: string }[]
   activeHostel: { id: string; name: string } | null
 }
+
+export type PartnerTier = "read_only" | "standard" | "full"
+
+export interface PartnerBranch {
+  partnershipId: string
+  hostelId: string
+  hostelName: string
+  tier: PartnerTier
+}
+
+export interface PartnerContext {
+  userId: string
+  branches: PartnerBranch[]
+  activeBranch: PartnerBranch
+}

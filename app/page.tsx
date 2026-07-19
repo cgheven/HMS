@@ -25,10 +25,7 @@ export default async function Home() {
   if (manager) redirect("/portal");
   if (salesRep) redirect("/sales");
 
-  const home =
-    profile?.role === "super_admin" ? "/super-admin"
-    : profile?.role === "partner" ? "/partner"
-    : "/dashboard";
+  const home = profile?.role === "super_admin" ? "/super-admin" : "/dashboard";
 
   redirect(home);
 }

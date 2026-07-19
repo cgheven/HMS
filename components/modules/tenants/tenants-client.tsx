@@ -20,12 +20,13 @@ import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates, type FoodAddonFlags } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
-import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction } from "@/app/actions/tenants";
+import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 
 interface Props {
   hostelId: string | null;
@@ -41,6 +42,12 @@ interface Props {
   foodMonthlyRate?: number;
   noticePeriodDays?: number;
   currentMonthPaymentByTenant?: Record<string, { status: string; remaining: number }>;
+  // null/undefined = owner (unrestricted). Add/Edit Tenant and Give Notice are
+  // deferred for partners in this pass — the safe write actions only cover a
+  // reduced field set, and a full-parity partner form is a planned follow-up
+  // rather than something rushed in here. Checkout has full parity (shares the
+  // exact same performTenantCheckout as the owner path) and is wired for Full tier.
+  partnerTier?: PartnerTier | null;
 }
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
@@ -220,6 +227,9 @@ interface TenantRowProps {
   t: Tenant;
   showCheckout?: boolean;
   showActivate?: boolean;
+  showEdit?: boolean;
+  showDelete?: boolean;
+  showGiveNotice?: boolean;
   roomMap: Record<string, Room>;
   foodAddonRates: FoodAddonRates;
   noticePeriodDays?: number;
@@ -232,7 +242,7 @@ interface TenantRowProps {
   onGiveNotice?: (t: Tenant) => void;
 }
 
-function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, onTimeline, onCheckout, onActivate, onEdit, onDelete, onGiveNotice }: TenantRowProps) {
+function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, onTimeline, onCheckout, onActivate, onEdit, onDelete, onGiveNotice }: TenantRowProps) {
   const room = t.room_id ? roomMap[t.room_id] : null;
   const foodCharge = calcFoodAddonCharge(t, foodAddonRates);
   const initials = t.full_name[0].toUpperCase();
@@ -352,7 +362,7 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
             <span className="hidden sm:inline text-xs ml-1.5">Activate</span>
           </Button>
         )}
-        {showCheckout && onGiveNotice && (
+        {showGiveNotice && onGiveNotice && (
           <Button
             variant="ghost"
             size="sm"
@@ -386,12 +396,16 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
         <Button variant="ghost" size="icon" className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground" title="History" onClick={() => onTimeline(t)}>
           <History className="w-3.5 h-3.5" />
         </Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEdit(t)}>
-          <Edit2 className="w-3.5 h-3.5" />
-        </Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => onDelete(t)}>
-          <Trash2 className="w-3.5 h-3.5" />
-        </Button>
+        {showEdit && (
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onEdit(t)}>
+            <Edit2 className="w-3.5 h-3.5" />
+          </Button>
+        )}
+        {showDelete && (
+          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => onDelete(t)}>
+            <Trash2 className="w-3.5 h-3.5" />
+          </Button>
+        )}
       </div>
       </div>
     </div>
@@ -400,7 +414,10 @@ function TenantRow({ t, showCheckout = false, showActivate = false, roomMap, foo
 
 // ---------------------------------------------------------------------------
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, currentMonthPaymentByTenant = {} }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, currentMonthPaymentByTenant = {}, partnerTier = null }: Props) {
+  const isPartner = !!partnerTier;
+  const canFullTier = !partnerTier || partnerTier === "full";
+  const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const [active, setActive] = useState(initialActive);
   const [waiting, setWaiting] = useState(initialWaiting);
   const [checkedOut, setCheckedOut] = useState(initialCheckedOut);
@@ -614,18 +631,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setApproveSaving(true);
     const result = await convertToTenant(approvingApp.id, approveForm);
     if (result.success) {
-      // If room assigned, update occupancy
-      if (!approveForm.is_waiting && approveForm.room_id) {
-        const room = rooms.find((r) => r.id === approveForm.room_id);
-        if (room) {
-          const supabase = createClient();
-          const newOcc = room.occupied + 1;
-          await supabase.from("hms_rooms").update({
-            occupied: newOcc,
-            status: newOcc >= room.capacity ? "occupied" : "available",
-          }).eq("id", approveForm.room_id);
-        }
-      }
       toast({ title: approveForm.is_waiting ? "Added to waiting list" : "Tenant activated", description: `${approvingApp.full_name} has been added.` });
       setApprovingApp(null);
       await Promise.all([reload(), reloadApplications()]);
@@ -721,6 +726,30 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       food_lunch: form.food_lunch,
       food_dinner: form.food_dinner,
     };
+
+    if (isPartner) {
+      // The partner write action does everything the rest of this function
+      // does client-side for an owner — insert/update, room occupancy,
+      // ledger events, historical backfill — server-side in one call.
+      const { hostel_id: _hostelId, is_active: _isActive, ...partnerPayload } = payload;
+      const result = editing
+        ? await editTenantAsPartner(editing.id, partnerPayload)
+        : await addTenantAsPartner(partnerPayload);
+      if (result.error) {
+        toast({ title: "Error", description: result.error, variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+      toast({
+        title: editing
+          ? editing.is_waiting && !form.is_waiting ? `${form.full_name} activated` : "Tenant updated"
+          : form.is_waiting ? "Added to waiting list" : "Tenant added",
+      });
+      setDialogOpen(false);
+      await reload();
+      setSaving(false);
+      return;
+    }
 
     const prevRoomId = editing?.room_id;
     const newRoomId = payload.room_id;
@@ -929,7 +958,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         : {}),
     };
 
-    const result = await checkoutTenantAction(input);
+    const result = isPartner ? await checkoutTenantAsPartner(input) : await checkoutTenantAction(input);
 
     if (!result.success) {
       toast({ title: "Checkout failed", description: result.error, variant: "destructive" });
@@ -976,16 +1005,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   }
 
   async function handleDelete(t: Tenant) {
-    const supabase = createClient();
-    const { error } = await supabase.from("hms_tenants").delete().eq("id", t.id);
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    if (t.room_id && t.is_active) {
-      const room = rooms.find((r) => r.id === t.room_id);
-      if (room) {
-        const newOcc = Math.max(0, room.occupied - 1);
-        await createClient().from("hms_rooms").update({ occupied: newOcc, status: newOcc < room.capacity ? "available" : "occupied" }).eq("id", t.room_id);
-      }
-    }
+    const result = await deleteTenantAction(t.id);
+    if (result.error) { toast({ title: "Error", description: result.error, variant: "destructive" }); return; }
     toast({ title: "Deleted" });
     await reload();
   }
@@ -1213,9 +1234,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           >
             <Link2 className="w-4 h-4" /> Share Application Form
           </Button>
-          <Button onClick={openAdd} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold flex-1 sm:flex-none">
-            <Plus className="w-4 h-4" /> Add Tenant
-          </Button>
+          {canStandardTier && (
+            <Button onClick={openAdd} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold flex-1 sm:flex-none">
+              <Plus className="w-4 h-4" /> Add Tenant
+            </Button>
+          )}
         </div>
       </div>
 
@@ -1402,7 +1425,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               <div className="divide-y divide-sidebar-border/50">
                 {filterList(active).map((t) => (
                 <TenantRow
-                  key={t.id} t={t} showCheckout
+                  key={t.id} t={t} showCheckout={canFullTier}
+                  showEdit={canFullTier} showDelete={canFullTier} showGiveNotice={canStandardTier}
                   roomMap={roomMap}
                   foodAddonRates={foodAddonRates}
                   noticePeriodDays={noticePeriodDays}
@@ -1433,7 +1457,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <div className="divide-y divide-sidebar-border/50">
                   {filterList(waiting).map((t) => (
                     <TenantRow
-                      key={t.id} t={t} showActivate
+                      key={t.id} t={t} showActivate={canFullTier}
+                      showEdit={canFullTier} showDelete={canFullTier}
                       roomMap={roomMap}
                       foodAddonRates={foodAddonRates}
                       noticePeriodDays={noticePeriodDays}
@@ -1490,18 +1515,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                               {new Date(entry.created_at).toLocaleDateString("en-PK", { day: "numeric", month: "short", year: "numeric" })}
                             </p>
                           </div>
-                          <button
-                            onClick={async () => {
-                              const supabase = createClient();
-                              const { error } = await supabase.from("hms_waitlist").delete().eq("id", entry.id);
-                              if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-                              else setWaitlistEntries((prev) => prev.filter((e) => e.id !== entry.id));
-                            }}
-                            className="p-1.5 rounded-lg text-muted-foreground/30 hover:text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0"
-                            title="Remove from waitlist"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {canStandardTier && (
+                            <button
+                              onClick={async () => {
+                                const supabase = createClient();
+                                const { data, error } = await supabase.from("hms_waitlist").delete().eq("id", entry.id).select("id");
+                                if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
+                                else if (!data?.length) toast({ title: "Not allowed", description: "You don't have permission to remove waitlist entries.", variant: "destructive" });
+                                else setWaitlistEntries((prev) => prev.filter((e) => e.id !== entry.id));
+                              }}
+                              className="p-1.5 rounded-lg text-muted-foreground/30 hover:text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0"
+                              title="Remove from waitlist"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       ))}
                   </div>
@@ -1529,6 +1557,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 {filterList(checkedOut).map((t) => (
                 <TenantRow
                   key={t.id} t={t}
+                  showEdit={canFullTier} showDelete={canFullTier}
                   roomMap={roomMap}
                   foodAddonRates={foodAddonRates}
                   noticePeriodDays={noticePeriodDays}
@@ -1642,7 +1671,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                             </span>
                           </td>
                           <td className="px-4 py-3 text-right">
-                            {app.status === "pending" && (
+                            {app.status === "pending" && canStandardTier && (
                               <div className="flex items-center justify-end gap-1">
                                 <Button
                                   variant="ghost"

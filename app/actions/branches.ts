@@ -1,7 +1,9 @@
 "use server";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
+import { unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { requireOwnerOrAbove } from "@/lib/auth";
 import type { Hostel } from "@/types";
 
 const COOKIE_NAME = "hms_active_hostel";
@@ -161,6 +163,15 @@ export async function createBranch(data: {
   try {
     if (!data.name?.trim()) return { error: "Branch name is required." };
 
+    // Creating a branch is an ACCOUNT-level action, not a branch-level one, so
+    // it stays owner-only even for a full-tier partner. This guard is the only
+    // thing stopping it: the underlying "Owner manages own hostel" RLS policy
+    // is `auth.uid() = owner_id`, which any authenticated user satisfies for a
+    // row they insert with their own id — so every logged-in user (partner,
+    // manager, sales rep) could previously call this action directly and mint
+    // a hostel they owned outright, regardless of what the sidebar showed.
+    await requireOwnerOrAbove();
+
     const { supabase, user } = await getAuthedUser();
 
     // Insert new hostel
@@ -195,6 +206,7 @@ export async function createBranch(data: {
     revalidatePath("/");
     return { hostel: newHostel as Hostel };
   } catch (e) {
+    unstable_rethrow(e);
     return { error: (e as Error).message };
   }
 }

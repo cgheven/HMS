@@ -43,6 +43,7 @@ export default async function TenantsPage() {
       hostelSlug={hostelSlug}
       hostelName={ctx?.hostel?.name}
       waitlistEntries={waitlistEntries}
+      partnerTier={ctx?.partnerTier}
     />
   );
 }

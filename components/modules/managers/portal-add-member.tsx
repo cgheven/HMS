@@ -25,6 +25,11 @@ function todayString() {
   return new Date().toISOString().slice(0, 10)
 }
 
+// Radix Select forbids an empty-string Item value (reserved to mean "cleared,
+// show placeholder"), so "no room" needs its own sentinel that's translated
+// back to "" when read/written from roomId state.
+const NO_ROOM = "__none__"
+
 export function PortalAddMember({ rooms }: PortalAddMemberProps) {
   const availableRooms = rooms.filter((r) => r.occupied < r.capacity)
 
@@ -122,12 +127,16 @@ export function PortalAddMember({ rooms }: PortalAddMemberProps) {
 
           <div className="space-y-1.5">
             <Label htmlFor="room">Room</Label>
-            <Select value={roomId} onValueChange={setRoomId} disabled={isPending}>
+            <Select
+              value={roomId || NO_ROOM}
+              onValueChange={(v) => setRoomId(v === NO_ROOM ? "" : v)}
+              disabled={isPending}
+            >
               <SelectTrigger id="room">
                 <SelectValue placeholder="Select a room (optional)" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">No room assigned</SelectItem>
+                <SelectItem value={NO_ROOM}>No room assigned</SelectItem>
                 {availableRooms.map((r) => (
                   <SelectItem key={r.id} value={r.id}>
                     Room {r.room_number} — {r.capacity - r.occupied} bed{r.capacity - r.occupied !== 1 ? "s" : ""} available

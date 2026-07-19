@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
-import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount } from "@/types";
+import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import {
   syncMonthAction,
@@ -24,6 +24,7 @@ import {
   saveACJoinReadingAction,
 } from "@/app/actions/payments";
 import { createInvoiceLink } from "@/app/actions/tenants";
+import { recordPaymentAsPartner } from "@/app/actions/partner";
 
 interface TenantRow {
   id: string;
@@ -58,6 +59,10 @@ interface Props {
   acReadings?: { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[];
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
   prevMonthACReadings?: { room_id: string; meter_reading: number | null; total_units: number }[];
+  // null/undefined = owner (unrestricted). Recording a payment requires
+  // standard+; late fee / receipt number overrides and AC billing management
+  // stay owner-only (the partner write path doesn't support them).
+  partnerTier?: PartnerTier | null;
 }
 
 const methodLabels: Record<PaymentMethod, string> = {
@@ -83,7 +88,9 @@ function genReceipt(tenantName: string, month: string) {
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, acReadings = [], acJoinReadings = [], prevMonthACReadings = [] }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, acReadings = [], acJoinReadings = [], prevMonthACReadings = [], partnerTier = null }: Props) {
+  const isPartner = !!partnerTier;
+  const canRecordPayment = !partnerTier || partnerTier !== "read_only";
   const router = useRouter();
   const [selectedMonth, setSelectedMonth] = useState(initialMonth);
   const [payments, setPayments] = useState<Payment[]>(initialPayments);
@@ -248,6 +255,38 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }
 
     setSaving(true);
+
+    if (isPartner) {
+      // recordPaymentAsPartner doesn't accept a late-fee/receipt-number override
+      // (both fields are hidden in the dialog for partners, so nothing typed is
+      // silently dropped).
+      const result = await recordPaymentAsPartner(
+        markDialog.tenant_id,
+        amountReceived,
+        markForm.method,
+        markDialog.for_month,
+        isAcTier ? parseInt(markForm.ac_units_consumed, 10) : undefined,
+        markForm.notes,
+      );
+      if (result.error) {
+        toast({ title: "Error", description: result.error, variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+      const isPartial = result.payment?.status === "partially_paid";
+      toast({ title: isPartial ? "Partial payment recorded" : "Payment recorded! 🎉" });
+      setMarkDialog(null);
+      setSaving(false);
+      await syncMonth(selectedMonth);
+      // Same post-payment WhatsApp-share step as the owner path below — uses
+      // the fresh post-update row so the dialog reflects the actual new
+      // status/amount_paid, not the stale pre-update markDialog.
+      if (result.payment) {
+        setPostPaymentWa({ payment: result.payment, amountReceivedNow: amountReceived });
+      }
+      return;
+    }
+
     const result = await markPaymentPaidAction({
       paymentId: markDialog.id,
       method: markForm.method,
@@ -547,9 +586,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" onClick={() => sendReminder(p)}>
               {WA_ICON} Remind
             </Button>
-            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
-              <CheckCircle2 className="w-3 h-3" /> Pay
-            </Button>
+            {canRecordPayment && (
+              <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
+                <CheckCircle2 className="w-3 h-3" /> Pay
+              </Button>
+            )}
           </>
         )}
         {p.status === "partially_paid" && (
@@ -557,9 +598,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" disabled={sendingWa === p.id} onClick={() => sendWhatsAppReceipt(p)}>
               {WA_ICON} Receipt
             </Button>
-            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
-              <CheckCircle2 className="w-3 h-3" /> Collect Rest
-            </Button>
+            {canRecordPayment && (
+              <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
+                <CheckCircle2 className="w-3 h-3" /> Collect Rest
+              </Button>
+            )}
           </>
         )}
         {p.status === "paid" && (
@@ -698,7 +741,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         <TabsList>
           <TabsTrigger value="monthly"><Banknote className="w-3.5 h-3.5" /> Monthly View</TabsTrigger>
           <TabsTrigger value="history"><Clock className="w-3.5 h-3.5" /> All History</TabsTrigger>
-          {acRooms.length > 0 && (
+          {acRooms.length > 0 && !isPartner && (
             <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> AC Billing</TabsTrigger>
           )}
         </TabsList>
@@ -1194,12 +1237,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5"><Label>Payment Date</Label><Input type="date" value={markForm.date} onChange={(e) => setMarkForm({ ...markForm, date: e.target.value })} /></div>
-              {/* F-005: min="0" prevents negative late fees in the UI */}
-              <div className="space-y-1.5"><Label>Late Fee (PKR)</Label><Input type="number" placeholder="0" min="0" step="0.01" value={markForm.late_fee} onChange={(e) => setMarkForm({ ...markForm, late_fee: e.target.value })} /></div>
-            </div>
-            <div className="space-y-1.5"><Label>Receipt No.</Label><Input value={markForm.receipt_number} onChange={(e) => setMarkForm({ ...markForm, receipt_number: e.target.value })} /></div>
+            {isPartner ? (
+              <p className="text-xs text-muted-foreground/70">
+                Recorded with today&apos;s date. Late fee and receipt number overrides aren&apos;t available here — ask the owner if either is needed.
+              </p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5"><Label>Payment Date</Label><Input type="date" value={markForm.date} onChange={(e) => setMarkForm({ ...markForm, date: e.target.value })} /></div>
+                  {/* F-005: min="0" prevents negative late fees in the UI */}
+                  <div className="space-y-1.5"><Label>Late Fee (PKR)</Label><Input type="number" placeholder="0" min="0" step="0.01" value={markForm.late_fee} onChange={(e) => setMarkForm({ ...markForm, late_fee: e.target.value })} /></div>
+                </div>
+                <div className="space-y-1.5"><Label>Receipt No.</Label><Input value={markForm.receipt_number} onChange={(e) => setMarkForm({ ...markForm, receipt_number: e.target.value })} /></div>
+              </>
+            )}
             <div className="space-y-1.5"><Label>Notes</Label><Input placeholder="Optional" value={markForm.notes} onChange={(e) => setMarkForm({ ...markForm, notes: e.target.value })} /></div>
           </div>
           <DialogFooter>

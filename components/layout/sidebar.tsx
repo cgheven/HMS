@@ -10,7 +10,16 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
+import { useHostelContext } from "@/contexts/hostel-context";
 
+// A partner is an owner of their branch, so they see every branch-scoped page.
+// ownerOnly marks the two exceptions, which are ACCOUNT-level rather than
+// branch-level:
+//   Managers — creating/deleting manager logins writes hms_profiles (auth users)
+//   Billing  — the account holder's SaaS subscription with Pulse across every
+//              branch, keyed to owner_id, so a partner would see an empty page
+// Settings is shown, but its Branches and Partners cards are hidden inside the
+// page for the same reason (see settings-client.tsx).
 const navGroups = [
   {
     label: "Residents",
@@ -29,7 +38,7 @@ const navGroups = [
       { href: "/food",          label: "Food List",     icon: UtensilsCrossed },
       { href: "/bills",         label: "Bills",         icon: FileText },
       { href: "/staff",         label: "Staff",         icon: UserCog },
-      { href: "/managers",      label: "Managers",      icon: ShieldCheck },
+      { href: "/managers",      label: "Managers",      icon: ShieldCheck, ownerOnly: true },
       { href: "/complaints",    label: "Complaints",    icon: MessageSquareWarning },
       { href: "/announcements", label: "Announcements", icon: Megaphone },
     ],
@@ -43,7 +52,7 @@ const navGroups = [
   {
     label: "System",
     items: [
-      { href: "/billing",  label: "Billing",          icon: Wallet },
+      { href: "/billing",  label: "Billing",          icon: Wallet, ownerOnly: true },
       { href: "/settings", label: "Settings",         icon: Settings },
       { href: "/find",     label: "My Public Page",   icon: Globe, newTab: true },
     ],
@@ -88,6 +97,15 @@ interface SidebarProps { open: boolean; onClose: () => void; }
 export function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
   const { isAdmin } = useIsAdmin();
+  const { profile } = useHostelContext();
+  const isPartner = profile?.role === "partner";
+
+  const visibleGroups = navGroups
+    .map((group) => ({
+      ...group,
+      items: isPartner ? group.items.filter((item) => !item.ownerOnly) : group.items,
+    }))
+    .filter((group) => group.items.length > 0);
 
   return (
     <>
@@ -122,7 +140,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
 
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto py-3 px-2.5 space-y-3 scrollbar-hide">
-          {navGroups.map((group) => (
+          {visibleGroups.map((group) => (
             <div key={group.label}>
               <p className="text-[10px] font-bold text-muted-foreground/70 uppercase tracking-widest px-3 mb-1 mt-1">{group.label}</p>
               <div className="space-y-0.5">
@@ -133,7 +151,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
             </div>
           ))}
 
-          {isAdmin && (
+          {isAdmin && !isPartner && (
             <div>
               <div className="flex items-center gap-1.5 px-3 mb-1">
                 <Shield className="w-3 h-3 text-amber/60" />

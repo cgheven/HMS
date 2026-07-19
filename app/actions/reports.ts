@@ -1,9 +1,46 @@
 "use server";
-import { requireOwnerOrAbove } from "@/lib/auth";
+import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { getAuthContext } from "@/lib/data";
 import { capitalize } from "@/lib/utils";
+import type { Profile } from "@/types";
+
+// Reports is pure read — any active partner tier suffices. Owners/super_admin
+// keep their existing hms_hostels.owner_id / hms_owner_hostels check; a
+// partner is verified against hms_partnerships instead (mirrors the RLS
+// policy shape in migrations 092/093, just expressed in application code
+// since this file never used RLS to begin with — it always re-verifies
+// ownership manually via the admin client).
+async function verifyReportAccess(
+  profile: Profile,
+  hostelId: string,
+  hostelOwnerId: string,
+  admin: ReturnType<typeof createAdminClient>
+): Promise<boolean> {
+  if (profile.role === "super_admin") return true;
+  if (profile.role === "owner") {
+    if (hostelOwnerId === profile.id) return true;
+    const { data: junction } = await admin
+      .from("hms_owner_hostels")
+      .select("hostel_id")
+      .eq("hostel_id", hostelId)
+      .eq("owner_id", profile.id)
+      .maybeSingle();
+    return !!junction;
+  }
+  if (profile.role === "partner") {
+    const { data: partnership } = await admin
+      .from("hms_partnerships")
+      .select("id")
+      .eq("hostel_id", hostelId)
+      .eq("partner_id", profile.id)
+      .eq("is_active", true)
+      .maybeSingle();
+    return !!partnership;
+  }
+  return false;
+}
 
 export interface ReportData {
   hostelId: string;
@@ -155,7 +192,7 @@ export async function getReportData(
   to: string,
   label: string
 ): Promise<{ data: ReportData | null; error: string | null }> {
-  const profile = await requireOwnerOrAbove();
+  const profile = await requireOwnerOrPartnerTier("read_only");
 
   const admin = createAdminClient();
 
@@ -168,14 +205,8 @@ export async function getReportData(
 
   if (!hostelRow) return { data: null, error: "Hostel not found" };
 
-  if (profile.role !== "super_admin" && hostelRow.owner_id !== profile.id) {
-    const { data: junction } = await admin
-      .from("hms_owner_hostels")
-      .select("hostel_id")
-      .eq("hostel_id", hostelId)
-      .eq("owner_id", profile.id)
-      .maybeSingle();
-    if (!junction) return { data: null, error: "Unauthorized" };
+  if (!(await verifyReportAccess(profile, hostelId, hostelRow.owner_id, admin))) {
+    return { data: null, error: "Unauthorized" };
   }
 
   // Generate month keys in the range
@@ -664,7 +695,7 @@ export async function getLedgerTenants(
   to: string,
   filters: LedgerFilters
 ): Promise<{ data: LedgerTenantRow[] | null; error: string | null }> {
-  const profile = await requireOwnerOrAbove();
+  const profile = await requireOwnerOrPartnerTier("read_only");
   const admin = createAdminClient();
 
   const { data: hostelRow } = await admin
@@ -675,14 +706,8 @@ export async function getLedgerTenants(
 
   if (!hostelRow) return { data: null, error: "Hostel not found" };
 
-  if (profile.role !== "super_admin" && hostelRow.owner_id !== profile.id) {
-    const { data: junction } = await admin
-      .from("hms_owner_hostels")
-      .select("hostel_id")
-      .eq("hostel_id", hostelId)
-      .eq("owner_id", profile.id)
-      .maybeSingle();
-    if (!junction) return { data: null, error: "Unauthorized" };
+  if (!(await verifyReportAccess(profile, hostelId, hostelRow.owner_id, admin))) {
+    return { data: null, error: "Unauthorized" };
   }
 
   let tenantQuery = admin

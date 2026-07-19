@@ -3,7 +3,8 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import type { Profile } from "@/types";
+import { getAuthContext } from "@/lib/data";
+import type { Profile, PartnerTier } from "@/types";
 
 /**
  * Fetch the hms_profiles row for the currently authenticated user.
@@ -53,28 +54,30 @@ export async function requireOwnerOrAbove(): Promise<Profile> {
   return profile;
 }
 
+const TIER_RANK: Record<PartnerTier, number> = { read_only: 0, standard: 1, full: 2 };
+
 /**
- * Guard: verifies a row exists in hms_partnerships where
- *   partner_id = auth.uid()  AND  hostel_id = hostelId  AND  is_active = true
- * Redirects to /dashboard on failure.
+ * Guard: caller must be "owner"/"super_admin" (unrestricted), or a "partner"
+ * whose tier on their active branch meets minTier.
+ *
+ * Redirects to /login only when the caller isn't authenticated at all, or
+ * holds a role with no path to this guard (e.g. manager). An authenticated
+ * partner whose tier simply falls short throws a normal Error instead —
+ * redirecting would tear them off whatever page/dialog they were on and dump
+ * them at /login (which, since they're still logged in, just bounces them
+ * to /dashboard with no explanation). A thrown Error is caught by the
+ * action's own try/catch and surfaces as a normal, actionable toast.
  */
-export async function requirePartnerAccess(hostelId: string): Promise<void> {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
-
-  const admin = createAdminClient();
-  const { data } = await admin
-    .from("hms_partnerships")
-    .select("id")
-    .eq("hostel_id", hostelId)
-    .eq("partner_id", user.id)
-    .eq("is_active", true)
-    .maybeSingle();
-
-  if (!data) redirect("/dashboard");
+export async function requireOwnerOrPartnerTier(minTier: PartnerTier): Promise<Profile> {
+  const profile = await getProfile();
+  if (!profile) redirect("/login");
+  if (["owner", "super_admin"].includes(profile.role)) return profile;
+  if (profile.role === "partner") {
+    const ctx = await getAuthContext(); // cache()-deduped — already resolved this request
+    if (ctx?.partnerTier && TIER_RANK[ctx.partnerTier] >= TIER_RANK[minTier]) return profile;
+    throw new Error("Your access level does not permit this action.");
+  }
+  redirect("/login");
 }
 
 /**

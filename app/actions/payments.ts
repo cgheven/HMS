@@ -15,9 +15,11 @@
  */
 
 import { revalidatePath } from "next/cache";
+import { unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
+import { requireOwnerOrAbove, requireOwnerOrPartnerTier } from "@/lib/auth";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { logActivity } from "@/lib/audit";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
@@ -125,10 +127,20 @@ export async function syncMonthAction(
   month: string
 ): Promise<{ payments?: Payment[]; error?: string }> {
   try {
+    // read_only, not just standard+: this only fills in missing pending rows
+    // and refreshes pending amounts (paid/waived rows are never touched), so
+    // it's safe for any partner tier — and it has to run for all of them,
+    // since the Payments page is otherwise empty until someone with write
+    // access happens to load it first for this branch/month.
+    await requireOwnerOrPartnerTier("read_only");
     if (!MONTH_RE.test(month)) throw new Error(`Invalid month format: "${month}"`);
 
     const hostelId = await resolveHostelId();
-    const supabase = await createClient();
+    // Admin client: partners have no write RLS grant on hms_payments (the
+    // hybrid architecture keeps their writes on the service role instead of
+    // opening new RLS policies), so this has to run as admin for everyone,
+    // not just when the caller happens to be a partner.
+    const supabase = createAdminClient();
 
     // Fetch active tenants and package config server-side
     const [{ data: tenants, error: tenantsErr }, { data: configData }] = await Promise.all([
@@ -236,6 +248,7 @@ export async function syncMonthAction(
 
     return { payments: (payments ?? []) as Payment[] };
   } catch (err: unknown) {
+    unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -264,6 +277,10 @@ export async function markPaymentPaidAction(
   input: MarkPaidInput
 ): Promise<{ payment?: Payment; error?: string }> {
   try {
+    // Recording collection is day-to-day work. Partners reach this through
+    // recordPaymentAsPartner instead, but the guard belongs here regardless —
+    // this action is a directly-callable RPC endpoint like any other.
+    await requireOwnerOrPartnerTier("standard");
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
@@ -474,6 +491,7 @@ export async function markPaymentPaidAction(
 
     return { payment: data as Payment };
   } catch (err: unknown) {
+    unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -486,18 +504,29 @@ export async function markPaymentWaivedAction(
   paymentId: string
 ): Promise<{ error?: string }> {
   try {
+    // Waiving is forgiving money owed, so it sits with the full-tier financial
+    // operations. resolveHostelId() below is scope resolution, not authorization
+    // — until now these actions had no authorization check at all and leaned
+    // entirely on hms_payments having no partner write policy. That is a
+    // coincidence of the current policy set, not a guard.
+    await requireOwnerOrPartnerTier("full");
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
-    const { error } = await supabase
+    // .select() so an RLS-filtered zero-row update is distinguishable from a
+    // real one — a bare update returns error === null when RLS blocks it.
+    const { data, error } = await supabase
       .from("hms_payments")
       .update({ status: "waived" as PaymentStatus })
       .eq("id", paymentId)
-      .eq("hostel_id", hostelId);
+      .eq("hostel_id", hostelId)
+      .select("id");
 
     if (error) throw new Error(error.message);
+    if (!data || data.length === 0) throw new Error("Payment not found, or your access level does not allow this change.");
     return {};
   } catch (err: unknown) {
+    unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -510,18 +539,23 @@ export async function markPaymentOverdueAction(
   paymentId: string
 ): Promise<{ error?: string }> {
   try {
+    // Flagging a bill overdue is day-to-day collections work.
+    await requireOwnerOrPartnerTier("standard");
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("hms_payments")
       .update({ status: "overdue" as PaymentStatus })
       .eq("id", paymentId)
-      .eq("hostel_id", hostelId);
+      .eq("hostel_id", hostelId)
+      .select("id");
 
     if (error) throw new Error(error.message);
+    if (!data || data.length === 0) throw new Error("Payment not found, or your access level does not allow this change.");
     return {};
   } catch (err: unknown) {
+    unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -545,6 +579,7 @@ export async function loadHistoryAction(forMonth: string): Promise<{ payments?: 
     if (error) throw new Error(error.message);
     return { payments: (data ?? []) as Payment[] };
   } catch (err: unknown) {
+    unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -616,6 +651,11 @@ export async function applyRoomACUnitsAction(
 }> {
   try {
     // ── Auth & ownership guard ──────────────────────────────────
+    // Owner-only: AC billing management was never part of the partner feature's
+    // scope, and this action writes via the admin client (bypasses RLS), so this
+    // guard is the only thing standing between "any authenticated user with a
+    // resolvable hostel" and a write here — no RLS backstop for this one.
+    await requireOwnerOrAbove();
     const ctx = await getAuthContext();
     if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
     const { hostelId } = ctx;
@@ -994,6 +1034,7 @@ export async function applyRoomACUnitsAction(
       currentReading: reading,
     };
   } catch (err) {
+    unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -1012,6 +1053,9 @@ export async function saveACJoinReadingAction(
   openingReading?: number
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    // Owner-only — same reasoning as applyRoomACUnitsAction: admin-client write,
+    // no RLS backstop, and AC billing management isn't part of the partner scope.
+    await requireOwnerOrAbove();
     const ctx = await getAuthContext();
     if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
     const { hostelId } = ctx;
@@ -1073,6 +1117,7 @@ export async function saveACJoinReadingAction(
     revalidatePath("/payments");
     return { success: true };
   } catch (err) {
+    unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }

@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
-import type { Expense, ExpenseCategory } from "@/types";
+import type { Expense, ExpenseCategory, PartnerTier } from "@/types";
 
 const categories: ExpenseCategory[] = ["furniture", "repairs", "cleaning", "security", "utilities", "other"];
 const categoryColors: Record<ExpenseCategory, "info" | "warning" | "success" | "secondary" | "default" | "outline"> = { furniture: "info", repairs: "warning", cleaning: "success", security: "secondary", utilities: "default", other: "outline" };
@@ -62,12 +62,13 @@ const CHIP_STYLES: Record<ExpenseCategory, string> = {
   other:     "bg-white/5       border-white/10      text-muted-foreground hover:bg-white/10",
 };
 
-interface Props { hostelId: string | null; initialExpenses: Expense[]; defaultMonth: string; }
+interface Props { hostelId: string | null; initialExpenses: Expense[]; defaultMonth: string; partnerTier?: PartnerTier | null; }
 
 // Module-level cache — persists across month switches within the session
 const expenseCache = new Map<string, Expense[]>();
 
-export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Props) {
+export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partnerTier = null }: Props) {
+  const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const [expenses, setExpenses] = useState<Expense[]>(initialExpenses);
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("all");
@@ -124,9 +125,22 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
     setSaving(true);
     const supabase = createClient();
     const payload = { hostel_id: hostelId, title: form.title, amount: parseFloat(form.amount), category: form.category, date: form.date, notes: form.notes || null };
-    const { error } = editing ? await supabase.from("hms_expenses").update(payload).eq("id", editing.id) : await supabase.from("hms_expenses").insert(payload);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: editing ? "Updated" : "Added" }); setDialogOpen(false); reload(); }
+    if (editing) {
+      const { data, error } = await supabase.from("hms_expenses").update(payload).eq("id", editing.id).select("id");
+      if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); setSaving(false); return; }
+      if (!data || data.length === 0) {
+        toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+      toast({ title: "Updated" });
+      setDialogOpen(false);
+      reload();
+    } else {
+      const { error } = await supabase.from("hms_expenses").insert(payload);
+      if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
+      else { toast({ title: "Added" }); setDialogOpen(false); reload(); }
+    }
     setSaving(false);
   }
 
@@ -138,9 +152,14 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
 
   async function handleDelete(id: string) {
     const supabase = createClient();
-    const { error } = await supabase.from("hms_expenses").delete().eq("id", id);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: "Deleted" }); reload(); }
+    const { data, error } = await supabase.from("hms_expenses").delete().eq("id", id).select("id");
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Deleted" });
+    reload();
   }
 
   function exportToExcel() {
@@ -167,7 +186,9 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
         <div><h1 className="text-3xl font-serif font-normal tracking-tight">Expenses</h1><p className="text-muted-foreground text-sm mt-1">Track hostel expenditures</p></div>
         <div className="flex gap-2 w-full sm:w-auto">
           <Button variant="outline" onClick={exportToExcel} disabled={filtered.length === 0} className="gap-2 flex-1 sm:flex-none"><Download className="w-4 h-4" /> Export Excel</Button>
-          <Button onClick={() => { setEditing(null); setForm(emptyForm); setDialogOpen(true); }} className="gap-2 flex-1 sm:flex-none"><Plus className="w-4 h-4" /> Add Expense</Button>
+          {canStandardTier && (
+            <Button onClick={() => { setEditing(null); setForm(emptyForm); setDialogOpen(true); }} className="gap-2 flex-1 sm:flex-none"><Plus className="w-4 h-4" /> Add Expense</Button>
+          )}
         </div>
       </div>
 
@@ -182,6 +203,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
       </div>
 
       {/* Quick Add */}
+      {canStandardTier && (
       <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
         <div className="flex items-center gap-2">
           <Plus className="w-3.5 h-3.5 text-muted-foreground" />
@@ -200,6 +222,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
           ))}
         </div>
       </div>
+      )}
 
       <div className="space-y-3">
         {/* Row 1: search + month + category */}
@@ -232,7 +255,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
-                <thead><tr className="border-b bg-muted/30"><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Title</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden sm:table-cell">Category</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">Date</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">Amount</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">Actions</th></tr></thead>
+                <thead><tr className="border-b bg-muted/30"><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Title</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden sm:table-cell">Category</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">Date</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">Amount</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">{canStandardTier ? "Actions" : ""}</th></tr></thead>
                 <tbody className="divide-y">
                   {filtered.map((exp) => (
                     <tr key={exp.id} className="hover:bg-muted/20 transition-colors">
@@ -241,8 +264,10 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth }: Prop
                       <td className="px-4 py-3 text-sm text-muted-foreground hidden md:table-cell">{formatDate(exp.date)}</td>
                       <td className="px-4 py-3 text-right font-semibold text-sm">{formatCurrency(exp.amount)}</td>
                       <td className="px-4 py-3 text-right"><div className="flex items-center justify-end gap-1">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(exp); setForm({ title: exp.title, amount: exp.amount.toString(), category: exp.category, date: exp.date, notes: exp.notes ?? "" }); setDialogOpen(true); }}><Edit2 className="w-3.5 h-3.5" /></Button>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteId(exp.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
+                        {canStandardTier && (<>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(exp); setForm({ title: exp.title, amount: exp.amount.toString(), category: exp.category, date: exp.date, notes: exp.notes ?? "" }); setDialogOpen(true); }}><Edit2 className="w-3.5 h-3.5" /></Button>
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteId(exp.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
+                        </>)}
                       </div></td>
                     </tr>
                   ))}

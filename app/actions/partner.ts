@@ -1,257 +1,482 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
+import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { createClient } from "@/lib/supabase/server";
-import type { Payment, Tenant, Room, PaymentStatus } from "@/types";
+import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { getAuthContext } from "@/lib/data";
+import { performTenantCheckout } from "@/lib/tenant-checkout";
+import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants";
+import type { CheckoutInput, CheckoutSettlement, Payment } from "@/types";
 
-// ── Guard: verify the current user is an active partner of some hostel ────────
+// Partner write actions — the safe, admin-client mutation layer a partner's
+// reused owner-dashboard UI calls into instead of the owner's raw mutation
+// path. Reads don't need this file at all: with getAuthContext() resolving a
+// partner's branch via hms_partnerships (see lib/data.ts) and the matching
+// RLS SELECT policies (migrations 092/093), the owner's own getDashboardData/
+// getTenants/getPaymentsPageData in lib/data.ts already work for a partner.
+//
+// Every action below resolves hostelId from the guarded, session-derived
+// active branch (getAuthContext()) — never from a client-supplied argument.
 
-async function requirePartner() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) throw new Error("Unauthorized");
-
-  const admin = createAdminClient();
-
-  const { data: partnership, error } = await admin
-    .from("hms_partnerships")
-    .select("id, hostel_id")
-    .eq("partner_id", user.id)
-    .eq("is_active", true)
-    .limit(1)
-    .maybeSingle();
-
-  if (error || !partnership) throw new Error("Forbidden: no active partnership");
-
-  return { user, hostelId: partnership.hostel_id as string };
+async function requirePartnerHostelId(minTier: "standard" | "full"): Promise<string> {
+  await requireOwnerOrPartnerTier(minTier);
+  const ctx = await getAuthContext();
+  if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
+  return ctx.hostelId;
 }
 
-// ── Dashboard Stats ────────────────────────────────────────────────────────────
+// ── Writes — Standard tier and above ───────────────────────────────────────────
 
-export interface PartnerDashboardData {
-  hostelName: string;
-  hostelId: string;
-  totalTenants: number;
-  monthlyRevenue: number;
-  collected: number;
-  pendingAmount: number;
-  occupancyRate: number;
-  totalRooms: number;
-  occupiedRooms: number;
-  recentPayments: {
-    id: string;
-    tenantName: string;
-    amount: number;
-    status: PaymentStatus;
-    for_month: string;
-    payment_date: string | null;
-  }[];
-}
-
-export async function getPartnerDashboardData(): Promise<{
-  data?: PartnerDashboardData;
-  error?: string;
-}> {
-  try {
-    const { hostelId } = await requirePartner();
-    const admin = createAdminClient();
-
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-
-    const [hostelRes, tenantsRes, roomsRes, paymentsRes, recentRes] =
-      await Promise.all([
-        admin
-          .from("hms_hostels")
-          .select("name")
-          .eq("id", hostelId)
-          .single(),
-        admin
-          .from("hms_tenants")
-          .select("monthly_rent")
-          .eq("hostel_id", hostelId)
-          .eq("is_active", true),
-        admin
-          .from("hms_rooms")
-          .select("status")
-          .eq("hostel_id", hostelId),
-        admin
-          .from("hms_payments")
-          .select("amount, status")
-          .eq("hostel_id", hostelId)
-          .eq("for_month", currentMonth),
-        admin
-          .from("hms_payments")
-          .select("id, amount, status, for_month, payment_date, tenant:hms_tenants(full_name)")
-          .eq("hostel_id", hostelId)
-          .order("created_at", { ascending: false })
-          .limit(10),
-      ]);
-
-    const hostelName = hostelRes.data?.name ?? "Hostel";
-    const tenants = tenantsRes.data ?? [];
-    const rooms = roomsRes.data ?? [];
-    const payments = paymentsRes.data ?? [];
-    const recent = (recentRes.data ?? []) as any[];
-
-    const totalRooms = rooms.length;
-    const occupiedRooms = rooms.filter((r) => r.status === "occupied").length;
-    const monthlyRevenue = tenants.reduce((s, t) => s + Number(t.monthly_rent), 0);
-    const collected = payments
-      .filter((p) => p.status === "paid")
-      .reduce((s, p) => s + Number(p.amount), 0);
-    const pendingAmount = payments
-      .filter((p) => p.status === "pending" || p.status === "overdue")
-      .reduce((s, p) => s + Number(p.amount), 0);
-
-    const recentPayments = recent.map((p) => ({
-      id: p.id,
-      tenantName: (p.tenant as any)?.full_name ?? "Unknown",
-      amount: Number(p.amount),
-      status: p.status as PaymentStatus,
-      for_month: p.for_month,
-      payment_date: p.payment_date,
-    }));
-
-    return {
-      data: {
-        hostelName,
-        hostelId,
-        totalTenants: tenants.length,
-        monthlyRevenue,
-        collected,
-        pendingAmount,
-        occupancyRate:
-          totalRooms > 0
-            ? Math.round((occupiedRooms / totalRooms) * 100)
-            : 0,
-        totalRooms,
-        occupiedRooms,
-        recentPayments,
-      },
-    };
-  } catch (err) {
-    return {
-      error:
-        err instanceof Error
-          ? err.message
-          : "Failed to load partner dashboard",
-    };
-  }
-}
-
-// ── Tenants (read-only) ────────────────────────────────────────────────────────
-
-export interface PartnerTenant {
-  id: string;
+// Full field parity with the owner's add/edit tenant form (components/modules/
+// tenants/tenants-client.tsx handleSave() payload) — a partner is equally
+// involved in running the branch, so this deliberately isn't a reduced subset.
+export interface PartnerTenantPayload {
   full_name: string;
   phone: string | null;
+  email: string | null;
+  cnic: string | null;
   type: string;
-  room_number: string | null;
+  package_tier: string;
+  custom_package_id: string | null;
+  room_id: string | null;
   bed_number: string | null;
   check_in: string;
-  monthly_rent: number;
+  check_out: string | null;
   billing_type: string;
-  package_tier: string;
-  is_active: boolean;
+  monthly_rent: number;
+  daily_rate: number;
+  security_deposit: number;
+  joining_meter_reading: number | null;
+  emergency_contact: string | null;
+  emergency_relationship: string | null;
+  emergency_phone: string | null;
+  notes: string | null;
+  is_waiting: boolean;
+  photo_url: string | null;
+  food_breakfast: boolean;
+  food_lunch: boolean;
+  food_dinner: boolean;
 }
 
-export async function getPartnerTenants(): Promise<{
-  tenants?: PartnerTenant[];
-  hostelId?: string;
-  error?: string;
-}> {
+function validateTenantPayload(payload: PartnerTenantPayload): string | null {
+  if (!payload.full_name?.trim() || payload.full_name.trim().length < 2) {
+    return "Full name must be at least 2 characters.";
+  }
+  if (!payload.is_waiting && !payload.check_in) return "Check-in date is required.";
+  if (payload.cnic && !/^\d{5}-\d{7}-\d$/.test(payload.cnic)) {
+    return "Invalid CNIC format. Must be XXXXX-XXXXXXX-X.";
+  }
+  return null;
+}
+
+export async function addTenantAsPartner(
+  payload: PartnerTenantPayload
+): Promise<{ error: string | null; tenantId?: string }> {
   try {
-    const { hostelId } = await requirePartner();
+    const hostelId = await requirePartnerHostelId("standard");
     const admin = createAdminClient();
 
-    const { data, error } = await admin
-      .from("hms_tenants")
-      .select(
-        "id, full_name, phone, type, room_id, bed_number, check_in, monthly_rent, billing_type, package_tier, is_active, room:hms_rooms(room_number)"
-      )
-      .eq("hostel_id", hostelId)
-      .eq("is_active", true)
-      .order("full_name");
+    const validationError = validateTenantPayload(payload);
+    if (validationError) return { error: validationError };
 
-    if (error) throw error;
+    const roomId = payload.is_waiting ? null : payload.room_id;
+    let room: { id: string; capacity: number; occupied: number } | null = null;
+    if (roomId) {
+      const { data: r } = await admin
+        .from("hms_rooms")
+        .select("id, capacity, occupied, status")
+        .eq("id", roomId)
+        .eq("hostel_id", hostelId)
+        .single();
+      if (!r) return { error: "Invalid room selection." };
+      if (r.status === "maintenance") return { error: "Selected room is under maintenance." };
+      if (r.occupied >= r.capacity) return { error: "Selected room is at full capacity." };
+      room = r;
+    }
 
-    const tenants: PartnerTenant[] = (data ?? []).map((t: any) => ({
-      id: t.id,
-      full_name: t.full_name,
-      phone: t.phone,
-      type: t.type,
-      room_number: (t.room as { room_number: string } | null)?.room_number ?? null,
-      bed_number: t.bed_number,
-      check_in: t.check_in,
-      monthly_rent: Number(t.monthly_rent),
-      billing_type: t.billing_type,
-      package_tier: t.package_tier,
-      is_active: t.is_active,
-    }));
-
-    return { tenants, hostelId };
-  } catch (err) {
-    return {
-      error:
-        err instanceof Error ? err.message : "Failed to load partner tenants",
+    const billingType = payload.billing_type === "daily" ? "daily" : "monthly";
+    const insertData: Record<string, unknown> = {
+      hostel_id: hostelId,
+      full_name: payload.full_name.trim(),
+      phone: payload.phone?.trim() || null,
+      email: payload.email?.trim() || null,
+      cnic: payload.cnic || null,
+      type: payload.type,
+      package_tier: payload.package_tier,
+      custom_package_id: payload.custom_package_id || null,
+      room_id: roomId,
+      bed_number: payload.bed_number || null,
+      check_in: payload.is_waiting ? new Date().toISOString().slice(0, 10) : payload.check_in,
+      check_out: billingType === "daily" && payload.check_out ? payload.check_out : null,
+      billing_type: billingType,
+      monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
+      daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
+      security_deposit: Number(payload.security_deposit) || 0,
+      joining_meter_reading: payload.joining_meter_reading ?? null,
+      emergency_contact: payload.emergency_contact || null,
+      emergency_relationship: payload.emergency_relationship || null,
+      emergency_phone: payload.emergency_phone || null,
+      notes: payload.notes || null,
+      is_waiting: payload.is_waiting,
+      is_active: !payload.is_waiting,
+      photo_url: payload.photo_url || null,
+      food_breakfast: !!payload.food_breakfast,
+      food_lunch: !!payload.food_lunch,
+      food_dinner: !!payload.food_dinner,
     };
+
+    const { data: created, error: insErr } = await admin
+      .from("hms_tenants")
+      .insert(insertData)
+      .select("id")
+      .single();
+    if (insErr) return { error: insErr.message };
+    const tenantId = created.id as string;
+
+    if (room && roomId) {
+      const newOccupied = room.occupied + 1;
+      await admin
+        .from("hms_rooms")
+        .update({ occupied: newOccupied, status: newOccupied >= room.capacity ? "occupied" : "available" })
+        .eq("id", roomId)
+        .eq("hostel_id", hostelId);
+    }
+
+    // Ledger entry — best-effort, mirrors the owner flow exactly.
+    const depositAmount = insertData.security_deposit as number;
+    if (depositAmount > 0) {
+      await admin.from("hms_tenant_events").insert({
+        hostel_id: hostelId,
+        tenant_id: tenantId,
+        event_type: "deposit_collected",
+        amount: depositAmount,
+      });
+    }
+
+    // Best-effort backfill for a historical check-in date — requires full tier
+    // internally, so this silently no-ops for a standard-tier partner, same
+    // graceful degradation the owner flow already has if backfill fails for
+    // any other reason (it never blocks tenant creation either way).
+    if (!payload.is_waiting && payload.check_in) {
+      const checkInMonth = payload.check_in.slice(0, 7);
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      if (checkInMonth < currentMonth) {
+        await backfillTenantPaymentsAction(tenantId);
+      }
+    }
+
+    revalidatePath("/tenants");
+    return { error: null, tenantId };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." };
   }
 }
 
-// ── Payments (read-only) ───────────────────────────────────────────────────────
-
-export interface PartnerPayment {
-  id: string;
-  tenantName: string;
-  for_month: string;
-  amount: number;
-  late_fee: number;
-  status: PaymentStatus;
-  payment_method: string | null;
-  payment_date: string | null;
-  receipt_number: string | null;
-}
-
-export async function getPartnerPayments(month: string): Promise<{
-  payments?: PartnerPayment[];
-  hostelId?: string;
-  error?: string;
-}> {
+export async function recordPaymentAsPartner(
+  tenantId: string,
+  amount: number,
+  method: string,
+  month: string,
+  acUnitsConsumed?: number,
+  notes?: string,
+): Promise<{ payment?: Payment; error: string | null }> {
   try {
-    const { hostelId } = await requirePartner();
+    const hostelId = await requirePartnerHostelId("standard");
     const admin = createAdminClient();
 
-    const { data, error } = await admin
+    const VALID_METHODS = new Set(["cash", "bank_transfer", "jazzcash", "easypaisa", "other"]);
+    if (!VALID_METHODS.has(method)) return { error: "Invalid payment method." };
+    if (!Number.isFinite(amount) || amount <= 0) return { error: "Invalid payment amount." };
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { error: "Invalid month." };
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    if (month !== currentMonth) return { error: "Payments can only be recorded for the current month." };
+
+    // Verify tenant belongs to the active branch and get their package tier
+    const { data: tenant } = await admin
+      .from("hms_tenants")
+      .select("hostel_id, package_tier")
+      .eq("id", tenantId)
+      .maybeSingle();
+
+    if (!tenant || tenant.hostel_id !== hostelId) {
+      return { error: "Tenant not found in your active branch." };
+    }
+
+    const isAcTier = tenant.package_tier === "space_food_ac";
+
+    // Fetch the actual outstanding bill so the entered amount is validated
+    // against it, mirroring the manager/owner recording flows exactly.
+    const { data: existingPayment } = await admin
       .from("hms_payments")
-      .select(
-        "id, for_month, amount, late_fee, status, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name)"
-      )
+      .select("id, amount, amount_paid, late_fee, ac_charge, status")
+      .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
-      .order("created_at", { ascending: false });
+      .in("status", ["pending", "overdue", "partially_paid"])
+      .maybeSingle();
 
-    if (error) throw error;
+    if (!existingPayment) {
+      return { error: "No outstanding bill found for this tenant this month." };
+    }
 
-    const payments: PartnerPayment[] = (data ?? []).map((p: any) => ({
-      id: p.id,
-      tenantName: p.tenant?.full_name ?? "Unknown",
-      for_month: p.for_month,
-      amount: Number(p.amount),
-      late_fee: Number(p.late_fee ?? 0),
-      status: p.status as PaymentStatus,
-      payment_method: p.payment_method,
-      payment_date: p.payment_date,
-      receipt_number: p.receipt_number,
-    }));
-
-    return { payments, hostelId };
-  } catch (err) {
-    return {
-      error:
-        err instanceof Error ? err.message : "Failed to load partner payments",
+    let newAcCharge = Number(existingPayment.ac_charge ?? 0);
+    const updatePayload: Record<string, unknown> = {
+      payment_method: method,
+      payment_date: new Date().toISOString().slice(0, 10),
+      ...(notes?.trim() ? { notes: notes.trim() } : {}),
     };
+
+    if (isAcTier && acUnitsConsumed !== undefined) {
+      if (!Number.isInteger(acUnitsConsumed) || acUnitsConsumed < 0 || acUnitsConsumed > 9999) {
+        return { error: "AC units must be a whole number between 0 and 9999." };
+      }
+      // Fetch AC rate from DB — never trust the client-supplied value
+      const { data: config } = await admin
+        .from("hms_package_configs")
+        .select("ac_per_unit_rate")
+        .eq("hostel_id", hostelId)
+        .maybeSingle();
+
+      const acUnitRate = Number(config?.ac_per_unit_rate ?? 0);
+      newAcCharge = acUnitsConsumed * acUnitRate;
+      updatePayload.ac_units_consumed = acUnitsConsumed;
+      updatePayload.ac_charge = newAcCharge;
+    }
+
+    // The bill's non-AC portion stays fixed here; only the AC charge can shift,
+    // if a fresh meter reading was entered above. Mirrors what the DB trigger recomputes.
+    const nonAcPortion = Number(existingPayment.amount) - Number(existingPayment.ac_charge ?? 0);
+    const fullAmountDue = nonAcPortion + newAcCharge + Number(existingPayment.late_fee ?? 0);
+    const previousAmountPaid = Number(existingPayment.amount_paid ?? 0);
+    const remainingBefore = Math.max(0, fullAmountDue - previousAmountPaid);
+
+    if (amount > remainingBefore + 0.01) {
+      return {
+        error: `Amount collected (Rs. ${amount.toLocaleString()}) exceeds the remaining balance (Rs. ${remainingBefore.toLocaleString()}). Enter the exact remaining amount instead.`,
+      };
+    }
+
+    const newAmountPaid = previousAmountPaid + amount;
+    const isFullyPaid = newAmountPaid >= fullAmountDue - 0.01;
+    updatePayload.status = isFullyPaid ? "paid" : "partially_paid";
+    updatePayload.amount_paid = newAmountPaid;
+
+    // Select the updated row back (same shape markPaymentPaidAction returns)
+    // so the caller can drive the post-payment WhatsApp-receipt share dialog —
+    // without this, that dialog silently never appears for partner-recorded payments.
+    const { data: updated, error } = await admin
+      .from("hms_payments")
+      .update(updatePayload)
+      .eq("id", existingPayment.id)
+      .eq("hostel_id", hostelId)
+      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
+      .single();
+
+    if (error) return { error: error.message };
+
+    // Record this transaction as its own immutable snapshot, same as the
+    // owner/manager payment flows — so a partner-collected installment shows up
+    // in the Member Ledger/timeline as its own event, not silently merged in.
+    const { error: installmentErr } = await admin.from("hms_payment_installments").insert({
+      hostel_id: hostelId,
+      tenant_id: tenantId,
+      payment_id: existingPayment.id,
+      for_month: month,
+      amount,
+      amount_before: previousAmountPaid,
+      amount_after: newAmountPaid,
+      total_due: fullAmountDue,
+      payment_method: method,
+      payment_date: new Date().toISOString().slice(0, 10),
+      notes: notes?.trim() || null,
+    });
+    if (installmentErr) {
+      console.error("[recordPaymentAsPartner] Failed to record payment installment:", installmentErr.message);
+    }
+
+    revalidatePath("/payments");
+    revalidatePath("/dashboard");
+    return { payment: updated as Payment, error: null };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." };
+  }
+}
+
+export async function addExpenseAsPartner(
+  category: string,
+  amount: number,
+  description: string,
+  date: string,
+): Promise<{ error: string | null }> {
+  try {
+    const hostelId = await requirePartnerHostelId("standard");
+    const admin = createAdminClient();
+
+    const VALID_CATEGORIES = new Set(["furniture", "repairs", "cleaning", "security", "utilities", "other"]);
+    if (!VALID_CATEGORIES.has(category)) return { error: "Invalid expense category." };
+    if (!Number.isFinite(amount) || amount <= 0) return { error: "Amount must be greater than 0." };
+    if (!description?.trim()) return { error: "Description is required." };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Invalid date." };
+
+    const { error } = await admin.from("hms_expenses").insert({
+      hostel_id: hostelId,
+      title: description.trim(),
+      amount,
+      category,
+      date,
+      notes: null,
+    });
+
+    if (error) return { error: error.message };
+
+    revalidatePath("/dashboard");
+    return { error: null };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." };
+  }
+}
+
+// ── Writes — Full tier only (equal to owner on this branch) ───────────────────
+
+export async function checkoutTenantAsPartner(
+  input: CheckoutInput
+): Promise<{ success: boolean; error?: string; warning?: string; settlement?: CheckoutSettlement }> {
+  try {
+    const hostelId = await requirePartnerHostelId("full");
+    return await performTenantCheckout(hostelId, input);
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function editTenantAsPartner(
+  tenantId: string,
+  payload: PartnerTenantPayload
+): Promise<{ error: string | null }> {
+  try {
+    const hostelId = await requirePartnerHostelId("full");
+    const admin = createAdminClient();
+
+    const { data: existing } = await admin
+      .from("hms_tenants")
+      .select("id, hostel_id, room_id, package_tier")
+      .eq("id", tenantId)
+      .maybeSingle();
+
+    if (!existing || existing.hostel_id !== hostelId) {
+      return { error: "Tenant not found in your active branch." };
+    }
+
+    const validationError = validateTenantPayload(payload);
+    if (validationError) return { error: validationError };
+
+    const prevRoomId = existing.room_id as string | null;
+    const roomId = payload.is_waiting ? null : payload.room_id;
+    let newRoom: { id: string; capacity: number; occupied: number } | null = null;
+    if (roomId && roomId !== prevRoomId) {
+      const { data: r } = await admin
+        .from("hms_rooms")
+        .select("id, capacity, occupied, status")
+        .eq("id", roomId)
+        .eq("hostel_id", hostelId)
+        .single();
+      if (!r) return { error: "Invalid room selection." };
+      if (r.status === "maintenance") return { error: "Selected room is under maintenance." };
+      if (r.occupied >= r.capacity) return { error: "Selected room is at full capacity." };
+      newRoom = r;
+    }
+
+    const billingType = payload.billing_type === "daily" ? "daily" : "monthly";
+    const updatePayload: Record<string, unknown> = {
+      full_name: payload.full_name.trim(),
+      phone: payload.phone?.trim() || null,
+      email: payload.email?.trim() || null,
+      cnic: payload.cnic || null,
+      type: payload.type,
+      package_tier: payload.package_tier,
+      custom_package_id: payload.custom_package_id || null,
+      room_id: roomId,
+      bed_number: payload.bed_number || null,
+      check_in: payload.is_waiting ? new Date().toISOString().slice(0, 10) : payload.check_in,
+      check_out: billingType === "daily" && payload.check_out ? payload.check_out : null,
+      billing_type: billingType,
+      monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
+      daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
+      security_deposit: Number(payload.security_deposit) || 0,
+      joining_meter_reading: payload.joining_meter_reading ?? null,
+      emergency_contact: payload.emergency_contact || null,
+      emergency_relationship: payload.emergency_relationship || null,
+      emergency_phone: payload.emergency_phone || null,
+      notes: payload.notes || null,
+      is_waiting: payload.is_waiting,
+      is_active: !payload.is_waiting,
+      photo_url: payload.photo_url || null,
+      food_breakfast: !!payload.food_breakfast,
+      food_lunch: !!payload.food_lunch,
+      food_dinner: !!payload.food_dinner,
+    };
+
+    const { error } = await admin
+      .from("hms_tenants")
+      .update(updatePayload)
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId);
+
+    if (error) return { error: error.message };
+
+    // Ledger events — best-effort, mirrors the owner flow exactly.
+    if (prevRoomId !== roomId) {
+      const [{ data: oldRoomRow }, { data: newRoomRow }] = await Promise.all([
+        prevRoomId ? admin.from("hms_rooms").select("room_number").eq("id", prevRoomId).maybeSingle() : Promise.resolve({ data: null }),
+        roomId ? admin.from("hms_rooms").select("room_number").eq("id", roomId).maybeSingle() : Promise.resolve({ data: null }),
+      ]);
+      await logTenantEvent({
+        tenantId,
+        eventType: "room_changed",
+        fromValue: oldRoomRow?.room_number ?? "None",
+        toValue: newRoomRow?.room_number ?? "None",
+      });
+    }
+    if (existing.package_tier !== payload.package_tier) {
+      await logTenantEvent({
+        tenantId,
+        eventType: "plan_changed",
+        fromValue: existing.package_tier ?? null,
+        toValue: payload.package_tier,
+      });
+    }
+
+    // Room occupancy adjustments — old room decrements, new room increments.
+    if (prevRoomId !== roomId) {
+      if (prevRoomId) {
+        const { data: oldRoom } = await admin.from("hms_rooms").select("occupied, capacity").eq("id", prevRoomId).single();
+        if (oldRoom) {
+          const newOcc = Math.max(0, oldRoom.occupied - 1);
+          await admin
+            .from("hms_rooms")
+            .update({ occupied: newOcc, status: newOcc < oldRoom.capacity ? "available" : "occupied" })
+            .eq("id", prevRoomId);
+        }
+      }
+      if (roomId && newRoom) {
+        const newOcc = newRoom.occupied + 1;
+        await admin
+          .from("hms_rooms")
+          .update({ occupied: newOcc, status: newOcc >= newRoom.capacity ? "occupied" : "available" })
+          .eq("id", roomId);
+      }
+    }
+
+    revalidatePath("/tenants");
+    return { error: null };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." };
   }
 }

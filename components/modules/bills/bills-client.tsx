@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize } from "@/lib/utils";
-import type { Bill, BillCategory, BillStatus } from "@/types";
+import type { Bill, BillCategory, BillStatus, PartnerTier } from "@/types";
 
 const categories: BillCategory[] = ["electricity", "water", "internet", "gas", "maintenance", "other"];
 const categoryIcons: Record<BillCategory, string> = { electricity: "⚡", water: "💧", internet: "🌐", gas: "🔥", maintenance: "🔧", other: "📋" };
@@ -35,9 +35,10 @@ const PRESETS: { icon: string; label: string; category: BillCategory }[] = [
 
 const emptyForm = { title: "", category: "electricity" as BillCategory, amount: "", due_date: formatDateInput(new Date()), paid_date: "", status: "unpaid" as BillStatus, notes: "" };
 
-interface Props { hostelId: string | null; initialBills: Bill[]; }
+interface Props { hostelId: string | null; initialBills: Bill[]; partnerTier?: PartnerTier | null; }
 
-export function BillsClient({ hostelId, initialBills }: Props) {
+export function BillsClient({ hostelId, initialBills, partnerTier = null }: Props) {
+  const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const [bills, setBills] = useState<Bill[]>(initialBills);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -76,24 +77,43 @@ export function BillsClient({ hostelId, initialBills }: Props) {
     setSaving(true);
     const supabase = createClient();
     const payload = { hostel_id: hostelId, title: form.title, category: form.category, amount: parseFloat(form.amount), due_date: form.due_date, paid_date: form.paid_date || null, status: form.status, notes: form.notes || null };
-    const { error } = editing ? await supabase.from("hms_bills").update(payload).eq("id", editing.id) : await supabase.from("hms_bills").insert(payload);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: editing ? "Bill updated" : "Bill added" }); setDialogOpen(false); reload(); }
+    const { data, error } = editing
+      ? await supabase.from("hms_bills").update(payload).eq("id", editing.id).select("id")
+      : await supabase.from("hms_bills").insert(payload).select("id");
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); setSaving(false); return; }
+    if (editing && (!data || data.length === 0)) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      setSaving(false);
+      return;
+    }
+    toast({ title: editing ? "Bill updated" : "Bill added" });
+    setDialogOpen(false);
+    reload();
     setSaving(false);
   }
 
   async function markPaid(bill: Bill) {
     const supabase = createClient();
-    const { error } = await supabase.from("hms_bills").update({ status: "paid", paid_date: formatDateInput(new Date()) }).eq("id", bill.id);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: "Marked as paid" }); reload(); }
+    const { data, error } = await supabase.from("hms_bills").update({ status: "paid", paid_date: formatDateInput(new Date()) }).eq("id", bill.id).select("id");
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Marked as paid" });
+    reload();
   }
 
   async function handleDelete(id: string) {
     const supabase = createClient();
-    const { error } = await supabase.from("hms_bills").delete().eq("id", id);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: "Deleted" }); reload(); }
+    const { data, error } = await supabase.from("hms_bills").delete().eq("id", id).select("id");
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Deleted" });
+    reload();
   }
 
   const totals = useMemo(() => ({
@@ -106,10 +126,11 @@ export function BillsClient({ hostelId, initialBills }: Props) {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div><h1 className="text-3xl font-serif font-normal tracking-tight">Bills</h1><p className="text-muted-foreground text-sm mt-1">Track utility and other bills</p></div>
-        <Button onClick={() => openAdd()} className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" /> Add Bill</Button>
+        {canStandardTier && <Button onClick={() => openAdd()} className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" /> Add Bill</Button>}
       </div>
 
       {/* Quick-add presets */}
+      {canStandardTier && (
       <div className="rounded-2xl border border-sidebar-border bg-card p-4">
         <div className="flex items-center gap-2 mb-3">
           <Zap className="w-3.5 h-3.5 text-amber" />
@@ -128,6 +149,7 @@ export function BillsClient({ hostelId, initialBills }: Props) {
           ))}
         </div>
       </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {[
@@ -161,9 +183,9 @@ export function BillsClient({ hostelId, initialBills }: Props) {
                     </div>
                     <div className="text-right shrink-0"><p className="font-bold text-sm">{formatCurrency(bill.amount)}</p></div>
                     <div className="flex items-center gap-1 shrink-0">
-                      {bill.status !== "paid" && <Button variant="ghost" size="sm" className="h-8 text-xs gap-1 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => markPaid(bill)}><CheckCircle2 className="w-3 h-3" /> Pay</Button>}
-                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(bill); setForm({ title: bill.title, category: bill.category, amount: bill.amount.toString(), due_date: bill.due_date, paid_date: bill.paid_date ?? "", status: bill.status, notes: bill.notes ?? "" }); setDialogOpen(true); }}><Edit2 className="w-3.5 h-3.5" /></Button>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteId(bill.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
+                      {canStandardTier && bill.status !== "paid" && <Button variant="ghost" size="sm" className="h-8 text-xs gap-1 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => markPaid(bill)}><CheckCircle2 className="w-3 h-3" /> Pay</Button>}
+                      {canStandardTier && <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(bill); setForm({ title: bill.title, category: bill.category, amount: bill.amount.toString(), due_date: bill.due_date, paid_date: bill.paid_date ?? "", status: bill.status, notes: bill.notes ?? "" }); setDialogOpen(true); }}><Edit2 className="w-3.5 h-3.5" /></Button>}
+                      {canStandardTier && <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteId(bill.id)}><Trash2 className="w-3.5 h-3.5" /></Button>}
                     </div>
                   </div>
                 );

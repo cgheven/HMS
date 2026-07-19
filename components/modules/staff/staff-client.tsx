@@ -17,7 +17,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
-import type { Employee, EmployeeRole, EmployeeStatus, SalaryPayment, PaymentMethod } from "@/types";
+import type { Employee, EmployeeRole, EmployeeStatus, SalaryPayment, PaymentMethod, PartnerTier } from "@/types";
 
 const ROLES: { value: EmployeeRole; label: string; icon: string }[] = [
   { value: "cook",    label: "Cook",    icon: "👨‍🍳" },
@@ -89,9 +89,11 @@ interface Props {
   hostelId: string | null;
   employees: Employee[];
   salaryPayments: SalaryPayment[];
+  partnerTier?: PartnerTier | null;
 }
 
-export function StaffClient({ hostelId, employees: initialEmployees, salaryPayments: initialPayments }: Props) {
+export function StaffClient({ hostelId, employees: initialEmployees, salaryPayments: initialPayments, partnerTier = null }: Props) {
+  const canFullTier = !partnerTier || partnerTier === "full";
   // ── Employee state ────────────────────────────────────────
   const [employees, setEmployees] = useState(initialEmployees);
   const [search, setSearch] = useState("");
@@ -153,19 +155,32 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
       join_date: form.join_date, monthly_salary: parseFloat(form.monthly_salary) || 0,
       status: form.status, notes: form.notes || null,
     };
-    const { error } = editing
-      ? await supabase.from("hms_employees").update(payload).eq("id", editing.id)
-      : await supabase.from("hms_employees").insert(payload);
+    if (editing) {
+      const { data, error } = await supabase.from("hms_employees").update(payload).eq("id", editing.id).select("id");
+      setSaving(false);
+      if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+      if (!data || data.length === 0) {
+        toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+        return;
+      }
+      toast({ title: "Updated" }); setDialogOpen(false); reloadEmployees();
+      return;
+    }
+    const { error } = await supabase.from("hms_employees").insert(payload);
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: editing ? "Updated" : "Employee added" }); setDialogOpen(false); reloadEmployees(); }
+    else { toast({ title: "Employee added" }); setDialogOpen(false); reloadEmployees(); }
     setSaving(false);
   }
 
   async function handleDelete(id: string) {
     const supabase = createClient();
-    const { error } = await supabase.from("hms_employees").delete().eq("id", id);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: "Deleted" }); reloadEmployees(); }
+    const { data, error } = await supabase.from("hms_employees").delete().eq("id", id).select("id");
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Deleted" }); reloadEmployees();
   }
 
   // ── Salary actions ────────────────────────────────────────
@@ -178,9 +193,15 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
       hostel_id: hostelId, employee_id: e.id,
       for_month: selectedMonth, amount: e.monthly_salary, status: "pending",
     }));
-    const { error } = await supabase.from("hms_salary_payments").upsert(rows, { onConflict: "employee_id,for_month", ignoreDuplicates: true });
+    // ignoreDuplicates makes this ON CONFLICT DO NOTHING, so rows.length is what
+    // we tried to write, not what landed — report the rows actually inserted.
+    const { data, error } = await supabase.from("hms_salary_payments").upsert(rows, { onConflict: "employee_id,for_month", ignoreDuplicates: true }).select("id");
     if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: `Generated ${rows.length} salary records` }); await reloadSalaries(selectedMonth); }
+    else {
+      const created = data?.length ?? 0;
+      toast({ title: created > 0 ? `Generated ${created} salary records` : "All salary records already exist for this month" });
+      await reloadSalaries(selectedMonth);
+    }
     setGenerating(false);
   }
 
@@ -193,14 +214,18 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
     if (!payDialog) return;
     setPaying(true);
     const supabase = createClient();
-    const { error } = await supabase.from("hms_salary_payments").update({
+    const { data, error } = await supabase.from("hms_salary_payments").update({
       status: "paid", payment_method: payForm.method,
       payment_date: payForm.date, notes: payForm.notes || null,
       receipt_number: payForm.receipt,
-    }).eq("id", payDialog.id);
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { toast({ title: "Salary paid" }); setPayDialog(null); await reloadSalaries(selectedMonth); }
+    }).eq("id", payDialog.id).select("id");
     setPaying(false);
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Salary paid" }); setPayDialog(null); await reloadSalaries(selectedMonth);
   }
 
   // ── Derived ───────────────────────────────────────────────
@@ -227,9 +252,11 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
           <h1 className="text-3xl font-serif font-normal tracking-tight">Staff</h1>
           <p className="text-muted-foreground text-sm mt-1">Manage employees and salaries</p>
         </div>
-        <Button onClick={openAdd} className="gap-2 w-full sm:w-auto">
-          <Plus className="w-4 h-4" /> Add Employee
-        </Button>
+        {canFullTier && (
+          <Button onClick={openAdd} className="gap-2 w-full sm:w-auto">
+            <Plus className="w-4 h-4" /> Add Employee
+          </Button>
+        )}
       </div>
 
       {/* Stats */}
@@ -258,6 +285,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
         {/* ── Employees tab ──────────────────────────────── */}
         <TabsContent value="employees" className="space-y-4">
           {/* Quick Add */}
+          {canFullTier && (
           <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
             <div className="flex items-center gap-2">
               <Plus className="w-3.5 h-3.5 text-muted-foreground" />
@@ -276,6 +304,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
               ))}
             </div>
           </div>
+          )}
 
           <div className="relative max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -319,10 +348,12 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                         <p className="text-xs text-muted-foreground">/month</p>
                       </div>
                       {/* Actions */}
-                      <div className="flex gap-1 shrink-0">
-                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(emp)}><Edit2 className="w-3.5 h-3.5" /></Button>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteId(emp.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
-                      </div>
+                      {canFullTier && (
+                        <div className="flex gap-1 shrink-0">
+                          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(emp)}><Edit2 className="w-3.5 h-3.5" /></Button>
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteId(emp.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -335,10 +366,12 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
         <TabsContent value="salaries" className="space-y-4">
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
             <Input type="month" value={selectedMonth} onChange={(e) => { setSelectedMonth(e.target.value); reloadSalaries(e.target.value); }} className="w-auto" />
-            <Button onClick={generateSalaries} disabled={generating} variant="outline" className="gap-2">
-              <Plus className="w-4 h-4" />
-              {generating ? "Generating…" : "Generate for All Active"}
-            </Button>
+            {canFullTier && (
+              <Button onClick={generateSalaries} disabled={generating} variant="outline" className="gap-2">
+                <Plus className="w-4 h-4" />
+                {generating ? "Generating…" : "Generate for All Active"}
+              </Button>
+            )}
             {monthPayments.length > 0 && (
               <span className="text-xs text-muted-foreground ml-auto">
                 {monthPayments.filter((p) => p.status === "paid").length}/{monthPayments.length} paid
@@ -351,7 +384,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
               <CardContent className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                 <Wallet className="w-10 h-10 mb-3 opacity-30" />
                 <p className="font-medium">No salary records for this month</p>
-                <p className="text-sm mt-1">Click "Generate for All Active" to create them</p>
+                {canFullTier && <p className="text-sm mt-1">Click "Generate for All Active" to create them</p>}
               </CardContent>
             </Card>
           ) : (
@@ -379,7 +412,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                           {isPaid ? "Paid" : "Pending"}
                         </p>
                       </div>
-                      {!isPaid && (
+                      {!isPaid && canFullTier && (
                         <Button
                           size="sm"
                           className="h-8 text-xs gap-1 shrink-0 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20"
