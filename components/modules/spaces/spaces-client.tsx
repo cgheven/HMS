@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
-import { Plus, BedDouble, Users, Wrench, Search, Edit2, Trash2, ImagePlus, X } from "lucide-react";
+import { Plus, BedDouble, Users, Wrench, Search, Edit2, Trash2, ImagePlus, X, FileSpreadsheet, FileText, Loader2 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -34,9 +34,9 @@ function roomToSlots(room: Room): PhotoSlot[] {
   return PHOTO_FIELDS.map((f) => ({ file: null, preview: room[f] ?? null, cleared: false }));
 }
 
-interface Props { hostelId: string | null; initialRooms: Room[]; partnerTier?: PartnerTier | null; }
+interface Props { hostelId: string | null; initialRooms: Room[]; partnerTier?: PartnerTier | null; hostelName?: string | null; }
 
-export function SpacesClient({ hostelId, initialRooms, partnerTier = null }: Props) {
+export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hostelName = null }: Props) {
   const canFullTier = !partnerTier || partnerTier === "full";
   const [rooms, setRooms] = useState<Room[]>(initialRooms);
   const [filtered, setFiltered] = useState<Room[]>(initialRooms);
@@ -44,6 +44,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null }: Pro
   const [statusFilter, setStatusFilter] = useState<"all" | RoomStatus>("all");
   const [roomFilter, setRoomFilter] = useState("all");
   const [floorFilter, setFloorFilter] = useState("all");
+  const [exportLoading, setExportLoading] = useState<"excel" | "pdf" | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Room | null>(null);
   const [form, setForm] = useState(emptyRoom);
@@ -219,6 +220,89 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null }: Pro
 
   const stats = { total: rooms.length, available: rooms.filter((r) => r.status === "available").length, occupied: rooms.filter((r) => r.status === "occupied").length, maintenance: rooms.filter((r) => r.status === "maintenance").length };
 
+  // Exports follow whatever is on screen, so a filtered view (one floor, or
+  // just the vacant rooms) exports exactly what the operator is looking at.
+  function exportRows() {
+    return filtered.map((r) => ({
+      Room: r.room_number,
+      Floor: r.floor ?? "",
+      Type: capitalize(r.type),
+      Capacity: r.capacity,
+      Occupied: r.occupied,
+      Vacant: Math.max(0, r.capacity - r.occupied),
+      Status: capitalize(r.status),
+      AC: r.has_ac ? "Yes" : "No",
+      Cooler: r.has_cooler ? "Yes" : "No",
+      "Monthly Rent (PKR)": r.monthly_rent,
+    }));
+  }
+
+  function exportFileLabel() {
+    const parts = ["spaces"];
+    if (statusFilter !== "all") parts.push(statusFilter);
+    if (floorFilter !== "all") parts.push(`floor-${floorFilter}`);
+    parts.push(new Date().toISOString().split("T")[0]);
+    return parts.join("-");
+  }
+
+  async function exportExcel() {
+    setExportLoading("excel");
+    try {
+      const XLSX = await import("xlsx");
+      const ws = XLSX.utils.json_to_sheet(exportRows());
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Spaces");
+      XLSX.writeFile(wb, `${exportFileLabel()}.xlsx`);
+    } catch {
+      toast({ title: "Export failed", description: "Could not generate Excel file.", variant: "destructive" });
+    } finally {
+      setExportLoading(null);
+    }
+  }
+
+  async function exportPDF() {
+    setExportLoading("pdf");
+    try {
+      const { default: jsPDF } = await import("jspdf");
+      const { default: autoTable } = await import("jspdf-autotable");
+      const doc = new jsPDF({ orientation: "landscape" });
+
+      doc.setFontSize(16);
+      doc.setTextColor(30, 30, 30);
+      doc.text(hostelName ? `Spaces — ${hostelName}` : "Spaces", 14, 16);
+      doc.setFontSize(9);
+      doc.setTextColor(120, 120, 120);
+      const filters = [
+        statusFilter !== "all" ? `Status: ${capitalize(statusFilter)}` : null,
+        floorFilter !== "all" ? `Floor ${floorFilter}` : null,
+      ].filter(Boolean).join(" · ");
+      doc.text(
+        `Generated ${new Date().toLocaleDateString()} · ${filtered.length} room${filtered.length === 1 ? "" : "s"}${filters ? ` · ${filters}` : ""}`,
+        14, 23
+      );
+
+      autoTable(doc, {
+        startY: 28,
+        head: [["Room", "Floor", "Type", "Capacity", "Occupied", "Vacant", "Status", "AC", "Cooler", "Rent"]],
+        body: exportRows().map((r) => [
+          r.Room, String(r.Floor || "—"), r.Type, String(r.Capacity), String(r.Occupied),
+          String(r.Vacant), r.Status, r.AC, r.Cooler,
+          r["Monthly Rent (PKR)"] ? `Rs ${r["Monthly Rent (PKR)"].toLocaleString()}` : "—",
+        ]),
+        theme: "striped",
+        headStyles: { fillColor: [245, 158, 11], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 9 },
+        bodyStyles: { fontSize: 8.5 },
+        alternateRowStyles: { fillColor: [248, 248, 248] },
+      });
+
+      doc.save(`${exportFileLabel()}.pdf`);
+    } catch {
+      toast({ title: "Export failed", description: "Could not generate PDF.", variant: "destructive" });
+    } finally {
+      setExportLoading(null);
+    }
+  }
+
   // How many filled slots exist (to decide where to show the "add" button)
   const filledCount = photos.filter((s) => s.preview).length;
 
@@ -226,7 +310,17 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null }: Pro
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div><h1 className="text-3xl font-serif font-normal tracking-tight">Spaces</h1><p className="text-muted-foreground text-sm mt-1">Manage rooms and occupancy</p></div>
-        {canFullTier && <Button onClick={openAdd} className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" /> Add Room</Button>}
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+          <Button variant="outline" size="sm" className="h-9 w-9 p-0 sm:w-auto sm:px-3 sm:gap-1.5 text-xs" disabled={!!exportLoading || filtered.length === 0} onClick={exportExcel} title="Export to Excel">
+            {exportLoading === "excel" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />}
+            <span className="hidden sm:inline">Excel</span>
+          </Button>
+          <Button variant="outline" size="sm" className="h-9 w-9 p-0 sm:w-auto sm:px-3 sm:gap-1.5 text-xs" disabled={!!exportLoading || filtered.length === 0} onClick={exportPDF} title="Export to PDF">
+            {exportLoading === "pdf" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5 text-rose-400" />}
+            <span className="hidden sm:inline">PDF</span>
+          </Button>
+          {canFullTier && <Button onClick={openAdd} className="gap-2 flex-1 sm:flex-none"><Plus className="w-4 h-4" /> Add Room</Button>}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
