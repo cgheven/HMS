@@ -2,6 +2,7 @@ import "server-only";
 
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { calcDailyRent, countBillableNights, proRateMonthlyRent } from "@/lib/daily-billing";
 import type { PaymentMethod, PaymentStatus, CheckoutInput, CheckoutSettlement } from "@/types";
 
 // Deliberately no "use server" directive — every export from a "use server" file
@@ -22,11 +23,12 @@ export async function performTenantCheckout(
 ): Promise<{ success: boolean; error?: string; warning?: string; settlement?: CheckoutSettlement }> {
   try {
     const adminDb = createAdminClient();
+    let repriceWarning: string | undefined;
 
     // Step 1: Fetch and verify tenant belongs to this hostel and is still active
     const { data: tenant, error: tenantErr } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, room_id, is_active, check_in, security_deposit, joining_meter_reading")
+      .select("id, full_name, hostel_id, room_id, is_active, check_in, security_deposit, joining_meter_reading, billing_type, daily_rate, monthly_rent")
       .eq("id", input.tenantId)
       .eq("hostel_id", hostelId)
       .single();
@@ -82,6 +84,128 @@ export async function performTenantCheckout(
 
       if (!paymentAlreadySettled && !["pending", "overdue"].includes(payment.status)) {
         throw new Error("Payment has already been settled");
+      }
+    }
+
+    // Step 2b: Re-price the checkout month's BASE RENT now that the real leaving
+    // date is known. This has to happen before the settlement math below, or the
+    // operator collects the pre-correction figure at the door.
+    //
+    // Daily tenants: a stay with no check_out was billed to month-end, because
+    // every remaining night was assumed slept. It no longer is, so the month is
+    // re-counted in nights (lib/daily-billing.ts owns that arithmetic).
+    // Monthly tenants: untouched unless the owner explicitly opts into RULE 2
+    // pro-rating. Absent that flag this whole block is a no-op for them.
+    const billingType = (tenant.billing_type as string | null) ?? "monthly";
+    const isDaily = billingType === "daily";
+    const proRateMonthly = !isDaily && input.proRateFinalMonth === true;
+
+    if ((isDaily || proRateMonthly) && checkinStr) {
+      const rentMonth = input.checkoutDate.substring(0, 7);
+
+      const { data: monthRow } = await adminDb
+        .from("hms_payments")
+        .select("id, status, amount, amount_paid, food_charge, ac_charge, security_deposit_charge")
+        .eq("tenant_id", input.tenantId)
+        .eq("hostel_id", hostelId)
+        .eq("for_month", rentMonth)
+        .maybeSingle();
+
+      // Settled money is never rewritten by a recompute. The sole exception is
+      // the row this checkout is settling right now — and only when it has not
+      // ALREADY been collected. Steps 2's idempotent-retry path deliberately
+      // admits an already-paid/waived verifiedPayment so the action can be retried
+      // in place; on that path the row is settled money and re-pricing it would
+      // leave amount_paid stranded above the new amount (Step 3 is skipped), i.e.
+      // a row that reads as overpaid. Re-pricing already-collected money is never
+      // correct.
+      // partially_paid belongs here too: it is genuinely uncollected money, and
+      // omitting it left the commonest real case — a daily tenant who paid part
+      // of the month, then left early — permanently billed for nights after
+      // their actual departure, which is the exact over-billing this recompute
+      // exists to remove.
+      const settleable =
+        !!monthRow &&
+        (["pending", "overdue", "partially_paid"].includes(monthRow.status) ||
+          (!paymentAlreadySettled && monthRow.id === verifiedPayment?.id));
+
+      if (monthRow && settleable) {
+        const checkIn = checkinStr.slice(0, 10);
+        const nights = countBillableNights({
+          checkIn,
+          checkOut: input.checkoutDate,
+          month: rentMonth,
+        });
+        const dailyRate = Number(tenant.daily_rate ?? 0);
+
+        const newBaseRent = isDaily
+          ? calcDailyRent({ checkIn, checkOut: input.checkoutDate, month: rentMonth, dailyRate })
+          : proRateMonthlyRent({
+              monthlyRent: Number(tenant.monthly_rent ?? 0),
+              checkIn,
+              checkOut: input.checkoutDate,
+              month: rentMonth,
+            });
+
+        // Only the rent component moves. Food, AC and deposit ride along at face
+        // value — they are not day-scaled, and the DB trigger re-derives food
+        // from the package config anyway.
+        //
+        // How the new rent reaches the row depends on who owns `amount`. The
+        // migration-082 trigger recomputes amount from hms_tenants.monthly_rent
+        // for MONTHLY tenants, so writing a pro-rated `amount` here is reverted
+        // inside the same statement; the pro-rated figure has to go through
+        // base_rent_override (migration 099) and let the trigger derive amount.
+        // For DAILY tenants the trigger preserves the app-supplied amount, so
+        // that path still writes `amount` directly.
+        // Never re-price BELOW what has already been collected — a partially_paid
+        // row re-priced under its amount_paid would read as overpaid, and this
+        // action has no refund path. When the correct figure really is lower, we
+        // hold the row at amount_paid and let the operator handle the difference
+        // as a refund rather than silently inventing a credit.
+        const alreadyPaid = Number(monthRow.amount_paid ?? 0);
+        const extras =
+          Number(monthRow.food_charge ?? 0) +
+          Number(monthRow.ac_charge ?? 0) +
+          Number(monthRow.security_deposit_charge ?? 0);
+        const proposedTotal = newBaseRent + extras;
+        const clampedTotal = Math.max(proposedTotal, alreadyPaid);
+        if (clampedTotal !== proposedTotal) {
+          repriceWarning =
+            `The final month re-prices to ${clampedTotal.toLocaleString()} but ` +
+            `${alreadyPaid.toLocaleString()} has already been collected. The bill was held at ` +
+            `the amount already paid — refund the difference manually if one is due.`;
+        }
+
+        const repriceFields = isDaily
+          ? { amount: clampedTotal }
+          : { base_rent_override: Math.max(newBaseRent, alreadyPaid - extras) };
+
+        const { data: repriced, error: repriceErr } = await adminDb
+          .from("hms_payments")
+          .update({
+            ...repriceFields,
+            billed_days: nights,
+            daily_rate_billed: isDaily ? dailyRate : null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", monthRow.id)
+          .eq("hostel_id", hostelId)
+          .select("amount")
+          .single();
+
+        if (repriceErr || !repriced) {
+          throw new Error("Failed to re-price the final month. Please try again.");
+        }
+
+        // Read the amount back rather than assuming it: the trigger is the
+        // authority on this column (it re-derives food from the package config
+        // and, for monthly, rebuilds the total from base_rent_override). Using
+        // the returned value keeps grossDue and amount_paid below in exact step
+        // with what the row actually bills.
+        if (verifiedPayment && verifiedPayment.id === monthRow.id) {
+          verifiedPayment = { ...verifiedPayment, amount: Number(repriced.amount ?? 0) };
+        }
       }
     }
 
@@ -465,7 +589,7 @@ export async function performTenantCheckout(
 
     return {
       success: true,
-      ...(acReadingWarning ? { warning: acReadingWarning } : {}),
+      ...((repriceWarning || acReadingWarning) ? { warning: [repriceWarning, acReadingWarning].filter(Boolean).join(" ") } : {}),
       settlement: {
         duesSettled: settleAction === "pay" ? totalDue : 0,
         depositApplied,

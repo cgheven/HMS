@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { generateReceiptPDF } from "@/lib/receipt-pdf";
+import { countBillableNights } from "@/lib/daily-billing";
 
 export async function GET(
   _req: NextRequest,
@@ -74,7 +75,7 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, payment_method, payment_date, receipt_number, payment_package_tier, status, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
+        "id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, payment_method, payment_date, receipt_number, payment_package_tier, status, billed_days, daily_rate_billed, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, is_active, billing_type, daily_rate, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
       )
       .eq("id", paymentId)
       .single(),
@@ -114,10 +115,18 @@ export async function GET(
   }
 
   const tenant = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
-  const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null; check_out?: string | null; joining_meter_reading?: number | null; food_breakfast?: boolean; food_lunch?: boolean; food_dinner?: boolean } | null;
+  const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null; check_out?: string | null; is_active?: boolean; billing_type?: string | null; daily_rate?: number | null; joining_meter_reading?: number | null; food_breakfast?: boolean; food_lunch?: boolean; food_dinner?: boolean } | null;
 
   const checkOutMonth = tenantTyped?.check_out?.slice(0, 7);
-  const isCheckout = !!checkOutMonth && checkOutMonth === payment.for_month;
+  // "Has actually left", not "their planned departure falls in this month".
+  // A DAILY tenant has check_out set at creation as their intended last day, so
+  // matching on the month alone printed a "Security Deposit Refund" line on the
+  // very first receipt — next to the deposit being collected, reading as a
+  // double charge. Only a tenant who is no longer active has a deposit to
+  // refund. Monthly tenants never exposed this because check_out is only ever
+  // written when they genuinely check out.
+  const isCheckout =
+    tenantTyped?.is_active === false && !!checkOutMonth && checkOutMonth === payment.for_month;
   // Deposit REFUND is shown only at checkout — informational, not part of `amount`.
   // Deposit COLLECTION is driven by payment.security_deposit_charge below (embedded
   // in `amount` for the tenant's first billing month), not guessed from the month here.
@@ -142,6 +151,21 @@ export async function GET(
       security_deposit_charge: Number(payment.security_deposit_charge ?? 0),
       security_deposit: securityDepositRefund,
       is_checkout: isCheckout,
+      // Snapshot from the row, with a fallback for rows billed before migration
+      // 099 existed so an older daily receipt still reads "N days x Rs R"
+      // rather than silently mislabelling itself "Monthly Rent".
+      billed_days: payment.billed_days != null
+        ? Number(payment.billed_days)
+        : (tenantTyped?.billing_type === "daily"
+            ? countBillableNights({
+                checkIn: (tenantTyped.check_in ?? "").slice(0, 10),
+                checkOut: tenantTyped.check_out ? tenantTyped.check_out.slice(0, 10) : null,
+                month: payment.for_month,
+              })
+            : null),
+      daily_rate_billed: payment.daily_rate_billed != null
+        ? Number(payment.daily_rate_billed)
+        : (tenantTyped?.billing_type === "daily" ? Number(tenantTyped.daily_rate ?? 0) : null),
       payment_method: installmentSnapshot?.payment_method ?? payment.payment_method,
       payment_date: installmentSnapshot?.payment_date ?? payment.payment_date,
       payment_package_tier: payment.payment_package_tier,

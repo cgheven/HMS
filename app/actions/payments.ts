@@ -22,6 +22,7 @@ import { getAuthContext } from "@/lib/data";
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
+import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
 import { logActivity } from "@/lib/audit";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
 
@@ -203,6 +204,7 @@ export async function syncMonthAction(
         if (!VALID_TIERS.has(tier)) throw new Error(`Invalid package_tier in DB for tenant ${t.id}`);
 
         const baseRent = calcBaseRentServer(t, month);
+        const daySnapshot = dailySnapshot(t, month);
         const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
         const addonFoodCharge = configData ? calcFoodAddonCharge(t, configData) : 0;
         const foodCharge = tierFoodCharge + addonFoodCharge;
@@ -223,6 +225,7 @@ export async function syncMonthAction(
             ac_units_consumed: 0,
             ac_charge: 0,
             security_deposit_charge: depositCharge,
+            ...daySnapshot,
           });
         } else if (existing.status === "pending") {
           // Pending row — refresh tier/amount but preserve any existing ac_charge
@@ -237,6 +240,7 @@ export async function syncMonthAction(
             ac_charge: preservedAC,
             ac_units_consumed: existing.ac_units_consumed ?? 0,
             security_deposit_charge: depositCharge,
+            ...daySnapshot,
           });
           // status stays "pending" — not included so it isn't overwritten
         }
@@ -450,6 +454,9 @@ export async function markPaymentPaidAction(
       // previously corrupted row is corrected
       food_charge: foodCharge,
       security_deposit_charge: depositCharge,
+      // Freeze the day count as of settlement, so the receipt keeps saying
+      // "11 days x Rs 500" even if the tenant's dates move afterwards.
+      ...dailySnapshot(tenantData, forMonth),
     };
 
     if (isAcTier) {
@@ -608,31 +615,43 @@ export async function loadHistoryAction(forMonth: string): Promise<{ payments?: 
 }
 
 // ---------------------------------------------------------------------------
-// calcBaseRentServer — mirrors the client-side calcBaseRent logic but runs
-// entirely on the server with DB-sourced data.
+// calcBaseRentServer — the only place base rent is derived on the server.
+// Monthly tenants bill the flat monthly_rent, untouched. Daily tenants defer
+// entirely to lib/daily-billing.ts, which owns the nights convention (the
+// check-out day is not billed; a stay continuing past month-end bills the month
+// inclusive) and parses dates as local midnight rather than UTC.
 // ---------------------------------------------------------------------------
 
-function calcBaseRentServer(
-  t: {
-    billing_type: string;
-    monthly_rent: number;
-    daily_rate: number;
-    check_in: string;
-    check_out: string | null;
-  },
-  month: string
-): number {
-  if (t.billing_type !== "daily") return Number(t.monthly_rent);
+type BaseRentTenant = {
+  billing_type: string;
+  monthly_rent: number;
+  daily_rate: number;
+  check_in: string;
+  check_out: string | null;
+};
 
-  const [y, m] = month.split("-").map(Number);
-  const monthStart = new Date(y, m - 1, 1);
-  const monthEnd = new Date(y, m, 0);
-  const checkIn = new Date(t.check_in);
-  const checkOut = t.check_out ? new Date(t.check_out) : null;
-  const start = checkIn > monthStart ? checkIn : monthStart;
-  const end = checkOut && checkOut < monthEnd ? checkOut : monthEnd;
-  const days = Math.max(0, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
-  return days * Number(t.daily_rate);
+function calcBaseRentServer(t: BaseRentTenant, month: string): number {
+  if (t.billing_type !== "daily") return Number(t.monthly_rent);
+  return calcDailyRent({
+    checkIn: t.check_in,
+    checkOut: t.check_out,
+    month,
+    dailyRate: Number(t.daily_rate),
+  });
+}
+
+// Day snapshot for hms_payments (migration 099). Daily rows record the nights
+// billed and the rate at the time; monthly rows explicitly record null/null so
+// nothing downstream mistakes a monthly row for a daily one.
+function dailySnapshot(t: BaseRentTenant, month: string): {
+  billed_days: number | null;
+  daily_rate_billed: number | null;
+} {
+  if (t.billing_type !== "daily") return { billed_days: null, daily_rate_billed: null };
+  return {
+    billed_days: countBillableNights({ checkIn: t.check_in, checkOut: t.check_out, month }),
+    daily_rate_billed: Number(t.daily_rate),
+  };
 }
 
 // ac_charge MUST always equal ac_units_consumed × rate. markPaymentPaidAction
@@ -952,16 +971,15 @@ export async function applyRoomACUnitsAction(
     if (missingTenants.length > 0) {
       const newRows = missingTenants.map(t => {
         const tier = (t.package_tier ?? "space_only") as PackageTier;
-        const baseRent = calcBaseRentServer(
-          {
-            billing_type: (t as { billing_type: string }).billing_type ?? "monthly",
-            monthly_rent: (t as { monthly_rent: number }).monthly_rent ?? 0,
-            daily_rate: (t as { daily_rate: number }).daily_rate ?? 0,
-            check_in: t.check_in,
-            check_out: (t as { check_out: string | null }).check_out ?? null,
-          },
-          forMonth
-        );
+        const billingInfo = {
+          billing_type: (t as { billing_type: string }).billing_type ?? "monthly",
+          monthly_rent: (t as { monthly_rent: number }).monthly_rent ?? 0,
+          daily_rate: (t as { daily_rate: number }).daily_rate ?? 0,
+          check_in: t.check_in,
+          check_out: (t as { check_out: string | null }).check_out ?? null,
+        };
+        const baseRent = calcBaseRentServer(billingInfo, forMonth);
+        const daySnapshot = dailySnapshot(billingInfo, forMonth);
         const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
         const addonFoodCharge = pkgConfig ? calcFoodAddonCharge(t, pkgConfig) : 0;
         const foodCharge = tierFoodCharge + addonFoodCharge;
@@ -980,6 +998,7 @@ export async function applyRoomACUnitsAction(
           ac_units_consumed: 0,
           ac_charge: 0,
           security_deposit_charge: depositCharge,
+          ...daySnapshot,
         };
       });
       await adminDb.from("hms_payments").insert(newRows);

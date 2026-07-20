@@ -1,6 +1,7 @@
 import { requireManagerPermission } from "@/lib/manager-auth"
 import { getManagerPaymentsPageData } from "@/lib/portal-data"
 import { syncMonthAction } from "@/app/actions/payments"
+import { countBillableNights } from "@/lib/daily-billing"
 import { PaymentsClient } from "@/components/modules/payments/payments-client"
 
 export default async function PortalPaymentsPage() {
@@ -20,7 +21,24 @@ export default async function PortalPaymentsPage() {
   const tenantIdsWithPayments = new Set(data.payments.map((p) => p.tenant_id))
   const hasMissingRows = data.tenants.some((t) => !tenantIdsWithPayments.has(t.id))
 
-  if (hasMissingRows) {
+  // Daily tenants also need re-syncing when their stored day count no longer
+  // matches their dates — "missing row" never fires for a tenant who already
+  // has one, so a pending daily row would otherwise keep a stale amount
+  // forever. See the owner page for the full reasoning.
+  const paymentByTenant = new Map(data.payments.map((p) => [p.tenant_id, p]))
+  const hasStaleDailyRow = data.tenants.some((t) => {
+    if (t.billing_type !== "daily") return false
+    const row = paymentByTenant.get(t.id)
+    if (!row || row.status !== "pending") return false
+    const nights = countBillableNights({
+      checkIn: t.check_in.slice(0, 10),
+      checkOut: t.check_out ? t.check_out.slice(0, 10) : null,
+      month: defaultMonth,
+    })
+    return row.billed_days !== nights
+  })
+
+  if (hasMissingRows || hasStaleDailyRow) {
     await syncMonthAction(defaultMonth)
     const synced = await getManagerPaymentsPageData(defaultMonth)
     return (

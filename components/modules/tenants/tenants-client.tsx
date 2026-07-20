@@ -21,6 +21,7 @@ import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates, type FoodAddonFlags } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
+import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
 import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { TenantTimeline } from "./tenant-timeline";
@@ -458,10 +459,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [editing, setEditing] = useState<Tenant | null>(null);
   const [checkingOut, setCheckingOut] = useState<Tenant | null>(null);
   const [checkoutDate, setCheckoutDate] = useState(formatDateInput(new Date()));
-  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; ac_charge: number; ac_units_consumed: number | null } | null>(null);
+  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; late_fee: number } | null>(null);
   const [checkoutPaymentLoading, setCheckoutPaymentLoading] = useState(false);
   const [checkoutPaymentError, setCheckoutPaymentError] = useState<string | null>(null);
   const [checkoutPayAction, setCheckoutPayAction] = useState<"pay" | "waive">("pay");
+  // RULE 2 opt-in. MUST default false: an owner who clicks straight through gets
+  // the full month, exactly as before.
+  const [checkoutProRate, setCheckoutProRate] = useState(false);
   const [checkoutPayDate, setCheckoutPayDate] = useState(formatDateInput(new Date()));
   const [checkoutPayMethod, setCheckoutPayMethod] = useState<string>("cash");
   const [checkoutNotes, setCheckoutNotes] = useState("");
@@ -921,6 +925,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutPaymentLoading(false);
     setCheckoutPaymentError(null);
     setCheckoutPayAction("pay");
+    setCheckoutProRate(false);
     setCheckoutPayDate(formatDateInput(new Date()));
     setCheckoutPayMethod("cash");
     setCheckoutNotes("");
@@ -939,6 +944,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutDate(t.intended_checkout_date ?? today);
     setCheckoutPayDate(today);
     setCheckoutPayAction("pay");
+    setCheckoutProRate(false);
     setCheckoutPayMethod("cash");
     setCheckoutPendingPayment(null);
     setCheckoutPaymentError(null);
@@ -966,7 +972,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const supabase = createClient();
     const { data, error } = await supabase
       .from("hms_payments")
-      .select("id, for_month, amount, late_fee, ac_charge, ac_units_consumed")
+      .select("id, for_month, amount, late_fee, ac_charge, ac_units_consumed, food_charge, security_deposit_charge")
       .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId ?? "")
       .in("status", ["pending", "overdue"])
@@ -986,6 +992,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           amount,
           ac_charge: Number(data.ac_charge ?? 0),
           ac_units_consumed: data.ac_units_consumed != null ? Number(data.ac_units_consumed) : null,
+          food_charge: Number(data.food_charge ?? 0),
+          security_deposit_charge: Number(data.security_deposit_charge ?? 0),
+          late_fee: Number(data.late_fee ?? 0),
         });
       }
     }
@@ -1010,6 +1019,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           }
         : undefined,
       ...(checkoutNotes.trim() ? { notes: checkoutNotes.trim() } : {}),
+      // Only sent when the owner explicitly opted in. Absent = full month, i.e.
+      // byte-for-byte the pre-existing behaviour.
+      ...(proRateActive ? { proRateFinalMonth: true } : {}),
       // Always send the deposit decision when one is held. Gating this on a non-empty
       // box let an untouched field mean "say nothing", which is how 12 departed tenants
       // ended up with deposits that were never returned, forfeited, or even recorded.
@@ -1149,9 +1161,58 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   // because the refund input needs the same numbers; keeping two copies is exactly
   // how the displayed deduction drifted away from what was actually recorded.
   // The server recomputes all of this from the real deposit — this is a preview.
+  // RULE 2 — pro-rating a MONTHLY tenant's final month. Only ever a preview; the
+  // server recomputes it. Offered only when the outstanding row IS the checkout
+  // month and the tenant leaves before it ends, so there is a real discount to make.
+  // Extras (food, AC, deposit) are never pro-rated, so the rent is isolated by
+  // subtraction and only that part is scaled.
+  const checkoutProRateInfo = useMemo(() => {
+    if (!checkingOut || checkingOut.billing_type !== "monthly") return null;
+    if (!checkoutPendingPayment || !checkoutDate) return null;
+    if (checkoutPendingPayment.for_month !== checkoutDate.slice(0, 7)) return null;
+
+    const month = checkoutPendingPayment.for_month;
+    // The basis is monthly_rent, identically to lib/tenant-checkout.ts. Deriving it
+    // by subtraction instead would let the preview and the server disagree.
+    const fullRent = Number(checkingOut.monthly_rent ?? 0);
+    if (fullRent <= 0) return null;
+
+    const totalDays = daysInMonth(month);
+    const nights = countBillableNights({
+      checkIn: checkingOut.check_in,
+      checkOut: checkoutDate,
+      month,
+    });
+    if (nights >= totalDays) return null;
+
+    const proRatedRent = proRateMonthlyRent({
+      monthlyRent: fullRent,
+      checkIn: checkingOut.check_in,
+      checkOut: checkoutDate,
+      month,
+    });
+
+    // What the outstanding total actually drops by: the server swaps the row's
+    // stored base rent for the pro-rated one, keeping extras and late fee intact.
+    const extras =
+      checkoutPendingPayment.ac_charge +
+      checkoutPendingPayment.food_charge +
+      checkoutPendingPayment.security_deposit_charge +
+      checkoutPendingPayment.late_fee;
+    const storedBaseRent = Math.max(0, checkoutPendingPayment.amount - extras);
+    const discount = Math.max(0, storedBaseRent - proRatedRent);
+    if (discount <= 0) return null;
+
+    return { month, nights, totalDays, fullRent, proRatedRent, discount };
+  }, [checkingOut, checkoutPendingPayment, checkoutDate]);
+
+  const proRateActive = !!checkoutProRateInfo && checkoutProRate && checkoutPayAction === "pay";
+
   const checkoutMath = useMemo(() => {
     const deposit = checkingOut?.security_deposit ?? 0;
-    const basePending = checkoutPendingPayment?.amount ?? 0;
+    const rawPending = checkoutPendingPayment?.amount ?? 0;
+    const proRateDiscount = proRateActive ? (checkoutProRateInfo?.discount ?? 0) : 0;
+    const basePending = Math.max(0, rawPending - proRateDiscount);
 
     const acReading = checkoutACReading.trim() !== "" ? Number(checkoutACReading) : NaN;
     const acPrev = checkoutACContext?.prevMonthReading
@@ -1179,10 +1240,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
     return {
       deposit, basePending, estimatedACCharge, pending, collecting, applied, refundable,
+      rawPending, proRateDiscount,
       toCollect: Math.max(0, pending - applied),
       depositCoversAll: collecting && applied >= pending,
     };
-  }, [checkingOut, checkoutPendingPayment, checkoutACReading, checkoutACOpeningReading, checkoutACContext, checkoutPayAction, roomMap]);
+  }, [checkingOut, checkoutPendingPayment, checkoutACReading, checkoutACOpeningReading, checkoutACContext, checkoutPayAction, roomMap, proRateActive, checkoutProRateInfo]);
 
   // Keep the refund box pinned to what is actually left after dues. Without this the
   // operator has to notice the deduction and subtract by hand — and the old default
@@ -2443,7 +2505,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 {(() => {
                   const rate = parseFloat(form.daily_rate) || 0;
                   const days = form.check_in && form.check_out
-                    ? Math.max(0, Math.round((new Date(form.check_out).getTime() - new Date(form.check_in).getTime()) / 86400000) + 1)
+                    ? Math.max(0, Math.round((parseLocalDate(form.check_out).getTime() - parseLocalDate(form.check_in).getTime()) / 86400000))
                     : 0;
                   if (!rate || !days) return null;
                   return (
@@ -2718,6 +2780,53 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       )}
                     </div>
 
+                    {/* RULE 2 — pro-rate the final month. Monthly tenants only;
+                        daily tenants are recomputed automatically. Full month is
+                        pre-selected and stays selected unless the owner acts. */}
+                    {checkoutPayAction === "pay" && checkoutProRateInfo && (
+                      <div className="rounded-xl border border-sidebar-border p-3 space-y-2">
+                        <div>
+                          <p className="text-sm font-medium">Charge for the final month</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} of {checkoutProRateInfo.totalDays} days stayed in {checkoutProRateInfo.month}. Food, AC and deposit charges are never pro-rated.
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setCheckoutProRate(false)}
+                            className={cn(
+                              "rounded-lg border p-2.5 text-left transition-all",
+                              !checkoutProRate ? "border-amber/50 bg-amber/5" : "border-sidebar-border hover:border-sidebar-border/60"
+                            )}
+                          >
+                            <p className="text-xs text-muted-foreground">Full month</p>
+                            <p className="text-sm font-semibold mt-0.5">{formatCurrency(checkoutProRateInfo.fullRent)}</p>
+                            <p className="text-[11px] text-muted-foreground mt-0.5">Default — whole month&apos;s rent</p>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setCheckoutProRate(true)}
+                            className={cn(
+                              "rounded-lg border p-2.5 text-left transition-all",
+                              checkoutProRate ? "border-amber/50 bg-amber/5" : "border-sidebar-border hover:border-sidebar-border/60"
+                            )}
+                          >
+                            <p className="text-xs text-muted-foreground">Days stayed</p>
+                            <p className="text-sm font-semibold mt-0.5">{formatCurrency(checkoutProRateInfo.proRatedRent)}</p>
+                            <p className="text-[11px] text-muted-foreground mt-0.5">
+                              {checkoutProRateInfo.nights} of {checkoutProRateInfo.totalDays} days
+                            </p>
+                          </button>
+                        </div>
+                        {checkoutProRate && (
+                          <p className="text-xs text-emerald-400">
+                            Rent reduced by {formatCurrency(checkoutProRateInfo.discount)}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
                     <div
                       onClick={() => setCheckoutPayAction("waive")}
                       className={cn(
@@ -2768,7 +2877,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {/* Live summary */}
             <div className="pt-3 border-t border-sidebar-border/60">
               {(() => {
-                const { deposit, basePending, estimatedACCharge, pending, collecting, applied, refundable, toCollect } = checkoutMath;
+                const { deposit, basePending, estimatedACCharge, pending, collecting, applied, refundable, toCollect, proRateDiscount } = checkoutMath;
                 const refunding = Number(checkoutDepositReturned || 0);
                 const forfeiting = Math.max(0, refundable - refunding);
 
@@ -2786,6 +2895,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         <span className={cn(checkoutPayAction !== "pay" ? "text-muted-foreground line-through" : "")}>
                           {formatCurrency(basePending)}
                         </span>
+                      </div>
+                    )}
+                    {proRateDiscount > 0 && (
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">
+                          Pro-rated ({checkoutProRateInfo?.nights} of {checkoutProRateInfo?.totalDays} days)
+                        </span>
+                        <span className="text-emerald-400">− {formatCurrency(proRateDiscount)}</span>
                       </div>
                     )}
                     {estimatedACCharge > 0 && (

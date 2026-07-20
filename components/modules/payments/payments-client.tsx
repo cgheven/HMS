@@ -15,6 +15,7 @@ import { toast } from "@/hooks/use-toast";
 import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier, StaffPermission } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
+import { countBillableNights } from "@/lib/daily-billing";
 import {
   syncMonthAction,
   markPaymentPaidAction,
@@ -48,6 +49,13 @@ interface TenantRow {
 }
 
 interface RoomRow { id: string; room_number: string; floor: number | null; has_ac?: boolean | null; }
+
+// Migration 099 adds these to hms_payments; the shared Payment type may not carry
+// them yet, so read them defensively rather than assume either is present.
+type PaymentDaySnapshot = Payment & {
+  billed_days?: number | null;
+  daily_rate_billed?: number | null;
+};
 
 interface Props {
   hostelId: string | null;
@@ -142,6 +150,27 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [acRoomFilter, setAcRoomFilter] = useState("all");
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
+
+  // Day basis for a daily-billed row: "11 days × Rs 500". Prefers the snapshot
+  // frozen on the payment row; rows predating migration 099 have none, so they
+  // fall back to countBillableNights() — the same arithmetic the server billed
+  // with. Returns null for monthly tenants, which must render unchanged.
+  const dailyBasis = useCallback((p: Payment): { nights: number; rate: number } | null => {
+    const snap = p as PaymentDaySnapshot;
+    const t = tenants.find((x) => x.id === p.tenant_id);
+    const snapDays = snap.billed_days ?? null;
+    const snapRate = snap.daily_rate_billed ?? null;
+    if (snapDays != null) {
+      return { nights: snapDays, rate: Number(snapRate ?? t?.daily_rate ?? 0) };
+    }
+    if (!t || t.billing_type !== "daily" || !t.check_in) return null;
+    const nights = countBillableNights({ checkIn: t.check_in, checkOut: t.check_out, month: p.for_month });
+    if (nights <= 0) return null;
+    return { nights, rate: Number(t.daily_rate ?? 0) };
+  }, [tenants]);
+
+  const dailyBasisLabel = (b: { nights: number; rate: number }) =>
+    `${b.nights} day${b.nights === 1 ? "" : "s"} × ${formatCurrency(b.rate)}`;
 
   // Pre-populate the meter reading input from saved readings on mount / when acReadings changes
   useEffect(() => {
@@ -638,6 +667,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     const isLate = (p.status === "pending" || p.status === "overdue") && p.for_month < selectedMonth;
     const tierLabel = p.payment_package_tier ? TIER_LABEL[p.payment_package_tier] : "Space Only";
     const total = Number(p.amount) + Number(p.late_fee || 0);
+    const basis = dailyBasis(p);
 
     const statusColors: Record<PaymentStatus, string> = {
       paid:    "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
@@ -699,6 +729,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             </div>
             <div className="text-right shrink-0">
               <p className="text-base font-bold text-foreground">{formatCurrency(total)}</p>
+              {basis && <p className="text-xs text-muted-foreground">{dailyBasisLabel(basis)}</p>}
               {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
               {p.status === "partially_paid" && (
                 <p className="text-xs text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
@@ -736,6 +767,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           </div>
           <div className="text-right">
             <p className="text-sm font-semibold text-foreground">{formatCurrency(total)}</p>
+            {basis && <p className="text-xs text-muted-foreground whitespace-nowrap">{dailyBasisLabel(basis)}</p>}
             {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
             {p.status === "partially_paid" && (
               <p className="text-xs text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
@@ -1203,10 +1235,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 const deposit = tenant?.security_deposit ?? 0;
                 const mealsLabel = [tenant?.food_breakfast && "Breakfast", tenant?.food_lunch && "Lunch", tenant?.food_dinner && "Dinner"]
                   .filter(Boolean).join(" + ");
+                // Daily rows label the rent line with the day basis, but keep the
+                // subtraction-derived figure so the breakdown still sums to Total.
+                const basis = dailyBasis(markDialog);
                 return (
                   <div className="pt-1.5 border-t border-white/10 space-y-1">
                     <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>Rent</span><span>{formatCurrency(Math.max(0, baseRent))}</span>
+                      <span>{basis ? dailyBasisLabel(basis) : "Rent"}</span><span>{formatCurrency(Math.max(0, baseRent))}</span>
                     </div>
                     {food > 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground">

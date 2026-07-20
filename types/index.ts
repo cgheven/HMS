@@ -285,6 +285,12 @@ export interface Payment {
   ac_charge?: number;
   security_deposit_charge?: number;
   payment_package_tier?: PackageTier | null;
+  /** Nights billed for a daily-rate tenant. null/undefined = not a daily row, or billed before migration 099. */
+  billed_days?: number | null;
+  /** The daily_rate in force when this row was billed — snapshotted, not re-read from the tenant. */
+  daily_rate_billed?: number | null;
+  /** Owner-chosen base rent replacing monthly_rent in the amount recomputation (checkout pro-rating). */
+  base_rent_override?: number | null;
   created_at: string;
   updated_at: string;
   tenant?: { full_name: string; room_id: string | null; phone?: string | null; check_in?: string; joining_meter_reading?: number | null } | null;
@@ -311,6 +317,14 @@ export interface CheckoutInput {
    */
   depositReturned?: number;
   depositNotes?: string;
+  /**
+   * RULE 2 — opt in to charging a MONTHLY tenant only the nights they actually
+   * slept in their final month, instead of the full month's rent. Owner-driven
+   * and never automatic: when absent or false the checkout bills exactly what it
+   * bills today. Base rent only — food, AC and deposit are never pro-rated.
+   * Ignored for daily tenants, whose final month is always re-counted.
+   */
+  proRateFinalMonth?: boolean;
 }
 
 /** What checkoutTenantAction actually did with the money, so the UI can confirm it rather than guess. */

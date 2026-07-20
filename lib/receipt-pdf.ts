@@ -19,6 +19,10 @@ interface ReceiptPayment {
   /** Deposit to be refunded — shown only on a checkout receipt, unrelated to `amount` */
   security_deposit?: number;
   is_checkout?: boolean;
+  /** Nights billed for a daily-rate tenant — snapshot on the row (migration 099). */
+  billed_days?: number | null;
+  /** The daily rate in force when this row was billed. */
+  daily_rate_billed?: number | null;
   payment_method?: string | null;
   payment_date?: string | null;
   payment_package_tier?: string | null;
@@ -179,8 +183,16 @@ export function generateReceiptPDF(
   add(ML, "Breakdown:", 8, true); nl(12);
   // Food-inclusive package tiers bundle food into monthly_rent with no separate
   // food_charge (0), so this only itemizes food when it was billed as an add-on.
-  const monthlyRent = payment.amount - (payment.ac_charge ?? 0) - (payment.food_charge ?? 0) - (payment.security_deposit_charge ?? 0);
-  addKv("Monthly Rent", pk(Math.max(0, monthlyRent))); nl(12);
+  const baseRent = payment.amount - (payment.ac_charge ?? 0) - (payment.food_charge ?? 0) - (payment.security_deposit_charge ?? 0);
+  // A daily tenant is not on a monthly rent, and printing that label on their
+  // receipt is simply wrong. Use the snapshot taken when the row was billed
+  // rather than recomputing from the tenant's dates — those keep moving after
+  // the receipt is issued, and a receipt must say what was actually charged.
+  const isDailyRow = (payment.billed_days ?? 0) > 0 && (payment.daily_rate_billed ?? 0) > 0;
+  const rentLabel = isDailyRow
+    ? `${payment.billed_days} ${payment.billed_days === 1 ? "day" : "days"} x ${pk(payment.daily_rate_billed!)}`
+    : "Monthly Rent";
+  addKv(rentLabel, pk(Math.max(0, baseRent))); nl(12);
   if ((payment.food_charge ?? 0) > 0) {
     addKv("Food Charges", pk(payment.food_charge!)); nl(11);
     const mealsLabel = [tenant.food_breakfast && "Breakfast", tenant.food_lunch && "Lunch", tenant.food_dinner && "Dinner"]

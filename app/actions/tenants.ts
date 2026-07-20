@@ -9,6 +9,7 @@ import { requireOwnerOrAbove, requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
+import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
 import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, CheckoutSettlement, TenantEventType } from "@/types";
 
@@ -836,13 +837,12 @@ export async function backfillTenantPaymentsAction(
     // Fetch tenant — verify it belongs to this hostel
     const { data: tenant } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, check_in, monthly_rent, security_deposit, package_tier, billing_type, food_breakfast, food_lunch, food_dinner")
+      .select("id, full_name, hostel_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, package_tier, billing_type, food_breakfast, food_lunch, food_dinner")
       .eq("id", tenantId)
       .eq("hostel_id", hostelId)
       .single();
 
     if (!tenant) throw new Error("Tenant not found");
-    if (tenant.billing_type !== "monthly") return { success: true, monthsCreated: 0 }; // daily tenants: skip
     if (!tenant.check_in) return { success: true, monthsCreated: 0 };
 
     const pastMonths = getPastMonths(tenant.check_in);
@@ -858,33 +858,73 @@ export async function backfillTenantPaymentsAction(
     const tierFoodCharge = FOOD_TIERS.has(tenant.package_tier ?? "") ? foodRate : 0;
     const addonFoodCharge = pkgConfig ? calcFoodAddonCharge(tenant, pkgConfig) : 0;
     const foodCharge = tierFoodCharge + addonFoodCharge;
-    const baseRent = Number(tenant.monthly_rent);
-    const totalAmount = baseRent + foodCharge;
     const checkInMonth = tenant.check_in.slice(0, 7);
+    const isDaily = tenant.billing_type === "daily";
+    const checkIn = tenant.check_in.slice(0, 10);
+    const checkOut = (tenant.check_out as string | null)?.slice(0, 10) ?? null;
+    const dailyRate = Number(tenant.daily_rate ?? 0);
 
-    const rows = pastMonths.map((month) => {
+    // Daily tenants used to be skipped outright here, so they had no history at
+    // all and read as absent from reports and the Member Ledger. Their rent is
+    // per-month nights × rate; months the stay never touched produce 0 and are
+    // dropped rather than written as empty rows.
+    const rows = pastMonths.flatMap((month) => {
+      const nights = isDaily
+        ? countBillableNights({ checkIn, checkOut, month })
+        : null;
+      if (isDaily && nights === 0) return [];
+
+      const baseRent = isDaily
+        ? calcDailyRent({ checkIn, checkOut, month, dailyRate })
+        : Number(tenant.monthly_rent);
+
       // Deposit is billed once, on the check-in month only — every later
       // month is rent + food as before.
       const depositCharge = month === checkInMonth ? Number(tenant.security_deposit ?? 0) : 0;
-      const monthAmount = totalAmount + depositCharge;
-      return {
+      const monthAmount = baseRent + foodCharge + depositCharge;
+
+      // Monthly tenants are recorded as already settled: the backfill exists to
+      // enter a resident who has been paying all along into the system, so their
+      // history really is collected money. That assumption does NOT carry over to
+      // daily tenants — a back-dated daily check-in is just as likely to be
+      // someone who arrived a few days ago and hasn't paid yet. Booking that as
+      // collected would overstate revenue in reports and the Member Ledger with
+      // nothing on screen to reveal it. An outstanding due the owner can see and
+      // clear is recoverable; silently fabricated income is not.
+      const settlement = isDaily
+        ? {
+            status: "pending" as const,
+            amount_paid: 0,
+            payment_method: null,
+            payment_date: null,
+            receipt_number: null,
+          }
+        : {
+            status: "paid" as const,
+            amount_paid: monthAmount,
+            payment_method: "cash" as const,
+            payment_date: lastDayOfMonth(month),
+            receipt_number: genReceiptNumber(tenant.full_name, month),
+          };
+
+      return [{
         hostel_id: hostelId,
         tenant_id: tenantId,
         for_month: month,
         amount: monthAmount,
-        amount_paid: monthAmount,
         food_charge: foodCharge,
         ac_charge: 0,
         security_deposit_charge: depositCharge,
         late_fee: 0,
-        status: "paid" as const,
-        payment_method: "cash" as const,
-        payment_date: lastDayOfMonth(month),
-        receipt_number: genReceiptNumber(tenant.full_name, month),
+        ...settlement,
         payment_package_tier: tenant.package_tier,
+        billed_days: nights,
+        daily_rate_billed: isDaily ? dailyRate : null,
         ...(month === checkInMonth ? { notes: `Security deposit: Rs ${tenant.security_deposit ?? 0} (paid on joining)` } : {}),
-      };
+      }];
     });
+
+    if (rows.length === 0) return { success: true, monthsCreated: 0 };
 
     // ignoreDuplicates: never overwrite if somehow a record already exists
     const { error } = await adminDb
@@ -894,7 +934,7 @@ export async function backfillTenantPaymentsAction(
     if (error) throw error;
 
     revalidatePath("/payments");
-    return { success: true, monthsCreated: pastMonths.length };
+    return { success: true, monthsCreated: rows.length };
   } catch (err) {
     unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };

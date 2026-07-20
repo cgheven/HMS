@@ -2,6 +2,7 @@ import { cache } from "react";
 import { cookies } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { getMonthRange, formatDateInput } from "@/lib/utils";
+import { calcDailyRent } from "@/lib/daily-billing";
 import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
@@ -144,7 +145,7 @@ export async function getDashboardData() {
   ] = await Promise.all([
     supabase.from("hms_rooms").select("status,monthly_rent").eq("hostel_id", hostelId),
     supabase.from("hms_tenants")
-      .select("id, full_name, monthly_rent, security_deposit, notice_given_date, intended_checkout_date, room:hms_rooms(room_number)")
+      .select("id, full_name, monthly_rent, daily_rate, billing_type, check_in, check_out, security_deposit, notice_given_date, intended_checkout_date, room:hms_rooms(room_number)")
       .eq("hostel_id", hostelId).eq("is_active", true).eq("is_waiting", false),
     supabase.from("hms_expenses").select("amount").eq("hostel_id", hostelId).gte("date", start).lte("date", end),
     supabase.from("hms_kitchen_expenses").select("amount").eq("hostel_id", hostelId).gte("date", start).lte("date", end),
@@ -174,7 +175,21 @@ export async function getDashboardData() {
   // already had some of it collected.
   const monthlyUncollected = pendingRows.reduce((s, p) => s + Math.max(0, Number(p.amount) - Number(p.amount_paid ?? 0)), 0);
   const unpaidBills = bills.data ?? [];
-  const monthlyRevenue = (tenants.data ?? []).reduce((s, t) => s + Number(t.monthly_rent), 0);
+  // Daily tenants have monthly_rent 0, so summing that alone silently dropped every
+  // one of them from expected revenue. Their contribution is this month's billable
+  // nights × daily_rate, counted by the same helper the payment rows are built from.
+  const monthlyRevenue = (tenants.data ?? []).reduce((s, t) => {
+    const row = (t as unknown) as { billing_type?: string; monthly_rent: unknown; daily_rate: unknown; check_in: string; check_out: string | null };
+    if (row.billing_type === "daily") {
+      return s + calcDailyRent({
+        checkIn: row.check_in,
+        checkOut: row.check_out,
+        month: currentMonthKey,
+        dailyRate: Number(row.daily_rate ?? 0),
+      });
+    }
+    return s + Number(row.monthly_rent);
+  }, 0);
   const depositTenants = (tenants.data ?? []).filter((t) => Number(t.security_deposit) > 0);
   const securityDepositTotal = depositTenants.reduce((s, t) => s + Number(t.security_deposit), 0);
   const securityDepositCount = depositTenants.length;
