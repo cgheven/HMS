@@ -12,7 +12,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { submitOnboarding } from "@/app/actions/onboarding";
-import { calculateAnnualPrice } from "@/lib/pricing";
+import { calculateAnnualPrice, calculateMonthlyPrice } from "@/lib/pricing";
 import { formatCurrency } from "@/lib/utils";
 import { LEAD_SOURCES, LEAD_SOURCE_OTHER } from "@/lib/lead-sources";
 
@@ -50,6 +50,7 @@ export function OnboardingClient() {
   const [error, setError] = useState<string | null>(null);
 
   const annualPrice = calculateAnnualPrice(form.branch_count);
+  const monthlyPrice = calculateMonthlyPrice(form.branch_count);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -299,11 +300,9 @@ export function OnboardingClient() {
                   <span className="text-xs text-muted-foreground">Estimated annual price</span>
                   <span className="text-lg font-semibold text-amber tabular-nums">{formatCurrency(annualPrice)}/year</span>
                 </div>
-                {form.branch_count >= 10 && (
-                  <p className="text-xs text-emerald-400">
-                    First 9 branches at Rs 60,000/year, every branch from the 10th onward at Rs 36,000/year.
-                  </p>
-                )}
+                <p className="text-xs text-emerald-400">
+                  {formatCurrency(monthlyPrice)}/month if billed monthly — 2 months free on the annual plan.
+                </p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

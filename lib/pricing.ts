@@ -1,14 +1,16 @@
 // Shared with app/onboarding/onboarding-client.tsx (live preview) and
 // app/actions/onboarding.ts (authoritative quote) so the two never drift.
-const STANDARD_RATE = 60000;
-const DISCOUNT_RATE = 36000;
-const DISCOUNT_STARTS_AT_BRANCH = 10;
+export const MONTHLY_RATE_PER_BRANCH = 8000;
+export const ANNUAL_RATE_PER_BRANCH = 80000; // = 10 months × monthly rate (2 months free)
 
 export function calculateAnnualPrice(branchCount: number): number {
   const branches = Math.max(1, Math.round(branchCount) || 1);
-  const standardBranches = Math.min(branches, DISCOUNT_STARTS_AT_BRANCH - 1);
-  const discountedBranches = Math.max(0, branches - (DISCOUNT_STARTS_AT_BRANCH - 1));
-  return standardBranches * STANDARD_RATE + discountedBranches * DISCOUNT_RATE;
+  return branches * ANNUAL_RATE_PER_BRANCH;
+}
+
+export function calculateMonthlyPrice(branchCount: number): number {
+  const branches = Math.max(1, Math.round(branchCount) || 1);
+  return branches * MONTHLY_RATE_PER_BRANCH;
 }
 
 // ── Platform invoicing (Pulse billing hostel-owner clients) ──────────────────

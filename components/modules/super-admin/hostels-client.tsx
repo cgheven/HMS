@@ -749,7 +749,7 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                     <Input
                       type="number"
                       min={0}
-                      placeholder="60000"
+                      placeholder="80000"
                       value={billingForm.price}
                       onChange={e => setBillingForm(f => ({ ...f, price: e.target.value }))}
                     />

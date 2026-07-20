@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import { ArrowRight, Check, Building2, CheckCircle2 } from "lucide-react";
+import { ArrowRight, Check, Building2, CheckCircle2, Star } from "lucide-react";
 import { submitDemoRequest } from "@/app/actions/demo-request";
 import {
   Dialog,
@@ -17,40 +17,44 @@ type BillingPeriod = "monthly" | "annual";
 
 const PLANS = [
   {
-    key:         "single",
-    name:        "Single Branch",
-    limit:       1,
+    key:         "1",
+    name:        "1 Branch",
     tagline:     "One hostel, fully managed.",
-    monthly:     5000,
-    annual:      50000,
+    monthly:     8000,
+    annual:      80000,
     highlight:   false,
   },
   {
-    key:         "small",
-    name:        "Up to 3 Branches",
-    limit:       3,
+    key:         "2",
+    name:        "2 Branches",
     tagline:     "Grow across multiple locations.",
-    monthly:     10000,
-    annual:      100000,
+    monthly:     16000,
+    annual:      160000,
     highlight:   false,
   },
   {
-    key:         "medium",
-    name:        "Up to 6 Branches",
-    limit:       6,
+    key:         "3",
+    name:        "3 Branches",
     tagline:     "The sweet spot for growing networks.",
-    monthly:     18000,
-    annual:      180000,
+    monthly:     24000,
+    annual:      240000,
     highlight:   true,
     badge:       "Most Popular",
   },
   {
-    key:         "large",
-    name:        "Up to 16 Branches",
-    limit:       16,
+    key:         "4",
+    name:        "4 Branches",
+    tagline:     "Built for expanding networks.",
+    monthly:     32000,
+    annual:      320000,
+    highlight:   false,
+  },
+  {
+    key:         "10",
+    name:        "10 Branches",
     tagline:     "Enterprise-scale hostel management.",
-    monthly:     40000,
-    annual:      400000,
+    monthly:     80000,
+    annual:      800000,
     highlight:   false,
   },
 ] as const;
@@ -76,8 +80,8 @@ function fmt(n: number) {
   return n.toLocaleString("en-PK");
 }
 
-function annualSavings(plan: (typeof PLANS)[number]) {
-  return plan.monthly * 12 - plan.annual;
+function monthsFree(plan: (typeof PLANS)[number]) {
+  return Math.round(12 - plan.annual / plan.monthly);
 }
 
 // ── Plan Card ─────────────────────────────────────────────────────────────────
@@ -92,22 +96,27 @@ function PlanCard({
   onGetStarted: () => void;
 }) {
   const price    = period === "monthly" ? plan.monthly : plan.annual;
-  const saved    = annualSavings(plan);
+  const free     = monthsFree(plan);
   const perMonth = Math.round(plan.annual / 12);
 
   return (
     <div
-      className={`flex flex-col gap-5 rounded-2xl border p-6 transition-all ${
+      className={`group/card relative flex flex-col gap-5 overflow-hidden rounded-2xl border p-6 transition-all duration-300 hover:-translate-y-1 ${
         plan.highlight
-          ? "border-primary/40 bg-primary/[0.04] shadow-[0_0_60px_-10px] shadow-primary/20"
-          : "border-sidebar-border bg-card"
+          ? "border-primary/40 bg-gradient-to-b from-primary/[0.07] to-transparent shadow-[0_0_60px_-10px] shadow-primary/20 hover:shadow-[0_0_70px_-8px] hover:shadow-primary/30"
+          : "border-sidebar-border bg-card hover:border-primary/25 hover:shadow-xl hover:shadow-black/20"
       }`}
     >
+      {/* Accent bar for the highlighted plan */}
+      {plan.highlight && (
+        <div className="absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-primary/30 via-primary to-primary/30" />
+      )}
+
       {/* Badge — inline so it never overlaps adjacent cards */}
       {"badge" in plan && plan.badge ? (
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary text-primary-foreground text-xs font-bold uppercase tracking-wider shadow-md">
-            ⭐ {plan.badge}
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary text-primary-foreground text-xs font-bold uppercase tracking-wider shadow-md shadow-primary/30">
+            <Star className="w-3 h-3 fill-current" /> {plan.badge}
           </span>
         </div>
       ) : (
@@ -116,40 +125,43 @@ function PlanCard({
 
       {/* Header */}
       <div>
-        <div className="flex items-center gap-1.5 mb-3">
-          {Array.from({ length: Math.min(plan.limit, 4) }).map((_, i) => (
-            <Building2 key={i} className="w-3 h-3 text-primary/60" />
-          ))}
-          {plan.limit > 4 && (
-            <span className="text-[10px] text-primary/60 font-semibold">+{plan.limit - 4}</span>
-          )}
+        <div className="flex items-center gap-2.5 mb-4">
+          <div
+            className={`flex items-center justify-center w-9 h-9 rounded-xl border transition-colors ${
+              plan.highlight
+                ? "bg-primary/15 border-primary/30"
+                : "bg-primary/10 border-primary/15 group-hover/card:border-primary/25"
+            }`}
+          >
+            <Building2 className="w-4 h-4 text-primary" />
+          </div>
+          <p className="text-sm font-bold text-foreground tracking-tight">
+            {plan.name}
+          </p>
         </div>
-        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-1">
-          {plan.name}
-        </p>
 
         {/* Price — suffix on its own line to prevent overflow on 6-digit annual numbers */}
-        <div className="mt-3 mb-1">
-          <div className="flex items-end gap-1">
-            <span className="text-sm text-muted-foreground mb-1">PKR</span>
-            <span className="text-4xl font-black text-foreground tabular-nums leading-none">
+        <div className="mb-1">
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-sm text-muted-foreground">PKR</span>
+            <span className="text-4xl font-black text-foreground tabular-nums tracking-tight leading-none">
               {fmt(price)}
             </span>
           </div>
           <span className="text-sm text-muted-foreground">
-            {period === "monthly" ? "/ month" : "/ year"}
+            {period === "monthly" ? "per month" : "per year"}
           </span>
         </div>
 
         {period === "annual" ? (
-          <div className="flex items-center gap-2 mt-2">
-            <span className="text-xs text-muted-foreground">PKR {fmt(perMonth)}/mo</span>
-            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-primary/10 border border-primary/25 text-[11px] font-bold text-primary">
-              Save PKR {fmt(saved)}
+          <p className="text-xs text-muted-foreground mt-2">
+            ≈ PKR {fmt(perMonth)}/mo ·{" "}
+            <span className="font-semibold text-primary">
+              {free} month{free === 1 ? "" : "s"} free
             </span>
-          </div>
+          </p>
         ) : (
-          <p className="text-xs text-muted-foreground mt-1.5">{plan.tagline}</p>
+          <p className="text-xs text-muted-foreground mt-2">{plan.tagline}</p>
         )}
       </div>
 
@@ -167,14 +179,14 @@ function PlanCard({
       <div className="mt-auto">
         <button
           onClick={onGetStarted}
-          className={`flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold transition-all duration-200 ${
+          className={`group flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold transition-all duration-200 ${
             plan.highlight
               ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-md shadow-primary/20"
               : "border border-sidebar-border hover:border-primary/40 hover:bg-primary/5 text-foreground"
           }`}
         >
           Get Started
-          <ArrowRight className="w-3.5 h-3.5" />
+          <ArrowRight className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-0.5" />
         </button>
       </div>
     </div>
@@ -187,10 +199,11 @@ const INPUT_CLS =
   "w-full h-11 rounded-lg border border-sidebar-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none transition focus:ring-2 focus:ring-primary/30 focus:border-primary";
 
 const PLAN_LABELS: Record<string, string> = {
-  single: "Single Branch",
-  small:  "Up to 3 Branches",
-  medium: "Up to 6 Branches",
-  large:  "Up to 16 Branches",
+  "1":  "1 Branch",
+  "2":  "2 Branches",
+  "3":  "3 Branches",
+  "4":  "4 Branches",
+  "10": "10 Branches",
 };
 
 function GetStartedForm({ initialPlan = "" }: { initialPlan?: string }) {
@@ -372,7 +385,7 @@ export default function PricingPage() {
               {p === "monthly" ? "Monthly" : "Annual"}
               {p === "annual" && (
                 <span className="ml-2 text-[10px] font-bold text-primary bg-primary/10 border border-primary/20 px-1.5 py-0.5 rounded-full">
-                  Save ~16%
+                  2 months free
                 </span>
               )}
             </button>
@@ -382,7 +395,7 @@ export default function PricingPage() {
 
       {/* Plan cards */}
       <div className="relative z-10 max-w-6xl mx-auto px-4 pb-16">
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-5">
           {PLANS.map((plan) => (
             <PlanCard
               key={plan.key}
@@ -399,14 +412,16 @@ export default function PricingPage() {
         </p>
 
         {/* Features grid */}
-        <div className="mt-16 rounded-2xl border border-sidebar-border bg-card p-8">
+        <div className="mt-16 rounded-2xl border border-sidebar-border bg-gradient-to-b from-card to-card/60 p-8">
           <p className="text-xs font-semibold text-primary uppercase tracking-widest mb-6 text-center">
             Everything included in every plan
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {FEATURES.map((f) => (
               <div key={f} className="flex items-center gap-2.5">
-                <Check className="w-3.5 h-3.5 text-primary shrink-0" />
+                <div className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/10 shrink-0">
+                  <Check className="w-3 h-3 text-primary" />
+                </div>
                 <span className="text-sm text-muted-foreground">{f}</span>
               </div>
             ))}
