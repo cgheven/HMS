@@ -178,8 +178,13 @@ export function ReportsClient(props: Props) {
 
   const d = reportData;
 
+  // Deposits are refundable, so they are cash collected but never profit — the
+  // same exclusion getDashboardData applies, so the two screens agree.
   const totalNetProfit = d
-    ? d.monthlyExpenses.reduce((s, m) => s + (m.collected - m.expenses - m.kitchen - m.salaries), 0)
+    ? d.monthlyExpenses.reduce(
+        (s, m) => s + (m.collected - (m.depositsCollected ?? 0) - m.expenses - m.kitchen - m.salaries),
+        0,
+      )
     : 0;
 
   return (

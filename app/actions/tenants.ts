@@ -669,6 +669,42 @@ export async function getTenantTimeline(
       }
     }
 
+    // The deposit is billed as security_deposit_charge on the tenant's first
+    // bill, so a paid bill already itemises it ("Rent: Rs 5,500 · Deposit:
+    // Rs 8,000"). Emitting the standalone deposit_collected event alongside it
+    // showed the SAME Rs 8,000 twice and read as two separate collections. The
+    // bill is the authoritative record of money actually changing hands, so it
+    // wins and the standalone entry is dropped.
+    //
+    // Only deposit_collected is de-duplicated. deposit_applied / _returned /
+    // _forfeited at checkout are genuinely distinct movements of that money and
+    // are never itemised on a bill, so they stay.
+    // Keyed off the BILL, not off which timeline entries happened to get a
+    // breakdown. A partially-paid bill attaches depositCharge only to the
+    // installment that completes it, so deriving this from events missed the
+    // partial case and showed the deposit twice — once as "deposit collected"
+    // and again inside the payment.
+    //
+    // Suppressing it whenever the deposit is billed at all (paid, partial or
+    // pending) is right because deposit_collected is not an independent record
+    // of money changing hands: all three add-tenant paths emit it automatically
+    // at creation, purely because security_deposit > 0, before anything has
+    // been collected. It is really "deposit charged", and the bill already says
+    // that. The header badge still shows the deposit currently held.
+    const depositIsOnABill = (payments ?? []).some(
+      (p) => Number(p.security_deposit_charge ?? 0) > 0
+    );
+    // Mutate in place ONLY when there is something to remove. An earlier version
+    // assigned `events` itself to a local in the else branch and then cleared
+    // `events` before re-pushing — same array reference, so the clear emptied
+    // both and every tenant without a fully-paid deposit bill lost their entire
+    // timeline.
+    if (depositIsOnABill) {
+      const kept = events.filter((e) => e.type !== "deposit_collected");
+      events.length = 0;
+      events.push(...kept);
+    }
+
     // Sort newest first; same-day ties broken by a logical same-day order
     // (e.g. deposit collected reads before that day's rent payment, not after)
     const SAME_DAY_PRIORITY: Record<TimelineEventType, number> = {

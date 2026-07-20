@@ -167,7 +167,10 @@ export async function addTenantAsPartner(
       }
     }
 
+    // A new tenant means the Payments page has a missing row to generate, so its
+    // cached RSC payload is stale the moment this returns.
     revalidatePath("/tenants");
+    revalidatePath("/payments");
     return { error: null, tenantId };
   } catch (err: unknown) {
     unstable_rethrow(err);
@@ -182,7 +185,7 @@ export async function recordPaymentAsPartner(
   month: string,
   acUnitsConsumed?: number,
   notes?: string,
-): Promise<{ payment?: Payment; error: string | null }> {
+): Promise<{ payment?: Payment; installmentId?: string; error: string | null }> {
   try {
     const hostelId = await requirePartnerHostelId("standard");
     const admin = createAdminClient();
@@ -280,7 +283,7 @@ export async function recordPaymentAsPartner(
     // Record this transaction as its own immutable snapshot, same as the
     // owner/manager payment flows — so a partner-collected installment shows up
     // in the Member Ledger/timeline as its own event, not silently merged in.
-    const { error: installmentErr } = await admin.from("hms_payment_installments").insert({
+    const { data: installmentRow, error: installmentErr } = await admin.from("hms_payment_installments").insert({
       hostel_id: hostelId,
       tenant_id: tenantId,
       payment_id: existingPayment.id,
@@ -292,14 +295,14 @@ export async function recordPaymentAsPartner(
       payment_method: method,
       payment_date: new Date().toISOString().slice(0, 10),
       notes: notes?.trim() || null,
-    });
+    }).select("id").single();
     if (installmentErr) {
       console.error("[recordPaymentAsPartner] Failed to record payment installment:", installmentErr.message);
     }
 
     revalidatePath("/payments");
     revalidatePath("/dashboard");
-    return { payment: updated as Payment, error: null };
+    return { payment: updated as Payment, installmentId: installmentRow?.id as string | undefined, error: null };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "An unexpected error occurred." };

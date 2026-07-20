@@ -152,7 +152,7 @@ export async function getDashboardData() {
     supabase.from("hms_bills").select("id,hostel_id,title,category,amount,due_date,paid_date,status,notes,created_at").eq("hostel_id", hostelId).neq("status", "paid").order("due_date").limit(5),
     supabase.from("hms_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", fullStart).lte("date", fullEnd),
     supabase.from("hms_kitchen_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", fullStart).lte("date", fullEnd),
-    supabase.from("hms_payments").select("amount,amount_paid").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).in("status", ["paid", "partially_paid"]),
+    supabase.from("hms_payments").select("amount,amount_paid,security_deposit_charge").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).in("status", ["paid", "partially_paid"]),
     supabase.from("hms_salary_payments").select("amount").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).eq("status", "paid"),
     supabase.from("hms_payments").select("id,amount,amount_paid,status,tenant:hms_tenants(full_name)").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).in("status", ["pending", "overdue", "partially_paid"]),
     supabase.from("hms_payments").select("for_month,amount,amount_paid,status").eq("hostel_id", hostelId).gte("for_month", ranges[0].monthKey).lte("for_month", ranges[5].monthKey),
@@ -168,6 +168,25 @@ export async function getDashboardData() {
   // amount_paid equals amount for legacy fully-paid rows (backfilled), so summing
   // it uniformly captures both full and partial payments without branching on status.
   const monthlyCollected = (collectedPayments.data ?? []).reduce((s, e) => s + Number(e.amount_paid ?? e.amount), 0);
+  // A security deposit is a LIABILITY, not income — it is refundable at
+  // checkout. It rides inside `amount` (security_deposit_charge), so summing
+  // amount_paid counts it as profit and then silently reverses that profit when
+  // the deposit is returned. "Collected" legitimately includes it (the cash was
+  // received, and the dashboard shows deposits held separately); net profit must
+  // not. Reports already excludes it from rentRevenue — this brings the
+  // dashboard into line.
+  //
+  // On a partially-paid bill nothing records WHICH component the money went to,
+  // so the deposit is treated as collected in the same proportion as the bill —
+  // neutral between rent and deposit, and it degrades smoothly as more is paid.
+  const depositsCollected = (collectedPayments.data ?? []).reduce((s, e) => {
+    const charged = Number(e.security_deposit_charge ?? 0);
+    if (charged <= 0) return s;
+    const amount = Number(e.amount ?? 0);
+    const paid = Number(e.amount_paid ?? e.amount ?? 0);
+    if (amount <= 0) return s + charged;
+    return s + Math.min(charged, charged * (paid / amount));
+  }, 0);
   const monthlyACUnits = (acReadingsRes.data ?? []).reduce((s, r) => s + Number(r.total_units ?? 0), 0);
   type PendingRow = { id: string; amount: unknown; amount_paid?: unknown; status: string; tenant: { full_name: string } | null };
   const pendingRows = ((pendingPaymentsRes.data ?? []) as unknown) as PendingRow[];
@@ -242,7 +261,7 @@ export async function getDashboardData() {
     monthly_salaries: monthlySalaries,
     monthly_collected: monthlyCollected,
     monthly_uncollected: monthlyUncollected,
-    net_profit: monthlyCollected - monthlyExpenses - monthlyKitchen - monthlySalaries,
+    net_profit: monthlyCollected - depositsCollected - monthlyExpenses - monthlyKitchen - monthlySalaries,
     unpaid_bills: unpaidBills.length,
     unpaid_bills_amount: unpaidBills.reduce((s, b) => s + Number(b.amount), 0),
     occupancy_rate: totalRooms > 0 ? Math.round((occupiedRooms / totalRooms) * 100) : 0,
@@ -427,7 +446,7 @@ export async function getReportsData() {
   const fullEnd = ranges[5].end;
 
   const [paymentsRes, expensesRes, kitchenRes, tenantsRes, roomsRes, salariesRes] = await Promise.all([
-    supabase.from("hms_payments").select("for_month,amount,status").eq("hostel_id", hostelId),
+    supabase.from("hms_payments").select("for_month,amount,status,security_deposit_charge").eq("hostel_id", hostelId),
     supabase.from("hms_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", fullStart).lte("date", fullEnd),
     supabase.from("hms_kitchen_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", fullStart).lte("date", fullEnd),
     supabase.from("hms_tenants").select("check_in,check_out,is_active").eq("hostel_id", hostelId),
@@ -444,7 +463,12 @@ export async function getReportsData() {
 
   const revenueByMonth: RevenueMonth[] = ranges.map(({ month, monthKey, start, end }) => {
     const monthPayments = payments.filter((p) => p.for_month === monthKey);
-    const collected = monthPayments.filter((p) => p.status === "paid").reduce((s, p) => s + Number(p.amount), 0);
+    const paidRows = monthPayments.filter((p) => p.status === "paid");
+    const collected = paidRows.reduce((s, p) => s + Number(p.amount), 0);
+    // Same reasoning as the dashboard: deposits are refundable, so they are cash
+    // collected but never profit. These rows are fully paid, so the whole
+    // charged deposit was collected.
+    const depositsCollected = paidRows.reduce((s, p) => s + Number(p.security_deposit_charge ?? 0), 0);
     const due = monthPayments.reduce((s, p) => s + Number(p.amount), 0);
     const exp = expenses.filter((e) => e.date >= start && e.date <= end).reduce((s, e) => s + Number(e.amount), 0);
     const kit = kitchen.filter((k) => k.date >= start && k.date <= end).reduce((s, k) => s + Number(k.amount), 0);
@@ -459,7 +483,7 @@ export async function getReportsData() {
       expenses: totalExp,
       kitchen: kit,
       salaries: sal,
-      profit: collected - totalExp,
+      profit: collected - depositsCollected - totalExp,
       collectionRate: due > 0 ? Math.round((collected / due) * 100) : 0,
       occupancyRate: totalCapacity > 0 ? Math.round((activeCount / totalCapacity) * 100) : 0,
       moveIns: tenants.filter((t) => t.check_in >= start && t.check_in <= end).length,

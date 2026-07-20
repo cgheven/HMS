@@ -23,7 +23,7 @@ import {
   applyRoomACUnitsAction,
   saveACJoinReadingAction,
 } from "@/app/actions/payments";
-import { createInvoiceLink } from "@/app/actions/tenants";
+import { createInvoiceLink, createInstallmentReceiptLink } from "@/app/actions/tenants";
 import { recordPaymentAsPartner } from "@/app/actions/partner";
 import {
   recordPaymentAsManager,
@@ -135,7 +135,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [saving, setSaving] = useState(false);
   const [sendingWa, setSendingWa] = useState<string | null>(null); // paymentId
   const [generatingReceipt, setGeneratingReceipt] = useState<string | null>(null); // paymentId
-  const [postPaymentWa, setPostPaymentWa] = useState<{ payment: Payment; amountReceivedNow: number } | null>(null);
+  const [postPaymentWa, setPostPaymentWa] = useState<{ payment: Payment; amountReceivedNow: number; installmentId?: string } | null>(null);
   const [acUnits, setAcUnits] = useState<Record<string, string>>({});
   const [applyingAC, setApplyingAC] = useState<string | null>(null);
   const [roomFilter, setRoomFilter] = useState<string>("all");
@@ -330,17 +330,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       const remainingBefore = Math.max(0, Number(markDialog.amount) + Number(markDialog.late_fee ?? 0) - Number(markDialog.amount_paid ?? 0));
       const isPartial = amountReceived < remainingBefore - 0.01;
       toast({ title: isPartial ? "Partial payment recorded" : "Payment recorded! 🎉" });
-      const paymentId = markDialog.id;
       setMarkDialog(null);
       setSaving(false);
-      // recordPaymentAsManager returns only { error } — it does not echo the
-      // updated row like recordPaymentAsPartner does. Rather than drop the
-      // post-payment WhatsApp receipt step (the whole point of this page for a
-      // manager), re-read the row from the fresh sync result.
-      const fresh = await syncMonth(selectedMonth);
-      const updated = fresh?.find((p) => p.id === paymentId);
-      if (updated) {
-        setPostPaymentWa({ payment: updated, amountReceivedNow: amountReceived });
+      await syncMonth(selectedMonth);
+      if (result.payment) {
+        setPostPaymentWa({ payment: result.payment, amountReceivedNow: amountReceived, installmentId: result.installmentId });
       }
       return;
     }
@@ -371,7 +365,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       // the fresh post-update row so the dialog reflects the actual new
       // status/amount_paid, not the stale pre-update markDialog.
       if (result.payment) {
-        setPostPaymentWa({ payment: result.payment, amountReceivedNow: amountReceived });
+        setPostPaymentWa({ payment: result.payment, amountReceivedNow: amountReceived, installmentId: result.installmentId });
       }
       return;
     }
@@ -400,7 +394,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       // Use the fresh post-update row (not the stale pre-update markDialog) so the
       // share dialog and WhatsApp message reflect the actual new status/amount_paid.
       if (result.payment) {
-        setPostPaymentWa({ payment: result.payment, amountReceivedNow: amountReceived });
+        setPostPaymentWa({ payment: result.payment, amountReceivedNow: amountReceived, installmentId: result.installmentId });
       }
       return;
     }
@@ -417,10 +411,18 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     window.open(`/r/${result.token}`, "_blank", "noopener,noreferrer");
   }
 
-  async function sendWhatsAppReceipt(p: Payment) {
+  // installmentId scopes the receipt to the single transaction just recorded.
+  // Without it the tenant gets a whole-bill receipt showing the CUMULATIVE
+  // amount received, so someone who just handed over Rs 2,000 is given a slip
+  // quoting a different number — the opposite of what a receipt is for.
+  // hms_payment_installments is an immutable snapshot, so a receipt reissued
+  // later still shows what was true at the time.
+  async function sendWhatsAppReceipt(p: Payment, installmentId?: string) {
     setSendingWa(p.id);
     try {
-      const result = await createInvoiceLink(p.id);
+      const result = installmentId
+        ? await createInstallmentReceiptLink(installmentId)
+        : await createInvoiceLink(p.id);
       if (result.error) {
         toast({ title: "Failed to create receipt link", description: result.error, variant: "destructive" });
         return;
@@ -1398,7 +1400,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               disabled={sendingWa === postPaymentWa?.payment.id}
               onClick={async () => {
                 if (postPaymentWa) {
-                  await sendWhatsAppReceipt(postPaymentWa.payment);
+                  await sendWhatsAppReceipt(postPaymentWa.payment, postPaymentWa.installmentId);
                   setPostPaymentWa(null);
                 }
               }}

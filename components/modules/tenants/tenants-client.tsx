@@ -609,6 +609,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setWaiting(all.filter((t) => t.is_waiting));
     setCheckedOut(all.filter((t) => !t.is_active && !t.is_waiting));
     setRooms((rms ?? []) as Room[]);
+
+    // The owner writes tenants straight from the browser, so no server action
+    // ever runs revalidatePath for them and OTHER routes keep serving their
+    // cached RSC payload. Navigating to Payments after adding a tenant showed
+    // the pre-add page until a manual refresh. router.refresh() invalidates the
+    // client Router Cache, so the next navigation re-renders Payments on the
+    // server — which is also what generates the new tenant's payment row.
+    router.refresh();
   }
 
   async function reloadApplications() {

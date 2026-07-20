@@ -87,6 +87,8 @@ export interface ReportData {
     kitchen: number;
     salaries: number;
     collected: number;
+    /** Refundable deposits inside `collected` — subtract for true profit. */
+    depositsCollected: number;
   }[];
 
   // Occupancy by room type
@@ -365,8 +367,23 @@ export async function getReportData(
     const exp = expenses.filter((e) => e.date >= start && e.date <= end).reduce((s, e) => s + Number(e.amount), 0);
     const kit = kitchen.filter((k) => k.date >= start && k.date <= end).reduce((s, k) => s + Number(k.amount), 0);
     const sal = salaries.filter((s) => s.for_month === monthKey && s.status === "paid").reduce((sum, s) => sum + Number(s.amount), 0);
-    const col = payments.filter((p) => p.for_month === monthKey && (p.status === "paid" || p.status === "partially_paid")).reduce((s, p) => s + Number(p.amount_paid ?? p.amount), 0);
-    return { month: label, monthKey, expenses: exp, kitchen: kit, salaries: sal, collected: col };
+    const colRows = payments.filter((p) => p.for_month === monthKey && (p.status === "paid" || p.status === "partially_paid"));
+    const col = colRows.reduce((s, p) => s + Number(p.amount_paid ?? p.amount), 0);
+    // Security deposits are refundable liabilities, not income. They ride inside
+    // `amount`, so `collected` legitimately contains them (it is cash received)
+    // but profit must not. Returned alongside rather than pre-subtracted so the
+    // Collected tile keeps meaning "cash in". Partially-paid bills allocate the
+    // deposit in proportion to how much of the bill was paid, matching
+    // getDashboardData — nothing records which component the money went to.
+    const dep = colRows.reduce((s, p) => {
+      const charged = Number(p.security_deposit_charge ?? 0);
+      if (charged <= 0) return s;
+      const amt = Number(p.amount ?? 0);
+      const paid = Number(p.amount_paid ?? p.amount ?? 0);
+      if (amt <= 0) return s + charged;
+      return s + Math.min(charged, charged * (paid / amt));
+    }, 0);
+    return { month: label, monthKey, expenses: exp, kitchen: kit, salaries: sal, collected: col, depositsCollected: dep };
   });
 
   // Top tenants by total paid

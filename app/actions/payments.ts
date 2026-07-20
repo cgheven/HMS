@@ -300,7 +300,7 @@ export interface MarkPaidInput {
 
 export async function markPaymentPaidAction(
   input: MarkPaidInput
-): Promise<{ payment?: Payment; error?: string }> {
+): Promise<{ payment?: Payment; installmentId?: string; error?: string }> {
   try {
     // Recording collection is day-to-day work. Partners reach this through
     // recordPaymentAsPartner instead, but the guard belongs here regardless —
@@ -479,7 +479,7 @@ export async function markPaymentPaidAction(
     // installment would erase all trace of the first one (its own date/method/
     // amount, and any receipt generated for it would start showing the new
     // cumulative state instead of what was true when it was generated).
-    const { error: installmentErr } = await supabase.from("hms_payment_installments").insert({
+    const { data: installmentRow, error: installmentErr } = await supabase.from("hms_payment_installments").insert({
       hostel_id: hostelId,
       tenant_id: existingPayment.tenant_id,
       payment_id: input.paymentId,
@@ -493,7 +493,7 @@ export async function markPaymentPaidAction(
       payment_date: input.date,
       notes: input.notes || null,
       receipt_number: input.receiptNumber,
-    });
+    }).select("id").single();
     if (installmentErr) {
       // Non-fatal — the payment itself is already recorded correctly above.
       // Losing the per-installment snapshot only affects historical granularity.
@@ -517,7 +517,9 @@ export async function markPaymentPaidAction(
       });
     }
 
-    return { payment: data as Payment };
+    // The installment id lets the caller mint a receipt for THIS transaction
+    // rather than the whole cumulative bill.
+    return { payment: data as Payment, installmentId: installmentRow?.id as string | undefined };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };

@@ -10,7 +10,7 @@ import { requireManagerPermission } from "@/lib/manager-auth"
 import { logActivity } from "@/lib/audit"
 import { backfillTenantPaymentsAction } from "@/app/actions/tenants"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
-import type { Manager, StaffPermission } from "@/types"
+import type { Manager, Payment, StaffPermission } from "@/types"
 
 function getPrevMonth(forMonth: string): string {
   const [y, m] = forMonth.split("-").map(Number);
@@ -704,7 +704,11 @@ export async function addTenantAsManager(
       }
     }
 
+    // Same reason as the partner path — the new tenant needs a payment row, so
+    // the payments route's cached payload is stale.
     revalidatePath("/portal/tenants")
+    revalidatePath("/portal/payments")
+    revalidatePath("/payments")
     return { error: null, tenantId }
   } catch (err: unknown) {
     unstable_rethrow(err)
@@ -718,7 +722,7 @@ export async function recordPaymentAsManager(
   method: string,
   month: string,
   acUnitsConsumed?: number,
-): Promise<{ error: string | null }> {
+): Promise<{ payment?: Payment; installmentId?: string; error: string | null }> {
   try {
     const ctx = await requireManagerPermission("collect_payments")
     const hostelId = ctx.activeHostel.id
@@ -802,18 +806,22 @@ export async function recordPaymentAsManager(
     updatePayload.status = isFullyPaid ? "paid" : "partially_paid"
     updatePayload.amount_paid = newAmountPaid
 
-    const { error } = await admin
+    const { data: updated, error } = await admin
       .from("hms_payments")
       .update(updatePayload)
       .eq("id", existingPayment.id)
       .eq("hostel_id", hostelId)
+      // Return the updated row so the caller can drive the post-payment receipt
+      // dialog, matching recordPaymentAsPartner.
+      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
+      .single()
 
     if (error) return { error: error.message }
 
     // Record this transaction as its own immutable snapshot, same as the
     // owner-facing payment flow — so a manager-collected installment shows up
     // in the Member Ledger/timeline as its own event, not silently merged in.
-    const { error: installmentErr } = await admin.from("hms_payment_installments").insert({
+    const { data: installmentRow, error: installmentErr } = await admin.from("hms_payment_installments").insert({
       hostel_id: hostelId,
       tenant_id: tenantId,
       payment_id: existingPayment.id,
@@ -824,14 +832,18 @@ export async function recordPaymentAsManager(
       total_due: fullAmountDue,
       payment_method: method,
       payment_date: new Date().toISOString().slice(0, 10),
-    })
+    }).select("id").single()
     if (installmentErr) {
       console.error("[recordPaymentAsManager] Failed to record payment installment:", installmentErr.message)
     }
 
     revalidatePath("/portal/payments")
     revalidatePath("/payments")
-    return { error: null }
+    return {
+      payment: updated as Payment,
+      installmentId: installmentRow?.id as string | undefined,
+      error: null,
+    }
   } catch (err: unknown) {
     unstable_rethrow(err)
     return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
