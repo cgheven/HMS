@@ -1168,7 +1168,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         name: t.full_name,
                         units: Number(payments.find(p => p.tenant_id === t.id && p.for_month === selectedMonth)?.ac_units_consumed ?? 0),
                         charge: Number(payments.find(p => p.tenant_id === t.id && p.for_month === selectedMonth)?.ac_charge ?? 0),
-                      })).filter(r => r.units > 0);
+                      }));
+                      // Tenants on 0 units used to be filtered out here. That hid the
+                      // commonest real fault: a tenant present in the room who was
+                      // never billed (joined after the last apply, or the roster
+                      // changed since). The operator only saw "unassigned — hostel
+                      // absorbs" and had no way to tell the difference between
+                      // genuine pre-occupancy usage and someone simply missing.
+                      const unbilled = rows.filter(r => r.units === 0);
                       if (rows.length === 0) return null;
                       const assignedUnits = rows.reduce((s, r) => s + r.units, 0);
                       const assignedCharge = rows.reduce((s, r) => s + r.charge, 0);
@@ -1186,9 +1193,21 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               <span className="tabular-nums text-emerald-400">{formatCurrency(r.charge)}</span>
                             </div>
                           ))}
+                          {unbilled.map(r => (
+                            <div key={r.name} className="flex items-center gap-2 text-xs">
+                              <span className="text-rose-400/80 flex-1 min-w-0 truncate">{r.name} — not billed</span>
+                              <span className="tabular-nums text-rose-400/80">0 units</span>
+                              <span className="text-muted-foreground/40">·</span>
+                              <span className="tabular-nums text-rose-400/80">{formatCurrency(0)}</span>
+                            </div>
+                          ))}
                           {unassignedUnits > 0 && (
                             <div className="flex items-center gap-2 text-xs">
-                              <span className="text-amber/70 flex-1 min-w-0 truncate">Unassigned (pre-occupancy) · hostel absorbs</span>
+                              <span className="text-amber/70 flex-1 min-w-0 truncate">
+                                {unbilled.length > 0
+                                  ? "Unassigned — re-apply to bill the tenants above"
+                                  : "Unassigned (pre-occupancy) · hostel absorbs"}
+                              </span>
                               <span className="tabular-nums text-amber/70">{unassignedUnits} units</span>
                               <span className="text-muted-foreground/40">·</span>
                               <span className="tabular-nums text-amber/70">{formatCurrency(unassignedCharge)}</span>

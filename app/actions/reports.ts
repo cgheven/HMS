@@ -136,6 +136,9 @@ export interface ReportData {
     acCharge: number;
     forMonth: string;
   }[];
+  /** acByRoom is one row PER TENANT, so a shared room appears several times.
+   *  This is the genuinely per-room rollup the "Top Rooms" chart needs. */
+  acTopRooms: { roomNumber: string; unitsConsumed: number; acCharge: number }[];
   acStats: {
     avgUnitsPerTenant: number;
     totalAcRevenue: number;
@@ -248,7 +251,7 @@ export async function getReportData(
   ] = await Promise.all([
     admin
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, security_deposit_charge, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
+      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
@@ -435,6 +438,24 @@ export async function getReportData(
       forMonth: p.for_month,
     };
   }).sort((a, b) => b.unitsConsumed - a.unitsConsumed).slice(0, 10);
+
+  // Roll the per-tenant rows up to one entry per room. Charting acByRoom
+  // directly repeated a shared room once per occupant — three "Rm 103"
+  // categories on an axis that is supposed to have one.
+  const roomTotals = new Map<string, { unitsConsumed: number; acCharge: number }>();
+  for (const p of acPayments) {
+    const t = p.tenant;
+    const rooms_raw = t?.hms_rooms;
+    const roomEntry = Array.isArray(rooms_raw) ? (rooms_raw as { room_number: string }[])[0] : (rooms_raw as { room_number: string } | null);
+    const key = roomEntry?.room_number ?? "—";
+    const cur = roomTotals.get(key) ?? { unitsConsumed: 0, acCharge: 0 };
+    cur.unitsConsumed += Number(p.ac_units_consumed || 0);
+    cur.acCharge += Number(p.ac_charge || 0);
+    roomTotals.set(key, cur);
+  }
+  const acTopRooms = Array.from(roomTotals, ([roomNumber, v]) => ({ roomNumber, ...v }))
+    .sort((a, b) => b.unitsConsumed - a.unitsConsumed)
+    .slice(0, 10);
 
   const totalAcRevenue = acPayments.reduce((s, p) => s + Number(p.ac_charge || 0), 0);
   const totalAcTenants = acPayments.length;
@@ -637,6 +658,7 @@ export async function getReportData(
       totalCapacity,
       totalOccupied,
       acByRoom,
+      acTopRooms,
       acStats: { avgUnitsPerTenant, totalAcRevenue, totalAcTenants },
       roomOptions: rooms.map((r) => ({ id: r.id, roomNumber: r.room_number })).sort((a, b) => a.roomNumber.localeCompare(b.roomNumber)),
       paymentMethodBreakdown,

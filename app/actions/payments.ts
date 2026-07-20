@@ -689,6 +689,11 @@ export async function applyRoomACUnitsAction(
   skippedFirstMonth?: number;
   proRatedCount?: number;
   unassignedUnits?: number;
+  /** Stale AC charges wiped from tenants who left the room since the last apply. */
+  clearedStaleCount?: number;
+  /** Departed tenants whose stale AC charge could NOT be cleared because the
+   *  bill is already settled — the operator has to refund or adjust manually. */
+  lockedStale?: { name: string; units: number; charge: number }[];
   derivedUnits?: number;
   prevMonthReading?: number;
   currentReading?: number;
@@ -1027,6 +1032,51 @@ export async function applyRoomACUnitsAction(
     const firstError = updateResults.find(r => r.error)?.error;
     if (firstError) throw new Error(`AC billing DB error: ${firstError.message} (code: ${firstError.code})`);
 
+    // ── Clear stale AC charges left on tenants who are no longer eligible ──
+    // The eligible set above is is_active = true, so a tenant who checked out
+    // after a previous apply is invisible to it: their old ac_charge is never
+    // recomputed AND the full room total is re-split among whoever remains, so
+    // their units get billed twice. Rajput Room 103 showed exactly this — a
+    // 120-unit meter billed as 168 because a departed tenant kept 48 units.
+    //
+    // A checkout that DID record a meter reading is different: it leaves a
+    // breakpoint in hms_room_ac_checkout_readings, the segmentation above
+    // accounts for it, and that charge is legitimately theirs — so those are
+    // left alone.
+    //
+    // Settled money is never rewritten. A paid/waived row keeps its charge and
+    // is reported back to the caller instead, for the operator to handle.
+    const eligibleIds = new Set(eligible.map((t) => t.id));
+    const { data: staleRows } = await adminDb
+      .from("hms_payments")
+      .select("id, tenant_id, status, ac_units_consumed, ac_charge, tenant:hms_tenants!inner(full_name, room_id)")
+      .eq("hostel_id", hostelId)
+      .eq("for_month", forMonth)
+      .eq("tenant.room_id", roomId)
+      .gt("ac_charge", 0);
+
+    const { data: breakpointRows } = await adminDb
+      .from("hms_room_ac_checkout_readings")
+      .select("tenant_id")
+      .eq("hostel_id", hostelId)
+      .eq("room_id", roomId)
+      .eq("for_month", forMonth);
+    const hasBreakpoint = new Set((breakpointRows ?? []).map((b) => b.tenant_id));
+
+    const staleCandidates = (staleRows ?? []).filter(
+      (r) => !eligibleIds.has(r.tenant_id) && !hasBreakpoint.has(r.tenant_id)
+    );
+    const clearable = staleCandidates.filter((r) => ["pending", "overdue", "partially_paid"].includes(r.status));
+    const lockedStale = staleCandidates.filter((r) => !["pending", "overdue", "partially_paid"].includes(r.status));
+
+    if (clearable.length > 0) {
+      await adminDb
+        .from("hms_payments")
+        .update({ ac_units_consumed: 0, ac_charge: 0, updated_at: new Date().toISOString() })
+        .in("id", clearable.map((r) => r.id))
+        .eq("hostel_id", hostelId);
+    }
+
     // ── Verify all rows were found ──
     const updatedCount = updateResults.reduce((sum, r) => sum + (r.data?.length ?? 0), 0);
     if (updatedCount < eligible.length) {
@@ -1076,6 +1126,12 @@ export async function applyRoomACUnitsAction(
       skippedFirstMonth: 0,
       proRatedCount,
       unassignedUnits,
+      clearedStaleCount: clearable.length,
+      lockedStale: lockedStale.map((r) => {
+        const t = r.tenant as unknown as { full_name?: string } | { full_name?: string }[] | null;
+        const name = Array.isArray(t) ? t[0]?.full_name : t?.full_name;
+        return { name: name ?? "Unknown", units: Number(r.ac_units_consumed ?? 0), charge: Number(r.ac_charge ?? 0) };
+      }),
       derivedUnits: units,
       prevMonthReading: prevReading,
       currentReading: reading,

@@ -616,12 +616,12 @@ export function ReportsClient(props: Props) {
                   <p className="text-xs text-muted-foreground mb-4">kWh usage</p>
                   <div className="h-[220px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={d.acByRoom.slice(0, 10)} layout="vertical">
+                      <BarChart data={d.acTopRooms} layout="vertical">
                         <XAxis type="number" tick={{ fontSize: 10, fill: "#888" }} axisLine={false} tickLine={false} />
                         <YAxis type="category" dataKey="roomNumber" tick={{ fontSize: 10, fill: "#888" }} axisLine={false} tickLine={false} width={50} />
                         <Tooltip formatter={(v: number) => `${v} kWh`} />
                         <Bar dataKey="unitsConsumed" name="Units (kWh)" fill="#3b82f6" radius={[0, 4, 4, 0]}>
-                          {d.acByRoom.slice(0, 10).map((_, idx) => (
+                          {d.acTopRooms.map((_, idx) => (
                             <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
                           ))}
                         </Bar>
