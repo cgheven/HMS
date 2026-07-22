@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import {
   listAllHostels, createHostelForClient, addBranchToOwner,
-  deleteHostel, deleteClient, type SuperHostelRow,
+  deleteHostel, deleteClient, setAutoReminderEnabled, type SuperHostelRow,
 } from "@/app/actions/super-admin";
 import {
   getClientBilling, setClientBilling, generateInvoiceNow, markInvoiceStatus, updateInvoiceAmount,
@@ -360,6 +360,19 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     setLoading(false);
   }
 
+  const [togglingReminder, setTogglingReminder] = useState<string | null>(null);
+  async function toggleAutoReminder(hostelId: string, current: boolean) {
+    setTogglingReminder(hostelId);
+    const res = await setAutoReminderEnabled(hostelId, !current);
+    if (res.error) {
+      toast({ title: "Error", description: res.error, variant: "destructive" });
+    } else {
+      setHostels(prev => prev.map(h => h.id === hostelId ? { ...h, auto_reminder_enabled: !current } : h));
+      toast({ title: !current ? "Auto reminders enabled" : "Auto reminders disabled" });
+    }
+    setTogglingReminder(null);
+  }
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     if (!q) return hostels;
@@ -535,6 +548,19 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                           {h.city && <p className="text-[11px] text-muted-foreground truncate">{h.city}</p>}
                         </div>
                         <span className="text-[11px] text-muted-foreground shrink-0">{h.tenant_count} ten.</span>
+                        <button
+                          onClick={() => toggleAutoReminder(h.id, h.auto_reminder_enabled)}
+                          disabled={togglingReminder === h.id}
+                          className={cn(
+                            "p-1 rounded transition-all shrink-0",
+                            h.auto_reminder_enabled
+                              ? "text-emerald-400 hover:bg-emerald-500/10"
+                              : "opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-emerald-400 hover:bg-emerald-500/10"
+                          )}
+                          title={h.auto_reminder_enabled ? "Auto WhatsApp reminders: ON for this branch — click to disable" : "Auto WhatsApp reminders: OFF for this branch — click to enable"}
+                        >
+                          <MessageCircle className="w-3 h-3" />
+                        </button>
                         <button
                           onClick={() => setDeleteTarget({ type: "branch", id: h.id, name: h.name })}
                           className="opacity-0 group-hover:opacity-100 p-1 rounded text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-all shrink-0"

@@ -142,6 +142,7 @@ export interface Hostel {
   cover_image_url: string | null;
   payment_methods: PaymentMethodAccount[];
   reminder_template: string | null;
+  auto_reminder_enabled: boolean;
   created_at: string;
   updated_at: string;
 }

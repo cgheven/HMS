@@ -22,7 +22,8 @@ import { getAuthContext } from "@/lib/data";
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
-import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
+import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
+import { VALID_TIERS, calcBaseRentServer, dailySnapshot, computeDepositCharge } from "@/lib/payment-calc";
 import { logActivity } from "@/lib/audit";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
 
@@ -30,7 +31,6 @@ import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types
 // Constants / validation helpers
 // ---------------------------------------------------------------------------
 
-const VALID_TIERS = new Set<string>(["space_only", "space_food", "space_3meals", "space_food_ac", "space_meals_cooler"]);
 const VALID_METHODS = new Set<string>(["cash", "bank_transfer", "jazzcash", "easypaisa", "sadapay", "other"]);
 const VALID_STATUSES = new Set<string>(["paid", "pending", "overdue", "waived"]);
 const MAX_AC_UNITS = 10_000;
@@ -125,19 +125,6 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Internal helper: the security deposit is billed once, on the tenant's first
-// billing month only — every later month is rent + food + AC as before.
-// ---------------------------------------------------------------------------
-
-function computeDepositCharge(
-  t: { check_in: string; security_deposit?: number | null },
-  forMonth: string
-): number {
-  const isFirstBillingMonth = t.check_in && t.check_in.slice(0, 7) === forMonth;
-  return isFirstBillingMonth ? Number(t.security_deposit ?? 0) : 0;
-}
-
-// ---------------------------------------------------------------------------
 // syncMonthAction
 // Called by the client instead of a direct Supabase upsert.
 // Re-fetches all canonical rates from the DB before writing.
@@ -164,103 +151,11 @@ export async function syncMonthAction(
     // not just when the caller happens to be a partner.
     const supabase = createAdminClient();
 
-    // Fetch active tenants and package config server-side
-    const [{ data: tenants, error: tenantsErr }, { data: configData }] = await Promise.all([
-      supabase
-        .from("hms_tenants")
-        .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, food_breakfast, food_lunch, food_dinner")
-        .eq("hostel_id", hostelId)
-        .eq("is_active", true),
-      supabase
-        .from("hms_package_configs")
-        .select("food_monthly_rate, ac_per_unit_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate")
-        .eq("hostel_id", hostelId)
-        .maybeSingle(),
-    ]);
-
-    if (tenantsErr) throw new Error(tenantsErr.message);
-
-    const activeTenants = tenants ?? [];
-    const foodRate = Number(configData?.food_monthly_rate ?? 0);
-
-    if (activeTenants.length > 0) {
-      // Fetch existing payment rows so we can skip paid/waived and preserve ac_charge on pending rows
-      const { data: existingRows } = await supabase
-        .from("hms_payments")
-        .select("tenant_id, status, ac_charge, ac_units_consumed")
-        .eq("hostel_id", hostelId)
-        .eq("for_month", month);
-
-      type ExistingRow = { tenant_id: string; status: string; ac_charge: number | null; ac_units_consumed: number | null };
-      const existingMap = new Map<string, ExistingRow>(
-        (existingRows ?? []).map((r) => [r.tenant_id, r])
-      );
-
-      const newRows: object[] = [];      // tenants with no payment row yet
-      const pendingUpdates: object[] = []; // pending rows that need tier/amount refresh
-
-      for (const t of activeTenants) {
-        const tier = (t.package_tier ?? "space_only") as PackageTier;
-        if (!VALID_TIERS.has(tier)) throw new Error(`Invalid package_tier in DB for tenant ${t.id}`);
-
-        const baseRent = calcBaseRentServer(t, month);
-        const daySnapshot = dailySnapshot(t, month);
-        const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
-        const addonFoodCharge = configData ? calcFoodAddonCharge(t, configData) : 0;
-        const foodCharge = tierFoodCharge + addonFoodCharge;
-        const depositCharge = computeDepositCharge(t, month);
-
-        const existing = existingMap.get(t.id);
-
-        if (!existing) {
-          // New tenant — create fresh row
-          newRows.push({
-            hostel_id: hostelId,
-            tenant_id: t.id,
-            for_month: month,
-            amount: baseRent + foodCharge + depositCharge,
-            status: "pending" as PaymentStatus,
-            payment_package_tier: tier,
-            food_charge: foodCharge,
-            ac_units_consumed: 0,
-            ac_charge: 0,
-            security_deposit_charge: depositCharge,
-            ...daySnapshot,
-          });
-        } else if (existing.status === "pending") {
-          // Pending row — refresh tier/amount but preserve any existing ac_charge
-          const preservedAC = Number(existing.ac_charge ?? 0);
-          pendingUpdates.push({
-            hostel_id: hostelId,
-            tenant_id: t.id,
-            for_month: month,
-            amount: baseRent + foodCharge + depositCharge,
-            payment_package_tier: tier,
-            food_charge: foodCharge,
-            ac_charge: preservedAC,
-            ac_units_consumed: existing.ac_units_consumed ?? 0,
-            security_deposit_charge: depositCharge,
-            ...daySnapshot,
-          });
-          // status stays "pending" — not included so it isn't overwritten
-        }
-        // paid/waived rows are skipped entirely
-      }
-
-      // Insert new rows
-      if (newRows.length > 0) {
-        const { error: insertErr } = await supabase.from("hms_payments").insert(newRows);
-        if (insertErr) throw new Error(insertErr.message);
-      }
-
-      // Update pending rows (upsert so it handles any race between the two steps)
-      if (pendingUpdates.length > 0) {
-        const { error: updateErr } = await supabase
-          .from("hms_payments")
-          .upsert(pendingUpdates, { onConflict: "tenant_id,for_month", ignoreDuplicates: false });
-        if (updateErr) throw new Error(updateErr.message);
-      }
-    }
+    // Same row-creation/refresh logic the payment-reminders cron uses to
+    // guarantee this month's rows exist before it scans for who to remind —
+    // one shared implementation so a page visit and the cron can never compute
+    // a tenant's rent differently.
+    await ensureMonthlyPaymentRows(supabase, hostelId, month);
 
     const { data: payments, error: fetchErr } = await supabase
       .from("hms_payments")
@@ -614,46 +509,6 @@ export async function loadHistoryAction(forMonth: string): Promise<{ payments?: 
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };
   }
-}
-
-// ---------------------------------------------------------------------------
-// calcBaseRentServer — the only place base rent is derived on the server.
-// Monthly tenants bill the flat monthly_rent, untouched. Daily tenants defer
-// entirely to lib/daily-billing.ts, which owns the nights convention (the
-// check-out day is not billed; a stay continuing past month-end bills the month
-// inclusive) and parses dates as local midnight rather than UTC.
-// ---------------------------------------------------------------------------
-
-type BaseRentTenant = {
-  billing_type: string;
-  monthly_rent: number;
-  daily_rate: number;
-  check_in: string;
-  check_out: string | null;
-};
-
-function calcBaseRentServer(t: BaseRentTenant, month: string): number {
-  if (t.billing_type !== "daily") return Number(t.monthly_rent);
-  return calcDailyRent({
-    checkIn: t.check_in,
-    checkOut: t.check_out,
-    month,
-    dailyRate: Number(t.daily_rate),
-  });
-}
-
-// Day snapshot for hms_payments (migration 099). Daily rows record the nights
-// billed and the rate at the time; monthly rows explicitly record null/null so
-// nothing downstream mistakes a monthly row for a daily one.
-function dailySnapshot(t: BaseRentTenant, month: string): {
-  billed_days: number | null;
-  daily_rate_billed: number | null;
-} {
-  if (t.billing_type !== "daily") return { billed_days: null, daily_rate_billed: null };
-  return {
-    billed_days: countBillableNights({ checkIn: t.check_in, checkOut: t.check_out, month }),
-    daily_rate_billed: Number(t.daily_rate),
-  };
 }
 
 // ac_charge MUST always equal ac_units_consumed × rate. markPaymentPaidAction

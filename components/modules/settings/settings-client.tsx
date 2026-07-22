@@ -158,6 +158,7 @@ export function SettingsClient() {
   function removePaymentMethod(id: string) {
     setPaymentMethods((prev) => prev.filter((m) => m.id !== id));
   }
+
   async function saveRecoverySettings() {
     setSavingRecovery(true);
     const result = await savePaymentRecoverySettings({
@@ -2021,6 +2022,20 @@ export function SettingsClient() {
               ))}
             </p>
           </div>
+
+          {/* Auto Reminders status — a curated feature Super Admin grants per branch;
+              fully automatic once granted, nothing here for the owner to configure. */}
+          {hostel?.auto_reminder_enabled && (
+          <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/[0.03] p-3">
+            <p className="text-xs font-semibold text-emerald-400">Auto WhatsApp Reminders — Active</p>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Each tenant is automatically reminded, using the template above, on the day-of-month they checked in —
+              only while still pending, overdue, or partially paid for the current month, and only while still active.
+              Checked-out tenants are never reminded. Separate from the manual &quot;Send Reminder&quot; button on the
+              Payments page, which is unaffected.
+            </p>
+          </div>
+          )}
 
           {/* Live Preview */}
           <div className="space-y-2">
