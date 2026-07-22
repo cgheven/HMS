@@ -23,9 +23,10 @@ export async function GET(
     return new NextResponse("This invoice link does not exist.", { status: 404 });
   }
 
-  // Branch count and standard price are read from the invoice itself (snapshotted
-  // at generation time in lib/invoice-generation.ts) — not recomputed live, so an
-  // old invoice stays an accurate historical record even if branches change later.
+  // Branch count and the rate/discount/onboarding snapshot are read from the
+  // invoice itself (snapshotted at generation time in lib/invoice-generation.ts)
+  // — not recomputed live, so an old invoice stays an accurate historical record
+  // even if branches or billing config change later.
   const [{ data: profile }, { data: authUser }] = await Promise.all([
     admin.from("hms_profiles").select("full_name, phone").eq("id", invoice.owner_id).maybeSingle(),
     admin.auth.admin.getUserById(invoice.owner_id),
@@ -42,7 +43,10 @@ export async function GET(
       created_at: invoice.created_at,
       paid_at: invoice.paid_at,
       branch_count: invoice.branch_count,
-      standard_annual_price: Number(invoice.standard_annual_price),
+      monthly_rate: Number(invoice.monthly_rate),
+      discount_pct: Number(invoice.discount_pct),
+      onboarding_fee_charged: Number(invoice.onboarding_fee_charged),
+      is_first_invoice: invoice.is_first_invoice,
     },
     {
       owner_name: profile?.full_name ?? "Client",

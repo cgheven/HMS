@@ -4,7 +4,7 @@ import { useState, useTransition, useMemo } from "react";
 import {
   Building2, Plus, Search, RefreshCw, Users, Home,
   GitBranch, Trash2, Copy, Check, MessageCircle, AlertTriangle,
-  Wallet, CheckCircle2, Clock, Zap, Download, Pencil,
+  Wallet, CheckCircle2, Clock, Zap, Download, Pencil, RotateCcw,
 } from "lucide-react";
 import {
   listAllHostels, createHostelForClient, addBranchToOwner,
@@ -12,7 +12,7 @@ import {
 } from "@/app/actions/super-admin";
 import {
   getClientBilling, setClientBilling, generateInvoiceNow, markInvoiceStatus, updateInvoiceAmount,
-  updateOwnerPhone,
+  resetClientInvoices, updateOwnerPhone,
 } from "@/app/actions/client-billing";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
-import { calculateAnnualPrice } from "@/lib/pricing";
+import { STANDARD_CLIENT_MONTHLY_RATE, ONBOARDING_FEE, clientDiscountPct, listSubtotalFromDiscount } from "@/lib/pricing";
 import type { ClientBilling, PlatformInvoice } from "@/types";
 
 const emptyOwner = { ownerEmail: "", ownerName: "", ownerPhone: "" };
@@ -164,7 +164,8 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
   const [savingPhone, setSavingPhone] = useState(false);
   const [billingForm, setBillingForm] = useState({
     cycle: "annual" as "monthly" | "annual",
-    price: "",
+    monthlyRate: "",
+    waiveOnboarding: true,
     notes: "",
     startDate: new Date().toISOString().slice(0, 10),
   });
@@ -181,9 +182,11 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
       setInvoices(res.invoices ?? []);
       setOwnerPhone(res.ownerPhone ?? null);
       setPhoneInput(res.ownerPhone ?? "");
+      const cycle = res.billing?.billing_cycle ?? "annual";
       setBillingForm({
-        cycle: res.billing?.billing_cycle ?? "annual",
-        price: res.billing?.custom_price != null ? String(res.billing.custom_price) : "",
+        cycle,
+        monthlyRate: res.billing?.monthly_rate != null ? String(res.billing.monthly_rate) : "",
+        waiveOnboarding: res.billing?.waive_onboarding ?? (cycle === "annual"),
         notes: res.billing?.pricing_notes ?? "",
         startDate: res.billing?.next_invoice_date ?? new Date().toISOString().slice(0, 10),
       });
@@ -193,16 +196,17 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
 
   function handleSaveBilling() {
     if (!billingTarget) return;
-    const price = parseFloat(billingForm.price);
-    if (!price || price <= 0) {
-      toast({ title: "Enter a valid price", variant: "destructive" });
+    const rate = parseFloat(billingForm.monthlyRate);
+    if (!rate || rate <= 0) {
+      toast({ title: "Enter a valid monthly rate", variant: "destructive" });
       return;
     }
     startTransition(async () => {
       const res = await setClientBilling({
         ownerId: billingTarget.ownerId,
         billingCycle: billingForm.cycle,
-        customPrice: price,
+        monthlyRate: rate,
+        waiveOnboarding: billingForm.waiveOnboarding,
         pricingNotes: billingForm.notes,
         nextInvoiceDate: billingForm.startDate,
       });
@@ -217,18 +221,19 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
 
   function handleGenerateInvoice() {
     if (!billingTarget) return;
-    const price = parseFloat(billingForm.price);
-    if (!price || price <= 0) {
-      toast({ title: "Enter a valid price", variant: "destructive" });
+    const rate = parseFloat(billingForm.monthlyRate);
+    if (!rate || rate <= 0) {
+      toast({ title: "Enter a valid monthly rate", variant: "destructive" });
       return;
     }
     startTransition(async () => {
       // Save whatever's currently typed FIRST — otherwise this would silently generate
-      // using the last-saved price and discard any unsaved edit in the price field.
+      // using the last-saved rate and discard any unsaved edit in the form.
       const saveRes = await setClientBilling({
         ownerId: billingTarget.ownerId,
         billingCycle: billingForm.cycle,
-        customPrice: price,
+        monthlyRate: rate,
+        waiveOnboarding: billingForm.waiveOnboarding,
         pricingNotes: billingForm.notes,
         nextInvoiceDate: billingForm.startDate,
       });
@@ -249,10 +254,13 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
   }
 
   function invoicePricingInfo(inv: PlatformInvoice) {
-    const actualAnnual = inv.billing_cycle === "annual" ? Number(inv.amount) : Number(inv.amount) * 12;
-    const discount = Math.max(0, Number(inv.standard_annual_price) - actualAnnual);
-    const discountPct = Number(inv.standard_annual_price) > 0 ? (discount / Number(inv.standard_annual_price)) * 100 : 0;
-    return { actualAnnual, discount, discountPct };
+    const months = inv.billing_cycle === "annual" ? 12 : 1;
+    const actualSubtotal = Number(inv.monthly_rate) * months * inv.branch_count;
+    const listSubtotal = listSubtotalFromDiscount(actualSubtotal, Number(inv.discount_pct));
+    const standardOnboarding = inv.is_first_invoice ? ONBOARDING_FEE : 0;
+    const listTotal = listSubtotal + standardOnboarding;
+    const totalSavings = listTotal - Number(inv.amount);
+    return { listTotal, totalSavings, discountPct: Number(inv.discount_pct) };
   }
 
   // ── Correct an already-generated but unpaid invoice's amount ──────────────
@@ -278,6 +286,23 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
       } else {
         toast({ title: "Invoice updated" });
         setEditingInvoiceId(null);
+        openBilling(billingTarget.ownerId, billingTarget.ownerName, billingBranchCount);
+      }
+    });
+  }
+
+  // ── Reset invoices (test accounts only) ───────────────────────────────────
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+
+  function handleResetInvoices() {
+    if (!billingTarget) return;
+    startTransition(async () => {
+      const res = await resetClientInvoices(billingTarget.ownerId);
+      if (res.error) {
+        toast({ title: "Cannot reset", description: res.error, variant: "destructive" });
+      } else {
+        toast({ title: "Invoices reset" });
+        setResetConfirmOpen(false);
         openBilling(billingTarget.ownerId, billingTarget.ownerName, billingBranchCount);
       }
     });
@@ -362,22 +387,41 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     return Array.from(map.values());
   }, [filtered]);
 
-  // Live discount-vs-standard-price preview while setting a client's billing —
-  // so it's visible before saving, not just after generating an invoice PDF.
+  // Live "everything included vs. what you're charging" preview while setting a
+  // client's billing — so it's visible before saving, not just on the PDF. The
+  // rate is PER BRANCH, so every total is rate × months × branch count — this is
+  // what was missing before and made totals look wrong for multi-branch clients.
+  // The discount is always auto-derived from the rate vs. our standard cost, for
+  // both monthly and annual clients — there's no separate manual discount field.
+  // Onboarding stays a flat one-time account-level fee, not multiplied by branches.
   const billingPreview = useMemo(() => {
-    const enteredPrice = parseFloat(billingForm.price);
-    if (!enteredPrice || enteredPrice <= 0) return null;
-    const standardAnnual = calculateAnnualPrice(billingBranchCount);
-    const actualAnnual = billingForm.cycle === "annual" ? enteredPrice : enteredPrice * 12;
-    const discount = Math.max(0, standardAnnual - actualAnnual);
-    const discountPct = standardAnnual > 0 ? (discount / standardAnnual) * 100 : 0;
+    const rate = parseFloat(billingForm.monthlyRate);
+    if (!rate || rate <= 0) return null;
+    const isFirstInvoice = invoices.length === 0;
+    const months = billingForm.cycle === "annual" ? 12 : 1;
+    const branches = Math.max(1, billingBranchCount);
+    const discountPct = clientDiscountPct(rate);
+    const perBranchActual = rate * months;
+    const perBranchList = STANDARD_CLIENT_MONTHLY_RATE * months;
+    const actualSubtotal = perBranchActual * branches;
+    const listSubtotal = perBranchList * branches;
+    const discountAmount = listSubtotal - actualSubtotal;
+    const standardOnboarding = isFirstInvoice ? ONBOARDING_FEE : 0;
+    const onboardingCharged = isFirstInvoice && !billingForm.waiveOnboarding ? ONBOARDING_FEE : 0;
+    const listTotal = listSubtotal + standardOnboarding;
+    const actualTotal = actualSubtotal + onboardingCharged;
+    const totalSavings = listTotal - actualTotal;
     return {
-      standardAnnual, actualAnnual, discount, discountPct,
-      standardMonthly: standardAnnual / 12,
-      actualMonthly: actualAnnual / 12,
-      discountMonthly: discount / 12,
+      isFirstInvoice, branches, perBranchActual, perBranchList,
+      listSubtotal, actualSubtotal, discountPct, discountAmount,
+      standardOnboarding, onboardingCharged, listTotal, actualTotal, totalSavings,
     };
-  }, [billingForm.price, billingForm.cycle, billingBranchCount]);
+  }, [billingForm.monthlyRate, billingForm.cycle, billingForm.waiveOnboarding, invoices.length, billingBranchCount]);
+
+  // Onboarding only ever applies to a client's literal first invoice ever generated —
+  // once they have any invoice history, the waive checkbox has no effect at all, which
+  // is confusing unless the dialog says so explicitly.
+  const isClientFirstInvoice = invoices.length === 0;
 
   return (
     <div className="min-h-screen bg-background">
@@ -689,8 +733,30 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
         </DialogContent>
       </Dialog>
 
+      {/* ── Reset Invoices Confirm Dialog ── */}
+      <Dialog open={resetConfirmOpen} onOpenChange={o => !o && setResetConfirmOpen(false)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-400">
+              <AlertTriangle className="w-4 h-4" /> Reset Invoices?
+            </DialogTitle>
+            <DialogDescription>
+              This permanently deletes all {invoices.length} invoice{invoices.length !== 1 ? "s" : ""} for <strong>{billingTarget?.ownerName}</strong> and cannot be undone.
+              Their billing config (rate, cycle, onboarding waiver) is kept as-is, and their next invoice will be treated as a first invoice again.
+              Blocked automatically if any invoice has been marked paid — this is for test accounts only.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResetConfirmOpen(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleResetInvoices} disabled={isPending} className="gap-2">
+              <RotateCcw className="w-4 h-4" />{isPending ? "Resetting…" : "Reset Invoices"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* ── Billing Dialog ── */}
-      <Dialog open={!!billingTarget} onOpenChange={o => !o && setBillingTarget(null)}>
+      <Dialog open={!!billingTarget} onOpenChange={o => { if (!o) { setBillingTarget(null); setResetConfirmOpen(false); } }}>
         <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto scrollbar-thin">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><Wallet className="w-4 h-4 text-amber" /> Billing</DialogTitle>
@@ -730,7 +796,7 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                       <button
                         key={c}
                         type="button"
-                        onClick={() => setBillingForm(f => ({ ...f, cycle: c }))}
+                        onClick={() => setBillingForm(f => ({ ...f, cycle: c, waiveOnboarding: c === "annual" ? true : f.waiveOnboarding }))}
                         className={cn(
                           "flex-1 h-9 rounded-lg border text-sm font-medium capitalize transition-colors",
                           billingForm.cycle === c
@@ -745,14 +811,18 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
-                    <Label>Price per {billingForm.cycle === "monthly" ? "month" : "year"} (PKR)</Label>
+                    <Label>Monthly Rate per Branch (PKR)</Label>
                     <Input
                       type="number"
                       min={0}
-                      placeholder="80000"
-                      value={billingForm.price}
-                      onChange={e => setBillingForm(f => ({ ...f, price: e.target.value }))}
+                      placeholder={String(STANDARD_CLIENT_MONTHLY_RATE)}
+                      value={billingForm.monthlyRate}
+                      onChange={e => setBillingForm(f => ({ ...f, monthlyRate: e.target.value }))}
                     />
+                    <p className="text-[11px] text-muted-foreground">
+                      Per branch, per month. Our standard rate is {formatCurrency(STANDARD_CLIENT_MONTHLY_RATE)}/mo — charge less and the discount % is worked out for you below.
+                      This client has {billingBranchCount} branch{billingBranchCount !== 1 ? "es" : ""}, so the total is this rate × {billingBranchCount}.
+                    </p>
                   </div>
                   <div className="space-y-1.5">
                     <Label>Billing Start Date</Label>
@@ -763,6 +833,28 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                     />
                   </div>
                 </div>
+                <label
+                  className={cn(
+                    "flex items-center gap-2.5 rounded-lg border px-3 py-2.5",
+                    isClientFirstInvoice ? "border-sidebar-border cursor-pointer" : "border-sidebar-border/50 opacity-60 cursor-not-allowed"
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={billingForm.waiveOnboarding}
+                    disabled={!isClientFirstInvoice}
+                    onChange={e => setBillingForm(f => ({ ...f, waiveOnboarding: e.target.checked }))}
+                    className="w-4 h-4 accent-amber"
+                  />
+                  <span className="text-sm">
+                    Waive onboarding fee ({formatCurrency(ONBOARDING_FEE)})
+                    <span className="block text-[11px] text-muted-foreground font-normal">
+                      {isClientFirstInvoice
+                        ? "This is their first invoice — this decides whether it includes the onboarding fee."
+                        : "Already has invoice history, so the onboarding fee no longer applies — this setting has no effect."}
+                    </span>
+                  </span>
+                </label>
                 <p className="text-[11px] text-muted-foreground -mt-2">
                   The next invoice generated (manually or by the daily job) will cover the {billingForm.cycle} starting from this date — set it to when the client actually started, not necessarily today.
                 </p>
@@ -770,29 +862,53 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                 {billingPreview && (
                   <div className="rounded-lg border border-sidebar-border bg-muted/20 p-3 space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-muted-foreground">Standard price ({billingBranchCount} branch{billingBranchCount !== 1 ? "es" : ""})</span>
-                      <span className="font-medium">
-                        {formatCurrency(billingPreview.standardAnnual)}/yr
-                        <span className="text-muted-foreground font-normal"> ({formatCurrency(billingPreview.standardMonthly)}/mo)</span>
-                      </span>
+                      <span className="text-muted-foreground">Our cost (per branch, {billingForm.cycle})</span>
+                      <span className="font-medium">{formatCurrency(billingPreview.perBranchList)}</span>
                     </div>
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-muted-foreground">This client's price</span>
-                      <span className="font-medium">
-                        {formatCurrency(billingPreview.actualAnnual)}/yr
-                        <span className="text-muted-foreground font-normal"> ({formatCurrency(billingPreview.actualMonthly)}/mo)</span>
-                      </span>
+                      <span className="text-muted-foreground">We're charging (per branch)</span>
+                      <span className="font-medium">{formatCurrency(billingPreview.perBranchActual)}</span>
                     </div>
-                    {billingPreview.discount > 0 ? (
-                      <div className="flex items-center justify-between text-xs pt-1 border-t border-sidebar-border/60">
-                        <span className="text-amber font-semibold">Discount you're giving</span>
-                        <span className="text-amber font-semibold">
-                          {formatCurrency(billingPreview.discount)}/yr ({formatCurrency(billingPreview.discountMonthly)}/mo) · {billingPreview.discountPct.toFixed(0)}%
-                        </span>
+                    {billingPreview.discountAmount > 0 ? (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-amber">Discount</span>
+                        <span className="font-medium text-amber">{billingPreview.discountPct.toFixed(1)}%</span>
                       </div>
                     ) : (
-                      <div className="flex items-center justify-between text-xs pt-1 border-t border-sidebar-border/60">
-                        <span className="text-emerald-400 font-semibold">No discount — full standard price</span>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-emerald-400">Discount</span>
+                        <span className="font-medium text-emerald-400">0% — full standard rate</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between text-xs pt-1.5 border-t border-sidebar-border/60">
+                      <span className="text-muted-foreground">× {billingPreview.branches} branch{billingPreview.branches !== 1 ? "es" : ""}</span>
+                      <span className="font-medium">{formatCurrency(billingPreview.actualSubtotal)}</span>
+                    </div>
+                    {billingPreview.discountAmount > 0 && (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">(list price for all branches: {formatCurrency(billingPreview.listSubtotal)}, discount - {formatCurrency(billingPreview.discountAmount)})</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between text-xs pt-1.5 border-t border-sidebar-border/60">
+                      <span className="text-muted-foreground">Onboarding fee (flat, not per branch)</span>
+                      {billingPreview.isFirstInvoice ? (
+                        billingForm.waiveOnboarding ? (
+                          <span className="font-medium text-emerald-400">Waived</span>
+                        ) : (
+                          <span className="font-medium">{formatCurrency(ONBOARDING_FEE)}</span>
+                        )
+                      ) : (
+                        <span className="font-medium text-muted-foreground">Not applicable</span>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between text-xs pt-1.5 border-t border-sidebar-border/60">
+                      <span className="font-semibold">You're charging (total, all branches)</span>
+                      <span className="font-semibold">{formatCurrency(billingPreview.actualTotal)}</span>
+                    </div>
+                    {billingPreview.totalSavings > 0 && (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-amber font-semibold">Total you're giving away</span>
+                        <span className="text-amber font-semibold">{formatCurrency(billingPreview.totalSavings)}</span>
                       </div>
                     )}
                   </div>
@@ -814,7 +930,7 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                   <Button
                     variant="outline"
                     onClick={handleGenerateInvoice}
-                    disabled={isPending || !billing?.custom_price}
+                    disabled={isPending || !billing?.monthly_rate}
                     className="flex-1 gap-2"
                   >
                     <Zap className="w-4 h-4" /> Generate Invoice Now
@@ -825,13 +941,24 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
               <div className="h-px bg-sidebar-border" />
 
               <div>
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Invoice History</p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Invoice History</p>
+                  {invoices.length > 0 && (
+                    <button
+                      onClick={() => setResetConfirmOpen(true)}
+                      className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-red-400 transition-colors"
+                      title="Reset invoices (test accounts only)"
+                    >
+                      <RotateCcw className="w-3 h-3" /> Reset (test)
+                    </button>
+                  )}
+                </div>
                 {invoices.length === 0 ? (
                   <p className="text-sm text-muted-foreground py-4 text-center">No invoices yet.</p>
                 ) : (
                   <div className="space-y-1.5">
                     {invoices.map((inv) => {
-                      const { actualAnnual, discount, discountPct } = invoicePricingInfo(inv);
+                      const { totalSavings, discountPct } = invoicePricingInfo(inv);
                       return (
                       <div key={inv.id} className="flex items-center justify-between gap-2 rounded-lg border border-sidebar-border px-3 py-2">
                         <div className="flex-1 min-w-0">
@@ -858,8 +985,10 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                             <>
                               <p className="text-[11px] text-muted-foreground">Due {formatDate(inv.due_date)} · {formatCurrency(inv.amount)}</p>
                               <p className="text-[11px] text-muted-foreground">
-                                {formatCurrency(actualAnnual)}/yr ({inv.branch_count} branch{inv.branch_count !== 1 ? "es" : ""})
-                                {discount > 0 && <span className="text-amber"> · {discountPct.toFixed(0)}% discount ({formatCurrency(discount)}/yr)</span>}
+                                {formatCurrency(Number(inv.monthly_rate) * (inv.billing_cycle === "annual" ? 12 : 1))}/branch × {inv.branch_count} branch{inv.branch_count !== 1 ? "es" : ""}
+                                {discountPct > 0 && <span className="text-amber"> · {discountPct.toFixed(0)}% discount</span>}
+                                {inv.is_first_invoice && <span> · first invoice{inv.onboarding_fee_charged > 0 ? " + onboarding fee" : " (onboarding waived)"}</span>}
+                                {totalSavings > 0 && <span className="text-amber"> · saved {formatCurrency(totalSavings)}</span>}
                               </p>
                             </>
                           )}
@@ -912,7 +1041,7 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
           )}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setBillingTarget(null)}>Close</Button>
+            <Button variant="outline" onClick={() => { setBillingTarget(null); setResetConfirmOpen(false); }}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -636,7 +636,8 @@ export interface PlatformLead {
 export interface ClientBilling {
   owner_id: string;
   billing_cycle: "monthly" | "annual";
-  custom_price: number | null;
+  monthly_rate: number | null;
+  waive_onboarding: boolean;
   pricing_notes: string | null;
   next_invoice_date: string | null;
   updated_at: string;
@@ -658,7 +659,11 @@ export interface PlatformInvoice {
   created_at: string;
   share_token: string;
   branch_count: number;
-  standard_annual_price: number;
+  /** Rate/discount/onboarding snapshot at generation time — an invoice is a historical record. */
+  monthly_rate: number;
+  discount_pct: number;
+  onboarding_fee_charged: number;
+  is_first_invoice: boolean;
 }
 
 export const FEATURE_KEYS = [

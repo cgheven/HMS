@@ -8,6 +8,7 @@
 import { jsPDF } from "jspdf";
 import fs from "fs";
 import path from "path";
+import { ONBOARDING_FEE, listSubtotalFromDiscount } from "@/lib/pricing";
 
 interface InvoiceData {
   id: string;
@@ -20,8 +21,11 @@ interface InvoiceData {
   paid_at?: string | null;
   /** Branches this client is being charged for, at the time of this invoice */
   branch_count: number;
-  /** List price (annual) for branch_count under the standard formula — used to show the discount, if any */
-  standard_annual_price: number;
+  /** Rate/discount/onboarding snapshot that produced `amount` at generation time */
+  monthly_rate: number;
+  discount_pct: number;
+  onboarding_fee_charged: number;
+  is_first_invoice: boolean;
 }
 
 interface InvoiceClient {
@@ -77,16 +81,23 @@ function drawIcon(doc: jsPDF, name: IconName, x: number, y: number, size: number
 
   switch (name) {
     case "building": {
-      const w = size * 0.7;
-      const h = size * 0.9;
+      // A door anchors this as unmistakably a building rather than a plain grid —
+      // the previous version (just 4 evenly-spaced window squares near-touching
+      // the outer wall) read as an abstract grid icon at small sizes.
+      const w = size * 0.64;
+      const h = size * 0.86;
       const bx = x + (size - w) / 2;
       const by = y + (size - h);
       doc.rect(bx, by, w, h, "S");
-      const gw = w * 0.22;
-      doc.rect(bx + w * 0.16, by + h * 0.18, gw, gw, "S");
-      doc.rect(bx + w * 0.6, by + h * 0.18, gw, gw, "S");
-      doc.rect(bx + w * 0.16, by + h * 0.55, gw, gw, "S");
-      doc.rect(bx + w * 0.6, by + h * 0.55, gw, gw, "S");
+      const winW = w * 0.24;
+      const winH = h * 0.16;
+      doc.rect(bx + w * 0.14, by + h * 0.16, winW, winH, "S");
+      doc.rect(bx + w * 0.62, by + h * 0.16, winW, winH, "S");
+      doc.rect(bx + w * 0.14, by + h * 0.44, winW, winH, "S");
+      doc.rect(bx + w * 0.62, by + h * 0.44, winW, winH, "S");
+      const doorW = w * 0.32;
+      const doorH = h * 0.3;
+      doc.rect(bx + (w - doorW) / 2, by + h - doorH, doorW, doorH, "S");
       break;
     }
     case "person": {
@@ -174,16 +185,27 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
   const COL_BILLED = ML + 130;
   const COL_INFO = ML + 260;
 
-  // Amount shown is always in the client's OWN billing cycle — never force-converted
+  // Everything is shown in the client's OWN billing cycle — never force-converted
   // to the other unit, so a monthly client never sees an unfamiliar annual number.
-  const standardForCycle = invoice.billing_cycle === "monthly"
-    ? invoice.standard_annual_price / 12
-    : invoice.standard_annual_price;
-  const discount = Math.max(0, standardForCycle - invoice.amount);
-  const discountPct = standardForCycle > 0 ? (discount / standardForCycle) * 100 : 0;
+  // invoice.monthly_rate is the ACTUAL (already-discounted) PER-BRANCH rate; the
+  // list/standard price is derived back from the snapshotted discount_pct, not
+  // recomputed live. Onboarding stays flat account-level, not per branch.
+  const months = invoice.billing_cycle === "monthly" ? 1 : 12;
+  const actualSubtotal = invoice.monthly_rate * months * invoice.branch_count;
+  const listSubtotal = listSubtotalFromDiscount(actualSubtotal, invoice.discount_pct);
+  const discount = listSubtotal - actualSubtotal;
+  // The onboarding fee is fixed platform-wide — if it was waived, onboarding_fee_charged
+  // is 0, but the "everything included" reference still needs to show what it would've been.
+  const standardOnboarding = invoice.is_first_invoice ? ONBOARDING_FEE : 0;
+  const onboardingWaived = standardOnboarding - invoice.onboarding_fee_charged;
+  const listTotal = listSubtotal + standardOnboarding;
+  const totalSavings = listTotal - invoice.amount;
   const branchLabel = `${invoice.branch_count} Branch${invoice.branch_count !== 1 ? "es" : ""}`;
-  const subtotal = discount > 0 ? standardForCycle : invoice.amount;
-  const perBranchRate = subtotal / invoice.branch_count;
+  // Both the standard (undiscounted) and actual charged per-branch rate are shown
+  // side by side on the subscription line, so the discount is never just an
+  // abstract percentage — it's visibly tied to a concrete before/after number.
+  const perBranchStandard = listSubtotal / invoice.branch_count;
+  const perBranchActual = invoice.monthly_rate * months;
   const cycleWord = invoice.billing_cycle === "monthly" ? "month" : "year";
 
   const statusInfo =
@@ -285,7 +307,7 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       doc.setFont("helvetica", "normal");
       doc.setFontSize(8);
       doc.setTextColor(...GRAY);
-      doc.text("support@yourpulse.io", COL_FROM + textX, leftY);
+      doc.text("hello@yourpulse.io", COL_FROM + textX, leftY);
     }
     leftY += 15;
 
@@ -303,7 +325,7 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       doc.setFont("helvetica", "normal");
       doc.setFontSize(8);
       doc.setTextColor(...GRAY);
-      doc.text("hms.yourpulse.io", COL_FROM + textX, leftY);
+      doc.text("hostel.yourpulse.io", COL_FROM + textX, leftY);
     }
     leftY += 15;
 
@@ -389,65 +411,86 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
     }
     y += tableHeaderH + 28;
 
+    // The subscription row shows what's ACTUALLY charged (rate × qty = amount),
+    // exactly like a normal invoice line — with the standard rate as a visible
+    // point of comparison underneath whenever a discount applies, so the number
+    // in AMOUNT is never a "before discount" figure dressed up as the charge.
     const rowBadgeR = 13;
+    const subLineH = 11;
     if (doc) {
       badgedIcon(doc, "building", ML + rowBadgeR, y + 4, rowBadgeR);
       doc.setFont("helvetica", "bold");
       doc.setFontSize(9.5);
       doc.setTextColor(20, 20, 22);
       doc.text(`Hostel Subscription (${branchLabel})`, ML + rowBadgeR * 2 + 8, y);
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(...GRAY);
-      doc.text(`Subscription fee for ${invoice.period_label}`, ML + rowBadgeR * 2 + 8, y + 14);
+      // No subtitle at all when paying full price — RATE and AMOUNT already say
+      // everything there is to say. The before/after comparison only earns its
+      // place on the invoice when there's an actual discount to explain.
+      if (discount > 0) {
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(...GRAY);
+        doc.text(`Standard ${pk(perBranchStandard)}/branch/${cycleWord}`, ML + rowBadgeR * 2 + 8, y + 14);
+        doc.text(`Charging ${pk(perBranchActual)}/branch/${cycleWord}`, ML + rowBadgeR * 2 + 8, y + 14 + subLineH);
+      }
       doc.setTextColor(20, 20, 22);
       doc.text(String(invoice.branch_count), MR - 150, y, { align: "center" });
-      doc.text(pk(perBranchRate), MR - 80, y, { align: "right" });
+      doc.text(pk(perBranchActual), MR - 80, y, { align: "right" });
       doc.setFont("helvetica", "bold");
-      doc.text(pk(subtotal), MR - 10, y, { align: "right" });
+      doc.text(pk(actualSubtotal), MR - 10, y, { align: "right" });
     }
-    y += 40;
+    // 40 is the base clearance the icon badge itself needs (radius 13, centered
+    // at y+4, so it extends to y+17) — that space exists regardless of whether
+    // a subtitle is shown, so removing the subtitle must not shrink it. The extra
+    // 28pt only belongs here when an Onboarding Fee row is actually coming next —
+    // on a renewal invoice (not first invoice) there's nothing to separate it
+    // from, so reserving that gap just left dead space before the closing divider.
+    const rowGapExtra = invoice.is_first_invoice ? 28 : 0;
+    y += 40 + (discount > 0 ? subLineH : 0) + rowGapExtra;
 
-    if (discount > 0) {
-      if (doc) {
-        doc.setDrawColor(...BORDER);
-        doc.setLineWidth(0.6);
-        doc.line(ML, y - 18, MR, y - 18);
+    // Onboarding is a one-time cost that only ever appears on a client's first
+    // invoice — the amount shown is what's ACTUALLY charged (0 if waived), with
+    // the standard fee noted underneath so a waiver is never just an invisible Rs 0.
+    if (invoice.is_first_invoice && doc) {
+      doc.setDrawColor(...BORDER);
+      doc.setLineWidth(0.6);
+      doc.line(ML, y - 18 - rowGapExtra / 2, MR, y - 18 - rowGapExtra / 2);
 
-        badgedIcon(doc, "percent", ML + rowBadgeR, y - 5, rowBadgeR);
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(9.5);
-        doc.setTextColor(20, 20, 22);
-        doc.text(`Discount (${discountPct.toFixed(0)}%)`, ML + rowBadgeR * 2 + 8, y);
-        doc.setTextColor(200, 60, 60);
-        doc.text(`- ${pk(discount)}`, MR - 10, y, { align: "right" });
+      badgedIcon(doc, "package", ML + rowBadgeR, y - 5, rowBadgeR);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9.5);
+      doc.setTextColor(20, 20, 22);
+      doc.text("Onboarding Fee (one-time)", ML + rowBadgeR * 2 + 8, y);
+      doc.text(pk(invoice.onboarding_fee_charged), MR - 10, y, { align: "right" });
+      if (onboardingWaived > 0) {
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(...GRAY);
+        doc.text(`Standard ${pk(ONBOARDING_FEE)} — waived for this client`, ML + rowBadgeR * 2 + 8, y + 14);
       }
-      y += 30;
     }
+    if (invoice.is_first_invoice) y += 30;
 
     if (doc) {
       doc.setDrawColor(...BORDER);
       doc.setLineWidth(0.6);
       doc.line(ML, y, MR, y);
     }
-    y += 12;
+    y += 16;
 
-    if (invoice.branch_count > 1 && doc) {
-      doc.setFont("helvetica", "italic");
-      doc.setFontSize(7.5);
-      doc.setTextColor(...GRAY);
-      doc.text(`(${pk(perBranchRate)} per branch / ${cycleWord})`, ML + 10, y);
-    }
-    y += invoice.branch_count > 1 ? 22 : 10;
-
-    // Totals box (right aligned)
+    // Totals box (right aligned) — shows the full "everything included" standard
+    // price and each deduction on the way down to what's actually charged, so
+    // the total discount/waiver being given is never just an invisible typed
+    // number. Each deduction names what it's discounting, not a bare percentage.
     const boxW = 190;
     const boxX = MR - boxW;
-    const lines: [string, string, boolean][] = discount > 0
-      ? [["Subtotal", pk(subtotal), false], ["Discount", `- ${pk(discount)}`, false]]
-      : [];
+    const lines: [string, string][] = [];
+    if (totalSavings > 0) {
+      lines.push(["Standard Price", pk(listTotal)]);
+      if (discount > 0) lines.push([`Subscription Discount (${invoice.discount_pct.toFixed(0)}%)`, `- ${pk(discount)}`]);
+      if (onboardingWaived > 0) lines.push(["Onboarding Fee Waived", `- ${pk(onboardingWaived)}`]);
+    }
     const totalsRowH = 17;
     const totalsPad = 12;
-    const totalsH = totalsPad * 2 + lines.length * totalsRowH + 26;
+    const totalsH = totalsPad * 2 + lines.length * totalsRowH + 26 + (totalSavings > 0 ? 16 : 0);
     if (doc) {
       doc.setFillColor(...LIGHT_GRAY);
       doc.roundedRect(boxX, y, boxW, totalsH, 6, 6, "F");
@@ -471,12 +514,19 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       doc.setFont("helvetica", "bold");
       doc.setFontSize(9);
       doc.setTextColor(20, 20, 22);
-      doc.text("TOTAL DUE", boxX + 14, ry + 4);
+      doc.text("AMOUNT CHARGED", boxX + 14, ry + 4);
       doc.setTextColor(...ORANGE);
       doc.setFontSize(14);
       doc.text(pk(invoice.amount), boxX + boxW - 14, ry + 5, { align: "right" });
+
+      if (totalSavings > 0) {
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7.5);
+        doc.setTextColor(...EMERALD);
+        doc.text(`${pk(totalSavings)} saved vs. our standard pricing`, boxX + boxW - 14, ry + 18, { align: "right" });
+      }
     }
-    y += totalsH + 26;
+    y += totalsH + (totalSavings > 0 ? 40 : 26);
 
     // Payment note — only shown for a settled/cancelled invoice; an unpaid
     // invoice doesn't need an instructional line, payment is handled over WhatsApp.
@@ -517,8 +567,8 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       doc.setFont("helvetica", "normal");
       doc.setFontSize(8);
       doc.setTextColor(200, 200, 205);
-      doc.text("support@yourpulse.io", ML, y + 19);
-      doc.text("hms.yourpulse.io", MR, y + 19, { align: "right" });
+      doc.text("hello@yourpulse.io", ML, y + 19);
+      doc.text("hostel.yourpulse.io", MR, y + 19, { align: "right" });
     }
     y += footerH;
 

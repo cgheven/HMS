@@ -75,14 +75,15 @@ export async function getClientBilling(ownerId: string): Promise<{
 export async function setClientBilling(data: {
   ownerId: string;
   billingCycle: "monthly" | "annual";
-  customPrice: number;
+  monthlyRate: number;
+  waiveOnboarding: boolean;
   pricingNotes?: string;
   nextInvoiceDate?: string;
 }): Promise<{ error?: string }> {
   try {
     const caller = await requireSuperAdmin();
     if (!data.ownerId) throw new Error("Owner is required");
-    if (!data.customPrice || data.customPrice <= 0) throw new Error("Price must be greater than 0");
+    if (!data.monthlyRate || data.monthlyRate <= 0) throw new Error("Monthly rate must be greater than 0");
     if (data.nextInvoiceDate && !/^\d{4}-\d{2}-\d{2}$/.test(data.nextInvoiceDate)) {
       throw new Error("Invalid billing start date");
     }
@@ -99,7 +100,8 @@ export async function setClientBilling(data: {
       {
         owner_id: data.ownerId,
         billing_cycle: data.billingCycle,
-        custom_price: data.customPrice,
+        monthly_rate: data.monthlyRate,
+        waive_onboarding: data.waiveOnboarding,
         pricing_notes: data.pricingNotes?.trim() || null,
         // Explicit override wins; otherwise preserve the existing schedule; only
         // a brand-new setup with no date picked at all defaults to today.
@@ -116,7 +118,11 @@ export async function setClientBilling(data: {
       action: "super_admin.set_client_billing",
       entity: "profile",
       entity_id: data.ownerId,
-      meta: { billing_cycle: data.billingCycle, custom_price: data.customPrice },
+      meta: {
+        billing_cycle: data.billingCycle,
+        monthly_rate: data.monthlyRate,
+        waive_onboarding: data.waiveOnboarding,
+      },
     });
 
     return {};
@@ -221,6 +227,46 @@ export async function updateInvoiceAmount(invoiceId: string, amount: number): Pr
     return {};
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to update invoice" };
+  }
+}
+
+// ── resetClientInvoices ────────────────────────────────────────────────────────
+// For test accounts only — wipes a client's invoice history (so their next
+// invoice is treated as "first" again, re-enabling the onboarding fee) while
+// leaving their billing config (rate/cycle/waiver) untouched. Refuses if any
+// invoice has been marked paid, since that's a settled financial record for a
+// real client, not a test fixture — same protection as updateInvoiceAmount.
+
+export async function resetClientInvoices(ownerId: string): Promise<{ error?: string }> {
+  try {
+    const caller = await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const { count: paidCount, error: countErr } = await admin
+      .from("hms_platform_invoices")
+      .select("id", { count: "exact", head: true })
+      .eq("owner_id", ownerId)
+      .eq("status", "paid");
+    if (countErr) throw countErr;
+    if ((paidCount ?? 0) > 0) {
+      throw new Error("Cannot reset — this client has paid invoices. This is only for test accounts with no settled payments.");
+    }
+
+    const { error } = await admin.from("hms_platform_invoices").delete().eq("owner_id", ownerId);
+    if (error) throw error;
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: "super_admin.reset_client_invoices",
+      entity: "profile",
+      entity_id: ownerId,
+      meta: {},
+    });
+
+    return {};
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to reset invoices" };
   }
 }
 

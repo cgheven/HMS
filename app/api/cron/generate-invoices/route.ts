@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
   const { data: due, error } = await admin
     .from("hms_client_billing")
     .select("owner_id")
-    .not("custom_price", "is", null)
+    .not("monthly_rate", "is", null)
     .not("next_invoice_date", "is", null)
     .lte("next_invoice_date", today);
 

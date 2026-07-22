@@ -10,6 +10,6 @@ export default async function BillingPage() {
   const ctx = await getAuthContext();
   if (ctx?.profile?.role === "partner") redirect("/dashboard");
 
-  const { billing, invoices } = await getOwnerBilling();
-  return <BillingClient billing={billing} invoices={invoices} />;
+  const { billing, invoices, branchCount } = await getOwnerBilling();
+  return <BillingClient billing={billing} invoices={invoices} branchCount={branchCount} />;
 }

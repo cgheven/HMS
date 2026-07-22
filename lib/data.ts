@@ -278,21 +278,23 @@ export async function getDashboardData() {
 // so this deliberately does NOT depend on ctx.hostelId / the branch switcher.
 export async function getOwnerBilling() {
   const ctx = await getAuthContext();
-  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[] };
+  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1 };
   const { supabase, user } = ctx;
 
-  const [{ data: billing }, { data: invoices }] = await Promise.all([
+  const [{ data: billing }, { data: invoices }, { count: branchCount }] = await Promise.all([
     supabase.from("hms_client_billing").select("*").eq("owner_id", user.id).maybeSingle(),
     supabase
       .from("hms_platform_invoices")
       .select("*")
       .eq("owner_id", user.id)
       .order("period_start", { ascending: false }),
+    supabase.from("hms_hostels").select("id", { count: "exact", head: true }).eq("owner_id", user.id),
   ]);
 
   return {
     billing: (billing as ClientBilling | null) ?? null,
     invoices: (invoices ?? []) as PlatformInvoice[],
+    branchCount: branchCount ?? 1,
   };
 }
 
