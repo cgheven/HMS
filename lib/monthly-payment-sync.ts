@@ -21,7 +21,8 @@ export async function ensureMonthlyPaymentRows(
       .from("hms_tenants")
       .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, food_breakfast, food_lunch, food_dinner")
       .eq("hostel_id", hostelId)
-      .eq("is_active", true),
+      .eq("is_active", true)
+      .eq("is_waiting", false),
     admin
       .from("hms_package_configs")
       .select("food_monthly_rate, ac_per_unit_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate")

@@ -754,7 +754,7 @@ export async function updatePaymentCharges(
 
 export async function getPaymentsPageData(forMonth: string) {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, acReadings: [], acJoinReadings: [], prevMonthACReadings: [] };
+  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, acReadings: [], acJoinReadings: [], prevMonthACReadings: [] };
   const { supabase, hostelId, hostel } = ctx;
 
   const [y, m] = forMonth.split("-").map(Number);
@@ -770,7 +770,8 @@ export async function getPaymentsPageData(forMonth: string) {
     supabase.from("hms_tenants")
       .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, food_breakfast, food_lunch, food_dinner")
       .eq("hostel_id", hostelId)
-      .eq("is_active", true),
+      .eq("is_active", true)
+      .eq("is_waiting", false),
     supabase.from("hms_rooms")
       .select("id, room_number, floor, has_ac")
       .eq("hostel_id", hostelId),
@@ -798,6 +799,7 @@ export async function getPaymentsPageData(forMonth: string) {
     hostelPhone: hostel?.whatsapp ?? hostel?.phone ?? null,
     paymentMethods: hostel?.payment_methods ?? [],
     reminderTemplate: hostel?.reminder_template ?? null,
+    autoReminderEnabled: hostel?.auto_reminder_enabled ?? false,
     acReadings: (acReadings ?? []) as { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     prevMonthACReadings: (prevMonthACReadings ?? []) as { room_id: string; meter_reading: number | null; total_units: number }[],

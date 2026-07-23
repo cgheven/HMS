@@ -22,6 +22,7 @@ import {
   loadHistoryAction,
   applyRoomACUnitsAction,
   saveACJoinReadingAction,
+  sendBulkRemindersAction,
 } from "@/app/actions/payments";
 import { createInvoiceLink, createInstallmentReceiptLink } from "@/app/actions/tenants";
 import { recordPaymentAsPartner } from "@/app/actions/partner";
@@ -50,6 +51,10 @@ interface TenantRow {
 
 interface RoomRow { id: string; room_number: string; floor: number | null; has_ac?: boolean | null; }
 
+// Mirrors ReminderSummary from lib/reminder-engine.ts — redeclared locally so
+// this client component never imports that server-only module.
+interface BulkReminderSummary { checked: number; sent: number; skipped: number; failed: number; markFailed: number }
+
 // Migration 099 adds these to hms_payments; the shared Payment type may not carry
 // them yet, so read them defensively rather than assume either is present.
 type PaymentDaySnapshot = Payment & {
@@ -68,6 +73,9 @@ interface Props {
   packageConfig: PackageConfig | null;
   paymentMethods?: PaymentMethodAccount[];
   reminderTemplate?: string | null;
+  // Super-Admin-curated flag — the "Send Reminders Now" bulk button only
+  // renders when this branch has been granted the automated feature.
+  autoReminderEnabled?: boolean;
   acReadings?: { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[];
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
   prevMonthACReadings?: { room_id: string; meter_reading: number | null; total_units: number }[];
@@ -105,7 +113,7 @@ function genReceipt(tenantName: string, month: string) {
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, acReadings = [], acJoinReadings = [], prevMonthACReadings = [], partnerTier = null, managerPermissions = null }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings = [], acJoinReadings = [], prevMonthACReadings = [], partnerTier = null, managerPermissions = null }: Props) {
   const isPartner = !!partnerTier;
   const isManager = !!managerPermissions;
   const canCollect = managerPermissions?.includes("collect_payments") ?? false;
@@ -134,6 +142,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   });
   const [saving, setSaving] = useState(false);
   const [sendingWa, setSendingWa] = useState<string | null>(null); // paymentId
+  const [sendingBulk, setSendingBulk] = useState(false);
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  const [bulkResult, setBulkResult] = useState<BulkReminderSummary | null>(null);
   const [generatingReceipt, setGeneratingReceipt] = useState<string | null>(null); // paymentId
   const [postPaymentWa, setPostPaymentWa] = useState<{ payment: Payment; amountReceivedNow: number; installmentId?: string } | null>(null);
   const [acUnits, setAcUnits] = useState<Record<string, string>>({});
@@ -505,6 +516,29 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     window.open(waUrl, "_blank", "noopener,noreferrer");
   }
 
+  // Bulk-sends the same automated WhatsApp reminder the daily cron sends —
+  // via the shared Wasender session, no browser tabs — to every tenant still
+  // pending/overdue/partially-paid this month, regardless of their personal
+  // due-day cadence. A per-tenant "already reminded today" guard on the
+  // server means this can be clicked again later without double-messaging
+  // anyone who already got one today.
+  async function confirmSendBulkReminders() {
+    setSendingBulk(true);
+    try {
+      const result = await sendBulkRemindersAction(selectedMonth);
+      if (result.error) {
+        setBulkConfirmOpen(false);
+        toast({ title: "Failed to send reminders", description: result.error, variant: "destructive" });
+        return;
+      }
+      setBulkConfirmOpen(false);
+      setBulkResult(result.data ?? null);
+      router.refresh();
+    } finally {
+      setSendingBulk(false);
+    }
+  }
+
   async function handleSaveJoinReading(roomId: string, tenantId: string) {
     if (!canRecordPayment) return;
     const key = `${tenantId}_${selectedMonth}`;
@@ -591,6 +625,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // (which may still be pending after checkout) should not appear in the monthly view.
   const activeTenantIds = useMemo(() => new Set(tenants.map(t => t.id)), [tenants]);
   const activePayments = useMemo(() => payments.filter(p => activeTenantIds.has(p.tenant_id)), [payments, activeTenantIds]);
+
+  // Feeds both the "Send Reminders" button's disabled state and the confirm
+  // dialog's tenant count — read fresh on every render, not cached from
+  // whenever the dialog happened to open.
+  const unpaidCount = useMemo(
+    () => activePayments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid").length,
+    [activePayments]
+  );
 
   // Rooms that have at least one payment this month — for the Room filter
   const roomsInMonth = useMemo(() => {
@@ -899,6 +941,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         ))}
                       </SelectContent>
                     </Select>
+                  )}
+
+                  {/* Bulk auto-reminder — only for branches Super Admin has granted this to */}
+                  {autoReminderEnabled && canRecordPayment && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-3 text-xs gap-1.5 text-[#25D366] border-[#25D366]/30 hover:bg-[#25D366]/10 hover:text-[#25D366]"
+                      disabled={unpaidCount === 0}
+                      onClick={() => setBulkConfirmOpen(true)}
+                    >
+                      {WA_ICON}
+                      Send Reminders
+                    </Button>
                   )}
 
                   {/* Name search */}
@@ -1429,6 +1485,84 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
               </svg>
               Send Receipt
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Send Reminders — Confirm */}
+      <Dialog open={bulkConfirmOpen} onOpenChange={(o) => !sendingBulk && setBulkConfirmOpen(o)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2.5">
+              <span className="flex items-center justify-center w-8 h-8 rounded-full bg-[#25D366]/15 text-[#25D366] shrink-0">{WA_ICON}</span>
+              Send Reminders
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <p className="text-sm text-muted-foreground">
+              Send an automated WhatsApp reminder to all{" "}
+              <span className="text-foreground font-semibold">{unpaidCount}</span>{" "}
+              tenant{unpaidCount === 1 ? "" : "s"} with dues pending for{" "}
+              <span className="text-foreground font-medium">{displayMonth}</span>?
+            </p>
+            <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-2.5">
+              <p className="text-xs text-muted-foreground">
+                Anyone already reminded today, on the waiting list, or checked out is skipped
+                automatically — this can&apos;t double-message a tenant.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkConfirmOpen(false)} disabled={sendingBulk}>
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmSendBulkReminders}
+              disabled={sendingBulk}
+              className="gap-2 bg-[#25D366] hover:bg-[#20ba57] text-white"
+            >
+              {sendingBulk ? <Loader2 className="w-4 h-4 animate-spin" /> : WA_ICON}
+              {sendingBulk ? "Sending…" : "Send Reminders"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Send Reminders — Result */}
+      <Dialog open={!!bulkResult} onOpenChange={(o) => !o && setBulkResult(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className={(bulkResult?.sent ?? 0) > 0 ? "text-emerald-400" : ""}>
+              {(bulkResult?.sent ?? 0) > 0 ? "Reminders Sent" : "No Reminders Sent"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-4 py-4 text-center">
+              <p className="text-3xl font-bold text-emerald-400">{bulkResult?.sent ?? 0}</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                reminder{bulkResult?.sent === 1 ? "" : "s"} sent to WhatsApp
+              </p>
+            </div>
+            <div className="space-y-1.5 text-xs rounded-lg bg-white/5 border border-white/10 px-3 py-2.5">
+              <div className="flex items-center justify-between text-muted-foreground">
+                <span>Skipped — already reminded today, waiting list, checked out, or no phone on file</span>
+                <span className="text-foreground font-medium shrink-0 ml-3">{bulkResult?.skipped ?? 0}</span>
+              </div>
+              {(bulkResult?.failed ?? 0) > 0 && (
+                <div className="flex items-center justify-between text-rose-400 pt-1.5 border-t border-white/10">
+                  <span>Rejected by WhatsApp</span>
+                  <span className="font-medium shrink-0 ml-3">{bulkResult?.failed}</span>
+                </div>
+              )}
+            </div>
+            <p className="text-[11px] text-muted-foreground/70 text-center">
+              This confirms the message was accepted by WhatsApp — not that the tenant has read it.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setBulkResult(null)} className="w-full">
+              Done
             </Button>
           </DialogFooter>
         </DialogContent>

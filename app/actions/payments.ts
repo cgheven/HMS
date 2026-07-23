@@ -24,6 +24,7 @@ import { getManagerContext } from "@/lib/manager-auth";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
 import { VALID_TIERS, calcBaseRentServer, dailySnapshot, computeDepositCharge } from "@/lib/payment-calc";
+import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 import { logActivity } from "@/lib/audit";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
 
@@ -167,6 +168,50 @@ export async function syncMonthAction(
     if (fetchErr) throw new Error(fetchErr.message);
 
     return { payments: (payments ?? []) as Payment[] };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// sendBulkRemindersAction
+// Owner-facing "Send Reminders Now" button — an on-demand nudge, not a
+// replacement for the scheduled cron. Reuses the exact same scan/send/mark
+// logic as app/api/cron/payment-reminders/route.ts (lib/reminder-engine.ts),
+// just with scheduleGate=false so it fires for every currently unpaid active
+// tenant today instead of only those whose personal due-day cadence lands on
+// today. The "already reminded today" guard inside runReminderPass still
+// applies here, so this can't be mashed to spam a tenant more than once a day.
+// ---------------------------------------------------------------------------
+
+export async function sendBulkRemindersAction(
+  month: string
+): Promise<{ data?: ReminderSummary; error?: string }> {
+  try {
+    // Same tier as recording a payment — this sends a real WhatsApp message to
+    // every unpaid tenant, so read-only partners stay excluded.
+    await requireOwnerOrPartnerTier("standard");
+    const hostelId = await resolveHostelId();
+    if (!MONTH_RE.test(month)) throw new Error(`Invalid month format: "${month}"`);
+
+    const admin = createAdminClient();
+
+    // Gated on the same Super-Admin-curated flag the cron uses — the manual
+    // button is the same feature, not a way around the opt-in requirement.
+    const { data: hostelRow } = await admin
+      .from("hms_hostels")
+      .select("auto_reminder_enabled")
+      .eq("id", hostelId)
+      .single();
+
+    if (!hostelRow?.auto_reminder_enabled) {
+      throw new Error("Automated WhatsApp reminders aren't enabled for this branch yet. Contact support to have this feature turned on.");
+    }
+
+    await ensureMonthlyPaymentRows(admin, hostelId, month);
+    const summary = await runReminderPass(admin, hostelId, month, false);
+    return { data: summary };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };
