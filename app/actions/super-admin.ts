@@ -45,7 +45,7 @@ export interface SuperHostelRow {
   address: string | null;
   total_capacity: number;
   tenant_count: number;
-  auto_reminder_enabled: boolean;
+  whatsapp_enabled: boolean;
   created_at: string;
 }
 
@@ -136,7 +136,7 @@ export async function listAllHostels(): Promise<{
       address: h.address ?? null,
       total_capacity: h.total_capacity,
       tenant_count: tenantCountMap.get(h.id) ?? 0,
-      auto_reminder_enabled: h.auto_reminder_enabled ?? false,
+      whatsapp_enabled: h.whatsapp_enabled ?? false,
       created_at: h.created_at,
     }));
 
@@ -146,14 +146,16 @@ export async function listAllHostels(): Promise<{
   }
 }
 
-// ── setAutoReminderEnabled ────────────────────────────────────────────────────
-// Curated per-branch gate: Wasender auto WhatsApp reminders (per-tenant due
-// day, every 3 days if still unpaid) are only ever live for a hostel once
-// Super Admin explicitly flips this on — fully automatic otherwise, nothing
-// for the owner to configure. Pinned against owner self-grant by a DB trigger
-// (migration 106) since RLS alone can't express a column-level restriction.
+// ── setWhatsappEnabled ────────────────────────────────────────────────────────
+// Curated per-branch gate: WhatsApp automation — auto payment reminders
+// (per-tenant due day, every 3 days if still unpaid) AND announcement
+// broadcasts — is only ever live for a hostel once Super Admin explicitly
+// flips this on. Sold/granted as one package, not two separate flags: a
+// hostel doesn't buy reminders and announcements separately. Pinned against
+// owner self-grant by a DB trigger (migration 110) since RLS alone can't
+// express a column-level restriction.
 
-export async function setAutoReminderEnabled(
+export async function setWhatsappEnabled(
   hostelId: string,
   enabled: boolean
 ): Promise<{ success?: boolean; error?: string }> {
@@ -163,14 +165,14 @@ export async function setAutoReminderEnabled(
 
     const { error } = await admin
       .from("hms_hostels")
-      .update({ auto_reminder_enabled: enabled, updated_at: new Date().toISOString() })
+      .update({ whatsapp_enabled: enabled, updated_at: new Date().toISOString() })
       .eq("id", hostelId);
     if (error) throw error;
 
     await writeAuditLog({
       actor_id: caller.id,
       actor_email: caller.email ?? "",
-      action: "super_admin.set_auto_reminder_enabled",
+      action: "super_admin.set_whatsapp_enabled",
       entity: "hostel",
       entity_id: hostelId,
       meta: { enabled },
@@ -178,7 +180,7 @@ export async function setAutoReminderEnabled(
 
     return { success: true };
   } catch (err) {
-    return { error: err instanceof Error ? err.message : "Failed to update auto-reminder access" };
+    return { error: err instanceof Error ? err.message : "Failed to update WhatsApp access" };
   }
 }
 

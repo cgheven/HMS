@@ -414,8 +414,8 @@ export async function getComplaints() {
 
 export async function getAnnouncements() {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, announcements: [] };
-  const { supabase, hostelId } = ctx;
+  if (!ctx?.hostelId) return { hostelId: null, announcements: [], whatsappEnabled: false };
+  const { supabase, hostelId, hostel } = ctx;
 
   const { data } = await supabase
     .from("hms_announcements")
@@ -424,7 +424,11 @@ export async function getAnnouncements() {
     .order("is_pinned", { ascending: false })
     .order("created_at", { ascending: false });
 
-  return { hostelId, announcements: (data ?? []) as Announcement[] };
+  return {
+    hostelId,
+    announcements: (data ?? []) as Announcement[],
+    whatsappEnabled: hostel?.whatsapp_enabled ?? false,
+  };
 }
 
 export async function getReportsData() {
@@ -799,7 +803,7 @@ export async function getPaymentsPageData(forMonth: string) {
     hostelPhone: hostel?.whatsapp ?? hostel?.phone ?? null,
     paymentMethods: hostel?.payment_methods ?? [],
     reminderTemplate: hostel?.reminder_template ?? null,
-    autoReminderEnabled: hostel?.auto_reminder_enabled ?? false,
+    autoReminderEnabled: hostel?.whatsapp_enabled ?? false,
     acReadings: (acReadings ?? []) as { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     prevMonthACReadings: (prevMonthACReadings ?? []) as { room_id: string; meter_reading: number | null; total_units: number }[],

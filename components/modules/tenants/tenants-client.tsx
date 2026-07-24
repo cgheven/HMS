@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
-  LogOut, Clock, UserCheck, Phone, Mail, CreditCard, History,
+  LogOut, Clock, UserCheck, Phone, Mail, CreditCard, Eye,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
   FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check, UtensilsCrossed,
   CalendarClock, CalendarX,
@@ -24,7 +24,6 @@ import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seate
 import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
 import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission } from "@/types";
 import { PhotoPicker } from "./photo-picker";
-import { TenantTimeline } from "./tenant-timeline";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
 import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction } from "@/app/actions/tenants";
@@ -248,10 +247,10 @@ interface TenantRowProps {
   foodAddonRates: FoodAddonRates;
   noticePeriodDays?: number;
   currentMonthPaymentByTenant?: Record<string, { status: string; remaining: number }>;
-  // Omitted for managers: getTenantTimeline() resolves the branch through
-  // getAuthContext(), which yields no hostelId for a manager, so the dialog
-  // would open permanently empty. Undefined hides the control entirely.
-  onTimeline?: (t: Tenant) => void;
+  // Omitted for managers: opens the same Add/Edit Tenant form read-only, and
+  // that form resolves hostelId client-side in a way managers don't have.
+  // Undefined hides the control entirely.
+  onView?: (t: Tenant) => void;
   onCheckout: (t: Tenant) => void;
   onActivate: (t: Tenant) => void;
   onEdit: (t: Tenant) => void;
@@ -259,7 +258,7 @@ interface TenantRowProps {
   onGiveNotice?: (t: Tenant) => void;
 }
 
-function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, onTimeline, onCheckout, onActivate, onEdit, onDelete, onGiveNotice }: TenantRowProps) {
+function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, onView, onCheckout, onActivate, onEdit, onDelete, onGiveNotice }: TenantRowProps) {
   const room = t.room_id ? roomMap[t.room_id] : null;
   const foodCharge = calcFoodAddonCharge(t, foodAddonRates);
   const initials = t.full_name[0].toUpperCase();
@@ -268,8 +267,8 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
       <div className="flex items-center gap-3 min-w-0 flex-1">
       <button
         type="button"
-        disabled={!onTimeline}
-        onClick={() => onTimeline?.(t)}
+        disabled={!onView}
+        onClick={() => onView?.(t)}
         className="w-9 h-9 rounded-full shrink-0 overflow-hidden border border-amber/20 bg-amber/10 flex items-center justify-center hover:opacity-80 transition-opacity disabled:hover:opacity-100 disabled:cursor-default"
       >
         {t.photo_url ? (
@@ -282,8 +281,8 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
 
       <button
         type="button"
-        disabled={!onTimeline}
-        onClick={() => onTimeline?.(t)}
+        disabled={!onView}
+        onClick={() => onView?.(t)}
         className="flex-1 min-w-0 text-left disabled:cursor-default"
       >
         <div className="flex items-center gap-1.5 min-w-0">
@@ -412,9 +411,9 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
             <span className="hidden sm:inline text-xs ml-1.5">Check Out</span>
           </Button>
         )}
-        {onTimeline && (
-          <Button variant="ghost" size="icon" className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground" title="History" onClick={() => onTimeline(t)}>
-            <History className="w-3.5 h-3.5" />
+        {onView && (
+          <Button variant="ghost" size="icon" className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground" title="View Tenant" onClick={() => onView(t)}>
+            <Eye className="w-3.5 h-3.5" />
           </Button>
         )}
         {showEdit && (
@@ -553,7 +552,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostelId, initialPackageConfig]);
-  const [timelineTenant, setTimelineTenant] = useState<Tenant | null>(null);
+  const [viewOnly, setViewOnly] = useState(false);
   const [appActionLoading, setAppActionLoading] = useState<string | null>(null);
   const [approvingApp, setApprovingApp] = useState<TenantApplication | null>(null);
   const [approveForm, setApproveForm] = useState<ConvertFormData>({
@@ -709,13 +708,20 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
   function openAdd() {
     setEditing(null);
+    setViewOnly(false);
     setForm({ ...emptyForm, security_deposit: configSecurityDeposit > 0 ? String(configSecurityDeposit) : "" });
     setEditingDocs([]);
     setDialogOpen(true);
   }
 
+  function openView(t: Tenant) {
+    openEdit(t);
+    setViewOnly(true);
+  }
+
   function openEdit(t: Tenant, forceActive = false) {
     setEditing(t);
+    setViewOnly(false);
     setEditingDocs(t.documents ?? []);
     setForm({
       full_name: t.full_name,
@@ -1426,25 +1432,34 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       {/* Filter chips — single scrollable row, never wraps */}
       <div className="overflow-x-auto scrollbar-hide -mx-1 px-1">
         <div className="flex items-center gap-1.5 w-max">
-          {(["all", "student", "professional", "general"] as const).map((type) => {
+          {(() => {
             const allTenants = [...active, ...waiting, ...checkedOut];
-            const count = type === "all" ? allTenants.length : allTenants.filter((t) => t.type === type).length;
             return (
-              <button
-                key={type}
-                onClick={() => setTypeFilter(type)}
-                className={cn(
-                  "px-3 py-1.5 rounded-full text-xs font-medium border transition-all whitespace-nowrap",
-                  typeFilter === type
-                    ? "bg-amber/15 border-amber/30 text-amber"
-                    : "border-sidebar-border text-muted-foreground hover:text-foreground hover:border-muted-foreground/40"
-                )}
-              >
-                {type === "all" ? "All" : capitalize(type)}
-                <span className="ml-1 opacity-50 tabular-nums">({count})</span>
-              </button>
+              <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as typeof typeFilter)}>
+                <SelectTrigger
+                  className={cn(
+                    "h-7 text-xs border rounded-full px-3 gap-1.5 w-auto min-w-[100px] shrink-0",
+                    typeFilter !== "all"
+                      ? "bg-amber/15 border-amber/30 text-amber"
+                      : "border-sidebar-border text-muted-foreground"
+                  )}
+                >
+                  <SelectValue placeholder="All Types" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(["all", "student", "professional", "general"] as const).map((type) => {
+                    const count = type === "all" ? allTenants.length : allTenants.filter((t) => t.type === type).length;
+                    return (
+                      <SelectItem key={type} value={type}>
+                        {type === "all" ? "All Types" : capitalize(type)}
+                        <span className="ml-1 opacity-50 tabular-nums">({count})</span>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
             );
-          })}
+          })()}
 
           <span className="w-px h-4 bg-sidebar-border mx-0.5 shrink-0" />
 
@@ -1573,7 +1588,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   foodAddonRates={foodAddonRates}
                   noticePeriodDays={noticePeriodDays}
                   currentMonthPaymentByTenant={currentMonthPaymentByTenant}
-                  onTimeline={isManager ? undefined : setTimelineTenant}
+                  onView={isManager ? undefined : openView}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}
@@ -1605,7 +1620,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       foodAddonRates={foodAddonRates}
                       noticePeriodDays={noticePeriodDays}
                       currentMonthPaymentByTenant={currentMonthPaymentByTenant}
-                      onTimeline={isManager ? undefined : setTimelineTenant}
+                      onView={isManager ? undefined : openView}
                       onCheckout={openCheckout}
                       onActivate={(tenant) => openEdit(tenant, true)}
                       onEdit={openEdit}
@@ -1704,7 +1719,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   foodAddonRates={foodAddonRates}
                   noticePeriodDays={noticePeriodDays}
                   currentMonthPaymentByTenant={currentMonthPaymentByTenant}
-                  onTimeline={isManager ? undefined : setTimelineTenant}
+                  onView={isManager ? undefined : openView}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}
@@ -2171,13 +2186,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto scrollbar-thin">
           <DialogHeader>
             <DialogTitle>
-              {editing
-                ? editing.is_waiting
-                  ? "Activate / Edit Tenant"
-                  : "Edit Tenant"
-                : "Add Tenant"}
+              {viewOnly
+                ? "Tenant Details"
+                : editing
+                  ? editing.is_waiting
+                    ? "Activate / Edit Tenant"
+                    : "Edit Tenant"
+                  : "Add Tenant"}
             </DialogTitle>
           </DialogHeader>
+          <fieldset disabled={viewOnly} className="contents">
           <div className="grid gap-4 py-2">
             {/* Status toggle — always shown for new tenants; shown when editing a waiting tenant to allow activation */}
             {(!editing || editing.is_waiting) && (
@@ -2553,10 +2571,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
             <div className="space-y-1.5"><Label>Notes</Label><Input placeholder="Any additional notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
           </div>
+          </fieldset>
 
-          {/* Documents — only shown when editing an existing tenant. Hidden for
-              managers, whose document actions are owner/partner-gated. */}
-          {editing && !isManager && (
+          {/* Documents — only shown when editing an existing tenant, and hidden
+              in view-only mode since DocumentManager's upload/delete controls
+              have no read-only variant. Hidden for managers, whose document
+              actions are owner/partner-gated. */}
+          {editing && !isManager && !viewOnly && (
             <div className="pt-2 border-t border-sidebar-border">
               <DocumentManager
                 tenantId={editing.id}
@@ -2567,16 +2588,22 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saving || !form.full_name || (!form.is_waiting && !form.check_in)}>
-              {saving
-                ? "Saving…"
-                : editing
-                  ? editing.is_waiting && !form.is_waiting
-                    ? "Activate Tenant"
-                    : "Update"
-                  : "Add Tenant"}
-            </Button>
+            {viewOnly ? (
+              <Button variant="outline" onClick={() => setDialogOpen(false)}>Close</Button>
+            ) : (
+              <>
+                <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
+                <Button onClick={handleSave} disabled={saving || !form.full_name || (!form.is_waiting && !form.check_in)}>
+                  {saving
+                    ? "Saving…"
+                    : editing
+                      ? editing.is_waiting && !form.is_waiting
+                        ? "Activate Tenant"
+                        : "Update"
+                      : "Add Tenant"}
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -3063,15 +3090,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         </DialogContent>
       </Dialog>
 
-      {/* Tenant Timeline / History Dialog */}
-      {timelineTenant && (
-        <TenantTimeline
-          tenant={timelineTenant}
-          room={timelineTenant.room_id ? (roomMap[timelineTenant.room_id] ?? null) : null}
-          open={!!timelineTenant}
-          onClose={() => setTimelineTenant(null)}
-        />
-      )}
 
       {/* Receipt Share Dialog — shown after successful checkout */}
       <Dialog open={!!shareReceipt} onOpenChange={(open) => { if (!open) setShareReceipt(null); }}>

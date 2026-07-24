@@ -4,6 +4,7 @@ import { pktTodayDateString } from "@/lib/pkt-time";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { sendWhatsAppMessage } from "@/lib/wasender";
 import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
+import { processInBatches } from "@/lib/batch";
 import type { PaymentMethodAccount } from "@/types";
 
 export interface ReminderPaymentRow {
@@ -15,7 +16,7 @@ export interface ReminderPaymentRow {
   ac_units_consumed: number | null;
   last_reminder_sent_at: string | null;
   tenant: { full_name: string; phone: string | null; security_deposit: number | null; check_in: string; is_active: boolean; is_waiting: boolean } | null;
-  hostel: { name: string; payment_methods: PaymentMethodAccount[]; reminder_template: string | null; auto_reminder_enabled: boolean } | null;
+  hostel: { name: string; payment_methods: PaymentMethodAccount[]; reminder_template: string | null; whatsapp_enabled: boolean } | null;
 }
 
 export interface ReminderSummary {
@@ -31,12 +32,6 @@ export interface ReminderSummary {
 // limit risks tripping the provider's own rate limit. Small batches keep this
 // bounded without serializing everything one at a time.
 const SEND_CONCURRENCY = 5;
-
-async function processInBatches<T>(items: T[], size: number, fn: (item: T) => Promise<void>): Promise<void> {
-  for (let i = 0; i < items.length; i += size) {
-    await Promise.all(items.slice(i, i + size).map(fn));
-  }
-}
 
 // Shared by the daily cron (app/api/cron/payment-reminders/route.ts) and the
 // owner-facing "Send Reminders Now" bulk action (sendBulkRemindersAction in
@@ -65,7 +60,7 @@ export async function runReminderPass(
     .select(
       "id, amount, late_fee, for_month, ac_charge, ac_units_consumed, last_reminder_sent_at, " +
       "tenant:hms_tenants(full_name, phone, security_deposit, check_in, is_active, is_waiting), " +
-      "hostel:hms_hostels(name, payment_methods, reminder_template, auto_reminder_enabled)"
+      "hostel:hms_hostels(name, payment_methods, reminder_template, whatsapp_enabled)"
     )
     .eq("hostel_id", hostelId)
     .eq("for_month", forMonth)
@@ -79,7 +74,7 @@ export async function runReminderPass(
 
   for (const p of payments ?? []) {
     // Not granted by Super Admin.
-    if (!p.hostel?.auto_reminder_enabled) {
+    if (!p.hostel?.whatsapp_enabled) {
       skipped++;
       continue;
     }

@@ -20,8 +20,9 @@ export const maxDuration = 300;
 // (is_active = false) is never reminded, even if a balance is still
 // outstanding. This is a curated feature, not self-service: none of this runs
 // for a branch unless Super Admin has explicitly granted it
-// (hms_hostels.auto_reminder_enabled — pinned against owner self-grant by a
-// DB trigger, migration 106). The actual scan/send logic lives in
+// (hms_hostels.whatsapp_enabled — the same single WhatsApp gate that also
+// covers announcement broadcasts, pinned against owner self-grant by a DB
+// trigger, migration 110). The actual scan/send logic lives in
 // lib/reminder-engine.ts, shared with the owner-facing manual "Send Reminders
 // Now" button (sendBulkRemindersAction).
 
@@ -38,7 +39,7 @@ export async function GET(request: NextRequest) {
   const { data: grantedHostels } = await admin
     .from("hms_hostels")
     .select("id")
-    .eq("auto_reminder_enabled", true);
+    .eq("whatsapp_enabled", true);
 
   const hostelIds = (grantedHostels ?? []).map((h) => h.id);
 

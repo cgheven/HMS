@@ -2025,7 +2025,7 @@ export function SettingsClient() {
 
           {/* Auto Reminders status — a curated feature Super Admin grants per branch;
               fully automatic once granted, nothing here for the owner to configure. */}
-          {hostel?.auto_reminder_enabled && (
+          {hostel?.whatsapp_enabled && (
           <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/[0.03] p-3">
             <p className="text-xs font-semibold text-emerald-400">Auto WhatsApp Reminders — Active</p>
             <p className="text-[11px] text-muted-foreground mt-1">

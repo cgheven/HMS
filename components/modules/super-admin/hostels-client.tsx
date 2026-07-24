@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import {
   listAllHostels, createHostelForClient, addBranchToOwner,
-  deleteHostel, deleteClient, setAutoReminderEnabled, type SuperHostelRow,
+  deleteHostel, deleteClient, setWhatsappEnabled, type SuperHostelRow,
 } from "@/app/actions/super-admin";
 import {
   getClientBilling, setClientBilling, generateInvoiceNow, markInvoiceStatus, updateInvoiceAmount,
@@ -360,17 +360,17 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     setLoading(false);
   }
 
-  const [togglingReminder, setTogglingReminder] = useState<string | null>(null);
-  async function toggleAutoReminder(hostelId: string, current: boolean) {
-    setTogglingReminder(hostelId);
-    const res = await setAutoReminderEnabled(hostelId, !current);
+  const [togglingWhatsapp, setTogglingWhatsapp] = useState<string | null>(null);
+  async function toggleWhatsapp(hostelId: string, current: boolean) {
+    setTogglingWhatsapp(hostelId);
+    const res = await setWhatsappEnabled(hostelId, !current);
     if (res.error) {
       toast({ title: "Error", description: res.error, variant: "destructive" });
     } else {
-      setHostels(prev => prev.map(h => h.id === hostelId ? { ...h, auto_reminder_enabled: !current } : h));
-      toast({ title: !current ? "Auto reminders enabled" : "Auto reminders disabled" });
+      setHostels(prev => prev.map(h => h.id === hostelId ? { ...h, whatsapp_enabled: !current } : h));
+      toast({ title: !current ? "WhatsApp enabled" : "WhatsApp disabled" });
     }
-    setTogglingReminder(null);
+    setTogglingWhatsapp(null);
   }
 
   const filtered = useMemo(() => {
@@ -549,15 +549,15 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                         </div>
                         <span className="text-[11px] text-muted-foreground shrink-0">{h.tenant_count} ten.</span>
                         <button
-                          onClick={() => toggleAutoReminder(h.id, h.auto_reminder_enabled)}
-                          disabled={togglingReminder === h.id}
+                          onClick={() => toggleWhatsapp(h.id, h.whatsapp_enabled)}
+                          disabled={togglingWhatsapp === h.id}
                           className={cn(
                             "p-1 rounded transition-all shrink-0",
-                            h.auto_reminder_enabled
+                            h.whatsapp_enabled
                               ? "text-emerald-400 hover:bg-emerald-500/10"
                               : "opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-emerald-400 hover:bg-emerald-500/10"
                           )}
-                          title={h.auto_reminder_enabled ? "Auto WhatsApp reminders: ON for this branch — click to disable" : "Auto WhatsApp reminders: OFF for this branch — click to enable"}
+                          title={h.whatsapp_enabled ? "WhatsApp (reminders + announcements): ON for this branch — click to disable" : "WhatsApp (reminders + announcements): OFF for this branch — click to enable"}
                         >
                           <MessageCircle className="w-3 h-3" />
                         </button>

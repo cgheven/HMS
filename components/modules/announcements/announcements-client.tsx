@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { Plus, Megaphone, Pin, PinOff, Trash2 } from "lucide-react";
+import { Plus, Megaphone, Pin, PinOff, Trash2, MessageCircle, Loader2, CheckCircle2 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -10,23 +10,28 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { formatDate } from "@/lib/utils";
+import { sendAnnouncementToWhatsAppAction, type AnnouncementSendSummary } from "@/app/actions/announcements";
 import type { Announcement, PartnerTier } from "@/types";
 
 interface Props {
   hostelId: string | null;
   announcements: Announcement[];
   partnerTier?: PartnerTier | null;
+  whatsappEnabled?: boolean;
 }
 
 const emptyForm = { title: "", content: "", is_pinned: false };
 
-export function AnnouncementsClient({ hostelId, announcements: initial, partnerTier = null }: Props) {
+export function AnnouncementsClient({ hostelId, announcements: initial, partnerTier = null, whatsappEnabled = false }: Props) {
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const [announcements, setAnnouncements] = useState<Announcement[]>(initial);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [confirmSend, setConfirmSend] = useState<Announcement | null>(null);
+  const [sendingId, setSendingId] = useState<string | null>(null);
+  const [sendResult, setSendResult] = useState<AnnouncementSendSummary | null>(null);
 
   async function reload() {
     if (!hostelId) return;
@@ -70,6 +75,20 @@ export function AnnouncementsClient({ hostelId, announcements: initial, partnerT
     await reload();
   }
 
+  async function confirmSendToWhatsApp() {
+    if (!confirmSend) return;
+    setSendingId(confirmSend.id);
+    const res = await sendAnnouncementToWhatsAppAction(confirmSend.id);
+    if (res.error) {
+      toast({ title: "Error", description: res.error, variant: "destructive" });
+    } else if (res.data) {
+      setSendResult(res.data);
+      await reload();
+    }
+    setSendingId(null);
+    setConfirmSend(null);
+  }
+
   const pinned = announcements.filter((a) => a.is_pinned);
   const rest = announcements.filter((a) => !a.is_pinned);
 
@@ -111,9 +130,19 @@ export function AnnouncementsClient({ hostelId, announcements: initial, partnerT
                   </div>
                   <p className="text-sm text-muted-foreground mt-2 leading-relaxed">{a.content}</p>
                   <p className="text-xs text-muted-foreground/60 mt-2">{formatDate(a.created_at)}</p>
+                  {a.whatsapp_sent_at && (
+                    <p className="text-xs text-emerald-400 mt-1 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" /> Sent to {a.whatsapp_sent_count} on WhatsApp · {formatDate(a.whatsapp_sent_at)}
+                    </p>
+                  )}
                 </div>
                 {canStandardTier && (
                   <div className="flex gap-1 shrink-0">
+                    {whatsappEnabled && !a.whatsapp_sent_at && (
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-emerald-400 hover:bg-emerald-500/10" title="Send to WhatsApp" onClick={() => setConfirmSend(a)} disabled={sendingId === a.id}>
+                        {sendingId === a.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MessageCircle className="w-3.5 h-3.5" />}
+                      </Button>
+                    )}
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-amber hover:bg-amber/10" onClick={() => togglePin(a)}>
                       <PinOff className="w-3.5 h-3.5" />
                     </Button>
@@ -139,9 +168,19 @@ export function AnnouncementsClient({ hostelId, announcements: initial, partnerT
                   <h3 className="text-sm font-semibold text-foreground">{a.title}</h3>
                   <p className="text-sm text-muted-foreground mt-2 leading-relaxed">{a.content}</p>
                   <p className="text-xs text-muted-foreground/60 mt-2">{formatDate(a.created_at)}</p>
+                  {a.whatsapp_sent_at && (
+                    <p className="text-xs text-emerald-400 mt-1 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" /> Sent to {a.whatsapp_sent_count} on WhatsApp · {formatDate(a.whatsapp_sent_at)}
+                    </p>
+                  )}
                 </div>
                 {canStandardTier && (
                   <div className="flex gap-1 shrink-0">
+                    {whatsappEnabled && !a.whatsapp_sent_at && (
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-emerald-400 hover:bg-emerald-500/10" title="Send to WhatsApp" onClick={() => setConfirmSend(a)} disabled={sendingId === a.id}>
+                        {sendingId === a.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MessageCircle className="w-3.5 h-3.5" />}
+                      </Button>
+                    )}
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-amber hover:bg-amber/10" onClick={() => togglePin(a)}>
                       <Pin className="w-3.5 h-3.5" />
                     </Button>
@@ -163,6 +202,82 @@ export function AnnouncementsClient({ hostelId, announcements: initial, partnerT
         onConfirm={() => { handleDelete(deleteId!); setDeleteId(null); }}
         onCancel={() => setDeleteId(null)}
       />
+
+      {/* Send to WhatsApp — Confirm */}
+      <Dialog open={!!confirmSend} onOpenChange={(o) => !sendingId && !o && setConfirmSend(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2.5">
+              <span className="flex items-center justify-center w-8 h-8 rounded-full bg-emerald-500/15 text-emerald-400 shrink-0">
+                <MessageCircle className="w-4 h-4" />
+              </span>
+              Send to WhatsApp
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <p className="text-sm text-muted-foreground">
+              Send <span className="text-foreground font-medium">&quot;{confirmSend?.title}&quot;</span> to every active resident&apos;s WhatsApp?
+            </p>
+            <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-2.5">
+              <p className="text-xs text-muted-foreground">
+                Tenants on the waiting list, checked out, or with no phone on file are skipped automatically. This can only be sent once per announcement.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmSend(null)} disabled={!!sendingId}>
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmSendToWhatsApp}
+              disabled={!!sendingId}
+              className="gap-2 bg-emerald-500 hover:bg-emerald-600 text-white"
+            >
+              {sendingId ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageCircle className="w-4 h-4" />}
+              {sendingId ? "Sending…" : "Send"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Send to WhatsApp — Result */}
+      <Dialog open={!!sendResult} onOpenChange={(o) => !o && setSendResult(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className={(sendResult?.sent ?? 0) > 0 ? "text-emerald-400" : ""}>
+              {(sendResult?.sent ?? 0) > 0 ? "Announcement Sent" : "No Messages Sent"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-1">
+            <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-4 py-4 text-center">
+              <p className="text-3xl font-bold text-emerald-400">{sendResult?.sent ?? 0}</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                tenant{sendResult?.sent === 1 ? "" : "s"} reached on WhatsApp
+              </p>
+            </div>
+            <div className="space-y-1.5 text-xs rounded-lg bg-white/5 border border-white/10 px-3 py-2.5">
+              <div className="flex items-center justify-between text-muted-foreground">
+                <span>Skipped — waiting list, checked out, or no phone on file</span>
+                <span className="text-foreground font-medium shrink-0 ml-3">{sendResult?.skipped ?? 0}</span>
+              </div>
+              {(sendResult?.failed ?? 0) > 0 && (
+                <div className="flex items-center justify-between text-rose-400 pt-1.5 border-t border-white/10">
+                  <span>Rejected by WhatsApp</span>
+                  <span className="font-medium shrink-0 ml-3">{sendResult?.failed}</span>
+                </div>
+              )}
+            </div>
+            <p className="text-[11px] text-muted-foreground/70 text-center">
+              This confirms the message was accepted by WhatsApp — not that the tenant has read it.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setSendResult(null)} className="w-full">
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

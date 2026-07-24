@@ -142,7 +142,7 @@ export interface Hostel {
   cover_image_url: string | null;
   payment_methods: PaymentMethodAccount[];
   reminder_template: string | null;
-  auto_reminder_enabled: boolean;
+  whatsapp_enabled: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -392,6 +392,8 @@ export interface Announcement {
   is_pinned: boolean;
   created_at: string;
   updated_at: string;
+  whatsapp_sent_at: string | null;
+  whatsapp_sent_count: number;
 }
 
 export interface Expense {

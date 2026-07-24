@@ -201,12 +201,12 @@ export async function sendBulkRemindersAction(
     // button is the same feature, not a way around the opt-in requirement.
     const { data: hostelRow } = await admin
       .from("hms_hostels")
-      .select("auto_reminder_enabled")
+      .select("whatsapp_enabled")
       .eq("id", hostelId)
       .single();
 
-    if (!hostelRow?.auto_reminder_enabled) {
-      throw new Error("Automated WhatsApp reminders aren't enabled for this branch yet. Contact support to have this feature turned on.");
+    if (!hostelRow?.whatsapp_enabled) {
+      throw new Error("WhatsApp isn't enabled for this branch yet. Contact support to have this feature turned on.");
     }
 
     await ensureMonthlyPaymentRows(admin, hostelId, month);
