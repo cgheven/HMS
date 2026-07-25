@@ -2,13 +2,14 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
-import { sendWhatsAppMessage } from "@/lib/wasender";
+import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
 import { processInBatches } from "@/lib/batch";
 import type { PaymentMethodAccount } from "@/types";
 
 export interface ReminderPaymentRow {
   id: string;
+  tenant_id: string;
   amount: number;
   late_fee: number | null;
   for_month: string;
@@ -27,10 +28,11 @@ export interface ReminderSummary {
   markFailed: number;
 }
 
-// Wasender is a single shared session — a handful of tenants at once is fine,
-// but sending to hundreds of simultaneously-due tenants with zero concurrency
-// limit risks tripping the provider's own rate limit. Small batches keep this
-// bounded without serializing everything one at a time.
+// The Meta WhatsApp Business API is a single shared business number — a
+// handful of tenants at once is fine, but sending to hundreds of
+// simultaneously-due tenants with zero concurrency limit risks tripping the
+// provider's own rate limit. Small batches keep this bounded without
+// serializing everything one at a time.
 const SEND_CONCURRENCY = 5;
 
 // Shared by the daily cron (app/api/cron/payment-reminders/route.ts) and the
@@ -58,7 +60,7 @@ export async function runReminderPass(
   const { data: payments, error } = await admin
     .from("hms_payments")
     .select(
-      "id, amount, late_fee, for_month, ac_charge, ac_units_consumed, last_reminder_sent_at, " +
+      "id, tenant_id, amount, late_fee, for_month, ac_charge, ac_units_consumed, last_reminder_sent_at, " +
       "tenant:hms_tenants(full_name, phone, security_deposit, check_in, is_active, is_waiting), " +
       "hostel:hms_hostels(name, payment_methods, reminder_template, whatsapp_enabled)"
     )
@@ -137,10 +139,10 @@ export async function runReminderPass(
       security_deposit: p.tenant?.security_deposit && p.tenant.security_deposit > 0 ? p.tenant.security_deposit : undefined,
     });
 
-    const result = await sendWhatsAppMessage(digits, message);
+    const result = await sendWhatsAppMessage(digits, message, { hostelId, tenantId: p.tenant_id, messageType: "reminder" });
     if (!result.ok) {
       failed++;
-      console.error(`[reminder-engine] Wasender rejected reminder for "${p.tenant?.full_name ?? "unknown"}" (payment ${p.id}, phone ${digits}):`, result.error);
+      console.error(`[reminder-engine] Meta WhatsApp API rejected reminder for "${p.tenant?.full_name ?? "unknown"}" (payment ${p.id}, phone ${digits}):`, result.error);
       return;
     }
 

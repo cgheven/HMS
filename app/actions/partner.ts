@@ -7,6 +7,7 @@ import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import { performTenantCheckout } from "@/lib/tenant-checkout";
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants";
+import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import type { CheckoutInput, CheckoutSettlement, Payment } from "@/types";
 
 // Partner write actions — the safe, admin-client mutation layer a partner's
@@ -133,6 +134,11 @@ export async function addTenantAsPartner(
       .single();
     if (insErr) return { error: insErr.message };
     const tenantId = created.id as string;
+
+    // Fire-and-forget welcome WhatsApp — never awaited, never blocks this action.
+    if (!payload.is_waiting) {
+      void sendTenantWelcomeMessageAction(tenantId);
+    }
 
     if (room && roomId) {
       const newOccupied = room.occupied + 1;
@@ -368,7 +374,7 @@ export async function editTenantAsPartner(
 
     const { data: existing } = await admin
       .from("hms_tenants")
-      .select("id, hostel_id, room_id, package_tier")
+      .select("id, hostel_id, room_id, package_tier, is_waiting")
       .eq("id", tenantId)
       .maybeSingle();
 
@@ -432,6 +438,12 @@ export async function editTenantAsPartner(
       .eq("hostel_id", hostelId);
 
     if (error) return { error: error.message };
+
+    // Fire-and-forget welcome WhatsApp — only on the waiting-list → active
+    // transition, not on every routine edit of an already-active tenant.
+    if (existing.is_waiting && !payload.is_waiting) {
+      void sendTenantWelcomeMessageAction(tenantId);
+    }
 
     // Ledger events — best-effort, mirrors the owner flow exactly.
     if (prevRoomId !== roomId) {

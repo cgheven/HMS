@@ -10,8 +10,8 @@ import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 export const maxDuration = 300;
 
 // Invoked daily by Vercel Cron (see vercel.json). Same CRON_SECRET auth as the
-// other cron routes. Auto-sends a WhatsApp reminder — via the single shared
-// Wasender platform session — to any tenant still pending/overdue/partially
+// other cron routes. Auto-sends a WhatsApp reminder — via the Meta WhatsApp
+// Business API — to any tenant still pending/overdue/partially
 // paid for the current month, on THEIR OWN due day (the day-of-month they
 // checked in) — not a single fixed day for the whole hostel, since tenants in
 // the same branch can each have joined on a different date. If still unpaid

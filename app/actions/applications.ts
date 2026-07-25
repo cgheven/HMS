@@ -6,6 +6,7 @@ import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { sendApplicationEmail } from "@/lib/email";
+import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import type { ApplicationStatus, PackageTier, Profile } from "@/types";
 
 /**
@@ -310,6 +311,11 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
   }).select("id").single();
 
   if (tenantError) return { success: false, error: tenantError.message };
+
+  // Fire-and-forget welcome WhatsApp — never awaited, never blocks approval.
+  if (newTenant?.id && !extra.is_waiting) {
+    void sendTenantWelcomeMessageAction(newTenant.id);
+  }
 
   // Occupancy must move with the tenant insert on the server: partners cannot
   // write hms_rooms from the browser (RLS), and a blocked update there affects

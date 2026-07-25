@@ -96,6 +96,23 @@ export interface PaymentMethodAccount {
   iban?: string;
 }
 
+export interface WifiNetwork {
+  id: string;
+  name: string;
+  password?: string;
+}
+
+export interface MealTimeRange {
+  from: string;
+  to: string;
+}
+
+export interface MealTimes {
+  breakfast?: MealTimeRange;
+  lunch?: MealTimeRange;
+  dinner?: MealTimeRange;
+}
+
 export interface RoomACReading {
   id: string;
   hostel_id: string;
@@ -143,6 +160,9 @@ export interface Hostel {
   payment_methods: PaymentMethodAccount[];
   reminder_template: string | null;
   whatsapp_enabled: boolean;
+  wifi_networks: WifiNetwork[];
+  welcome_message_template: string | null;
+  meal_times: MealTimes;
   created_at: string;
   updated_at: string;
 }
@@ -265,6 +285,7 @@ export interface Tenant {
   documents: TenantDocument[];
   notice_given_date: string | null;
   intended_checkout_date: string | null;
+  leaving_reminder_sent_at: string | null;
   created_at: string;
 }
 

@@ -9,6 +9,7 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { requireManagerPermission } from "@/lib/manager-auth"
 import { logActivity } from "@/lib/audit"
 import { backfillTenantPaymentsAction } from "@/app/actions/tenants"
+import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
 import type { Manager, Payment, StaffPermission } from "@/types"
 
@@ -666,6 +667,11 @@ export async function addTenantAsManager(
       .single()
     if (insErr) return { error: insErr.message }
     const tenantId = created.id as string
+
+    // Fire-and-forget welcome WhatsApp — never awaited, never blocks this action.
+    if (!payload.is_waiting) {
+      void sendTenantWelcomeMessageAction(tenantId)
+    }
 
     if (room && roomId) {
       const newOccupied = room.occupied + 1

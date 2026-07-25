@@ -1164,7 +1164,9 @@ export async function giveTenantNoticeAction(
     const noticeGivenDate = today;
     const { error } = await adminDb
       .from("hms_tenants")
-      .update({ notice_given_date: noticeGivenDate, intended_checkout_date: intendedCheckoutDate })
+      // Reset leaving_reminder_sent_at — a fresh or changed checkout date
+      // means the 7-day-out reminder to the owner should fire again for it.
+      .update({ notice_given_date: noticeGivenDate, intended_checkout_date: intendedCheckoutDate, leaving_reminder_sent_at: null })
       .eq("id", tenantId)
       .eq("hostel_id", hostelId);
     if (error) throw new Error("Failed to record notice.");
@@ -1203,7 +1205,7 @@ export async function cancelTenantNoticeAction(
 
     const { error } = await adminDb
       .from("hms_tenants")
-      .update({ notice_given_date: null, intended_checkout_date: null })
+      .update({ notice_given_date: null, intended_checkout_date: null, leaving_reminder_sent_at: null })
       .eq("id", tenantId)
       .eq("hostel_id", hostelId);
     if (error) throw new Error("Failed to cancel notice.");

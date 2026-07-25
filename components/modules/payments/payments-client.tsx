@@ -517,7 +517,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }
 
   // Bulk-sends the same automated WhatsApp reminder the daily cron sends —
-  // via the shared Wasender session, no browser tabs — to every tenant still
+  // via the Meta WhatsApp Business API, no browser tabs — to every tenant still
   // pending/overdue/partially-paid this month, regardless of their personal
   // due-day cadence. A per-tenant "already reminded today" guard on the
   // server means this can be clicked again later without double-messaging

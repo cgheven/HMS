@@ -15,10 +15,11 @@ import { listPartners, createPartner, removePartner, updatePartnerTier, getExist
 import type { PartnerRow, ExistingPartnerOption } from "@/app/actions/partners";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PARTNER_TIER_LABELS } from "@/lib/partner-tier-labels";
-import type { HostelType, Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier, PartnerTier } from "@/types";
+import type { HostelType, Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier, PartnerTier, WifiNetwork, MealTimes } from "@/types";
 import { DEFAULT_FORM_CONFIG } from "@/types";
-import { savePaymentRecoverySettings } from "@/app/actions/settings";
+import { savePaymentRecoverySettings, saveWelcomeSettings } from "@/app/actions/settings";
 import { DEFAULT_REMINDER_TEMPLATE, formatAccounts, buildReminderMessage } from "@/lib/whatsapp-reminder";
+import { DEFAULT_WELCOME_TEMPLATE, buildWelcomeMessage } from "@/lib/whatsapp-welcome";
 import { SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
 
 const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
@@ -176,6 +177,54 @@ export function SettingsClient() {
     month: new Date().toLocaleDateString("en-PK", { month: "long", year: "numeric" }),
     hostelName: hostel?.name ?? "Your Hostel",
     accounts: paymentMethods,
+  });
+
+  // Tenant Welcome / WiFi state
+  const [wifiNetworks, setWifiNetworks] = useState<WifiNetwork[]>(
+    () => (hostel?.wifi_networks ?? []).map((w) => ({ ...w, id: w.id || uid() }))
+  );
+  const [welcomeTemplate, setWelcomeTemplate] = useState(
+    hostel?.welcome_message_template ?? DEFAULT_WELCOME_TEMPLATE
+  );
+  const [mealTimes, setMealTimes] = useState<MealTimes>(() => ({
+    breakfast: { from: hostel?.meal_times?.breakfast?.from ?? "", to: hostel?.meal_times?.breakfast?.to ?? "" },
+    lunch: { from: hostel?.meal_times?.lunch?.from ?? "", to: hostel?.meal_times?.lunch?.to ?? "" },
+    dinner: { from: hostel?.meal_times?.dinner?.from ?? "", to: hostel?.meal_times?.dinner?.to ?? "" },
+  }));
+  const [savingWelcome, setSavingWelcome] = useState(false);
+
+  function addWifiNetwork() {
+    setWifiNetworks((prev) => [...prev, { id: uid(), name: "", password: "" }]);
+  }
+  function updateWifiNetwork(id: string, patch: Partial<WifiNetwork>) {
+    setWifiNetworks((prev) => prev.map((w) => w.id === id ? { ...w, ...patch } : w));
+  }
+  function removeWifiNetwork(id: string) {
+    setWifiNetworks((prev) => prev.filter((w) => w.id !== id));
+  }
+  function updateMealTime(meal: "breakfast" | "lunch" | "dinner", field: "from" | "to", value: string) {
+    setMealTimes((prev) => ({ ...prev, [meal]: { ...prev[meal], [field]: value } }));
+  }
+
+  async function saveWelcomeSettingsHandler() {
+    setSavingWelcome(true);
+    const result = await saveWelcomeSettings({
+      wifi_networks: wifiNetworks.filter((w) => w.name.trim()),
+      welcome_message_template: welcomeTemplate,
+      meal_times: mealTimes,
+    });
+    setSavingWelcome(false);
+    if (result.success) toast({ title: "Tenant welcome settings saved" });
+    else toast({ title: "Error", description: result.error, variant: "destructive" });
+  }
+  const welcomePreview = buildWelcomeMessage({
+    template: welcomeTemplate,
+    tenantName: "Ali Raza",
+    hostelName: hostel?.name ?? "Your Hostel",
+    room: "5",
+    wifiNetworks,
+    menuUrl: hostel?.listing_enabled && hostel?.slug ? `https://hms.yourpulse.io/find/${hostel.slug}` : null,
+    mealTimes,
   });
 
   type WaitlistEntry = { id: string; name: string; phone: string; created_at: string };
@@ -2061,6 +2110,159 @@ export function SettingsClient() {
             <Button onClick={saveRecoverySettings} disabled={savingRecovery} className="gap-2">
               {savingRecovery ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               Save Recovery Settings
+            </Button>
+          ) : readOnlyNote}
+        </CardContent>
+      </Card>
+
+      <Separator />
+
+      {/* Tenant Welcome & WiFi */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <MessageCircle className="w-4 h-4 text-muted-foreground" />
+            <CardTitle className="text-base">Tenant Welcome &amp; WiFi</CardTitle>
+          </div>
+          <CardDescription>
+            Automatic WhatsApp message sent the moment a tenant becomes active — room, WiFi, and the monthly menu link.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <fieldset disabled={!canFullTier} className="space-y-6 min-w-0">
+
+          {/* WiFi Networks */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-sm font-semibold">WiFi Networks</Label>
+                <p className="text-xs text-muted-foreground mt-0.5">Device name &amp; password shown to new tenants — add more than one if you have multiple networks.</p>
+              </div>
+              <Button size="sm" variant="outline" onClick={addWifiNetwork} className="gap-1.5 h-8 shrink-0">
+                <Plus className="w-3.5 h-3.5" /> Add Network
+              </Button>
+            </div>
+            {wifiNetworks.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-sidebar-border p-4 text-center">
+                <Globe className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
+                <p className="text-xs text-muted-foreground">No WiFi networks added yet.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {wifiNetworks.map((w) => (
+                  <div key={w.id} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end rounded-xl border border-sidebar-border bg-card/50 p-3">
+                    <div className="space-y-1">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Device Name</p>
+                      <Input
+                        placeholder="e.g. Hostel_5G"
+                        value={w.name}
+                        onChange={(e) => updateWifiNetwork(w.id, { name: e.target.value })}
+                        className="h-9 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Password</p>
+                      <Input
+                        placeholder="hostel123"
+                        value={w.password ?? ""}
+                        onChange={(e) => updateWifiNetwork(w.id, { password: e.target.value })}
+                        className="h-9 text-sm"
+                      />
+                    </div>
+                    <Button
+                      variant="ghost" size="icon"
+                      onClick={() => removeWifiNetwork(w.id)}
+                      className="h-9 w-9 text-muted-foreground hover:text-rose-400 shrink-0"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Meal Times */}
+          <div className="space-y-2">
+            <Label className="text-sm font-semibold">Meal Times</Label>
+            <p className="text-xs text-muted-foreground -mt-1">Shown in the welcome message via {"{meal_times}"} — leave a meal&apos;s From/To blank to leave it out (not every hostel serves lunch).</p>
+            <div className="space-y-2">
+              {([
+                { key: "breakfast" as const, label: "Breakfast" },
+                { key: "lunch" as const, label: "Lunch" },
+                { key: "dinner" as const, label: "Dinner" },
+              ]).map(({ key, label }) => (
+                <div key={key} className="grid grid-cols-[80px_1fr_1fr] gap-2 items-center">
+                  <Label className="text-xs text-muted-foreground">{label}</Label>
+                  <Input
+                    placeholder="From, e.g. 7:00 AM"
+                    value={mealTimes[key]?.from ?? ""}
+                    onChange={(e) => updateMealTime(key, "from", e.target.value)}
+                    className="h-9 text-sm"
+                  />
+                  <Input
+                    placeholder="To, e.g. 9:00 AM"
+                    value={mealTimes[key]?.to ?? ""}
+                    onChange={(e) => updateMealTime(key, "to", e.target.value)}
+                    className="h-9 text-sm"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Welcome Message Template */}
+          <div className="space-y-2">
+            <Label className="text-sm font-semibold">Welcome Message Template</Label>
+            <textarea
+              value={welcomeTemplate}
+              onChange={(e) => setWelcomeTemplate(e.target.value)}
+              rows={8}
+              className="w-full rounded-xl border border-sidebar-border bg-card p-3 text-sm font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/50 resize-y scrollbar-thin"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Placeholders:&nbsp;
+              {["{name}", "{hostel}", "{room}", "{wifi}", "{menu}", "{meal_times}"].map((p) => (
+                <code key={p} className="text-foreground mx-0.5 px-1 py-0.5 rounded bg-white/5">{p}</code>
+              ))}
+            </p>
+            {!hostel?.listing_enabled && (
+              <p className="text-[11px] text-muted-foreground/70">
+                {"{menu}"} will be left out of the message until your public listing page is enabled — the monthly menu link needs that page turned on.
+              </p>
+            )}
+          </div>
+
+          {/* WhatsApp status — same curated whatsapp_enabled gate as reminders/announcements */}
+          {hostel?.whatsapp_enabled && (
+          <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/[0.03] p-3">
+            <p className="text-xs font-semibold text-emerald-400">Auto Welcome Message — Active</p>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Every tenant gets this message the moment they become active — a brand-new active tenant, or a
+              waiting-list tenant whose room finally gets assigned.
+            </p>
+          </div>
+          )}
+
+          {/* Live Preview */}
+          <div className="space-y-2">
+            <Label className="text-sm font-semibold">Live Preview</Label>
+            <div className="rounded-xl border border-[#25D366]/15 bg-[#25D366]/[0.03] p-4 max-w-md">
+              <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5">
+                <svg className="w-3 h-3 text-[#25D366]" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+                </svg>
+                WhatsApp message preview
+              </p>
+              <pre className="whitespace-pre-wrap text-sm font-sans text-foreground leading-relaxed">{welcomePreview}</pre>
+            </div>
+          </div>
+
+          </fieldset>
+          {canFullTier ? (
+            <Button onClick={saveWelcomeSettingsHandler} disabled={savingWelcome} className="gap-2">
+              {savingWelcome ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              Save Welcome Settings
             </Button>
           ) : readOnlyNote}
         </CardContent>

@@ -4,7 +4,7 @@ import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
-import { sendWhatsAppMessage } from "@/lib/wasender";
+import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { processInBatches } from "@/lib/batch";
 
 const SEND_CONCURRENCY = 5;
@@ -22,9 +22,10 @@ export interface AnnouncementSendSummary {
   failed: number;
 }
 
-// Reuses the same Wasender session and the same Super-Admin-curated
-// whatsapp_enabled gate as the payment-reminder engine (lib/wasender.ts,
-// migration 110) — WhatsApp is granted per branch as one package covering
+// Reuses the same Meta WhatsApp Business API service and the same
+// Super-Admin-curated whatsapp_enabled gate as the payment-reminder engine
+// (lib/whatsapp.ts, migration 110) — WhatsApp is granted per branch as one
+// package covering
 // both reminders and announcements, not two separate flags. Manual trigger
 // only — no scheduling, no WhatsApp group support — the owner reviews the
 // announcement, then explicitly sends it to every active tenant's own
@@ -70,7 +71,7 @@ export async function sendAnnouncementToWhatsAppAction(
 
     const { data: tenants } = await admin
       .from("hms_tenants")
-      .select("full_name, phone")
+      .select("id, full_name, phone")
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
       .eq("is_waiting", false);
@@ -85,10 +86,10 @@ export async function sendAnnouncementToWhatsAppAction(
 
     await processInBatches(due, SEND_CONCURRENCY, async (t) => {
       const digits = (t.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
-      const result = await sendWhatsAppMessage(digits, message);
+      const result = await sendWhatsAppMessage(digits, message, { hostelId, tenantId: t.id, messageType: "announcement" });
       if (!result.ok) {
         failed++;
-        console.error(`[announcements] Wasender rejected announcement for "${t.full_name}" (${digits}):`, result.error);
+        console.error(`[announcements] Meta WhatsApp API rejected announcement for "${t.full_name}" (${digits}):`, result.error);
         return;
       }
       sent++;

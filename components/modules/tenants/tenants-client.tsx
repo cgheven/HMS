@@ -29,6 +29,7 @@ import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "
 import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction } from "@/app/actions/tenants";
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 import { addTenantAsManager } from "@/app/actions/managers";
+import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 
 interface Props {
   hostelId: string | null;
@@ -850,6 +851,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       return;
     }
     if (!editing) newTenantId = (mutData as { id: string } | null)?.id ?? null;
+
+    // Fire-and-forget welcome WhatsApp — new active tenant, or a waiting-list
+    // tenant getting activated (room finally assigned). Never awaited inline
+    // so a slow/failed WhatsApp send can't delay this dialog closing.
+    if (!editing && newTenantId && !form.is_waiting) {
+      void sendTenantWelcomeMessageAction(newTenantId);
+    } else if (editing && editing.is_waiting && !form.is_waiting) {
+      void sendTenantWelcomeMessageAction(editing.id);
+    }
 
     // Log room/plan changes and deposit collection to the Member Ledger — best-effort,
     // never blocks the save itself. `hms_tenants.room_id`/`package_tier` are overwritten
