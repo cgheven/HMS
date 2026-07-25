@@ -19,7 +19,7 @@ const dmSerif = DM_Serif_Display({
 });
 
 export const metadata: Metadata = {
-  title: "HMS — Hostel Management System",
+  title: "Pulse - Hostel Management System",
   description: "Manage your hostel, expenses, kitchen, and bills in one place",
 };
 
