@@ -667,16 +667,22 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     });
   }, [activePayments, roomFilter, statusFilter, search]);
 
+  // Headline stats deliberately use ALL payment rows for the month, not just
+  // activePayments — a checked-out tenant's unpaid/paid balance for a month
+  // they actually stayed is real money and must match the Dashboard's figures
+  // (which never filtered by tenant-active status). activePayments remains
+  // the source for the tenant-facing list/filters/reminders below, where
+  // showing only current residents is the correct scope.
   const stats = useMemo(() => {
-    const due = activePayments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
-    const collected = activePayments.filter((p) => p.status === "paid" || p.status === "partially_paid").reduce((s, p) => s + Math.max(0, Number(p.amount_paid ?? p.amount)), 0);
-    const pending = activePayments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid").reduce((s, p) => s + Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0)), 0);
+    const due = payments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
+    const collected = payments.filter((p) => p.status === "paid" || p.status === "partially_paid").reduce((s, p) => s + Math.max(0, Number(p.amount_paid ?? p.amount)), 0);
+    const pending = payments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid").reduce((s, p) => s + Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0)), 0);
     // AC collected/pending stay paid-only — a partial payment can't be cleanly
     // attributed between rent and AC (which portion did it cover?).
-    const acCollected = activePayments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
-    const acPending = activePayments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
+    const acCollected = payments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
+    const acPending = payments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
     return { due, collected, pending, acCollected, acPending };
-  }, [activePayments]);
+  }, [payments]);
 
   const TIER_LABEL: Record<string, string> = {
     space_only: "Space Only",

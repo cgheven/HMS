@@ -154,7 +154,7 @@ export async function getDashboardData() {
     supabase.from("hms_kitchen_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", fullStart).lte("date", fullEnd),
     supabase.from("hms_payments").select("amount,amount_paid,security_deposit_charge").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).in("status", ["paid", "partially_paid"]),
     supabase.from("hms_salary_payments").select("amount").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).eq("status", "paid"),
-    supabase.from("hms_payments").select("id,amount,amount_paid,status,tenant:hms_tenants(full_name)").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).in("status", ["pending", "overdue", "partially_paid"]),
+    supabase.from("hms_payments").select("id,amount,amount_paid,late_fee,status,tenant:hms_tenants(full_name)").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).in("status", ["pending", "overdue", "partially_paid"]),
     supabase.from("hms_payments").select("for_month,amount,amount_paid,status").eq("hostel_id", hostelId).gte("for_month", ranges[0].monthKey).lte("for_month", ranges[5].monthKey),
     supabase.from("hms_room_ac_readings").select("total_units").eq("hostel_id", hostelId).eq("for_month", currentMonthKey),
   ]);
@@ -188,11 +188,12 @@ export async function getDashboardData() {
     return s + Math.min(charged, charged * (paid / amount));
   }, 0);
   const monthlyACUnits = (acReadingsRes.data ?? []).reduce((s, r) => s + Number(r.total_units ?? 0), 0);
-  type PendingRow = { id: string; amount: unknown; amount_paid?: unknown; status: string; tenant: { full_name: string } | null };
+  type PendingRow = { id: string; amount: unknown; amount_paid?: unknown; late_fee?: unknown; status: string; tenant: { full_name: string } | null };
   const pendingRows = ((pendingPaymentsRes.data ?? []) as unknown) as PendingRow[];
   // Owed = remaining balance, not the full amount — a partially_paid row has
-  // already had some of it collected.
-  const monthlyUncollected = pendingRows.reduce((s, p) => s + Math.max(0, Number(p.amount) - Number(p.amount_paid ?? 0)), 0);
+  // already had some of it collected. Late fee is real money owed too — must
+  // match the Payments page's "Pending", which already includes it.
+  const monthlyUncollected = pendingRows.reduce((s, p) => s + Math.max(0, Number(p.amount) + Number(p.late_fee ?? 0) - Number(p.amount_paid ?? 0)), 0);
   const unpaidBills = bills.data ?? [];
   // Daily tenants have monthly_rent 0, so summing that alone silently dropped every
   // one of them from expected revenue. Their contribution is this month's billable
