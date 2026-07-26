@@ -156,6 +156,7 @@ export interface Hostel {
   slug: string | null;
   form_config: FormConfig | null;
   food_closed_on_sundays: boolean;
+  food_menu_type: FoodMenuType;
   cover_image_url: string | null;
   payment_methods: PaymentMethodAccount[];
   reminder_template: string | null;
@@ -186,6 +187,7 @@ export interface PublicHostel {
   available_beds: number;
   slug: string | null;
   food_closed_on_sundays: boolean;
+  food_menu_type: FoodMenuType;
   cover_image_url: string | null;
 }
 
@@ -440,10 +442,15 @@ export interface KitchenExpense {
   created_at: string;
 }
 
+export type FoodMenuType = "monthly" | "weekly";
+
 export interface FoodItem {
   id: string;
   hostel_id: string;
-  date: string;
+  /** Real calendar date — set for "monthly" hostels, null for "weekly" ones. */
+  date: string | null;
+  /** ISO 8601 weekday (1=Monday...7=Sunday) — set for "weekly" hostels, null for "monthly" ones. */
+  day_of_week: number | null;
   meal_type: MealType;
   item_name: string;
   quantity: string | null;

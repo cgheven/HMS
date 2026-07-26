@@ -11,6 +11,7 @@ export default async function FoodPage() {
       hostelId={hostelId}
       initialItems={items}
       initialMonth={month}
+      initialMenuType={ctx?.hostel?.food_menu_type ?? "monthly"}
       partnerTier={ctx?.partnerTier}
     />
   );

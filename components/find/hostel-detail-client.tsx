@@ -14,7 +14,7 @@ import { formatCurrency } from "@/lib/utils";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
 import { buildPackageOptions } from "@/lib/room-pricing";
-import type { PublicHostelDetail, PublicRoom, FoodItem, MealType, SpaceType, PackageConfig, PackageTier } from "@/types";
+import type { PublicHostelDetail, PublicRoom, FoodItem, MealType, SpaceType, PackageConfig, PackageTier, FoodMenuType } from "@/types";
 
 // ── WhatsApp icon ─────────────────────────────────────────────────────────────
 
@@ -36,11 +36,15 @@ const SPACE_LABELS: Record<SpaceType, string> = {
   student: "Student", professional: "Professional", general: "General",
 };
 
-const MEAL_CONFIG: Record<MealType, { label: string; from: string; border: string; badge: string }> = {
-  breakfast: { label: "Breakfast", from: "bg-amber/10",       border: "border-amber/25",       badge: "bg-amber/15 text-amber border-amber/30" },
-  lunch:     { label: "Lunch",     from: "bg-emerald-500/10", border: "border-emerald-500/25", badge: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" },
-  dinner:    { label: "Dinner",    from: "bg-blue-500/10",    border: "border-blue-500/25",    badge: "bg-blue-500/15 text-blue-400 border-blue-500/30" },
+const MEAL_LABEL: Record<MealType, string> = {
+  breakfast: "Breakfast", lunch: "Lunch", dinner: "Dinner",
 };
+
+// ISO 8601 numbering (1=Monday...7=Sunday) — matches the day_of_week column.
+const WEEKDAY_LABELS: Record<number, string> = {
+  1: "Monday", 2: "Tuesday", 3: "Wednesday", 4: "Thursday", 5: "Friday", 6: "Saturday", 7: "Sunday",
+};
+const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 7];
 
 const AMENITY_ICONS: Record<string, React.ReactNode> = {
   "WiFi":            <Wifi className="w-3 h-3" />,
@@ -454,8 +458,105 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
 
 // ── Food menu ─────────────────────────────────────────────────────────────────
 
-function FoodMenuSection({ items, closedOnSundays }: { items: FoodItem[]; closedOnSundays: boolean }) {
+const MEAL_HEADER_COLOR: Record<MealType, string> = {
+  breakfast: "text-amber",
+  lunch:     "text-emerald-400",
+  dinner:    "text-blue-400",
+};
+
+function byMealType(dayItems: FoodItem[]) {
+  return dayItems.reduce<Partial<Record<MealType, FoodItem[]>>>((acc, i) => {
+    if (!acc[i.meal_type]) acc[i.meal_type] = [];
+    acc[i.meal_type]!.push(i);
+    return acc;
+  }, {});
+}
+
+interface FoodMenuRow { key: string; label: string; closed: boolean; meals: Partial<Record<MealType, FoodItem[]>> }
+
+// One table with meal types as column headers, one row per day — so
+// "Breakfast"/"Lunch"/"Dinner" is written once, not once per day (a weekly
+// menu showing all 7 days at once made the old per-day badge repetition
+// obvious and cluttered).
+function FoodMenuTable({ rows }: { rows: FoodMenuRow[] }) {
+  return (
+    <div className="overflow-x-auto rounded-xl border border-white/[0.07]">
+      <table className="w-full min-w-[480px] border-collapse text-sm">
+        <thead>
+          <tr className="border-b border-white/[0.07] bg-white/[0.02]">
+            <th className="px-3.5 py-2.5 text-left sticky left-0 bg-[#111113] z-10 border-r border-white/[0.05] w-[120px]">
+              <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Day</span>
+            </th>
+            {(["breakfast", "lunch", "dinner"] as MealType[]).map((mealType) => (
+              <th key={mealType} className="px-3.5 py-2.5 text-left">
+                <span className={`text-[10px] font-semibold uppercase tracking-widest ${MEAL_HEADER_COLOR[mealType]}`}>
+                  {MEAL_LABEL[mealType]}
+                </span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key} className={`border-b border-white/[0.05] last:border-0 ${row.closed ? "opacity-40" : ""}`}>
+              <td className="px-3.5 py-2.5 align-top sticky left-0 bg-[#111113] z-10 border-r border-white/[0.05]">
+                <span className="text-xs font-semibold">{row.label}</span>
+                {row.closed && (
+                  <span className="block mt-1 w-fit text-[10px] text-amber/70 bg-amber/10 border border-amber/20 px-1.5 py-0.5 rounded-full">Closed</span>
+                )}
+              </td>
+              {(["breakfast", "lunch", "dinner"] as MealType[]).map((mealType) => {
+                const mealItems = row.meals[mealType];
+                return (
+                  <td key={mealType} className="px-3.5 py-2.5 align-top">
+                    {mealItems?.length
+                      ? mealItems.map((item) => (
+                          <p key={item.id} className="text-[11px] text-foreground/80 leading-snug">{item.item_name}</p>
+                        ))
+                      : <span className="text-[11px] text-muted-foreground/25">—</span>}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function FoodMenuSection({ items, closedOnSundays, menuType }: { items: FoodItem[]; closedOnSundays: boolean; menuType: FoodMenuType }) {
+  if (menuType === "weekly") {
+    const byDow = items.reduce<Record<number, FoodItem[]>>((acc, item) => {
+      if (item.day_of_week == null) return acc;
+      if (!acc[item.day_of_week]) acc[item.day_of_week] = [];
+      acc[item.day_of_week].push(item);
+      return acc;
+    }, {});
+    const activeDows = WEEKDAY_ORDER.filter((d) => byDow[d]?.length);
+    if (activeDows.length === 0) return null;
+
+    const rows: FoodMenuRow[] = activeDows.map((dow) => ({
+      key: String(dow),
+      label: WEEKDAY_LABELS[dow],
+      closed: dow === 7 && closedOnSundays,
+      meals: byMealType(byDow[dow]),
+    }));
+
+    return (
+      <section>
+        <div className="flex items-center gap-2 mb-4">
+          <Utensils className="w-4 h-4 text-amber" />
+          <h2 className="font-semibold text-base">Weekly Menu</h2>
+          {closedOnSundays && <span className="text-[11px] text-amber/70 bg-amber/10 border border-amber/20 px-2 py-0.5 rounded-full">Closed Sundays</span>}
+        </div>
+        <FoodMenuTable rows={rows} />
+      </section>
+    );
+  }
+
   const byDate = items.reduce<Record<string, FoodItem[]>>((acc, item) => {
+    if (!item.date) return acc;
     if (!acc[item.date]) acc[item.date] = [];
     acc[item.date].push(item);
     return acc;
@@ -464,12 +565,12 @@ function FoodMenuSection({ items, closedOnSundays }: { items: FoodItem[]; closed
   const dates = Object.keys(byDate).sort();
   if (dates.length === 0) return null;
 
-  const byMeal = (dayItems: FoodItem[]) =>
-    dayItems.reduce<Partial<Record<MealType, FoodItem[]>>>((acc, i) => {
-      if (!acc[i.meal_type]) acc[i.meal_type] = [];
-      acc[i.meal_type]!.push(i);
-      return acc;
-    }, {});
+  const rows: FoodMenuRow[] = dates.map((date) => ({
+    key: date,
+    label: formatDate(date),
+    closed: isSunday(date) && closedOnSundays,
+    meals: byMealType(byDate[date]),
+  }));
 
   return (
     <section>
@@ -478,35 +579,7 @@ function FoodMenuSection({ items, closedOnSundays }: { items: FoodItem[]; closed
         <h2 className="font-semibold text-base">Monthly Menu</h2>
         {closedOnSundays && <span className="text-[11px] text-amber/70 bg-amber/10 border border-amber/20 px-2 py-0.5 rounded-full">Closed Sundays</span>}
       </div>
-      <div className="space-y-2">
-        {dates.map((date) => {
-          const sunday = isSunday(date);
-          const meals = byMeal(byDate[date]);
-          return (
-            <div key={date} className={`rounded-xl border border-white/[0.07] bg-[#111113] overflow-hidden ${sunday && closedOnSundays ? "opacity-40" : ""}`}>
-              <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-white/[0.05]">
-                <span className="text-xs font-semibold">{formatDate(date)}</span>
-                {sunday && closedOnSundays && <span className="text-[10px] text-amber/70 bg-amber/10 border border-amber/20 px-1.5 py-0.5 rounded-full">Closed</span>}
-              </div>
-              <div className="p-2.5 flex flex-wrap gap-2">
-                {(["breakfast", "lunch", "dinner"] as MealType[]).map((mealType) => {
-                  const mealItems = meals[mealType];
-                  if (!mealItems?.length) return null;
-                  const cfg = MEAL_CONFIG[mealType];
-                  return (
-                    <div key={mealType} className={`flex-1 min-w-[110px] rounded-lg border p-2.5 ${cfg.from} ${cfg.border}`}>
-                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full border text-[9px] font-semibold mb-1.5 ${cfg.badge}`}>{cfg.label}</span>
-                      {mealItems.map((item) => (
-                        <p key={item.id} className="text-[11px] text-foreground/80 leading-snug">{item.item_name}</p>
-                      ))}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <FoodMenuTable rows={rows} />
     </section>
   );
 }
@@ -713,11 +786,6 @@ function PackagePricingSection({
   });
   if (!rows.length) return null;
 
-  const colClass =
-    hasNonAcRooms && hasAcRooms
-      ? "grid-cols-[1fr_auto_auto]"
-      : "grid-cols-[1fr_auto]";
-
   return (
     <section>
       <div className="flex items-center gap-2 mb-3">
@@ -725,51 +793,55 @@ function PackagePricingSection({
         <h2 className="font-semibold text-sm">Monthly Pricing</h2>
       </div>
       <div className="rounded-xl border border-white/[0.08] bg-[#111113] overflow-hidden">
-        {/* Header */}
-        <div className={`grid ${colClass} gap-px bg-white/[0.05]`}>
-          <div className="bg-[#111113] px-4 py-2">
-            <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Package</span>
-          </div>
-          {hasNonAcRooms && (
-            <div className="bg-[#111113] px-4 py-2 text-center min-w-[90px]">
-              <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Standard</span>
-            </div>
-          )}
-          {hasAcRooms && (
-            <div className="bg-[#111113] px-4 py-2 text-center min-w-[90px]">
-              <span className="text-[10px] font-semibold text-blue-400/60 uppercase tracking-widest">AC Room</span>
-            </div>
-          )}
-        </div>
-        {/* Rows */}
-        {rows.map((t, i) => {
-          const p = prices[t.tier]!;
-          return (
-            <div
-              key={t.tier}
-              className={`grid ${colClass} gap-px bg-white/[0.04] ${i !== 0 ? "border-t border-white/[0.05]" : ""}`}
-            >
-              <div className="bg-[#111113] px-4 py-3">
-                <p className="text-sm font-medium leading-tight">{t.label}</p>
-                <p className="text-[11px] text-muted-foreground/50 mt-0.5">{t.subtitle}</p>
-              </div>
+        {/* A real <table> — not stacked CSS grid divs — so column widths are
+            computed once across header + every row and stay aligned, instead
+            of each row's "auto" columns sizing independently to their own content. */}
+        <table className="w-full border-collapse">
+          <thead>
+            <tr className="border-b border-white/[0.05]">
+              <th className="px-4 py-2 text-left font-normal">
+                <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Package</span>
+              </th>
               {hasNonAcRooms && (
-                <div className="bg-[#111113] px-4 py-3 flex items-center justify-end min-w-[90px]">
-                  {p.no_ac > 0
-                    ? <span className="text-sm font-semibold text-amber tabular-nums">{formatCurrency(p.no_ac)}</span>
-                    : <span className="text-xs text-muted-foreground/30">—</span>}
-                </div>
+                <th className="px-4 py-2 text-right font-normal">
+                  <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Standard</span>
+                </th>
               )}
               {hasAcRooms && (
-                <div className="bg-[#111113] px-4 py-3 flex items-center justify-end min-w-[90px]">
-                  {p.ac > 0
-                    ? <span className="text-sm font-semibold text-blue-400 tabular-nums">{formatCurrency(p.ac)}</span>
-                    : <span className="text-xs text-muted-foreground/30">—</span>}
-                </div>
+                <th className="px-4 py-2 text-right font-normal">
+                  <span className="text-[10px] font-semibold text-blue-400/60 uppercase tracking-widest">AC Room</span>
+                </th>
               )}
-            </div>
-          );
-        })}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((t, i) => {
+              const p = prices[t.tier]!;
+              return (
+                <tr key={t.tier} className={i !== 0 ? "border-t border-white/[0.05]" : ""}>
+                  <td className="px-4 py-3">
+                    <p className="text-sm font-medium leading-tight">{t.label}</p>
+                    <p className="text-[11px] text-muted-foreground/50 mt-0.5">{t.subtitle}</p>
+                  </td>
+                  {hasNonAcRooms && (
+                    <td className="px-4 py-3 text-right">
+                      {p.no_ac > 0
+                        ? <span className="text-sm font-semibold text-amber tabular-nums">{formatCurrency(p.no_ac)}</span>
+                        : <span className="text-xs text-muted-foreground/30">—</span>}
+                    </td>
+                  )}
+                  {hasAcRooms && (
+                    <td className="px-4 py-3 text-right">
+                      {p.ac > 0
+                        ? <span className="text-sm font-semibold text-blue-400 tabular-nums">{formatCurrency(p.ac)}</span>
+                        : <span className="text-xs text-muted-foreground/30">—</span>}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
         {/* AC note */}
         {hasAcRooms && config.ac_per_unit_rate > 0 && (
           <div className="border-t border-white/[0.05] px-4 py-2.5 flex items-center gap-2">
@@ -811,11 +883,6 @@ function SeaterPricingSection({
   });
   if (!rows.length) return null;
 
-  const colClass =
-    hasNonAcRooms && hasAcRooms
-      ? "grid-cols-[1fr_auto_auto]"
-      : "grid-cols-[1fr_auto]";
-
   return (
     <section>
       <div className="flex items-center gap-2 mb-3">
@@ -823,58 +890,62 @@ function SeaterPricingSection({
         <h2 className="font-semibold text-sm">Monthly Pricing</h2>
       </div>
       <div className="rounded-xl border border-white/[0.08] bg-[#111113] overflow-hidden">
-        {/* Header */}
-        <div className={`grid ${colClass} gap-px bg-white/[0.05]`}>
-          <div className="bg-[#111113] px-4 py-2">
-            <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Seater</span>
-          </div>
-          {hasNonAcRooms && (
-            <div className="bg-[#111113] px-4 py-2 text-center min-w-[90px]">
-              <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Standard</span>
-            </div>
-          )}
-          {hasAcRooms && (
-            <div className="bg-[#111113] px-4 py-2 text-center min-w-[90px]">
-              <span className="text-[10px] font-semibold text-blue-400/60 uppercase tracking-widest">AC Room</span>
-            </div>
-          )}
-        </div>
-        {/* Rows */}
-        {rows.map((c, i) => {
-          const p = seaterPrices[c]!;
-          const depositNoAc = (p.deposit_no_ac ?? 0) > 0 ? p.deposit_no_ac! : config.security_deposit;
-          const depositAc = (p.deposit_ac ?? 0) > 0 ? p.deposit_ac! : config.security_deposit;
-          return (
-            <div
-              key={c}
-              className={`grid ${colClass} gap-px bg-white/[0.04] ${i !== 0 ? "border-t border-white/[0.05]" : ""}`}
-            >
-              <div className="bg-[#111113] px-4 py-3 flex items-center">
-                <p className="text-sm font-medium leading-tight">{SEATER_LABELS[c]}</p>
-              </div>
+        {/* A real <table> — not stacked CSS grid divs — so column widths are
+            computed once across header + every row and stay aligned, instead
+            of each row's "auto" columns sizing independently to their own content. */}
+        <table className="w-full border-collapse">
+          <thead>
+            <tr className="border-b border-white/[0.05]">
+              <th className="px-4 py-2 text-left font-normal">
+                <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Seater</span>
+              </th>
               {hasNonAcRooms && (
-                <div className="bg-[#111113] px-4 py-3 flex flex-col items-end justify-center min-w-[90px]">
-                  {p.no_ac > 0
-                    ? <span className="text-sm font-semibold text-amber tabular-nums">{formatCurrency(p.no_ac)}</span>
-                    : <span className="text-xs text-muted-foreground/30">—</span>}
-                  {p.no_ac > 0 && depositNoAc > 0 && (
-                    <span className="text-[10px] text-muted-foreground/50 mt-0.5">Dep {formatCurrency(depositNoAc)}</span>
-                  )}
-                </div>
+                <th className="px-4 py-2 text-right font-normal">
+                  <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Standard</span>
+                </th>
               )}
               {hasAcRooms && (
-                <div className="bg-[#111113] px-4 py-3 flex flex-col items-end justify-center min-w-[90px]">
-                  {p.ac > 0
-                    ? <span className="text-sm font-semibold text-blue-400 tabular-nums">{formatCurrency(p.ac)}</span>
-                    : <span className="text-xs text-muted-foreground/30">—</span>}
-                  {p.ac > 0 && depositAc > 0 && (
-                    <span className="text-[10px] text-muted-foreground/50 mt-0.5">Dep {formatCurrency(depositAc)}</span>
-                  )}
-                </div>
+                <th className="px-4 py-2 text-right font-normal">
+                  <span className="text-[10px] font-semibold text-blue-400/60 uppercase tracking-widest">AC Room</span>
+                </th>
               )}
-            </div>
-          );
-        })}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((c, i) => {
+              const p = seaterPrices[c]!;
+              const depositNoAc = (p.deposit_no_ac ?? 0) > 0 ? p.deposit_no_ac! : config.security_deposit;
+              const depositAc = (p.deposit_ac ?? 0) > 0 ? p.deposit_ac! : config.security_deposit;
+              return (
+                <tr key={c} className={i !== 0 ? "border-t border-white/[0.05]" : ""}>
+                  <td className="px-4 py-3">
+                    <p className="text-sm font-medium leading-tight">{SEATER_LABELS[c]}</p>
+                  </td>
+                  {hasNonAcRooms && (
+                    <td className="px-4 py-3 text-right">
+                      {p.no_ac > 0
+                        ? <span className="text-sm font-semibold text-amber tabular-nums">{formatCurrency(p.no_ac)}</span>
+                        : <span className="text-xs text-muted-foreground/30">—</span>}
+                      {p.no_ac > 0 && depositNoAc > 0 && (
+                        <span className="block text-[10px] text-muted-foreground/50 mt-0.5">Dep {formatCurrency(depositNoAc)}</span>
+                      )}
+                    </td>
+                  )}
+                  {hasAcRooms && (
+                    <td className="px-4 py-3 text-right">
+                      {p.ac > 0
+                        ? <span className="text-sm font-semibold text-blue-400 tabular-nums">{formatCurrency(p.ac)}</span>
+                        : <span className="text-xs text-muted-foreground/30">—</span>}
+                      {p.ac > 0 && depositAc > 0 && (
+                        <span className="block text-[10px] text-muted-foreground/50 mt-0.5">Dep {formatCurrency(depositAc)}</span>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
         {/* AC note */}
         {hasAcRooms && config.ac_per_unit_rate > 0 && (
           <div className="border-t border-white/[0.05] px-4 py-2.5 flex items-center gap-2">
@@ -947,6 +1018,14 @@ export function HostelDetailClient({
     const obs = new IntersectionObserver(([entry]) => setShowBand(!entry.isIntersecting), { threshold: 0 });
     if (infoRef.current) obs.observe(infoRef.current);
     return () => obs.disconnect();
+  }, []);
+
+  // Deep-link support for ?tab=menu (used by the welcome-message "Monthly food
+  // menu" link) — jumps straight to Packages & Menu instead of landing on Rooms.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("tab") === "menu") {
+      setActiveTab("details");
+    }
   }, []);
 
   // H2: reject non-http(s) URLs to block javascript: protocol injection
@@ -1170,7 +1249,7 @@ export function HostelDetailClient({
               })()}
 
               {hostel.food_menu.length > 0 && (
-                <FoodMenuSection items={hostel.food_menu} closedOnSundays={hostel.food_closed_on_sundays} />
+                <FoodMenuSection items={hostel.food_menu} closedOnSundays={hostel.food_closed_on_sundays} menuType={hostel.food_menu_type} />
               )}
 
               {!hostel.package_config && hostel.food_menu.length === 0 && (

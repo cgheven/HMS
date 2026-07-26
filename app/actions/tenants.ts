@@ -11,6 +11,7 @@ import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
+import { sendWelcomeMessageNow, type WelcomeSendResult } from "@/lib/whatsapp-welcome-action";
 import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, CheckoutSettlement, TenantEventType } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,20 @@ async function resolveShareLinkHostelId(): Promise<string> {
     return mgr.activeHostel.id;
   }
   await requireOwnerOrPartnerTier("read_only");
+  return resolveHostelId();
+}
+
+// Same "add_members" permission that gates addTenantAsManager — resending the
+// welcome message is a variant of the same capability, not a new one. Owner/
+// partner path mirrors addTenantAsPartner's "standard" tier.
+async function resolveWelcomeMessageHostelId(): Promise<string> {
+  const mgr = await getManagerContext();
+  if (mgr) {
+    if (!mgr.permissions.has("add_members")) throw new Error("Access denied");
+    if (!mgr.activeHostel) throw new Error("Unauthorized: no active hostel");
+    return mgr.activeHostel.id;
+  }
+  await requireOwnerOrPartnerTier("standard");
   return resolveHostelId();
 }
 
@@ -1136,6 +1151,30 @@ export async function logTenantEvent(input: {
 // they intend to check out — reused later to pre-fill the actual checkout
 // dialog. No penalty/reminder logic; this only tracks the dates.
 // ---------------------------------------------------------------------------
+
+// Owner-facing "Resend Welcome" button — sends the same hms_tenant_welcome
+// message (room, WiFi password, meal times, mess/menu link) the tenant would
+// have gotten automatically on activation. Useful when the original send
+// failed, the tenant lost the message, or WiFi/menu details changed since.
+export async function resendTenantWelcomeMessageAction(tenantId: string): Promise<WelcomeSendResult> {
+  try {
+    const hostelId = await resolveWelcomeMessageHostelId();
+    const admin = createAdminClient();
+
+    const { data: tenant } = await admin
+      .from("hms_tenants")
+      .select("id, full_name, phone, is_active, is_waiting, room_id, hostel_id")
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+      .single();
+    if (!tenant) throw new Error("Tenant not found or access denied");
+
+    return await sendWelcomeMessageNow(tenant);
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 export async function giveTenantNoticeAction(
   tenantId: string,

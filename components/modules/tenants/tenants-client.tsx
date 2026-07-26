@@ -6,7 +6,7 @@ import {
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, Eye,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
   FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check, UtensilsCrossed,
-  CalendarClock, CalendarX,
+  CalendarClock, CalendarX, MessageCircle,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -26,7 +26,7 @@ import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplica
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, resendTenantWelcomeMessageAction } from "@/app/actions/tenants";
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 import { addTenantAsManager } from "@/app/actions/managers";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
@@ -244,10 +244,12 @@ interface TenantRowProps {
   showEdit?: boolean;
   showDelete?: boolean;
   showGiveNotice?: boolean;
+  showSendWelcome?: boolean;
   roomMap: Record<string, Room>;
   foodAddonRates: FoodAddonRates;
   noticePeriodDays?: number;
   currentMonthPaymentByTenant?: Record<string, { status: string; remaining: number }>;
+  sendingWelcome?: boolean;
   // Omitted for managers: opens the same Add/Edit Tenant form read-only, and
   // that form resolves hostelId client-side in a way managers don't have.
   // Undefined hides the control entirely.
@@ -257,9 +259,10 @@ interface TenantRowProps {
   onEdit: (t: Tenant) => void;
   onDelete: (t: Tenant) => void;
   onGiveNotice?: (t: Tenant) => void;
+  onSendWelcome?: (t: Tenant) => void;
 }
 
-function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, onView, onCheckout, onActivate, onEdit, onDelete, onGiveNotice }: TenantRowProps) {
+function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, showSendWelcome = false, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, sendingWelcome = false, onView, onCheckout, onActivate, onEdit, onDelete, onGiveNotice, onSendWelcome }: TenantRowProps) {
   const room = t.room_id ? roomMap[t.room_id] : null;
   const foodCharge = calcFoodAddonCharge(t, foodAddonRates);
   const initials = t.full_name[0].toUpperCase();
@@ -412,6 +415,18 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
             <span className="hidden sm:inline text-xs ml-1.5">Check Out</span>
           </Button>
         )}
+        {showSendWelcome && onSendWelcome && t.phone && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
+            onClick={() => onSendWelcome(t)}
+            disabled={sendingWelcome}
+            title="Resend Welcome Message (WiFi + Mess Link)"
+          >
+            {sendingWelcome ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MessageCircle className="w-3.5 h-3.5" />}
+          </Button>
+        )}
         {onView && (
           <Button variant="ghost" size="icon" className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground" title="View Tenant" onClick={() => onView(t)}>
             <Eye className="w-3.5 h-3.5" />
@@ -447,9 +462,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const canAdd = isManager ? canAddAsManager : canStandardTier;
   const canMutateRow = canFullTier && !isManager;
   const canNotice = canStandardTier && !isManager;
+  // Same "add_members"/"standard" gate as adding a tenant — resending the
+  // welcome message is a variant of that capability, matches resolveWelcomeMessageHostelId.
+  const canSendWelcome = canAdd;
   const [active, setActive] = useState(initialActive);
   const [waiting, setWaiting] = useState(initialWaiting);
   const [checkedOut, setCheckedOut] = useState(initialCheckedOut);
+  const [sendingWelcomeId, setSendingWelcomeId] = useState<string | null>(null);
   const [rooms, setRooms] = useState(initialRooms);
   const [applications, setApplications] = useState<TenantApplication[]>(initialApplications);
   const [waitlistEntries, setWaitlistEntries] = useState<WaitlistEntry[]>(initialWaitlistEntries);
@@ -1114,6 +1133,31 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     await reload();
   }
 
+  async function handleSendWelcome(t: Tenant) {
+    // Deliberately NOT pre-opening a blank tab and navigating it later —
+    // Safari/WebKit silently drops a deferred .location.href assignment on a
+    // window opened with window.open("", ...) once any async gap (our server
+    // round-trip) has passed, treating it as a suspicious popup redirect. The
+    // tab opens blank and just stays blank, with no error anywhere. Opening
+    // the real URL only once we have it is the reliable, cross-browser way —
+    // the spinner below still gives instant feedback on click.
+    setSendingWelcomeId(t.id);
+    const result = await resendTenantWelcomeMessageAction(t.id);
+    setSendingWelcomeId(null);
+    if (!result.ok) {
+      toast({ title: "Couldn't send welcome message", description: result.error, variant: "destructive" });
+      return;
+    }
+    // Branches without WhatsApp API access get a wa.me link instead of an
+    // automatic send — open it so the owner can hit send themselves.
+    if (result.waLink) {
+      window.open(result.waLink, "_blank", "noopener,noreferrer");
+      toast({ title: "Opening WhatsApp…", description: `Message ready to send to ${t.full_name}.` });
+      return;
+    }
+    toast({ title: "Welcome message sent", description: `Sent to ${t.full_name} via WhatsApp.` });
+  }
+
   function openNoticeDialog(t: Tenant) {
     setNoticeDialogTenant(t);
     setNoticeDate(t.intended_checkout_date ?? formatDateInput(new Date()));
@@ -1594,16 +1638,19 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <TenantRow
                   key={t.id} t={t} showCheckout={canMutateRow}
                   showEdit={canMutateRow} showDelete={canMutateRow} showGiveNotice={canNotice}
+                  showSendWelcome={canSendWelcome}
                   roomMap={roomMap}
                   foodAddonRates={foodAddonRates}
                   noticePeriodDays={noticePeriodDays}
                   currentMonthPaymentByTenant={currentMonthPaymentByTenant}
+                  sendingWelcome={sendingWelcomeId === t.id}
                   onView={isManager ? undefined : openView}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}
                   onDelete={setDeleteTenant}
                   onGiveNotice={openNoticeDialog}
+                  onSendWelcome={handleSendWelcome}
                 />
               ))}
               </div>

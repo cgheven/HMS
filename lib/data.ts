@@ -543,7 +543,16 @@ export async function getKitchenExpenses(monthFilter: string) {
 export async function getFoodItems(month: string) {
   const ctx = await getAuthContext();
   if (!ctx?.hostelId) return { hostelId: null, items: [] };
-  const { supabase, hostelId } = ctx;
+  const { supabase, hostelId, hostel } = ctx;
+
+  if (hostel?.food_menu_type === "weekly") {
+    const { data } = await supabase
+      .from("hms_food_items").select("*").eq("hostel_id", hostelId)
+      .not("day_of_week", "is", null)
+      .order("day_of_week").order("meal_type").order("sort_order");
+    return { hostelId, items: (data as FoodItem[]) ?? [] };
+  }
+
   const [y, m] = month.split("-").map(Number);
   const end = new Date(y, m, 0).toISOString().slice(0, 10);
   const { data } = await supabase

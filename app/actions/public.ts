@@ -162,7 +162,7 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
 
     const { data: hostelData, error: hostelErr } = await admin
       .from("hms_hostels")
-      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays,cover_image_url,form_config")
+      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays,food_menu_type,cover_image_url,form_config")
       .eq("slug", slug)
       .eq("listing_enabled", true)
       .single();
@@ -170,8 +170,9 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
     if (hostelErr || !hostelData) return { error: "Hostel not found" };
 
     const hostelId = hostelData.id;
+    const isWeeklyMenu = hostelData.food_menu_type === "weekly";
 
-    // Current month bounds
+    // Current month bounds — only relevant for the monthly menu query below.
     const now = new Date();
     const y = now.getFullYear();
     const m = String(now.getMonth() + 1).padStart(2, "0");
@@ -187,14 +188,22 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
         .eq("hostel_id", hostelId)
         .neq("status", "maintenance")
         .order("room_number"),
-      admin
-        .from("hms_food_items")
-        .select("*")
-        .eq("hostel_id", hostelId)
-        .gte("date", monthStart)
-        .lte("date", monthEnd)
-        .order("date")
-        .order("sort_order"),
+      isWeeklyMenu
+        ? admin
+            .from("hms_food_items")
+            .select("*")
+            .eq("hostel_id", hostelId)
+            .not("day_of_week", "is", null)
+            .order("day_of_week")
+            .order("sort_order")
+        : admin
+            .from("hms_food_items")
+            .select("*")
+            .eq("hostel_id", hostelId)
+            .gte("date", monthStart)
+            .lte("date", monthEnd)
+            .order("date")
+            .order("sort_order"),
       admin
         .from("hms_package_configs")
         .select("id,hostel_id,food_monthly_rate,food_bd_rate,food_3meals_rate,food_breakfast_rate,food_lunch_rate,food_dinner_rate,food_all_meals_rate,ac_per_unit_rate,security_deposit,notice_period_days,package_prices,seater_prices,created_at,updated_at")

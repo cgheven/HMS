@@ -18,8 +18,8 @@ function formatMealTimesBlock(mealTimes?: MealTimes | null): string {
   ];
   const lines = rows
     .filter(([, r]) => r?.from?.trim() && r?.to?.trim())
-    .map(([label, r]) => `${label}: ${r!.from.trim()} - ${r!.to.trim()}`);
-  return lines.length ? "\n\n🕐 " + lines.join("\n") : "";
+    .map(([label, r]) => `*${label}:* ${r!.from.trim()} - ${r!.to.trim()}`);
+  return lines.length ? "\n\n" + lines.join("\n") : "";
 }
 
 function formatWifiBlock(networks: WifiNetwork[]): string {
@@ -30,7 +30,7 @@ function formatWifiBlock(networks: WifiNetwork[]): string {
     if (n.password?.trim()) lines.push(`Password: ${n.password}`);
     return lines.join("\n");
   });
-  const header = blocks.length > 1 ? "📶 Internet Connections:" : "📶 Internet Connection:";
+  const header = blocks.length > 1 ? "*Internet Connections:*" : "*Internet Connection:*";
   return "\n\n" + header + "\n" + blocks.join("\n\n");
 }
 
@@ -52,6 +52,6 @@ export function buildWelcomeMessage(args: BuildWelcomeArgs): string {
     .replace(/\{hostel\}/g,     args.hostelName)
     .replace(/\{room\}/g,       args.room?.trim() ? `Room ${args.room.trim()}` : "a room")
     .replace(/\{wifi\}/g,       formatWifiBlock(args.wifiNetworks))
-    .replace(/\{menu\}/g,       args.menuUrl ? `\n\n🍽️ Monthly food menu: ${args.menuUrl}` : "")
+    .replace(/\{menu\}/g,       args.menuUrl ? `\n\n*Monthly food menu:* ${args.menuUrl}` : "")
     .replace(/\{meal_times\}/g, formatMealTimesBlock(args.mealTimes));
 }

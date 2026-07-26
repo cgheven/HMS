@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { formatDateInput } from "@/lib/utils";
-import type { FoodItem, MealType, PartnerTier } from "@/types";
+import type { FoodItem, MealType, PartnerTier, FoodMenuType } from "@/types";
 
 const mealTypes: MealType[] = ["breakfast", "lunch", "dinner"];
 const mealLabel: Record<MealType, string> = { breakfast: "Breakfast", lunch: "Lunch", dinner: "Dinner" };
@@ -25,6 +25,21 @@ const mealInputFocus: Record<MealType, string> = {
   lunch:     "focus:border-emerald-400/50",
   dinner:    "focus:border-blue-400/50",
 };
+
+// ISO 8601 numbering (1=Monday...7=Sunday) — matches the day_of_week column
+// and migration 113's EXTRACT(ISODOW ...) precedent.
+const WEEKDAYS: { dow: number; label: string; short: string }[] = [
+  { dow: 1, label: "Monday",    short: "Mon" },
+  { dow: 2, label: "Tuesday",   short: "Tue" },
+  { dow: 3, label: "Wednesday", short: "Wed" },
+  { dow: 4, label: "Thursday",  short: "Thu" },
+  { dow: 5, label: "Friday",    short: "Fri" },
+  { dow: 6, label: "Saturday",  short: "Sat" },
+  { dow: 7, label: "Sunday",    short: "Sun" },
+];
+function isoDow(d: Date): number {
+  return ((d.getDay() + 6) % 7) + 1; // JS Sun=0 → ISO 7
+}
 
 function formatMonthTitle(month: string) {
   const [y, m] = month.split("-").map(Number);
@@ -47,6 +62,7 @@ function parseDateLocal(d: string) {
 
 const emptyForm = () => ({
   date: formatDateInput(new Date()),
+  day_of_week: 1,
   meal_type: "breakfast" as MealType,
   item_name: "",
   quantity: "",
@@ -54,16 +70,29 @@ const emptyForm = () => ({
   notes: "",
 });
 
-interface Props { hostelId: string | null; initialItems: FoodItem[]; initialMonth: string; partnerTier?: PartnerTier | null; }
+interface Props {
+  hostelId: string | null;
+  initialItems: FoodItem[];
+  initialMonth: string;
+  initialMenuType: FoodMenuType;
+  partnerTier?: PartnerTier | null;
+}
 
 const monthCache = new Map<string, FoodItem[]>();
+const weeklyCache = new Map<string, FoodItem[]>();
 
-export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier = null }: Props) {
+export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuType, partnerTier = null }: Props) {
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
-  const [monthItems, setMonthItems] = useState<FoodItem[]>(initialItems);
+  // Menu-type lives on hms_hostels, whose RLS update policy requires full
+  // tier for partners (same reason the Settings "Save Listing" button — the
+  // other hms_hostels writer — is full-tier gated too).
+  const canFullTier = !partnerTier || partnerTier === "full";
+  const [menuType, setMenuType] = useState<FoodMenuType>(initialMenuType);
+  const [switchingMenu, setSwitchingMenu] = useState(false);
+  const [items, setItems] = useState<FoodItem[]>(initialItems);
   const [monthFilter, setMonthFilter] = useState(initialMonth);
-  const [loadingMonth, setLoadingMonth] = useState(false);
-  const [addingMeal, setAddingMeal] = useState<{ date: string; meal: MealType } | null>(null);
+  const [loadingItems, setLoadingItems] = useState(false);
+  const [addingMeal, setAddingMeal] = useState<{ row: string; meal: MealType } | null>(null);
   const [addingText, setAddingText] = useState("");
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
@@ -74,17 +103,22 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
   const addInputRef = useRef<HTMLInputElement>(null);
 
   const today = formatDateInput(new Date());
+  const todayDow = isoDow(new Date());
+  const isWeekly = menuType === "weekly";
 
   // Seed cache with SSR data
-  if (hostelId && !monthCache.has(`${hostelId}:${initialMonth}`)) {
+  if (hostelId && isWeekly && !weeklyCache.has(hostelId)) {
+    weeklyCache.set(hostelId, initialItems);
+  }
+  if (hostelId && !isWeekly && !monthCache.has(`${hostelId}:${initialMonth}`)) {
     monthCache.set(`${hostelId}:${initialMonth}`, initialItems);
   }
 
   async function loadMonth(month: string) {
     if (!hostelId) return;
     const key = `${hostelId}:${month}`;
-    if (monthCache.has(key)) { setMonthItems(monthCache.get(key)!); return; }
-    setLoadingMonth(true);
+    if (monthCache.has(key)) { setItems(monthCache.get(key)!); return; }
+    setLoadingItems(true);
     const [y, m] = month.split("-").map(Number);
     const end = new Date(y, m, 0).toISOString().slice(0, 10);
     const supabase = createClient();
@@ -93,12 +127,30 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
       .gte("date", `${month}-01`).lte("date", end)
       .order("date").order("meal_type").order("sort_order");
     if (error) toast({ title: "Failed to load", description: error.message, variant: "destructive" });
-    else { const rows = (data as FoodItem[]) ?? []; monthCache.set(key, rows); setMonthItems(rows); }
-    setLoadingMonth(false);
+    else { const rows = (data as FoodItem[]) ?? []; monthCache.set(key, rows); setItems(rows); }
+    setLoadingItems(false);
+  }
+
+  async function loadWeekly(force = false) {
+    if (!hostelId) return;
+    if (!force && weeklyCache.has(hostelId)) { setItems(weeklyCache.get(hostelId)!); return; }
+    setLoadingItems(true);
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("hms_food_items").select("*").eq("hostel_id", hostelId)
+      .not("day_of_week", "is", null)
+      .order("day_of_week").order("meal_type").order("sort_order");
+    if (error) toast({ title: "Failed to load", description: error.message, variant: "destructive" });
+    else { const rows = (data as FoodItem[]) ?? []; weeklyCache.set(hostelId, rows); setItems(rows); }
+    setLoadingItems(false);
   }
 
   function invalidateMonthCache() {
     if (hostelId) monthCache.delete(`${hostelId}:${monthFilter}`);
+  }
+
+  function invalidateWeeklyCache() {
+    if (hostelId) weeklyCache.delete(hostelId);
   }
 
   function changeMonth(delta: number) {
@@ -109,19 +161,42 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
     loadMonth(next);
   }
 
-  async function quickAdd(date: string, meal: MealType) {
+  // Never touches hms_food_items — old entries from the other mode just stop
+  // being queried, they're not deleted, so switching back restores them.
+  async function switchMenuType(next: FoodMenuType) {
+    if (next === menuType || !hostelId || switchingMenu) return;
+    setSwitchingMenu(true);
+    const supabase = createClient();
+    const { data, error } = await supabase.from("hms_hostels").update({ food_menu_type: next }).eq("id", hostelId).select("id");
+    if (error || !data?.length) {
+      toast({ title: "Error", description: error?.message ?? "Your access level does not allow changing the menu type.", variant: "destructive" });
+      setSwitchingMenu(false);
+      return;
+    }
+    setMenuType(next);
+    if (next === "weekly") await loadWeekly();
+    else await loadMonth(monthFilter);
+    setSwitchingMenu(false);
+  }
+
+  async function quickAdd(row: string, meal: MealType) {
     const text = addingText.trim();
     if (!text || !hostelId) return;
-    const siblings = monthItems.filter((i) => i.date === date && i.meal_type === meal);
+    const siblings = items.filter((i) =>
+      (isWeekly ? i.day_of_week === Number(row) : i.date === row) && i.meal_type === meal
+    );
     const maxOrder = siblings.length ? Math.max(...siblings.map((i) => i.sort_order ?? 0)) : -1;
+    const payload = isWeekly
+      ? { hostel_id: hostelId, date: null, day_of_week: Number(row), meal_type: meal, item_name: text, sort_order: maxOrder + 1 }
+      : { hostel_id: hostelId, date: row, day_of_week: null, meal_type: meal, item_name: text, sort_order: maxOrder + 1 };
     const supabase = createClient();
     const { data, error } = await supabase
       .from("hms_food_items")
-      .insert({ hostel_id: hostelId, date, meal_type: meal, item_name: text, sort_order: maxOrder + 1 })
+      .insert(payload)
       .select().single();
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    setMonthItems((prev) => [...prev, data as FoodItem]);
-    invalidateMonthCache();
+    setItems((prev) => [...prev, data as FoodItem]);
+    if (isWeekly) invalidateWeeklyCache(); else invalidateMonthCache();
     setAddingText("");
     setTimeout(() => addInputRef.current?.focus(), 50);
   }
@@ -137,8 +212,8 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
       toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
       return;
     }
-    setMonthItems((prev) => prev.map((i) => i.id === item.id ? { ...i, item_name: text } : i));
-    invalidateMonthCache();
+    setItems((prev) => prev.map((i) => i.id === item.id ? { ...i, item_name: text } : i));
+    if (isWeekly) invalidateWeeklyCache(); else invalidateMonthCache();
   }
 
   async function deleteItem(id: string) {
@@ -149,20 +224,27 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
       toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
       return;
     }
-    setMonthItems((prev) => prev.filter((i) => i.id !== id));
-    invalidateMonthCache();
+    setItems((prev) => prev.filter((i) => i.id !== id));
+    if (isWeekly) invalidateWeeklyCache(); else invalidateMonthCache();
   }
 
   async function handleSave() {
     if (!hostelId || !form.item_name.trim()) return;
     setSaving(true);
     const supabase = createClient();
-    const payload = {
-      hostel_id: hostelId, date: form.date, meal_type: form.meal_type,
-      item_name: form.item_name.trim(), quantity: form.quantity || null,
-      unit_cost: form.unit_cost ? parseFloat(form.unit_cost) : null,
-      notes: form.notes || null,
-    };
+    const payload = isWeekly
+      ? {
+          hostel_id: hostelId, date: null, day_of_week: form.day_of_week, meal_type: form.meal_type,
+          item_name: form.item_name.trim(), quantity: form.quantity || null,
+          unit_cost: form.unit_cost ? parseFloat(form.unit_cost) : null,
+          notes: form.notes || null,
+        }
+      : {
+          hostel_id: hostelId, date: form.date, day_of_week: null, meal_type: form.meal_type,
+          item_name: form.item_name.trim(), quantity: form.quantity || null,
+          unit_cost: form.unit_cost ? parseFloat(form.unit_cost) : null,
+          notes: form.notes || null,
+        };
     if (editing) {
       const { data, error } = await supabase.from("hms_food_items").update(payload).eq("id", editing.id).select("id");
       if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); setSaving(false); return; }
@@ -177,20 +259,31 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
     }
     toast({ title: editing ? "Updated" : "Added" });
     setDialogOpen(false);
-    invalidateMonthCache();
-    if (form.date.startsWith(monthFilter)) loadMonth(monthFilter);
+    if (isWeekly) { invalidateWeeklyCache(); await loadWeekly(true); }
+    else { invalidateMonthCache(); if (form.date.startsWith(monthFilter)) loadMonth(monthFilter); }
     setSaving(false);
   }
 
-  const groupedByDate = useMemo(() => {
-    return monthItems.reduce<Record<string, Record<MealType, FoodItem[]>>>((acc, item) => {
+  const groupedByRow = useMemo(() => {
+    if (isWeekly) {
+      return items.reduce<Record<string, Record<MealType, FoodItem[]>>>((acc, item) => {
+        if (item.day_of_week == null) return acc;
+        const key = String(item.day_of_week);
+        if (!acc[key]) acc[key] = { breakfast: [], lunch: [], dinner: [] };
+        acc[key][item.meal_type].push(item);
+        return acc;
+      }, {});
+    }
+    return items.reduce<Record<string, Record<MealType, FoodItem[]>>>((acc, item) => {
+      if (!item.date) return acc;
       if (!acc[item.date]) acc[item.date] = { breakfast: [], lunch: [], dinner: [] };
       acc[item.date][item.meal_type].push(item);
       return acc;
     }, {});
-  }, [monthItems]);
+  }, [items, isWeekly]);
 
   const daysInMonth = useMemo(() => getDaysInMonth(monthFilter), [monthFilter]);
+  const rows = isWeekly ? WEEKDAYS.map((w) => String(w.dow)) : daysInMonth;
 
   return (
     <div className="space-y-6">
@@ -198,37 +291,62 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-serif font-normal tracking-tight">Food List</h1>
-          <p className="text-muted-foreground text-sm mt-1">Monthly meal planner</p>
+          <p className="text-muted-foreground text-sm mt-1">
+            {isWeekly ? "Weekly meal planner — repeats every week" : "Monthly meal planner"}
+          </p>
         </div>
-        {canStandardTier && (
-          <Button
-            onClick={() => { setEditing(null); setForm(emptyForm()); setDialogOpen(true); }}
-            className="gap-2 w-full sm:w-auto"
-          >
-            <Plus className="w-4 h-4" /> Add Item
-          </Button>
-        )}
+        <div className="flex items-center gap-3">
+          {canFullTier && (
+            <div className="inline-flex rounded-lg border border-sidebar-border p-0.5 shrink-0">
+              {(["monthly", "weekly"] as FoodMenuType[]).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  disabled={switchingMenu}
+                  onClick={() => switchMenuType(t)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors disabled:opacity-50 ${
+                    menuType === t ? "bg-amber/15 text-amber" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {t === "monthly" ? "30 Days" : "7 Days"}
+                </button>
+              ))}
+            </div>
+          )}
+          {canStandardTier && (
+            <Button
+              onClick={() => { setEditing(null); setForm(emptyForm()); setDialogOpen(true); }}
+              className="gap-2 w-full sm:w-auto"
+            >
+              <Plus className="w-4 h-4" /> Add Item
+            </Button>
+          )}
+        </div>
       </div>
 
-      {/* Month navigation */}
-      <div className="flex items-center gap-3">
-        <Button variant="outline" size="icon" onClick={() => changeMonth(-1)}>
-          <ChevronLeft className="w-4 h-4" />
-        </Button>
-        <span className="text-base font-semibold min-w-[150px] text-center">{formatMonthTitle(monthFilter)}</span>
-        <Button variant="outline" size="icon" onClick={() => changeMonth(1)}>
-          <ChevronRight className="w-4 h-4" />
-        </Button>
-        <Button
-          variant="outline" size="sm"
-          onClick={() => { const m = today.slice(0, 7); if (m !== monthFilter) { setMonthFilter(m); loadMonth(m); } }}
-        >
-          This Month
-        </Button>
-      </div>
+      {/* Month navigation — monthly mode only; weekly repeats forever, nothing to navigate */}
+      {isWeekly ? (
+        <p className="text-xs text-muted-foreground">Repeats every week — no month-to-month re-entry needed.</p>
+      ) : (
+        <div className="flex items-center gap-3">
+          <Button variant="outline" size="icon" onClick={() => changeMonth(-1)}>
+            <ChevronLeft className="w-4 h-4" />
+          </Button>
+          <span className="text-base font-semibold min-w-[150px] text-center">{formatMonthTitle(monthFilter)}</span>
+          <Button variant="outline" size="icon" onClick={() => changeMonth(1)}>
+            <ChevronRight className="w-4 h-4" />
+          </Button>
+          <Button
+            variant="outline" size="sm"
+            onClick={() => { const m = today.slice(0, 7); if (m !== monthFilter) { setMonthFilter(m); loadMonth(m); } }}
+          >
+            This Month
+          </Button>
+        </div>
+      )}
 
       {/* Grid */}
-      {loadingMonth ? (
+      {loadingItems ? (
         <div className="space-y-1.5">
           {Array.from({ length: 10 }).map((_, i) => (
             <div key={i} className="h-9 bg-white/5 rounded-lg animate-pulse" />
@@ -239,7 +357,7 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
           <table className="w-full min-w-[560px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-sidebar-border bg-white/[0.015]">
-                <th className="w-[72px] px-3 py-2.5 text-left sticky left-0 bg-sidebar z-10 border-r border-sidebar-border">
+                <th className={`px-3 py-2.5 text-left sticky left-0 bg-sidebar z-10 border-r border-sidebar-border ${isWeekly ? "w-[104px]" : "w-[72px]"}`}>
                   <span className="text-[10px] font-semibold text-muted-foreground/40 uppercase tracking-widest">Day</span>
                 </th>
                 {mealTypes.map((meal) => (
@@ -252,21 +370,30 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
               </tr>
             </thead>
             <tbody>
-              {daysInMonth.map((date) => {
-                const dayData = groupedByDate[date] ?? { breakfast: [], lunch: [], dinner: [] };
-                const isToday = date === today;
-                const d = parseDateLocal(date);
-                const dayNum = d.getDate();
-                const dayName = d.toLocaleDateString("en-US", { weekday: "short" });
+              {rows.map((row) => {
+                const dayData = groupedByRow[row] ?? { breakfast: [], lunch: [], dinner: [] };
+                const isToday = isWeekly ? Number(row) === todayDow : row === today;
+
+                let smallLabel: string;
+                let bigLabel: string;
+                if (isWeekly) {
+                  const w = WEEKDAYS.find((w) => String(w.dow) === row)!;
+                  smallLabel = "";
+                  bigLabel = w.label;
+                } else {
+                  const d = parseDateLocal(row);
+                  smallLabel = d.toLocaleDateString("en-US", { weekday: "short" });
+                  bigLabel = String(d.getDate());
+                }
 
                 return (
-                  <tr key={date} className={`border-b border-sidebar-border/40 transition-colors ${isToday ? "bg-amber/[0.04]" : "hover:bg-white/[0.01]"}`}>
+                  <tr key={row} className={`border-b border-sidebar-border/40 transition-colors ${isToday ? "bg-amber/[0.04]" : "hover:bg-white/[0.01]"}`}>
 
                     {/* Day label */}
                     <td className={`px-3 py-2 sticky left-0 z-10 border-r border-sidebar-border/50 ${isToday ? "bg-amber/[0.08]" : "bg-sidebar"}`}>
                       <div className="leading-tight select-none">
-                        <div className={`text-[10px] font-medium ${isToday ? "text-amber/70" : "text-muted-foreground/40"}`}>{dayName}</div>
-                        <div className={`text-sm font-bold tabular-nums ${isToday ? "text-amber" : "text-foreground/80"}`}>{dayNum}</div>
+                        {smallLabel && <div className={`text-[10px] font-medium ${isToday ? "text-amber/70" : "text-muted-foreground/40"}`}>{smallLabel}</div>}
+                        <div className={`text-sm font-bold tabular-nums ${isToday ? "text-amber" : "text-foreground/80"}`}>{bigLabel}</div>
                       </div>
                     </td>
 
@@ -275,7 +402,7 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
                       const cellItems = [...(dayData[meal] ?? [])].sort(
                         (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.created_at.localeCompare(b.created_at)
                       );
-                      const isAddingHere = addingMeal?.date === date && addingMeal.meal === meal;
+                      const isAddingHere = addingMeal?.row === row && addingMeal.meal === meal;
 
                       return (
                         <td
@@ -283,7 +410,7 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
                           className={`px-3 py-2 align-top group/cell ${canStandardTier ? "cursor-pointer" : ""}`}
                           onClick={() => {
                             if (canStandardTier && !isAddingHere && !editingItemId) {
-                              setAddingMeal({ date, meal });
+                              setAddingMeal({ row, meal });
                               setAddingText("");
                               setTimeout(() => addInputRef.current?.focus(), 40);
                             }
@@ -331,7 +458,7 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
                                   value={addingText}
                                   onChange={(e) => setAddingText(e.target.value)}
                                   onKeyDown={(e) => {
-                                    if (e.key === "Enter") quickAdd(date, meal);
+                                    if (e.key === "Enter") quickAdd(row, meal);
                                     if (e.key === "Escape") setAddingMeal(null);
                                   }}
                                   onBlur={() => { if (!addingText.trim()) setAddingMeal(null); }}
@@ -367,8 +494,19 @@ export function FoodClient({ hostelId, initialItems, initialMonth, partnerTier =
           <div className="grid gap-4 py-2">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <Label>Date</Label>
-                <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+                <Label>{isWeekly ? "Day" : "Date"}</Label>
+                {isWeekly ? (
+                  <Select value={String(form.day_of_week)} onValueChange={(v) => setForm({ ...form, day_of_week: Number(v) })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {WEEKDAYS.map((w) => (
+                        <SelectItem key={w.dow} value={String(w.dow)}>{w.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
+                )}
               </div>
               <div className="space-y-1.5">
                 <Label>Meal</Label>
