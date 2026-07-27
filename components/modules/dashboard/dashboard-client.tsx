@@ -19,7 +19,6 @@ interface Props {
     defaulters: Defaulter[];
     upcomingVacancies: UpcomingVacancy[];
     canSeeDailyExpenses: boolean;
-    canSeeDailyIncome: boolean;
     dailyExpenses?: DailyExpenseRow[];
     todayIncome?: number;
     todayExpense?: number;
@@ -36,7 +35,7 @@ export function DashboardClient({ data }: Props) {
     );
   }
 
-  const { stats, upcomingBills, monthlyData, defaulters, upcomingVacancies, canSeeDailyExpenses, canSeeDailyIncome, dailyExpenses, todayIncome, todayExpense } = data;
+  const { stats, upcomingBills, monthlyData, defaulters, upcomingVacancies, canSeeDailyExpenses, dailyExpenses, todayIncome, todayExpense } = data;
   const isProfit = stats.net_profit >= 0;
   const monthlyExpected = stats.monthly_collected + stats.monthly_uncollected;
   const collectionRate = monthlyExpected > 0
@@ -162,16 +161,12 @@ export function DashboardClient({ data }: Props) {
         ))}
       </div>
 
-      {/* ── Daily Expenses / Income (opt-in, per-partner custom features) ── */}
-      {(canSeeDailyExpenses || canSeeDailyIncome) && dailyExpenses && (
+      {/* ── Daily Expenses (opt-in, per-partner custom feature) ──────────── */}
+      {canSeeDailyExpenses && dailyExpenses && (
         <DailyExpensesSection
-          monthlyExpenses={stats.monthly_expenses}
-          monthlyKitchen={stats.monthly_kitchen}
           daily={dailyExpenses}
           todayIncome={todayIncome ?? 0}
           todayExpense={todayExpense ?? 0}
-          showExpenses={canSeeDailyExpenses}
-          showIncome={canSeeDailyIncome}
         />
       )}
 

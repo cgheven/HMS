@@ -15,7 +15,7 @@ import { listPartners, createPartner, removePartner, updatePartnerTier, updatePa
 import type { PartnerRow, ExistingPartnerOption } from "@/app/actions/partners";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PARTNER_TIER_LABELS } from "@/lib/partner-tier-labels";
-import type { HostelType, Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier, PartnerTier, PartnerFeatureFlags, WifiNetwork, MealTimes } from "@/types";
+import type { HostelType, Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier, PartnerTier, WifiNetwork, MealTimes } from "@/types";
 import { DEFAULT_FORM_CONFIG } from "@/types";
 import { savePaymentRecoverySettings, saveWelcomeSettings } from "@/app/actions/settings";
 import { DEFAULT_REMINDER_TEMPLATE, formatAccounts, buildReminderMessage } from "@/lib/whatsapp-reminder";
@@ -392,23 +392,18 @@ export function SettingsClient() {
     toast({ title: "Access updated", description: `Now set to ${PARTNER_TIER_LABELS[tier]}.` });
   }
 
-  async function handleToggleFeatureFlag(partnershipId: string, key: keyof PartnerFeatureFlags, label: string, enabled: boolean) {
+  async function handleToggleDailyExpenses(partnershipId: string, enabled: boolean) {
     const previous = partners;
-    const target = partners.find((p) => p.partnership_id === partnershipId);
-    // Send the full merged flags object, not just the changed key — the two
-    // flags are independently toggleable and the server action overwrites
-    // feature_flags wholesale, so a partial payload would silently drop the other flag.
-    const nextFlags = { ...target?.feature_flags, [key]: enabled };
-    setPartners((prev) => prev.map((p) => (p.partnership_id === partnershipId ? { ...p, feature_flags: nextFlags } : p)));
+    setPartners((prev) => prev.map((p) => (p.partnership_id === partnershipId ? { ...p, feature_flags: { ...p.feature_flags, daily_expenses: enabled } } : p)));
     setUpdatingFlagsFor(partnershipId);
-    const result = await updatePartnerFeatureFlags(partnershipId, nextFlags);
+    const result = await updatePartnerFeatureFlags(partnershipId, { daily_expenses: enabled });
     setUpdatingFlagsFor(null);
     if (result.error) {
       setPartners(previous);
       toast({ title: "Failed to update feature", description: result.error, variant: "destructive" });
       return;
     }
-    toast({ title: `${label} ${enabled ? "enabled" : "disabled"}` });
+    toast({ title: enabled ? "Daily expenses enabled" : "Daily expenses disabled" });
   }
 
   function buildWhatsAppLink(partner: { name: string; email: string; phone?: string | null; password?: string }) {
@@ -1946,33 +1941,19 @@ export function SettingsClient() {
                     </Select>
                   </div>
 
-                  {/* Custom features: daily expense/income breakdown (opt-in, per-partner, independent toggles) */}
+                  {/* Custom feature: daily expense + income breakdown (opt-in, per-partner) */}
                   <label
                     className="flex items-center gap-1.5 shrink-0 text-[11px] text-muted-foreground cursor-pointer select-none"
-                    title="Show a day-by-day expense breakdown on this partner's Dashboard (custom, opt-in feature)"
+                    title="Show a day-by-day expense + income breakdown on this partner's Dashboard (custom, opt-in feature)"
                   >
                     <input
                       type="checkbox"
                       className="w-3.5 h-3.5 rounded border-sidebar-border accent-amber"
                       checked={!!p.feature_flags?.daily_expenses}
                       disabled={updatingFlagsFor === p.partnership_id}
-                      onChange={(e) => handleToggleFeatureFlag(p.partnership_id, "daily_expenses", "Daily expenses", e.target.checked)}
+                      onChange={(e) => handleToggleDailyExpenses(p.partnership_id, e.target.checked)}
                     />
                     <span className="hidden lg:inline">Daily expenses</span>
-                  </label>
-
-                  <label
-                    className="flex items-center gap-1.5 shrink-0 text-[11px] text-muted-foreground cursor-pointer select-none"
-                    title="Show a day-by-day income breakdown on this partner's Dashboard (custom, opt-in feature)"
-                  >
-                    <input
-                      type="checkbox"
-                      className="w-3.5 h-3.5 rounded border-sidebar-border accent-amber"
-                      checked={!!p.feature_flags?.daily_income}
-                      disabled={updatingFlagsFor === p.partnership_id}
-                      onChange={(e) => handleToggleFeatureFlag(p.partnership_id, "daily_income", "Daily income", e.target.checked)}
-                    />
-                    <span className="hidden lg:inline">Daily income</span>
                   </label>
 
                   {/* Actions */}

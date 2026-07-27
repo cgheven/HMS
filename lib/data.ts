@@ -122,10 +122,9 @@ export async function getDashboardData() {
   const ctx = await getAuthContext();
   if (!ctx?.hostelId) return null;
   const { supabase, hostelId } = ctx;
-  // One-off, opt-in features (see migration 121) — independently toggleable,
-  // never on unless a specific partner's owner explicitly enabled them in Settings.
+  // One-off, opt-in feature (see migration 121) — never on unless a specific
+  // partner's owner explicitly enabled it in Settings.
   const canSeeDailyExpenses = ctx.profile?.role === "partner" && !!ctx.partnerFeatureFlags?.daily_expenses;
-  const canSeeDailyIncome = ctx.profile?.role === "partner" && !!ctx.partnerFeatureFlags?.daily_income;
 
   const { start, end } = getMonthRange();
   const now = new Date();
@@ -261,46 +260,38 @@ export async function getDashboardData() {
 
   // Derived from allExp/allKit (already fetched above for the 6-month chart) —
   // no extra query for the expenses side. Only built when the viewer actually
-  // has one of the two flags, since nobody else can see it. The two flags are
-  // independent: a partner can have expenses only, income only, or both.
+  // has the flag, since nobody else can see it.
   let dailyExpenses: DailyExpenseRow[] | undefined;
-  if (canSeeDailyExpenses || canSeeDailyIncome) {
+  if (canSeeDailyExpenses) {
     const byDate = new Map<string, { expenses: number; kitchen: number; income: number }>();
-    if (canSeeDailyExpenses) {
-      for (const x of allExp.data ?? []) {
-        if (x.date < start || x.date > end) continue;
-        const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
-        row.expenses += Number(x.amount);
-        byDate.set(x.date, row);
-      }
-      for (const x of allKit.data ?? []) {
-        if (x.date < start || x.date > end) continue;
-        const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
-        row.kitchen += Number(x.amount);
-        byDate.set(x.date, row);
-      }
+    for (const x of allExp.data ?? []) {
+      if (x.date < start || x.date > end) continue;
+      const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
+      row.expenses += Number(x.amount);
+      byDate.set(x.date, row);
     }
-    if (canSeeDailyIncome) {
-      // hms_payment_installments (migration 080) is the immutable per-transaction
-      // ledger — hms_payments.amount_paid is a cumulative running total and would
-      // double-count prior partial payments against every date they were touched.
-      const { data: monthInstallments } = await supabase
-        .from("hms_payment_installments")
-        .select("amount,payment_date")
-        .eq("hostel_id", hostelId)
-        .gte("payment_date", start)
-        .lte("payment_date", end);
-      for (const i of monthInstallments ?? []) {
-        const row = byDate.get(i.payment_date) ?? { expenses: 0, kitchen: 0, income: 0 };
-        row.income += Number(i.amount);
-        byDate.set(i.payment_date, row);
-      }
+    for (const x of allKit.data ?? []) {
+      if (x.date < start || x.date > end) continue;
+      const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
+      row.kitchen += Number(x.amount);
+      byDate.set(x.date, row);
+    }
+    // hms_payment_installments (migration 080) is the immutable per-transaction
+    // ledger — hms_payments.amount_paid is a cumulative running total and would
+    // double-count prior partial payments against every date they were touched.
+    const { data: monthInstallments } = await supabase
+      .from("hms_payment_installments")
+      .select("amount,payment_date")
+      .eq("hostel_id", hostelId)
+      .gte("payment_date", start)
+      .lte("payment_date", end);
+    for (const i of monthInstallments ?? []) {
+      const row = byDate.get(i.payment_date) ?? { expenses: 0, kitchen: 0, income: 0 };
+      row.income += Number(i.amount);
+      byDate.set(i.payment_date, row);
     }
     dailyExpenses = Array.from(byDate.entries())
-      .map(([date, { expenses, kitchen, income }]) => ({
-        date, expenses, kitchen, total: expenses + kitchen,
-        ...(canSeeDailyIncome ? { income } : {}),
-      }))
+      .map(([date, { expenses, kitchen, income }]) => ({ date, expenses, kitchen, total: expenses + kitchen, income }))
       .sort((a, b) => b.date.localeCompare(a.date));
   }
 
@@ -345,7 +336,7 @@ export async function getDashboardData() {
 
   return {
     hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters, upcomingVacancies,
-    canSeeDailyExpenses, canSeeDailyIncome, dailyExpenses, todayIncome, todayExpense,
+    canSeeDailyExpenses, dailyExpenses, todayIncome, todayExpense,
   };
 }
 
