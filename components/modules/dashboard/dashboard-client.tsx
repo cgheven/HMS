@@ -7,7 +7,8 @@ import {
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { ExpenseChartClient as ExpenseChart } from "./expense-chart-client";
-import type { DashboardStats, Bill, Defaulter, UpcomingVacancy } from "@/types";
+import { DailyExpensesSection } from "./daily-expenses-section";
+import type { DashboardStats, Bill, Defaulter, UpcomingVacancy, DailyExpenseRow } from "@/types";
 
 interface Props {
   data: {
@@ -17,6 +18,11 @@ interface Props {
     monthlyData: { month: string; expenses: number; kitchen: number; collected: number }[];
     defaulters: Defaulter[];
     upcomingVacancies: UpcomingVacancy[];
+    canSeeDailyExpenses: boolean;
+    canSeeDailyIncome: boolean;
+    dailyExpenses?: DailyExpenseRow[];
+    todayIncome?: number;
+    todayExpense?: number;
   } | null;
 }
 
@@ -30,7 +36,7 @@ export function DashboardClient({ data }: Props) {
     );
   }
 
-  const { stats, upcomingBills, monthlyData, defaulters, upcomingVacancies } = data;
+  const { stats, upcomingBills, monthlyData, defaulters, upcomingVacancies, canSeeDailyExpenses, canSeeDailyIncome, dailyExpenses, todayIncome, todayExpense } = data;
   const isProfit = stats.net_profit >= 0;
   const monthlyExpected = stats.monthly_collected + stats.monthly_uncollected;
   const collectionRate = monthlyExpected > 0
@@ -155,6 +161,19 @@ export function DashboardClient({ data }: Props) {
           </div>
         ))}
       </div>
+
+      {/* ── Daily Expenses / Income (opt-in, per-partner custom features) ── */}
+      {(canSeeDailyExpenses || canSeeDailyIncome) && dailyExpenses && (
+        <DailyExpensesSection
+          monthlyExpenses={stats.monthly_expenses}
+          monthlyKitchen={stats.monthly_kitchen}
+          daily={dailyExpenses}
+          todayIncome={todayIncome ?? 0}
+          todayExpense={todayExpense ?? 0}
+          showExpenses={canSeeDailyExpenses}
+          showIncome={canSeeDailyIncome}
+        />
+      )}
 
       {/* ── Defaulters + Chart ────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">

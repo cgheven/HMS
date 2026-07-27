@@ -2,7 +2,7 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
-import type { PartnerTier } from "@/types";
+import type { PartnerTier, PartnerFeatureFlags } from "@/types";
 
 const VALID_TIERS = new Set<PartnerTier>(["read_only", "standard", "full"]);
 
@@ -228,6 +228,7 @@ export interface PartnerRow {
   is_active: boolean;
   created_at: string;
   tier: PartnerTier;
+  feature_flags: PartnerFeatureFlags;
 }
 
 export async function listPartners(
@@ -243,7 +244,7 @@ export async function listPartners(
     // Fetch partnerships + profiles
     const { data: partnerships, error: pErr } = await admin
       .from("hms_partnerships")
-      .select("id, partner_id, is_active, created_at, tier")
+      .select("id, partner_id, is_active, created_at, tier, feature_flags")
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
       .order("created_at", { ascending: false });
@@ -281,6 +282,7 @@ export async function listPartners(
       is_active: p.is_active,
       created_at: p.created_at,
       tier: p.tier as PartnerTier,
+      feature_flags: (p.feature_flags as PartnerFeatureFlags) ?? {},
     }));
 
     return { partners };
@@ -413,6 +415,43 @@ export async function updatePartnerTier(
   } catch (err) {
     return {
       error: getErrorMessage(err, "Failed to update partner tier"),
+    };
+  }
+}
+
+// ── Update Partner Feature Flags ───────────────────────────────────────────────
+// One-off, opt-in custom features per partner (e.g. daily expense breakdown).
+// Never affects any other partner or hostel — must be explicitly enabled here.
+
+export async function updatePartnerFeatureFlags(
+  partnershipId: string,
+  flags: PartnerFeatureFlags
+): Promise<{ error?: string }> {
+  try {
+    const caller = await requireOwnerOrAbove();
+    const admin = createAdminClient();
+
+    const { data: partnership, error: fetchErr } = await admin
+      .from("hms_partnerships")
+      .select("hostel_id")
+      .eq("id", partnershipId)
+      .single();
+
+    if (fetchErr || !partnership) throw new Error("Partnership not found");
+
+    const owns = await verifyOwnsHostel(caller.id, partnership.hostel_id);
+    if (!owns) throw new Error("Forbidden: you do not own this hostel");
+
+    const { error } = await admin
+      .from("hms_partnerships")
+      .update({ feature_flags: flags })
+      .eq("id", partnershipId);
+
+    if (error) throw error;
+    return {};
+  } catch (err) {
+    return {
+      error: getErrorMessage(err, "Failed to update partner features"),
     };
   }
 }

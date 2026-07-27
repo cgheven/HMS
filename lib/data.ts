@@ -7,7 +7,7 @@ import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
   Employee, SalaryPayment, PackageConfig, PackageTier, UpcomingVacancy,
-  ClientBilling, PlatformInvoice, PartnerTier,
+  ClientBilling, PlatformInvoice, PartnerTier, PartnerFeatureFlags, DailyExpenseRow,
 } from "@/types";
 
 // React cache() deduplicates within the same server request.
@@ -37,16 +37,17 @@ export const getAuthContext = cache(async () => {
     // Partner path: branch access lives in hms_partnerships, not hms_owner_hostels
     supabase
       .from("hms_partnerships")
-      .select("hostel_id, tier, hostel:hms_hostels(*)")
+      .select("hostel_id, tier, feature_flags, hostel:hms_hostels(*)")
       .eq("partner_id", user.id)
       .eq("is_active", true),
   ]);
 
   if (profile?.role === "partner") {
-    type PartnershipRow = { hostel_id: string; tier: PartnerTier; hostel: Hostel | null };
+    type PartnershipRow = { hostel_id: string; tier: PartnerTier; feature_flags: PartnerFeatureFlags | null; hostel: Hostel | null };
     const rows = ((partnerships ?? []) as unknown as PartnershipRow[]).filter((r) => r.hostel !== null);
     const hostels = rows.map((r) => r.hostel as Hostel);
     const tierByHostel = new Map(rows.map((r) => [r.hostel_id, r.tier]));
+    const flagsByHostel = new Map(rows.map((r) => [r.hostel_id, r.feature_flags ?? {}]));
 
     const hostel: Hostel | null =
       (activeHostelId && hostels.find((h) => h.id === activeHostelId)) || hostels[0] || null;
@@ -59,6 +60,7 @@ export const getAuthContext = cache(async () => {
       hostels,
       hostelId: (hostel?.id ?? null) as string | null,
       partnerTier: (hostel ? tierByHostel.get(hostel.id) ?? null : null) as PartnerTier | null,
+      partnerFeatureFlags: (hostel ? flagsByHostel.get(hostel.id) ?? {} : {}) as PartnerFeatureFlags,
     };
   }
 
@@ -112,6 +114,7 @@ export const getAuthContext = cache(async () => {
     hostels,
     hostelId: (hostel?.id ?? null) as string | null,
     partnerTier: null as PartnerTier | null,
+    partnerFeatureFlags: {} as PartnerFeatureFlags,
   };
 });
 
@@ -119,6 +122,10 @@ export async function getDashboardData() {
   const ctx = await getAuthContext();
   if (!ctx?.hostelId) return null;
   const { supabase, hostelId } = ctx;
+  // One-off, opt-in features (see migration 121) — independently toggleable,
+  // never on unless a specific partner's owner explicitly enabled them in Settings.
+  const canSeeDailyExpenses = ctx.profile?.role === "partner" && !!ctx.partnerFeatureFlags?.daily_expenses;
+  const canSeeDailyIncome = ctx.profile?.role === "partner" && !!ctx.partnerFeatureFlags?.daily_income;
 
   const { start, end } = getMonthRange();
   const now = new Date();
@@ -252,6 +259,70 @@ export async function getDashboardData() {
     collected: allPayments6mo.filter((p) => p.for_month === monthKey && (p.status === "paid" || p.status === "partially_paid")).reduce((sum, p) => sum + Number(p.amount_paid ?? p.amount), 0),
   }));
 
+  // Derived from allExp/allKit (already fetched above for the 6-month chart) —
+  // no extra query for the expenses side. Only built when the viewer actually
+  // has one of the two flags, since nobody else can see it. The two flags are
+  // independent: a partner can have expenses only, income only, or both.
+  let dailyExpenses: DailyExpenseRow[] | undefined;
+  if (canSeeDailyExpenses || canSeeDailyIncome) {
+    const byDate = new Map<string, { expenses: number; kitchen: number; income: number }>();
+    if (canSeeDailyExpenses) {
+      for (const x of allExp.data ?? []) {
+        if (x.date < start || x.date > end) continue;
+        const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
+        row.expenses += Number(x.amount);
+        byDate.set(x.date, row);
+      }
+      for (const x of allKit.data ?? []) {
+        if (x.date < start || x.date > end) continue;
+        const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
+        row.kitchen += Number(x.amount);
+        byDate.set(x.date, row);
+      }
+    }
+    if (canSeeDailyIncome) {
+      // hms_payment_installments (migration 080) is the immutable per-transaction
+      // ledger — hms_payments.amount_paid is a cumulative running total and would
+      // double-count prior partial payments against every date they were touched.
+      const { data: monthInstallments } = await supabase
+        .from("hms_payment_installments")
+        .select("amount,payment_date")
+        .eq("hostel_id", hostelId)
+        .gte("payment_date", start)
+        .lte("payment_date", end);
+      for (const i of monthInstallments ?? []) {
+        const row = byDate.get(i.payment_date) ?? { expenses: 0, kitchen: 0, income: 0 };
+        row.income += Number(i.amount);
+        byDate.set(i.payment_date, row);
+      }
+    }
+    dailyExpenses = Array.from(byDate.entries())
+      .map(([date, { expenses, kitchen, income }]) => ({
+        date, expenses, kitchen, total: expenses + kitchen,
+        ...(canSeeDailyIncome ? { income } : {}),
+      }))
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }
+
+  // Today's income/expense — same opt-in gate as dailyExpenses. Income sums
+  // hms_payment_installments (an immutable per-transaction ledger), NOT
+  // hms_payments.amount_paid, which is a cumulative running total that would
+  // double-count a prior partial payment as if it arrived today.
+  // Deliberately NOT scoped to for_month=currentMonthKey — a tenant settling
+  // last month's arrears today is real cash in hand today.
+  let todayIncome: number | undefined;
+  let todayExpense: number | undefined;
+  if (canSeeDailyExpenses) {
+    const todayStr = formatDateInput(now);
+    const { data: todayInstallments } = await supabase
+      .from("hms_payment_installments")
+      .select("amount")
+      .eq("hostel_id", hostelId)
+      .eq("payment_date", todayStr);
+    todayIncome = (todayInstallments ?? []).reduce((s, i) => s + Number(i.amount), 0);
+    todayExpense = dailyExpenses?.find((d) => d.date === todayStr)?.total ?? 0;
+  }
+
   const stats: DashboardStats = {
     total_rooms: totalRooms,
     occupied_rooms: occupiedRooms,
@@ -272,7 +343,10 @@ export async function getDashboardData() {
     monthly_ac_units: monthlyACUnits,
   };
 
-  return { hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters, upcomingVacancies };
+  return {
+    hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters, upcomingVacancies,
+    canSeeDailyExpenses, canSeeDailyIncome, dailyExpenses, todayIncome, todayExpense,
+  };
 }
 
 // Account-level (not per-branch) — billing follows the owner, not the active hostel,

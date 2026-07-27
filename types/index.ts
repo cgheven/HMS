@@ -493,6 +493,23 @@ export interface DashboardStats {
   monthly_ac_units: number;
 }
 
+// Opt-in, per-partner custom features (currently one client's requests for a
+// daily expense breakdown and a daily income breakdown) — independently
+// toggleable, never enabled by default, set via Settings.
+export interface PartnerFeatureFlags {
+  daily_expenses?: boolean;
+  daily_income?: boolean;
+}
+
+export interface DailyExpenseRow {
+  date: string;
+  expenses: number;
+  kitchen: number;
+  total: number;
+  // Present only when the viewer has daily_income enabled.
+  income?: number;
+}
+
 export interface Defaulter {
   id: string;
   name: string;
