@@ -44,6 +44,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
   const [statusFilter, setStatusFilter] = useState<"all" | RoomStatus>("all");
   const [roomFilter, setRoomFilter] = useState("all");
   const [floorFilter, setFloorFilter] = useState("all");
+  const [washroomFilter, setWashroomFilter] = useState<"all" | "yes" | "no">("all");
   const [exportLoading, setExportLoading] = useState<"excel" | "pdf" | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Room | null>(null);
@@ -78,15 +79,20 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
     setFiltered(rooms.filter((r) => {
       if (statusFilter !== "all" && r.status !== statusFilter) return false;
       if (floorFilter !== "all" && String(r.floor ?? "") !== floorFilter) return false;
+      if (washroomFilter !== "all" && !!r.has_attached_washroom !== (washroomFilter === "yes")) return false;
       if (!q) return true;
       return r.room_number.toLowerCase().includes(q) || r.type.includes(q);
     }));
-  }, [search, statusFilter, roomFilter, floorFilter, rooms]);
+  }, [search, statusFilter, roomFilter, floorFilter, washroomFilter, rooms]);
 
   // Floors present in this branch, numerically ordered.
   const floors = Array.from(
     new Set(rooms.filter((r) => r.floor != null).map((r) => String(r.floor)))
   ).sort((a, b) => Number(a) - Number(b));
+
+  // Only show the washroom filter when at least one room in this branch actually
+  // has one — otherwise it's a filter with nothing to filter, pure clutter.
+  const hasWashroomRooms = rooms.some((r) => r.has_attached_washroom);
 
   async function reload() {
     if (!hostelId) return;
@@ -362,6 +368,17 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
               {floors.map((f) => (
                 <SelectItem key={f} value={f}>Floor {f}</SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+        )}
+
+        {hasWashroomRooms && (
+          <Select value={washroomFilter} onValueChange={(v) => setWashroomFilter(v as "all" | "yes" | "no")}>
+            <SelectTrigger className="h-10 w-full lg:w-44"><SelectValue placeholder="Attached Washroom" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Any Washroom</SelectItem>
+              <SelectItem value="yes">Attached Washroom</SelectItem>
+              <SelectItem value="no">No Washroom</SelectItem>
             </SelectContent>
           </Select>
         )}
