@@ -26,18 +26,28 @@ export function buildPackageOptions(room: PublicRoom, config: PackageConfig | nu
     return null;
   }
 
+  // Attached washroom is a flat add-on on top of whatever base price a tier
+  // resolves to — same amount regardless of package tier or seater count,
+  // only applied when the room's own flag is set. Defaults to 0, so hostels
+  // that never set it see no change. Never added to a tier that isn't priced
+  // at all (disabled stays at 0, not 0 + premium).
+  const washroomAddOn = room.has_attached_washroom ? (config?.washroom_premium ?? 0) : 0;
+  function withWashroom(base: number | null): number {
+    return base != null ? base + washroomAddOn : 0;
+  }
+
   // Seater price (by room capacity + AC) takes priority when configured — it's
   // the most specific, intentional pricing signal. Falls back to the flat
   // "Space Only" package price, then the room's own manual rent, exactly as
   // before for hostels that never set seater pricing.
-  const spaceOnlyPrice = getSeaterPrice(room.capacity, room.has_ac, config?.seater_prices) ?? pkgPrice("space_only") ?? room.monthly_rent;
+  const spaceOnlyBase = getSeaterPrice(room.capacity, room.has_ac, config?.seater_prices) ?? pkgPrice("space_only") ?? room.monthly_rent;
 
   const options: PackageOption[] = [
     {
       tier: "space_only",
       label: "Space Only",
       subtitle: "Bed + room facilities",
-      price: spaceOnlyPrice,
+      price: withWashroom(spaceOnlyBase),
       extra: null,
       disabled: false,
     },
@@ -45,7 +55,7 @@ export function buildPackageOptions(room: PublicRoom, config: PackageConfig | nu
       tier: "space_food",
       label: "Space + Breakfast & Dinner",
       subtitle: "Bed + 2 meals daily",
-      price: pkgPrice("space_food") ?? 0,
+      price: withWashroom(pkgPrice("space_food")),
       extra: null,
       disabled: !pkgPrice("space_food"),
     },
@@ -53,7 +63,7 @@ export function buildPackageOptions(room: PublicRoom, config: PackageConfig | nu
       tier: "space_3meals",
       label: "Space + 3 Meals",
       subtitle: "Bed + breakfast, lunch & dinner",
-      price: pkgPrice("space_3meals") ?? 0,
+      price: withWashroom(pkgPrice("space_3meals")),
       extra: null,
       disabled: !pkgPrice("space_3meals"),
     },
@@ -64,7 +74,7 @@ export function buildPackageOptions(room: PublicRoom, config: PackageConfig | nu
       tier: "space_meals_cooler",
       label: "Space + Meals + Cooler",
       subtitle: "Bed + meals + cooler included",
-      price: pkgPrice("space_meals_cooler") ?? 0,
+      price: withWashroom(pkgPrice("space_meals_cooler")),
       extra: null,
       disabled: !pkgPrice("space_meals_cooler"),
     });

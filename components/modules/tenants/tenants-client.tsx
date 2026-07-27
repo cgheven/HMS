@@ -141,6 +141,37 @@ function getPkgPrice(prices: Partial<Record<PackageTier, { no_ac: number; ac: nu
   return val > 0 ? String(val) : "";
 }
 
+// Flat washroom add-on stacked on top of any suggested price string — applies
+// regardless of package/custom-package/room-rent source, but never inflates
+// an empty ("no price set") suggestion.
+function addWashroomPremium(priceStr: string, hasWashroom: boolean, premium: number): string {
+  if (!priceStr || !hasWashroom || premium <= 0) return priceStr;
+  return String(Number(priceStr) + premium);
+}
+
+// Suggested price for the manual "Add New Tenant" dialog's Package Tier field.
+// Seater pricing (by capacity + AC) only takes priority for "space_only" when
+// the room has an attached washroom — scoped narrowly on purpose: every other
+// room keeps this dialog's original behavior (flat package-tier price) exactly
+// as it's always been, since no existing hostel has any room tagged with a
+// washroom yet. Only a room an owner has just opted into the new feature gets
+// the corrected, consistent total (matching Approve Application / the public
+// site). Deliberately does NOT fall back further to room.monthly_rent here —
+// callers already layer that on separately, exactly as before this fix.
+function getTierPriceString(
+  room: Room,
+  tier: PackageTier,
+  pkgPrices: Partial<Record<PackageTier, { no_ac: number; ac: number }>>,
+  seaterPrices: SeaterPrices | null | undefined,
+  washroomPremium: number
+): string {
+  if (tier === "space_only" && room.has_attached_washroom) {
+    const seater = getSeaterPrice(room.capacity, room.has_ac, seaterPrices);
+    if (seater !== null) return addWashroomPremium(String(seater), room.has_attached_washroom, washroomPremium);
+  }
+  return addWashroomPremium(getPkgPrice(pkgPrices, tier, room.has_ac), room.has_attached_washroom, washroomPremium);
+}
+
 // Suggested rent for a room + package tier — mirrors the precedence chain used on the
 // public join/room-browsing pages (lib/room-pricing.ts): seater price only governs the
 // base "space_only" tier; other tiers are always flat package-tier prices.
@@ -148,16 +179,21 @@ function getSuggestedRent(
   room: Room,
   tier: PackageTier,
   pkgPrices: Partial<Record<PackageTier, PackagePrices>>,
-  seaterPrices: SeaterPrices | null | undefined
+  seaterPrices: SeaterPrices | null | undefined,
+  washroomPremium = 0
 ): number {
+  // Flat add-on for a washroom-equipped room, same amount regardless of seater
+  // count or package tier — stacks on top of whichever price is actually
+  // resolved below, but never added to a tier that has no price set (stays 0).
+  const washroomAddOn = room.has_attached_washroom ? washroomPremium : 0;
   if (tier === "space_only") {
     const seater = getSeaterPrice(room.capacity, room.has_ac, seaterPrices);
-    if (seater !== null) return seater;
+    if (seater !== null) return seater + washroomAddOn;
   }
   const tierPrices = pkgPrices[tier];
   const tierPrice = tierPrices ? (room.has_ac ? tierPrices.ac : tierPrices.no_ac) : 0;
-  if (tierPrice > 0) return tierPrice;
-  return tier === "space_only" ? room.monthly_rent : 0;
+  if (tierPrice > 0) return tierPrice + washroomAddOn;
+  return tier === "space_only" ? room.monthly_rent + washroomAddOn : 0;
 }
 
 function getSuggestedDeposit(
@@ -511,6 +547,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [customPackages, setCustomPackages] = useState<CustomPackage[]>([]);
   const [configSecurityDeposit, setConfigSecurityDeposit] = useState<number>(0);
   const [seaterPrices, setSeaterPrices] = useState<SeaterPrices>({});
+  const [washroomPremium, setWashroomPremium] = useState<number>(0);
   const [foodAddonRates, setFoodAddonRates] = useState<FoodAddonRates>(
     initialFoodAddonRates ?? { food_breakfast_rate: 0, food_lunch_rate: 0, food_dinner_rate: 0, food_all_meals_rate: 0 }
   );
@@ -540,6 +577,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     }
     if (data.security_deposit) setConfigSecurityDeposit(Number(data.security_deposit));
     if (data.seater_prices) setSeaterPrices(data.seater_prices as SeaterPrices);
+    setWashroomPremium(Number(data.washroom_premium ?? 0));
     setFoodAddonRates({
       food_breakfast_rate: Number(data.food_breakfast_rate ?? 0),
       food_lunch_rate: Number(data.food_lunch_rate ?? 0),
@@ -564,7 +602,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
     const supabase = createClient();
     supabase.from("hms_package_configs")
-      .select("package_prices, security_deposit, seater_prices, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, food_monthly_rate")
+      .select("package_prices, security_deposit, seater_prices, washroom_premium, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, food_monthly_rate")
       .eq("hostel_id", hostelId)
       .maybeSingle()
       .then(({ data }) => {
@@ -685,7 +723,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       type: app.type ?? matchedRoom?.type ?? "general",
       package_tier: tier,
       billing_type: "monthly",
-      monthly_rent: matchedRoom ? getSuggestedRent(matchedRoom, tier, pkgPrices, seaterPrices) : 0,
+      monthly_rent: matchedRoom ? getSuggestedRent(matchedRoom, tier, pkgPrices, seaterPrices, washroomPremium) : 0,
       daily_rate: 0,
       security_deposit: matchedRoom
         ? getSuggestedDeposit(matchedRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
@@ -1993,7 +2031,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         setApproveForm({
                           ...approveForm,
                           room_id: v || null,
-                          monthly_rent: approveRoom ? getSuggestedRent(approveRoom, tier, pkgPrices, seaterPrices) : approveForm.monthly_rent,
+                          monthly_rent: approveRoom ? getSuggestedRent(approveRoom, tier, pkgPrices, seaterPrices, washroomPremium) : approveForm.monthly_rent,
                           security_deposit: suggestedDeposit,
                         });
                       }}
@@ -2002,7 +2040,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       <SelectContent>
                         {availableRooms.map((r) => (
                           <SelectItem key={r.id} value={r.id}>
-                            Rm {r.room_number} · {r.capacity - r.occupied} free · {formatCurrency(getSuggestedRent(r, approveForm.package_tier as PackageTier, pkgPrices, seaterPrices))}/mo
+                            Rm {r.room_number} · {r.capacity - r.occupied} free · {formatCurrency(getSuggestedRent(r, approveForm.package_tier as PackageTier, pkgPrices, seaterPrices, washroomPremium))}/mo
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -2044,7 +2082,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     ? getSuggestedDeposit(approveRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
                     : (configSecurityDeposit > 0 ? configSecurityDeposit : approveForm.security_deposit);
                   const suggestedRent = approveRoom
-                    ? getSuggestedRent(approveRoom, tier, pkgPrices, seaterPrices)
+                    ? getSuggestedRent(approveRoom, tier, pkgPrices, seaterPrices, washroomPremium)
                     : approveForm.monthly_rent;
                   // Clear any add-on meal selection when switching to a package that
                   // already bundles food — prevents a stale double-charge on save.
@@ -2319,12 +2357,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <div className="space-y-1.5"><Label>Room *</Label>
                   <Select value={form.room_id} onValueChange={(v) => {
                     const room = rooms.find((r) => r.id === v);
+                    const hasWashroom = !!room?.has_attached_washroom;
                     const pkgSuggested = room
                       ? (form.custom_package_id
-                          ? getCustomPackagePrice(customPackages, form.custom_package_id, room.has_ac)
-                          : getPkgPrice(pkgPrices, form.package_tier, room.has_ac))
+                          ? addWashroomPremium(getCustomPackagePrice(customPackages, form.custom_package_id, room.has_ac), hasWashroom, washroomPremium)
+                          : getTierPriceString(room, form.package_tier, pkgPrices, seaterPrices, washroomPremium))
                       : "";
-                    const fallback = room?.monthly_rent?.toString() ?? "";
+                    const fallback = addWashroomPremium(room?.monthly_rent?.toString() ?? "", hasWashroom, washroomPremium);
                     const tierPrices = pkgPrices[form.package_tier];
                     const tierDeposit = room
                       ? (form.custom_package_id
@@ -2382,7 +2421,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         const id = v.slice("custom:".length);
                         const custom = customPackages.find((c) => c.id === id);
                         if (!custom) return;
-                        const suggested = selectedRoom ? getCustomPackagePrice(customPackages, id, selectedRoom.has_ac) : "";
+                        const suggested = addWashroomPremium(
+                          selectedRoom ? getCustomPackagePrice(customPackages, id, selectedRoom.has_ac) : "",
+                          !!selectedRoom?.has_attached_washroom, washroomPremium
+                        );
                         const tierDeposit = selectedRoom ? getCustomPackageDeposit(customPackages, id, selectedRoom.has_ac) : 0;
                         const suggestedDeposit = tierDeposit > 0 ? String(tierDeposit) : (configSecurityDeposit > 0 ? String(configSecurityDeposit) : "");
                         // Custom packages always bill as space_only — their price is a flat, all-inclusive
@@ -2390,7 +2432,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         setForm({ ...form, package_tier: "space_only", custom_package_id: id, monthly_rent: suggested || form.monthly_rent, security_deposit: suggestedDeposit || form.security_deposit });
                       } else {
                         const tier = v.slice("tier:".length) as PackageTier;
-                        const suggested = selectedRoom ? getPkgPrice(pkgPrices, tier, selectedRoom.has_ac) : "";
+                        const suggested = selectedRoom
+                          ? getTierPriceString(selectedRoom, tier, pkgPrices, seaterPrices, washroomPremium)
+                          : "";
                         const tierPrices = pkgPrices[tier];
                         const tierDeposit = selectedRoom
                           ? (selectedRoom.has_ac ? (tierPrices?.deposit_ac ?? 0) : (tierPrices?.deposit_no_ac ?? 0))
@@ -2411,9 +2455,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     <SelectContent>
                       {SELECTABLE_TIERS.map(({ tier, label }) => {
                         const p = pkgPrices[tier];
-                        const price = selectedRoom && p
+                        let price = selectedRoom && p
                           ? (selectedRoom.has_ac ? p.ac : p.no_ac)
                           : null;
+                        // Seater price (by capacity + AC) takes priority for "space_only" —
+                        // scoped to washroom-flagged rooms only, matching getTierPriceString,
+                        // so this hint stays exactly as before for every other room.
+                        if (selectedRoom && tier === "space_only" && selectedRoom.has_attached_washroom) {
+                          const seater = getSeaterPrice(selectedRoom.capacity, selectedRoom.has_ac, seaterPrices);
+                          if (seater !== null) price = seater;
+                        }
+                        if (price != null && price > 0 && selectedRoom?.has_attached_washroom) price += washroomPremium;
                         return (
                           <SelectItem key={`tier:${tier}`} value={`tier:${tier}`}>
                             <span>{label}</span>
@@ -2424,7 +2476,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         );
                       })}
                       {customPackages.map((c) => {
-                        const price = selectedRoom ? (selectedRoom.has_ac ? c.ac : c.no_ac) : null;
+                        let price = selectedRoom ? (selectedRoom.has_ac ? c.ac : c.no_ac) : null;
+                        if (price != null && price > 0 && selectedRoom?.has_attached_washroom) price += washroomPremium;
                         return (
                           <SelectItem key={`custom:${c.id}`} value={`custom:${c.id}`}>
                             <span>{c.name}</span>

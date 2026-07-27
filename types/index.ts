@@ -202,6 +202,7 @@ export interface PublicRoom {
   status: RoomStatus;
   has_ac: boolean;
   has_cooler: boolean;
+  has_attached_washroom: boolean;
   photo_path: string | null;
   photo_path_2: string | null;
   photo_path_3: string | null;
@@ -228,6 +229,7 @@ export interface Room {
   status: RoomStatus;
   has_ac: boolean;
   has_cooler: boolean;
+  has_attached_washroom: boolean;
   photo_path: string | null;
   photo_path_2: string | null;
   photo_path_3: string | null;
@@ -626,6 +628,9 @@ export interface PackageConfig {
   notice_period_days: number;
   package_prices: Partial<Record<PackageTier, PackagePrices>>;
   seater_prices: Partial<Record<string, { no_ac: number; ac: number; deposit_no_ac?: number; deposit_ac?: number }>>;
+  // Flat, owner-editable add-on for any room with has_attached_washroom — same
+  // amount regardless of seater count (e.g. +3,000 for a 2-seater or a 3-seater alike).
+  washroom_premium: number;
   created_at: string;
   updated_at: string;
 }

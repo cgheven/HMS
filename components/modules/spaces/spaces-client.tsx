@@ -15,7 +15,7 @@ import { formatCurrency, capitalize } from "@/lib/utils";
 import type { PartnerTier, Room, RoomStatus, SpaceType } from "@/types";
 
 const statusColors: Record<RoomStatus, "success" | "info" | "warning"> = { available: "success", occupied: "info", maintenance: "warning" };
-const emptyRoom = { room_number: "", floor: "", type: "general" as SpaceType, capacity: "1", status: "available" as RoomStatus, has_ac: false, has_cooler: false };
+const emptyRoom = { room_number: "", floor: "", type: "general" as SpaceType, capacity: "1", status: "available" as RoomStatus, has_ac: false, has_cooler: false, has_attached_washroom: false };
 
 // Fields for each slot — slot 0 = photo_path, slot 1 = photo_path_2, etc.
 const PHOTO_FIELDS = ["photo_path", "photo_path_2", "photo_path_3", "photo_path_4", "photo_path_5"] as const;
@@ -104,7 +104,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
 
   function openEdit(room: Room) {
     setEditing(room);
-    setForm({ room_number: room.room_number, floor: room.floor?.toString() ?? "", type: room.type, capacity: room.capacity.toString(), status: room.status, has_ac: room.has_ac ?? false, has_cooler: room.has_cooler ?? false });
+    setForm({ room_number: room.room_number, floor: room.floor?.toString() ?? "", type: room.type, capacity: room.capacity.toString(), status: room.status, has_ac: room.has_ac ?? false, has_cooler: room.has_cooler ?? false, has_attached_washroom: room.has_attached_washroom ?? false });
     setPhotos(roomToSlots(room));
     setDialogOpen(true);
   }
@@ -148,6 +148,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
       status: form.status,
       has_ac: form.has_ac,
       has_cooler: form.has_cooler,
+      has_attached_washroom: form.has_attached_washroom,
     };
 
     let roomId: string;
@@ -233,6 +234,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
       Status: capitalize(r.status),
       AC: r.has_ac ? "Yes" : "No",
       Cooler: r.has_cooler ? "Yes" : "No",
+      "Attached Washroom": r.has_attached_washroom ? "Yes" : "No",
       "Monthly Rent (PKR)": r.monthly_rent,
     }));
   }
@@ -433,10 +435,11 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
                   {[["Type", capitalize(room.type)], ["Capacity", `${room.occupied}/${room.capacity}`], ["Rent/mo", formatCurrency(room.monthly_rent)]].map(([k, v]) => (
                     <div key={k} className="flex items-center justify-between text-sm"><span className="text-muted-foreground">{k}</span><span className="font-medium">{v}</span></div>
                   ))}
-                  {(room.has_ac || room.has_cooler) && (
+                  {(room.has_ac || room.has_cooler || room.has_attached_washroom) && (
                     <div className="flex gap-1.5 flex-wrap">
                       {room.has_ac && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">AC</span>}
                       {room.has_cooler && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">Cooler</span>}
+                      {room.has_attached_washroom && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-violet-500/10 text-violet-400 border border-violet-500/20">Washroom</span>}
                     </div>
                   )}
                   {canFullTier && (
@@ -528,6 +531,9 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
                 </button>
                 <button type="button" onClick={() => setForm({ ...form, has_cooler: !form.has_cooler })} className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${form.has_cooler ? "bg-cyan-500/10 border-cyan-500/25 text-cyan-400" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}>
                   <span className="w-4 h-4 flex items-center justify-center">{form.has_cooler ? "✓" : "○"}</span> Cooler Available
+                </button>
+                <button type="button" onClick={() => setForm({ ...form, has_attached_washroom: !form.has_attached_washroom })} className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${form.has_attached_washroom ? "bg-violet-500/10 border-violet-500/25 text-violet-400" : "border-sidebar-border text-muted-foreground hover:text-foreground"}`}>
+                  <span className="w-4 h-4 flex items-center justify-center">{form.has_attached_washroom ? "✓" : "○"}</span> Attached Washroom
                 </button>
               </div>
             </div>

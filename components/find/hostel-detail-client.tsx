@@ -4,7 +4,7 @@ import Link from "next/link";
 import {
   ArrowLeft, MapPin, ExternalLink, BedDouble, Zap, Wifi,
   Utensils, Shield, ChevronLeft, ChevronRight, Clock, Loader2, X,
-  Wind, Thermometer, Users, Banknote, Check,
+  Wind, Thermometer, Users, Banknote, Check, Droplet,
 } from "lucide-react";
 import { joinWaitlist } from "@/app/actions/public";
 import { Button } from "@/components/ui/button";
@@ -250,6 +250,12 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                   {room.has_cooler && (
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-cyan-500/10 border border-cyan-400/20 text-cyan-400">
                       <Thermometer className="w-3 h-3" /> Cooler
+                    </span>
+                  )}
+
+                  {room.has_attached_washroom && (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-violet-500/10 border border-violet-400/20 text-violet-400">
+                      <Droplet className="w-3 h-3" /> Attached Washroom
                     </span>
                   )}
                 </div>
@@ -740,7 +746,7 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
             <span className="text-muted-foreground/50">{room.occupied}/{room.capacity} occupied</span>
           </div>
 
-          {(room.has_ac || room.has_cooler) && (
+          {(room.has_ac || room.has_cooler || room.has_attached_washroom) && (
             <div className="flex gap-1.5">
               {room.has_ac && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-400/20 text-[10px] font-medium">
@@ -750,6 +756,11 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
               {room.has_cooler && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-400/20 text-[10px] font-medium">
                   <Thermometer className="w-2.5 h-2.5" /> Cooler
+                </span>
+              )}
+              {room.has_attached_washroom && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-400 border border-violet-400/20 text-[10px] font-medium">
+                  <Droplet className="w-2.5 h-2.5" /> Washroom
                 </span>
               )}
             </div>
@@ -870,10 +881,12 @@ function SeaterPricingSection({
   config,
   hasAcRooms,
   hasNonAcRooms,
+  hasWashroomRooms,
 }: {
   config: PackageConfig;
   hasAcRooms: boolean;
   hasNonAcRooms: boolean;
+  hasWashroomRooms: boolean;
 }) {
   const seaterPrices = config.seater_prices ?? {};
   const rows = SEATER_CAPACITIES.filter((c) => {
@@ -951,6 +964,12 @@ function SeaterPricingSection({
           <div className="border-t border-white/[0.05] px-4 py-2.5 flex items-center gap-2">
             <Wind className="w-3 h-3 text-blue-400/60 shrink-0" />
             <span className="text-[11px] text-blue-400/70">AC rooms billed additionally at {formatCurrency(config.ac_per_unit_rate)}/unit consumed</span>
+          </div>
+        )}
+        {/* Washroom note */}
+        {hasWashroomRooms && config.washroom_premium > 0 && (
+          <div className="border-t border-white/[0.05] px-4 py-2.5 flex items-center gap-2">
+            <span className="text-[11px] text-muted-foreground">Rooms with an attached washroom: +{formatCurrency(config.washroom_premium)}/month</span>
           </div>
         )}
       </div>
@@ -1233,6 +1252,7 @@ export function HostelDetailClient({
                       config={config}
                       hasAcRooms={seaterVals.some((p) => p!.ac > 0)}
                       hasNonAcRooms={seaterVals.some((p) => p!.no_ac > 0)}
+                      hasWashroomRooms={hostel.rooms.some((r) => r.has_attached_washroom)}
                     />
                   );
                 }

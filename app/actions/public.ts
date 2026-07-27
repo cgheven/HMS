@@ -184,7 +184,7 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
       admin.from("hms_profiles").select("full_name").eq("id", hostelData.owner_id).maybeSingle(),
       admin
         .from("hms_rooms")
-        .select("id,room_number,floor,type,capacity,occupied,monthly_rent,status,has_ac,has_cooler,photo_path,photo_path_2,photo_path_3,photo_path_4,photo_path_5")
+        .select("id,room_number,floor,type,capacity,occupied,monthly_rent,status,has_ac,has_cooler,has_attached_washroom,photo_path,photo_path_2,photo_path_3,photo_path_4,photo_path_5")
         .eq("hostel_id", hostelId)
         .neq("status", "maintenance")
         .order("room_number"),
@@ -206,7 +206,7 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
             .order("sort_order"),
       admin
         .from("hms_package_configs")
-        .select("id,hostel_id,food_monthly_rate,food_bd_rate,food_3meals_rate,food_breakfast_rate,food_lunch_rate,food_dinner_rate,food_all_meals_rate,ac_per_unit_rate,security_deposit,notice_period_days,package_prices,seater_prices,created_at,updated_at")
+        .select("id,hostel_id,food_monthly_rate,food_bd_rate,food_3meals_rate,food_breakfast_rate,food_lunch_rate,food_dinner_rate,food_all_meals_rate,ac_per_unit_rate,security_deposit,notice_period_days,package_prices,seater_prices,washroom_premium,created_at,updated_at")
         .eq("hostel_id", hostelId)
         .maybeSingle(),
     ]);
