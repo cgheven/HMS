@@ -511,6 +511,8 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       ac_units: (p.ac_units_consumed ?? 0) > 0 ? Number(p.ac_units_consumed) : undefined,
       ac_rate: packageConfig?.ac_per_unit_rate ?? undefined,
       security_deposit: tenantDeposit > 0 ? tenantDeposit : undefined,
+      ac_maintenance_charge: (p.ac_maintenance_charge ?? 0) > 0 ? Number(p.ac_maintenance_charge) : undefined,
+      registration_fee_charge: (p.registration_fee_charge ?? 0) > 0 ? Number(p.registration_fee_charge) : undefined,
     });
     const waUrl = `https://wa.me/${digits}?text=${encodeURIComponent(message)}`;
     window.open(waUrl, "_blank", "noopener,noreferrer");
@@ -812,6 +814,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             {Number(p.ac_charge) > 0 && (
               <div className="mt-0.5">
                 <span className="text-xs text-muted-foreground">AC: {formatCurrency(p.ac_charge!)}</span>
+              </div>
+            )}
+            {Number(p.ac_maintenance_charge) > 0 && (
+              <div className="mt-0.5">
+                <span className="text-xs text-muted-foreground">AC Maintenance: {formatCurrency(p.ac_maintenance_charge!)}</span>
+              </div>
+            )}
+            {Number(p.registration_fee_charge) > 0 && (
+              <div className="mt-0.5">
+                <span className="text-xs text-muted-foreground">Reg. Fee: {formatCurrency(p.registration_fee_charge!)}</span>
               </div>
             )}
           </div>
@@ -1313,7 +1325,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 const food = markDialog.food_charge ?? 0;
                 const ac = markDialog.ac_charge ?? 0;
                 const depositCharge = markDialog.security_deposit_charge ?? 0;
-                const baseRent = (markDialog.amount ?? 0) - food - ac - depositCharge;
+                const registrationFeeCharge = markDialog.registration_fee_charge ?? 0;
+                const acMaintenanceCharge = markDialog.ac_maintenance_charge ?? 0;
+                const baseRent = (markDialog.amount ?? 0) - food - ac - depositCharge - registrationFeeCharge - acMaintenanceCharge;
                 const tenant = tenants.find(t => t.id === markDialog.tenant_id);
                 const deposit = tenant?.security_deposit ?? 0;
                 const mealsLabel = [tenant?.food_breakfast && "Breakfast", tenant?.food_lunch && "Lunch", tenant?.food_dinner && "Dinner"]
@@ -1339,6 +1353,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     {depositCharge > 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground">
                         <span>Security Deposit</span><span>{formatCurrency(depositCharge)}</span>
+                      </div>
+                    )}
+                    {registrationFeeCharge > 0 && (
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>Registration Fee</span><span>{formatCurrency(registrationFeeCharge)}</span>
+                      </div>
+                    )}
+                    {acMaintenanceCharge > 0 && (
+                      <div className="flex justify-between text-xs text-muted-foreground">
+                        <span>AC Maintenance</span><span>{formatCurrency(acMaintenanceCharge)}</span>
                       </div>
                     )}
                     <div className="flex justify-between text-xs font-medium text-foreground">

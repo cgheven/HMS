@@ -451,6 +451,8 @@ export function ReportsClient(props: Props) {
                       <th className="text-right pb-2 pr-3">Rent</th>
                       <th className="text-right pb-2 pr-3">Food</th>
                       <th className="text-right pb-2 pr-3">AC</th>
+                      <th className="text-right pb-2 pr-3">Reg. Fee</th>
+                      <th className="text-right pb-2 pr-3">AC Maint.</th>
                       <th className="text-right pb-2 pr-3">Total</th>
                       <th className="text-right pb-2 pr-3">Collected</th>
                       <th className="text-right pb-2">Pending</th>
@@ -463,6 +465,8 @@ export function ReportsClient(props: Props) {
                         <td className="py-2.5 pr-3 text-right">{formatCurrency(m.rentRevenue)}</td>
                         <td className="py-2.5 pr-3 text-right text-amber">{m.foodRevenue > 0 ? formatCurrency(m.foodRevenue) : "—"}</td>
                         <td className="py-2.5 pr-3 text-right text-blue-400">{m.acRevenue > 0 ? formatCurrency(m.acRevenue) : "—"}</td>
+                        <td className="py-2.5 pr-3 text-right text-violet-400">{m.registrationFeeRevenue > 0 ? formatCurrency(m.registrationFeeRevenue) : "—"}</td>
+                        <td className="py-2.5 pr-3 text-right text-cyan-400">{m.acMaintenanceRevenue > 0 ? formatCurrency(m.acMaintenanceRevenue) : "—"}</td>
                         <td className="py-2.5 pr-3 text-right font-semibold">{formatCurrency(m.total)}</td>
                         <td className="py-2.5 pr-3 text-right text-emerald-400">{formatCurrency(m.collected)}</td>
                         <td className={`py-2.5 text-right ${m.pending > 0 ? "text-rose-400" : "text-muted-foreground"}`}>
@@ -477,6 +481,8 @@ export function ReportsClient(props: Props) {
                       <td className="pt-2.5 pr-3 text-right">{formatCurrency(d.revenueByMonth.reduce((s, m) => s + m.rentRevenue, 0))}</td>
                       <td className="pt-2.5 pr-3 text-right text-amber">{formatCurrency(d.revenueByMonth.reduce((s, m) => s + m.foodRevenue, 0))}</td>
                       <td className="pt-2.5 pr-3 text-right text-blue-400">{formatCurrency(d.revenueByMonth.reduce((s, m) => s + m.acRevenue, 0))}</td>
+                      <td className="pt-2.5 pr-3 text-right text-violet-400">{formatCurrency(d.revenueByMonth.reduce((s, m) => s + m.registrationFeeRevenue, 0))}</td>
+                      <td className="pt-2.5 pr-3 text-right text-cyan-400">{formatCurrency(d.revenueByMonth.reduce((s, m) => s + m.acMaintenanceRevenue, 0))}</td>
                       <td className="pt-2.5 pr-3 text-right">{formatCurrency(d.totalRevenue)}</td>
                       <td className="pt-2.5 pr-3 text-right text-emerald-400">{formatCurrency(d.totalRevenue)}</td>
                       <td className="pt-2.5 text-right text-rose-400">{formatCurrency(d.pendingCollections)}</td>

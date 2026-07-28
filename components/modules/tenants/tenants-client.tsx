@@ -263,6 +263,7 @@ const emptyForm = {
   check_in: formatDateInput(new Date()),
   billing_type: "monthly" as "monthly" | "daily",
   monthly_rent: "", daily_rate: "", check_out: "", security_deposit: "0",
+  registration_fee: "",
   joining_meter_reading: "",
   emergency_contact: "", emergency_relationship: "", emergency_phone: "", notes: "",
   is_waiting: false,
@@ -549,6 +550,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [pkgPrices, setPkgPrices] = useState<Partial<Record<PackageTier, PackagePrices>>>({});
   const [customPackages, setCustomPackages] = useState<CustomPackage[]>([]);
   const [configSecurityDeposit, setConfigSecurityDeposit] = useState<number>(0);
+  const [configRegistrationFee, setConfigRegistrationFee] = useState<number>(0);
   const [seaterPrices, setSeaterPrices] = useState<SeaterPrices>({});
   const [washroomPremium, setWashroomPremium] = useState<number>(0);
   const [foodAddonRates, setFoodAddonRates] = useState<FoodAddonRates>(
@@ -579,6 +581,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         })));
     }
     if (data.security_deposit) setConfigSecurityDeposit(Number(data.security_deposit));
+    if (data.registration_fee) setConfigRegistrationFee(Number(data.registration_fee));
     if (data.seater_prices) setSeaterPrices(data.seater_prices as SeaterPrices);
     setWashroomPremium(Number(data.washroom_premium ?? 0));
     setFoodAddonRates({
@@ -605,7 +608,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
     const supabase = createClient();
     supabase.from("hms_package_configs")
-      .select("package_prices, security_deposit, seater_prices, washroom_premium, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, food_monthly_rate")
+      .select("package_prices, security_deposit, registration_fee, seater_prices, washroom_premium, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, food_monthly_rate")
       .eq("hostel_id", hostelId)
       .maybeSingle()
       .then(({ data }) => {
@@ -625,6 +628,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     monthly_rent: 0,
     daily_rate: 0,
     security_deposit: 0,
+    registration_fee: 0,
     check_in: formatDateInput(new Date()),
     room_id: null,
     bed_number: null,
@@ -739,6 +743,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       security_deposit: matchedRoom
         ? getSuggestedDeposit(matchedRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
         : (configSecurityDeposit > 0 ? configSecurityDeposit : 10000),
+      registration_fee: configRegistrationFee > 0 ? configRegistrationFee : 0,
       check_in: app.move_in_date ?? formatDateInput(new Date()),
       room_id: matchedRoom?.id ?? null,
       bed_number: null,
@@ -854,7 +859,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   function openAdd() {
     setEditing(null);
     setViewOnly(false);
-    setForm({ ...emptyForm, security_deposit: configSecurityDeposit > 0 ? String(configSecurityDeposit) : "" });
+    setForm({
+      ...emptyForm,
+      security_deposit: configSecurityDeposit > 0 ? String(configSecurityDeposit) : "",
+      registration_fee: configRegistrationFee > 0 ? String(configRegistrationFee) : "",
+    });
     setEditingDocs([]);
     setCustomSpecialization(false);
     setCustomInstitute(false);
@@ -886,6 +895,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       daily_rate: t.daily_rate?.toString() ?? "0",
       check_out: t.check_out ?? "",
       security_deposit: t.security_deposit?.toString() ?? "0",
+      registration_fee: t.registration_fee?.toString() ?? "",
       joining_meter_reading: t.joining_meter_reading?.toString() ?? "",
       emergency_contact: t.emergency_contact ?? "",
       emergency_relationship: t.emergency_relationship ?? "",
@@ -994,6 +1004,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       monthly_rent: form.billing_type === "monthly" ? parseFloat(form.monthly_rent) || 0 : 0,
       daily_rate: form.billing_type === "daily" ? parseFloat(form.daily_rate) || 0 : 0,
       security_deposit: parseFloat(form.security_deposit) || 0,
+      registration_fee: parseFloat(form.registration_fee) || 0,
       joining_meter_reading: form.joining_meter_reading.trim() ? parseFloat(form.joining_meter_reading) || null : null,
       emergency_contact: form.emergency_contact || null,
       emergency_relationship: form.emergency_relationship || null,
@@ -2499,6 +2510,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     onChange={(e) => setApproveForm({ ...approveForm, security_deposit: parseFloat(e.target.value) || 0 })}
                   />
                 </div>
+                {configRegistrationFee > 0 && (
+                  <div className="space-y-1.5">
+                    <Label>Registration Fee (PKR) — one-time, non-refundable</Label>
+                    <Input
+                      type="number"
+                      placeholder="0"
+                      value={approveForm.registration_fee || ""}
+                      onChange={(e) => setApproveForm({ ...approveForm, registration_fee: parseFloat(e.target.value) || 0 })}
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Check-in */}
@@ -3011,6 +3033,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   })()}
                 </div>
                 <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
+                {configRegistrationFee > 0 && (
+                  <div className="space-y-1.5"><Label>Registration Fee (PKR) — one-time, non-refundable</Label><Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} /></div>
+                )}
               </div>
             ) : (
               <>
@@ -3018,6 +3043,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   <div className="space-y-1.5"><Label>Daily Rate (PKR)</Label><Input type="number" placeholder="0" value={form.daily_rate} onChange={(e) => setForm({ ...form, daily_rate: e.target.value })} /></div>
                   <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
                 </div>
+                {configRegistrationFee > 0 && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5"><Label>Registration Fee (PKR) — one-time, non-refundable</Label><Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} /></div>
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label>Check-in Date *</Label><Input type="date" value={form.check_in} onChange={(e) => setForm({ ...form, check_in: e.target.value })} /></div>
                   <div className="space-y-1.5"><Label>Expected Check-out *</Label><Input type="date" value={form.check_out} onChange={(e) => setForm({ ...form, check_out: e.target.value })} /></div>

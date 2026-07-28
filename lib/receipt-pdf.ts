@@ -18,6 +18,10 @@ interface ReceiptPayment {
   security_deposit_charge?: number;
   /** Deposit to be refunded — shown only on a checkout receipt, unrelated to `amount` */
   security_deposit?: number;
+  /** One-time, non-refundable — billed only in the check-in month. */
+  registration_fee_charge?: number;
+  /** Recurring monthly, applied automatically for tenants in an AC room. */
+  ac_maintenance_charge?: number;
   is_checkout?: boolean;
   /** Nights billed for a daily-rate tenant — snapshot on the row (migration 099). */
   billed_days?: number | null;
@@ -183,7 +187,8 @@ export function generateReceiptPDF(
   add(ML, "Breakdown:", 8, true); nl(12);
   // Food-inclusive package tiers bundle food into monthly_rent with no separate
   // food_charge (0), so this only itemizes food when it was billed as an add-on.
-  const baseRent = payment.amount - (payment.ac_charge ?? 0) - (payment.food_charge ?? 0) - (payment.security_deposit_charge ?? 0);
+  const baseRent = payment.amount - (payment.ac_charge ?? 0) - (payment.food_charge ?? 0) - (payment.security_deposit_charge ?? 0)
+    - (payment.registration_fee_charge ?? 0) - (payment.ac_maintenance_charge ?? 0);
   // A daily tenant is not on a monthly rent, and printing that label on their
   // receipt is simply wrong. Use the snapshot taken when the row was billed
   // rather than recomputing from the tenant's dates — those keep moving after
@@ -219,11 +224,18 @@ export function generateReceiptPDF(
     nl(2);
   }
   if ((payment.late_fee ?? 0) > 0)       { addKv("Late Fee", pk(payment.late_fee!)); nl(12); }
+  if ((payment.ac_maintenance_charge ?? 0) > 0) {
+    addKv("AC Maintenance", pk(payment.ac_maintenance_charge!)); nl(12);
+  }
   if ((payment.security_deposit_charge ?? 0) > 0) {
     // Actually charged as part of THIS bill (first month) — already included
     // in `payment.amount`, so it's itemized here, not added again below.
     addKv("Security Deposit", pk(payment.security_deposit_charge!)); nl(12);
     add(ML, "(refundable on checkout)", 6, false); nl(10);
+  }
+  if ((payment.registration_fee_charge ?? 0) > 0) {
+    addKv("Registration Fee", pk(payment.registration_fee_charge!)); nl(12);
+    add(ML, "(one-time, non-refundable)", 6, false); nl(10);
   }
   if (payment.is_checkout && (payment.security_deposit ?? 0) > 0) {
     // Informational only — the deposit was already collected at move-in, not

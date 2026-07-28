@@ -2,7 +2,7 @@ import type { PaymentMethodAccount } from "@/types";
 
 export const DEFAULT_REMINDER_TEMPLATE = `Assalam o Alaikum {name},
 
-Friendly reminder — your rent of {amount} for {month} is still pending.{ac}{deposit}
+Friendly reminder — your rent of {amount} for {month} is still pending.{ac}{ac_maintenance}{registration_fee}{deposit}
 
 {accounts}
 
@@ -32,6 +32,16 @@ function formatACLine(units?: number, charge?: number, rate?: number): string {
   return "⚡ AC: " + parts.join(" = ");
 }
 
+function formatAcMaintenanceLine(charge?: number): string {
+  if (!charge || charge <= 0) return "";
+  return `🔧 AC Maintenance: *Rs ${new Intl.NumberFormat("en-PK").format(Math.round(charge))}*`;
+}
+
+function formatRegistrationFeeLine(charge?: number): string {
+  if (!charge || charge <= 0) return "";
+  return `📝 Registration Fee: *Rs ${new Intl.NumberFormat("en-PK").format(Math.round(charge))}* (one-time)`;
+}
+
 interface BuildArgs {
   template?: string | null;
   tenantName: string;
@@ -43,6 +53,8 @@ interface BuildArgs {
   ac_charge?: number;
   ac_rate?: number;
   security_deposit?: number;
+  ac_maintenance_charge?: number;
+  registration_fee_charge?: number;
 }
 
 export function buildReminderMessage(args: BuildArgs): string {
@@ -52,6 +64,10 @@ export function buildReminderMessage(args: BuildArgs): string {
   const accountsBlock = formatAccounts(args.accounts);
   const acLine = formatACLine(args.ac_units, args.ac_charge, args.ac_rate);
   const acBlock = acLine ? "\n" + acLine : "";
+  const acMaintenanceLine = formatAcMaintenanceLine(args.ac_maintenance_charge);
+  const acMaintenanceBlock = acMaintenanceLine ? "\n" + acMaintenanceLine : "";
+  const registrationFeeLine = formatRegistrationFeeLine(args.registration_fee_charge);
+  const registrationFeeBlock = registrationFeeLine ? "\n" + registrationFeeLine : "";
   const depositBlock = (args.security_deposit && args.security_deposit > 0)
     ? `\n🔒 Security Deposit: *Rs ${new Intl.NumberFormat("en-PK").format(Math.round(args.security_deposit))}* (held)`
     : "";
@@ -62,5 +78,7 @@ export function buildReminderMessage(args: BuildArgs): string {
     .replace(/\{hostel\}/g,   args.hostelName)
     .replace(/\{accounts\}/g, accountsBlock)
     .replace(/\{ac\}/g,       acBlock)
+    .replace(/\{ac_maintenance\}/g,   acMaintenanceBlock)
+    .replace(/\{registration_fee\}/g, registrationFeeBlock)
     .replace(/\{deposit\}/g,  depositBlock);
 }

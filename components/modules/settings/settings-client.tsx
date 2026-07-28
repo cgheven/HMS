@@ -124,8 +124,8 @@ export function SettingsClient() {
   const [uploadingCover, setUploadingCover] = useState(false);
   const coverInputRef = useRef<HTMLInputElement>(null);
 
-  const [packageForm, setPackageForm] = useState<{ ac_per_unit_rate: string; security_deposit: string; notice_period_days: string; washroom_premium: string; prices: PkgPriceForm }>({
-    ac_per_unit_rate: "", security_deposit: "", notice_period_days: "30", washroom_premium: "", prices: emptyPriceForm(),
+  const [packageForm, setPackageForm] = useState<{ ac_per_unit_rate: string; security_deposit: string; registration_fee: string; ac_maintenance_rate: string; notice_period_days: string; washroom_premium: string; prices: PkgPriceForm }>({
+    ac_per_unit_rate: "", security_deposit: "", registration_fee: "", ac_maintenance_rate: "", notice_period_days: "30", washroom_premium: "", prices: emptyPriceForm(),
   });
   const [foodAddonForm, setFoodAddonForm] = useState<{ breakfast: string; lunch: string; dinner: string; allMeals: string }>({
     breakfast: "", lunch: "", dinner: "", allMeals: "",
@@ -247,7 +247,7 @@ export function SettingsClient() {
     const supabase = createClient();
     const { data } = await supabase
       .from("hms_package_configs")
-      .select("ac_per_unit_rate, security_deposit, notice_period_days, package_prices, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, seater_prices, washroom_premium")
+      .select("ac_per_unit_rate, security_deposit, registration_fee, ac_maintenance_rate, notice_period_days, package_prices, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, seater_prices, washroom_premium")
       .eq("hostel_id", id)
       .maybeSingle();
     if (data) {
@@ -267,6 +267,8 @@ export function SettingsClient() {
       setPackageForm({
         ac_per_unit_rate: data.ac_per_unit_rate?.toString() ?? "0",
         security_deposit: data.security_deposit > 0 ? String(data.security_deposit) : "",
+        registration_fee: (data.registration_fee ?? 0) > 0 ? String(data.registration_fee) : "",
+        ac_maintenance_rate: (data.ac_maintenance_rate ?? 0) > 0 ? String(data.ac_maintenance_rate) : "",
         notice_period_days: data.notice_period_days != null ? String(data.notice_period_days) : "30",
         washroom_premium: (data.washroom_premium ?? 0) > 0 ? String(data.washroom_premium) : "",
         prices,
@@ -663,6 +665,8 @@ export function SettingsClient() {
           hostel_id:            hostelId,
           ac_per_unit_rate:     parseFloat(packageForm.ac_per_unit_rate) || 0,
           security_deposit:     parseFloat(packageForm.security_deposit) || 0,
+          registration_fee:     parseFloat(packageForm.registration_fee) || 0,
+          ac_maintenance_rate:  parseFloat(packageForm.ac_maintenance_rate) || 0,
           notice_period_days:   parseInt(packageForm.notice_period_days, 10) || 30,
           washroom_premium:     parseFloat(packageForm.washroom_premium) || 0,
           package_prices:       dbPayload,
@@ -1357,6 +1361,28 @@ export function SettingsClient() {
                   className="max-w-[180px]"
                 />
                 <p className="text-xs text-muted-foreground">Minimum notice a tenant should give before checking out.</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Default Registration Fee (Rs.)</Label>
+                <Input
+                  type="number" min="0" step="1" placeholder="e.g. 2000"
+                  value={packageForm.registration_fee}
+                  onChange={(e) => setPackageForm({ ...packageForm, registration_fee: e.target.value })}
+                  disabled={!packageLoaded}
+                  className="max-w-[180px]"
+                />
+                <p className="text-xs text-muted-foreground">One-time, non-refundable, billed only in the tenant&apos;s first month. Hidden on the Tenants page unless set here.</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">AC Maintenance Rate (Rs. / month)</Label>
+                <Input
+                  type="number" min="0" step="1" placeholder="e.g. 500"
+                  value={packageForm.ac_maintenance_rate}
+                  onChange={(e) => setPackageForm({ ...packageForm, ac_maintenance_rate: e.target.value })}
+                  disabled={!packageLoaded}
+                  className="max-w-[180px]"
+                />
+                <p className="text-xs text-muted-foreground">Flat monthly charge automatically applied to every tenant in an AC room, regardless of package.</p>
               </div>
             </div>
 
@@ -2088,7 +2114,7 @@ export function SettingsClient() {
             />
             <p className="text-[11px] text-muted-foreground">
               Placeholders:&nbsp;
-              {["{name}", "{amount}", "{month}", "{hostel}", "{accounts}"].map((p) => (
+              {["{name}", "{amount}", "{month}", "{hostel}", "{accounts}", "{ac_maintenance}", "{registration_fee}"].map((p) => (
                 <code key={p} className="text-foreground mx-0.5 px-1 py-0.5 rounded bg-white/5">{p}</code>
               ))}
             </p>

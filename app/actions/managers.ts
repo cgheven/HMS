@@ -647,6 +647,7 @@ export async function addTenantAsManager(
       monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
       daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
       security_deposit: Number(payload.security_deposit) || 0,
+      registration_fee: Number(payload.registration_fee) || 0,
       joining_meter_reading: payload.joining_meter_reading ?? null,
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,

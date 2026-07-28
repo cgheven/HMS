@@ -285,6 +285,8 @@ export interface Tenant {
   monthly_rent: number;
   daily_rate: number;
   security_deposit: number;
+  /** One-time, non-refundable — billed only in check_in's month. Hidden on the Tenants page unless the hostel has a non-zero default configured in Settings. */
+  registration_fee: number;
   joining_meter_reading: number | null;
   food_breakfast: boolean;
   food_lunch: boolean;
@@ -330,6 +332,10 @@ export interface Payment {
   ac_units_consumed?: number;
   ac_charge?: number;
   security_deposit_charge?: number;
+  /** One-time, populated only in the tenant's check-in month. Trusted from the app by the recalculation trigger. */
+  registration_fee_charge?: number;
+  /** Recurring monthly, re-derived fresh by the recalculation trigger from room.has_ac + the hostel's ac_maintenance_rate — independent of package tier. */
+  ac_maintenance_charge?: number;
   payment_package_tier?: PackageTier | null;
   /** Nights billed for a daily-rate tenant. null/undefined = not a daily row, or billed before migration 099. */
   billed_days?: number | null;
@@ -637,6 +643,12 @@ export interface PackageConfig {
   food_all_meals_rate: number;
   ac_per_unit_rate: number;
   security_deposit: number;
+  // Hostel-wide default one-time registration fee. 0 = not configured — the
+  // Tenants page hides the per-tenant override field entirely until set.
+  registration_fee: number;
+  // Hostel-wide flat monthly AC maintenance charge, auto-applied to every
+  // tenant whose room has_ac = true, regardless of package tier.
+  ac_maintenance_rate: number;
   notice_period_days: number;
   package_prices: Partial<Record<PackageTier, PackagePrices>>;
   seater_prices: Partial<Record<string, { no_ac: number; ac: number; deposit_no_ac?: number; deposit_ac?: number }>>;

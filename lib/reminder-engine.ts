@@ -15,6 +15,8 @@ export interface ReminderPaymentRow {
   for_month: string;
   ac_charge: number | null;
   ac_units_consumed: number | null;
+  ac_maintenance_charge: number | null;
+  registration_fee_charge: number | null;
   last_reminder_sent_at: string | null;
   tenant: { full_name: string; phone: string | null; security_deposit: number | null; check_in: string; is_active: boolean; is_waiting: boolean } | null;
   hostel: { name: string; payment_methods: PaymentMethodAccount[]; reminder_template: string | null; whatsapp_enabled: boolean } | null;
@@ -60,7 +62,7 @@ export async function runReminderPass(
   const { data: payments, error } = await admin
     .from("hms_payments")
     .select(
-      "id, tenant_id, amount, late_fee, for_month, ac_charge, ac_units_consumed, last_reminder_sent_at, " +
+      "id, tenant_id, amount, late_fee, for_month, ac_charge, ac_units_consumed, ac_maintenance_charge, registration_fee_charge, last_reminder_sent_at, " +
       "tenant:hms_tenants(full_name, phone, security_deposit, check_in, is_active, is_waiting), " +
       "hostel:hms_hostels(name, payment_methods, reminder_template, whatsapp_enabled)"
     )
@@ -137,6 +139,8 @@ export async function runReminderPass(
       ac_charge: (p.ac_charge ?? 0) > 0 ? Number(p.ac_charge) : undefined,
       ac_units: (p.ac_units_consumed ?? 0) > 0 ? Number(p.ac_units_consumed) : undefined,
       security_deposit: p.tenant?.security_deposit && p.tenant.security_deposit > 0 ? p.tenant.security_deposit : undefined,
+      ac_maintenance_charge: (p.ac_maintenance_charge ?? 0) > 0 ? Number(p.ac_maintenance_charge) : undefined,
+      registration_fee_charge: (p.registration_fee_charge ?? 0) > 0 ? Number(p.registration_fee_charge) : undefined,
     });
 
     const result = await sendWhatsAppMessage(digits, message, { hostelId, tenantId: p.tenant_id, messageType: "reminder" });

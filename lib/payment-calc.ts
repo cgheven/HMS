@@ -56,6 +56,30 @@ export function computeDepositCharge(
   return isFirstBillingMonth ? Number(t.security_deposit ?? 0) : 0;
 }
 
+// One-time, non-refundable — billed only in the tenant's check-in month, same
+// timing rule as computeDepositCharge. Trusted as-is by the DB recalculation
+// trigger (hms_recalculate_payment_amount), which does NOT re-derive it.
+export function computeRegistrationFeeCharge(
+  t: { check_in: string; registration_fee?: number | null },
+  forMonth: string
+): number {
+  const isFirstBillingMonth = t.check_in && t.check_in.slice(0, 7) === forMonth;
+  return isFirstBillingMonth ? Number(t.registration_fee ?? 0) : 0;
+}
+
+// Recurring monthly flat charge, independent of package tier — applies for as
+// long as the tenant occupies a room with has_ac = true. Unlike the deposit/
+// registration fee, this is a pure function of current state (no timing
+// decision), so the DB trigger re-derives it fresh on every write — this
+// helper exists purely so the app layer's own amount previews/sums agree with
+// the trigger's outcome ahead of the round trip.
+export function computeAcMaintenanceCharge(
+  roomHasAc: boolean | null | undefined,
+  rate: number | null | undefined
+): number {
+  return roomHasAc ? Number(rate ?? 0) : 0;
+}
+
 // A tenant's personal "rent due" day-of-month is just the day they checked
 // in — 20 tenants in one hostel can each have a different one, so the
 // auto-reminder cron anchors off this instead of a single hostel-wide day.

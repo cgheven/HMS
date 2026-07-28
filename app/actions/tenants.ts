@@ -888,7 +888,7 @@ export async function backfillTenantPaymentsAction(
     // Fetch tenant — verify it belongs to this hostel
     const { data: tenant } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, package_tier, billing_type, food_breakfast, food_lunch, food_dinner")
+      .select("id, full_name, hostel_id, room_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, registration_fee, package_tier, billing_type, food_breakfast, food_lunch, food_dinner")
       .eq("id", tenantId)
       .eq("hostel_id", hostelId)
       .single();
@@ -899,16 +899,24 @@ export async function backfillTenantPaymentsAction(
     const pastMonths = getPastMonths(tenant.check_in);
     if (pastMonths.length === 0) return { success: true, monthsCreated: 0 };
 
-    // Get food rate from package config
-    const { data: pkgConfig } = await adminDb
-      .from("hms_package_configs")
-      .select("food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate")
-      .eq("hostel_id", hostelId)
-      .single();
+    // Get food + AC maintenance rates from package config, and whether this
+    // tenant's room has AC (constant across every backfilled month, unlike
+    // the registration fee which only applies in the check-in month).
+    const [{ data: pkgConfig }, { data: roomData }] = await Promise.all([
+      adminDb
+        .from("hms_package_configs")
+        .select("food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate")
+        .eq("hostel_id", hostelId)
+        .single(),
+      tenant.room_id
+        ? adminDb.from("hms_rooms").select("has_ac").eq("id", tenant.room_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+    ]);
     const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
     const tierFoodCharge = FOOD_TIERS.has(tenant.package_tier ?? "") ? foodRate : 0;
     const addonFoodCharge = pkgConfig ? calcFoodAddonCharge(tenant, pkgConfig) : 0;
     const foodCharge = tierFoodCharge + addonFoodCharge;
+    const acMaintenanceCharge = roomData?.has_ac ? Number(pkgConfig?.ac_maintenance_rate ?? 0) : 0;
     const checkInMonth = tenant.check_in.slice(0, 7);
     const isDaily = tenant.billing_type === "daily";
     const checkIn = tenant.check_in.slice(0, 10);
@@ -929,10 +937,15 @@ export async function backfillTenantPaymentsAction(
         ? calcDailyRent({ checkIn, checkOut, month, dailyRate })
         : Number(tenant.monthly_rent);
 
-      // Deposit is billed once, on the check-in month only — every later
-      // month is rent + food as before.
+      // Deposit and registration fee are billed once, on the check-in month
+      // only — every later month is rent + food + AC maintenance as before.
+      // Reimplemented inline rather than via computeDepositCharge/
+      // computeRegistrationFeeCharge, matching how this file already
+      // reimplements the deposit logic independently (a pre-existing
+      // inconsistency, not introduced here).
       const depositCharge = month === checkInMonth ? Number(tenant.security_deposit ?? 0) : 0;
-      const monthAmount = baseRent + foodCharge + depositCharge;
+      const registrationFeeCharge = month === checkInMonth ? Number(tenant.registration_fee ?? 0) : 0;
+      const monthAmount = baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge;
 
       // Monthly tenants are recorded as already settled: the backfill exists to
       // enter a resident who has been paying all along into the system, so their
@@ -966,6 +979,8 @@ export async function backfillTenantPaymentsAction(
         food_charge: foodCharge,
         ac_charge: 0,
         security_deposit_charge: depositCharge,
+        registration_fee_charge: registrationFeeCharge,
+        ac_maintenance_charge: acMaintenanceCharge,
         late_fee: 0,
         ...settlement,
         payment_package_tier: tenant.package_tier,

@@ -264,6 +264,7 @@ export interface ConvertFormData {
   monthly_rent: number;
   daily_rate: number;
   security_deposit: number;
+  registration_fee?: number;
   check_in: string;
   room_id: string | null;
   bed_number: string | null;
@@ -314,6 +315,7 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     monthly_rent: extra.billing_type === "monthly" ? extra.monthly_rent : 0,
     daily_rate: extra.billing_type === "daily" ? extra.daily_rate : 0,
     security_deposit: extra.security_deposit,
+    registration_fee: extra.registration_fee ?? 0,
     room_id: extra.is_waiting ? null : (extra.room_id || null),
     bed_number: extra.bed_number || null,
     is_active: !extra.is_waiting,

@@ -48,6 +48,7 @@ export interface PartnerTenantPayload {
   monthly_rent: number;
   daily_rate: number;
   security_deposit: number;
+  registration_fee: number;
   joining_meter_reading: number | null;
   emergency_contact: string | null;
   emergency_relationship: string | null;
@@ -120,6 +121,7 @@ export async function addTenantAsPartner(
       monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
       daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
       security_deposit: Number(payload.security_deposit) || 0,
+      registration_fee: Number(payload.registration_fee) || 0,
       joining_meter_reading: payload.joining_meter_reading ?? null,
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,
@@ -430,6 +432,7 @@ export async function editTenantAsPartner(
       monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
       daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
       security_deposit: Number(payload.security_deposit) || 0,
+      registration_fee: Number(payload.registration_fee) || 0,
       joining_meter_reading: payload.joining_meter_reading ?? null,
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,

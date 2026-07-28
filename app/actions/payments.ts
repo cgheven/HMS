@@ -23,7 +23,10 @@ import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
-import { VALID_TIERS, calcBaseRentServer, dailySnapshot, computeDepositCharge } from "@/lib/payment-calc";
+import {
+  VALID_TIERS, calcBaseRentServer, dailySnapshot, computeDepositCharge,
+  computeRegistrationFeeCharge, computeAcMaintenanceCharge,
+} from "@/lib/payment-calc";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 import { logActivity } from "@/lib/audit";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
@@ -104,7 +107,7 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("hms_tenants")
-    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, food_breakfast, food_lunch, food_dinner")
+    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, registration_fee, room_id, food_breakfast, food_lunch, food_dinner")
     .eq("id", tenantId)
     .eq("hostel_id", hostelId) // ensures the tenant belongs to the owner's hostel
     .single();
@@ -119,6 +122,8 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
     check_in: string;
     check_out: string | null;
     security_deposit: number | null;
+    registration_fee: number | null;
+    room_id: string | null;
     food_breakfast: boolean;
     food_lunch: boolean;
     food_dinner: boolean;
@@ -321,11 +326,21 @@ export async function markPaymentPaidAction(
       fetchTenantData(existingPayment.tenant_id, hostelId),
       supabase
         .from("hms_package_configs")
-        .select("food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate")
+        .select("food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate")
         .eq("hostel_id", hostelId)
         .maybeSingle(),
     ]);
     const forMonth = existingPayment.for_month;
+
+    let roomHasAc = false;
+    if (tenantData.room_id) {
+      const { data: roomData } = await supabase
+        .from("hms_rooms")
+        .select("has_ac")
+        .eq("id", tenantData.room_id)
+        .maybeSingle();
+      roomHasAc = !!roomData?.has_ac;
+    }
 
     let baseRent: number;
     if (tenantData.billing_type === "monthly") {
@@ -344,8 +359,10 @@ export async function markPaymentPaidAction(
     const addonFoodCharge = foodConfigData ? calcFoodAddonCharge(tenantData, foodConfigData) : 0;
     const foodCharge = tierFoodCharge + addonFoodCharge;
     const depositCharge = computeDepositCharge(tenantData, forMonth);
+    const registrationFeeCharge = computeRegistrationFeeCharge(tenantData, forMonth);
+    const acMaintenanceCharge = computeAcMaintenanceCharge(roomHasAc, foodConfigData?.ac_maintenance_rate);
 
-    const newTotalAmount = baseRent + foodCharge + newAcCharge + depositCharge;
+    const newTotalAmount = baseRent + foodCharge + newAcCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge;
 
     // Final sanity: total must be non-negative
     if (newTotalAmount < 0) {
@@ -394,6 +411,8 @@ export async function markPaymentPaidAction(
       // previously corrupted row is corrected
       food_charge: foodCharge,
       security_deposit_charge: depositCharge,
+      registration_fee_charge: registrationFeeCharge,
+      ac_maintenance_charge: acMaintenanceCharge,
       // Freeze the day count as of settlement, so the receipt keeps saying
       // "11 days x Rs 500" even if the tenant's dates move afterwards.
       ...dailySnapshot(tenantData, forMonth),
@@ -632,7 +651,7 @@ export async function applyRoomACUnitsAction(
     const prevMonthStr = getPrevMonth(forMonth);
     const [{ data: room }, { data: pkgConfig }, { data: prevRecord }] = await Promise.all([
       supabase.from("hms_rooms").select("id, hostel_id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
-      supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate").eq("hostel_id", hostelId).single(),
+      supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).single(),
       supabase.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
     ]);
 
@@ -642,6 +661,10 @@ export async function applyRoomACUnitsAction(
     const perUnitRate = Number(pkgConfig?.ac_per_unit_rate ?? 0);
     if (perUnitRate <= 0) throw new Error("AC per-unit rate is not configured. Set it in Settings → Packages.");
     const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
+    // This function only ever runs against a room already verified has_ac = true
+    // (line above), so AC maintenance applies unconditionally here — no per-tenant
+    // room lookup needed, unlike the general sync paths.
+    const acMaintenanceCharge = Number(pkgConfig?.ac_maintenance_rate ?? 0);
 
     // ── Derive consumption from cumulative meter readings ─────────
     const prevReading = prevRecord?.meter_reading != null
@@ -656,7 +679,7 @@ export async function applyRoomACUnitsAction(
     // ── Find all active tenants in this room ─────────────────────
     const { data: allTenants } = await supabase
       .from("hms_tenants")
-      .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
+      .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
       .eq("hostel_id", hostelId)
       .eq("room_id", roomId)
       .eq("is_active", true);
@@ -894,17 +917,23 @@ export async function applyRoomACUnitsAction(
           { check_in: t.check_in, security_deposit: (t as { security_deposit?: number | null }).security_deposit },
           forMonth
         );
+        const registrationFeeCharge = computeRegistrationFeeCharge(
+          { check_in: t.check_in, registration_fee: (t as { registration_fee?: number | null }).registration_fee },
+          forMonth
+        );
         return {
           hostel_id: hostelId,
           tenant_id: t.id,
           for_month: forMonth,
-          amount: baseRent + foodCharge + depositCharge,
+          amount: baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge,
           status: "pending" as PaymentStatus,
           payment_package_tier: tier,
           food_charge: foodCharge,
           ac_units_consumed: 0,
           ac_charge: 0,
           security_deposit_charge: depositCharge,
+          registration_fee_charge: registrationFeeCharge,
+          ac_maintenance_charge: acMaintenanceCharge,
           ...daySnapshot,
         };
       });

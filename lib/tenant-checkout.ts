@@ -105,7 +105,7 @@ export async function performTenantCheckout(
 
       const { data: monthRow } = await adminDb
         .from("hms_payments")
-        .select("id, status, amount, amount_paid, food_charge, ac_charge, security_deposit_charge")
+        .select("id, status, amount, amount_paid, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge")
         .eq("tenant_id", input.tenantId)
         .eq("hostel_id", hostelId)
         .eq("for_month", rentMonth)
@@ -147,9 +147,14 @@ export async function performTenantCheckout(
               month: rentMonth,
             });
 
-        // Only the rent component moves. Food, AC and deposit ride along at face
-        // value — they are not day-scaled, and the DB trigger re-derives food
-        // from the package config anyway.
+        // Only the rent component moves. Food, AC, deposit, registration fee and
+        // AC maintenance all ride along at face value — they are not day-scaled,
+        // and the DB trigger re-derives food/AC-maintenance from the package
+        // config anyway. Registration fee and AC maintenance MUST be included
+        // here even though the trigger doesn't change `amount` for daily tenants
+        // (it only validates amount >= the sum of these charges) — omitting them
+        // would silently drop both from the persisted total, or throw if the
+        // pro-rated rent is smaller than what was omitted.
         //
         // How the new rent reaches the row depends on who owns `amount`. The
         // migration-082 trigger recomputes amount from hms_tenants.monthly_rent
@@ -167,7 +172,9 @@ export async function performTenantCheckout(
         const extras =
           Number(monthRow.food_charge ?? 0) +
           Number(monthRow.ac_charge ?? 0) +
-          Number(monthRow.security_deposit_charge ?? 0);
+          Number(monthRow.security_deposit_charge ?? 0) +
+          Number(monthRow.registration_fee_charge ?? 0) +
+          Number(monthRow.ac_maintenance_charge ?? 0);
         const proposedTotal = newBaseRent + extras;
         const clampedTotal = Math.max(proposedTotal, alreadyPaid);
         if (clampedTotal !== proposedTotal) {
