@@ -522,14 +522,6 @@ export interface PartnerFeatureFlags {
   daily_expenses?: boolean;
 }
 
-export interface DailyExpenseRow {
-  date: string;
-  expenses: number;
-  kitchen: number;
-  total: number;
-  income: number;
-}
-
 export interface Defaulter {
   id: string;
   name: string;

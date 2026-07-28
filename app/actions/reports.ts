@@ -3,7 +3,22 @@ import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { capitalize, getMonthRange, formatDateInput } from "@/lib/utils";
-import type { Profile, DailyExpenseRow } from "@/types";
+import type { Profile } from "@/types";
+
+// Per-day, itemized expense/income breakdown for the "Today" tab's monthly
+// overview — each entry only exists for a date with actual activity (an
+// expense row, kitchen row, or installment payment), so an empty array for
+// kitchenItems/expenseItems means that category had nothing that day, not
+// that the query failed.
+export interface DailyExpenseDetail {
+  date: string;
+  income: number;
+  kitchenTotal: number;
+  otherTotal: number;
+  total: number;
+  kitchenItems: { id: string; title: string; amount: number }[];
+  expenseItems: { id: string; title: string; category: string; amount: number }[];
+}
 
 // Reports is pure read — any active partner tier suffices. Owners/super_admin
 // keep their existing hms_hostels.owner_id / hms_owner_hostels check; a
@@ -195,7 +210,7 @@ export interface ReportData {
   // The *List fields exist so the owner can verify each figure against their
   // own physical register — a headcount alone ("3 joined today") isn't
   // verifiable, but a name + room number is.
-  dailyExpenses: DailyExpenseRow[];
+  dailyExpenseDetails: DailyExpenseDetail[];
   todayIncome: number;
   todayExpense: number;
   todayKitchenExpense: number;
@@ -720,24 +735,39 @@ export async function getReportData(
       .eq("check_out", todayStr),
   ]);
 
-  const byDate = new Map<string, { expenses: number; kitchen: number; income: number }>();
+  const detailByDate = new Map<string, DailyExpenseDetail>();
+  function getDetailRow(date: string): DailyExpenseDetail {
+    let row = detailByDate.get(date);
+    if (!row) {
+      row = { date, income: 0, kitchenTotal: 0, otherTotal: 0, total: 0, kitchenItems: [], expenseItems: [] };
+      detailByDate.set(date, row);
+    }
+    return row;
+  }
   for (const x of curExpensesRes.data ?? []) {
-    const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
-    row.expenses += Number(x.amount);
-    byDate.set(x.date, row);
+    const row = getDetailRow(x.date);
+    const amount = Number(x.amount);
+    row.otherTotal += amount;
+    row.total += amount;
+    row.expenseItems.push({ id: x.id, title: x.title, category: capitalize(x.category), amount });
   }
   for (const x of curKitchenRes.data ?? []) {
-    const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
-    row.kitchen += Number(x.amount);
-    byDate.set(x.date, row);
+    const row = getDetailRow(x.date);
+    const amount = Number(x.amount);
+    row.kitchenTotal += amount;
+    row.total += amount;
+    row.kitchenItems.push({ id: x.id, title: x.title, amount });
   }
   for (const i of monthInstallmentsRes.data ?? []) {
-    const row = byDate.get(i.payment_date) ?? { expenses: 0, kitchen: 0, income: 0 };
+    const row = getDetailRow(i.payment_date);
     row.income += Number(i.amount);
-    byDate.set(i.payment_date, row);
   }
-  const dailyExpenses: DailyExpenseRow[] = Array.from(byDate.entries())
-    .map(([date, { expenses, kitchen, income }]) => ({ date, expenses, kitchen, total: expenses + kitchen, income }))
+  const dailyExpenseDetails: DailyExpenseDetail[] = Array.from(detailByDate.values())
+    .map((row) => ({
+      ...row,
+      kitchenItems: [...row.kitchenItems].sort((a, b) => b.amount - a.amount),
+      expenseItems: [...row.expenseItems].sort((a, b) => b.amount - a.amount),
+    }))
     .sort((a, b) => b.date.localeCompare(a.date));
 
   type TodayTenantRow = {
@@ -794,10 +824,10 @@ export async function getReportData(
   ].sort((a, b) => b.amount - a.amount);
 
   const todayIncome = todayPaymentsList.reduce((s, p) => s + p.amount, 0);
-  const todayRow = dailyExpenses.find((r) => r.date === todayStr);
-  const todayExpense = todayRow?.total ?? 0;
-  const todayKitchenExpense = todayRow?.kitchen ?? 0;
-  const todayOtherExpense = todayRow?.expenses ?? 0;
+  const todayDetail = dailyExpenseDetails.find((r) => r.date === todayStr);
+  const todayExpense = todayDetail?.total ?? 0;
+  const todayKitchenExpense = todayDetail?.kitchenTotal ?? 0;
+  const todayOtherExpense = todayDetail?.otherTotal ?? 0;
   const todayJoined = todayJoinedList.length;
   const todayLeft = todayLeftList.length;
 
@@ -842,7 +872,7 @@ export async function getReportData(
         formerDebtorsOwed: formerDebtorList.reduce((s, d) => s + d.owed, 0),
         topDebtors,
       },
-      dailyExpenses, todayIncome, todayExpense, todayKitchenExpense, todayOtherExpense, todayJoined, todayLeft,
+      dailyExpenseDetails, todayIncome, todayExpense, todayKitchenExpense, todayOtherExpense, todayJoined, todayLeft,
       todayExpenseList, todayJoinedList, todayLeftList, todayPaymentsList,
     },
     error: null,

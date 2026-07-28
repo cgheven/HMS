@@ -310,7 +310,7 @@ export function ReportsClient(props: Props) {
               pinned above every other tab regardless of context. */}
           <TabsContent value="today" className="space-y-6 mt-4">
             <DailyExpensesSection
-              daily={d.dailyExpenses}
+              dailyDetails={d.dailyExpenseDetails}
               todayIncome={d.todayIncome}
               todayExpense={d.todayExpense}
               todayKitchenExpense={d.todayKitchenExpense}

@@ -1,8 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import { CalendarDays, ArrowDownCircle, ArrowUpCircle, UserPlus, UserMinus, Receipt, ChefHat } from "lucide-react";
-import { formatCurrency, formatDate } from "@/lib/utils";
-import type { DailyExpenseRow } from "@/types";
+import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
 import type { ReportData } from "@/app/actions/reports";
 
 const METHOD_LABELS: Record<string, string> = {
@@ -15,7 +16,7 @@ const METHOD_LABELS: Record<string, string> = {
 };
 
 interface Props {
-  daily: DailyExpenseRow[];
+  dailyDetails: ReportData["dailyExpenseDetails"];
   todayIncome: number;
   todayExpense: number;
   todayKitchenExpense: number;
@@ -29,9 +30,19 @@ interface Props {
 }
 
 export function DailyExpensesSection({
-  daily, todayIncome, todayExpense, todayKitchenExpense, todayOtherExpense, todayJoined, todayLeft,
+  dailyDetails, todayIncome, todayExpense, todayKitchenExpense, todayOtherExpense, todayJoined, todayLeft,
   todayExpenseList, todayJoinedList, todayLeftList, todayPaymentsList,
 }: Props) {
+  const now = new Date();
+  const todayStr = formatDateInput(now);
+  // A picked date, not a scrolling list of every day — a full month of
+  // collapsed rows was more clutter than signal. Data is only fetched for the
+  // current calendar month, so the picker is bounded to it.
+  const monthStartStr = formatDateInput(new Date(now.getFullYear(), now.getMonth(), 1));
+  const monthEndStr = formatDateInput(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+  const [selectedDate, setSelectedDate] = useState(todayStr);
+  const selectedDetail = dailyDetails.find((d) => d.date === selectedDate);
+
   return (
     <div className="rounded-2xl border border-sidebar-border bg-card p-6 animate-fade-up">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5 pb-5 border-b border-white/5">
@@ -206,43 +217,77 @@ export function DailyExpensesSection({
         </div>
       </div>
 
-      <div className="mb-5">
-        <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
-          <CalendarDays className="w-4 h-4 text-rose-400" />
-          Expense Overview
-        </h2>
-        <p className="text-xs text-muted-foreground mt-0.5">Expenses and income, by day, this month</p>
+      <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <CalendarDays className="w-4 h-4 text-rose-400" />
+            Expense Overview
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">Pick a day this month to see its expense breakdown</p>
+        </div>
+        <Input
+          type="date"
+          value={selectedDate}
+          min={monthStartStr}
+          max={monthEndStr}
+          onChange={(e) => setSelectedDate(e.target.value)}
+          className="w-auto h-9 text-sm"
+        />
       </div>
 
-      {daily.length === 0 ? (
-        <div className="flex flex-col items-center justify-center h-[140px] gap-2 text-muted-foreground">
+      {!selectedDetail ? (
+        <div className="flex flex-col items-center justify-center h-[140px] gap-2 text-muted-foreground rounded-xl border border-white/5">
           <CalendarDays className="w-8 h-8 opacity-30" />
-          <p className="text-sm">No activity recorded this month yet</p>
+          <p className="text-sm">No activity recorded on {formatDate(selectedDate)}</p>
         </div>
       ) : (
-        <div className="max-h-[320px] overflow-auto scrollbar-hide rounded-xl border border-white/5">
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-card">
-              <tr className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wide">
-                <th className="text-left font-medium px-3 py-2 whitespace-nowrap">Date</th>
-                <th className="text-right font-medium px-3 py-2 whitespace-nowrap">Kitchen</th>
-                <th className="text-right font-medium px-3 py-2 whitespace-nowrap">Other</th>
-                <th className="text-right font-medium px-3 py-2 whitespace-nowrap">Total</th>
-                <th className="text-right font-medium px-3 py-2 whitespace-nowrap">Income</th>
-              </tr>
-            </thead>
-            <tbody>
-              {daily.map((d) => (
-                <tr key={d.date} className="border-t border-white/5">
-                  <td className="px-3 py-2 text-foreground whitespace-nowrap">{formatDate(d.date)}</td>
-                  <td className="px-3 py-2 text-right text-amber tabular-nums whitespace-nowrap">{formatCurrency(d.kitchen)}</td>
-                  <td className="px-3 py-2 text-right text-rose-400 tabular-nums whitespace-nowrap">{formatCurrency(d.expenses)}</td>
-                  <td className="px-3 py-2 text-right font-semibold text-foreground tabular-nums whitespace-nowrap">{formatCurrency(d.total)}</td>
-                  <td className="px-3 py-2 text-right text-emerald-400 tabular-nums whitespace-nowrap">{formatCurrency(d.income)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="rounded-xl border border-white/5 p-4">
+          <div className="flex items-center justify-between gap-3 pb-3 mb-3 border-b border-white/5">
+            <span className="text-sm font-medium text-foreground">{formatDate(selectedDetail.date)}</span>
+            <div className="flex items-center gap-4">
+              <span className="text-xs sm:text-sm font-semibold text-foreground tabular-nums whitespace-nowrap">Total {formatCurrency(selectedDetail.total)}</span>
+              <span className="text-xs sm:text-sm text-emerald-400 tabular-nums whitespace-nowrap">Income {formatCurrency(selectedDetail.income)}</span>
+            </div>
+          </div>
+          {selectedDetail.kitchenItems.length === 0 && selectedDetail.expenseItems.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No expenses recorded on this day</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {selectedDetail.kitchenItems.length > 0 && (
+                <div>
+                  <h4 className="text-[10px] font-semibold text-amber uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                    <ChefHat className="w-3 h-3" /> Kitchen · {formatCurrency(selectedDetail.kitchenTotal)}
+                  </h4>
+                  <ul className="rounded-lg border border-white/5 divide-y divide-white/5">
+                    {selectedDetail.kitchenItems.map((item) => (
+                      <li key={`kitchen-${item.id}`} className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-xs">
+                        <span className="text-foreground">{item.title}</span>
+                        <span className="text-amber tabular-nums whitespace-nowrap">{formatCurrency(item.amount)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {selectedDetail.expenseItems.length > 0 && (
+                <div>
+                  <h4 className="text-[10px] font-semibold text-rose-400 uppercase tracking-wide mb-1.5 flex items-center gap-1">
+                    <Receipt className="w-3 h-3" /> Other Expenses · {formatCurrency(selectedDetail.otherTotal)}
+                  </h4>
+                  <ul className="rounded-lg border border-white/5 divide-y divide-white/5">
+                    {selectedDetail.expenseItems.map((item) => (
+                      <li key={`expense-${item.id}`} className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-xs">
+                        <span className="text-foreground">
+                          {item.title}
+                          <span className="text-muted-foreground"> · {item.category}</span>
+                        </span>
+                        <span className="text-rose-400 tabular-nums whitespace-nowrap">{formatCurrency(item.amount)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
