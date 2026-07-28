@@ -100,6 +100,18 @@ export interface ReportData {
   pendingCollections: number;
   occupancyRate: number;
   newTenants: number;
+  // Who exactly joined in the selected period — newTenants is just a count,
+  // this is the filterable list behind it (name/room/type so the owner can
+  // actually verify who, not just how many).
+  joinedTenantsList: {
+    id: string;
+    name: string;
+    phone: string | null;
+    type: string;
+    packageTier: string;
+    roomNumber: string | null;
+    checkIn: string;
+  }[];
 
   // Revenue by month
   revenueByMonth: {
@@ -332,7 +344,7 @@ export async function getReportData(
       .lte("for_month", to),
     admin
       .from("hms_tenants")
-      .select("id, full_name, check_in, check_out, is_active, package_tier")
+      .select("id, full_name, phone, type, check_in, check_out, is_active, package_tier, hms_rooms(room_number)")
       .eq("hostel_id", hostelId),
     admin
       .from("hms_rooms")
@@ -378,11 +390,35 @@ export async function getReportData(
   const expenses = expensesRes.data ?? [];
   const kitchen = kitchenRes.data ?? [];
   const salaries = salariesRes.data ?? [];
-  const tenants = tenantsRes.data ?? [];
+  type TenantWithRoomRow = {
+    id: string;
+    full_name: string;
+    phone: string | null;
+    type: string;
+    check_in: string;
+    check_out: string | null;
+    is_active: boolean;
+    package_tier: string;
+    hms_rooms: { room_number: string } | { room_number: string }[] | null;
+  };
+  const tenants = (tenantsRes.data ?? []) as unknown as TenantWithRoomRow[];
   const rooms = roomsRes.data ?? [];
-  const newTenants = tenants.filter(
-    (t) => t.check_in >= fullStart && t.check_in <= fullEnd
-  ).length;
+  const joinedInPeriod = tenants.filter((t) => t.check_in >= fullStart && t.check_in <= fullEnd);
+  const newTenants = joinedInPeriod.length;
+  const joinedTenantsList = [...joinedInPeriod]
+    .sort((a, b) => b.check_in.localeCompare(a.check_in))
+    .map((t) => {
+      const r = t.hms_rooms;
+      return {
+        id: t.id,
+        name: t.full_name,
+        phone: t.phone,
+        type: t.type,
+        packageTier: t.package_tier,
+        roomNumber: (Array.isArray(r) ? r[0] : r)?.room_number ?? null,
+        checkIn: t.check_in,
+      };
+    });
 
   // Total revenue & pending
   // "paid" = fully settled rows only, used for breakdowns (rent/food/AC split, AC
@@ -826,6 +862,7 @@ export async function getReportData(
       pendingCollections,
       occupancyRate,
       newTenants,
+      joinedTenantsList,
       revenueByMonth,
       topTenants,
       overduePayments,

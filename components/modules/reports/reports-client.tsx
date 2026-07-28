@@ -336,6 +336,45 @@ export function ReportsClient(props: Props) {
               ))}
             </div>
 
+            {/* New Members — the filterable list behind the "New Tenants" count
+                above, respecting whatever period is selected at the top of the
+                page (This Month / Last Month / 12 Months / Custom). */}
+            {d.joinedTenantsList.length > 0 && (
+              <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
+                <div className="flex flex-wrap items-baseline justify-between gap-2 px-5 py-4 border-b border-sidebar-border">
+                  <div>
+                    <p className="text-sm font-semibold">New Members</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Who joined during {d.label}</p>
+                  </div>
+                  <span className="text-sm font-semibold text-purple-400">{d.joinedTenantsList.length}</span>
+                </div>
+                <div className="max-h-[320px] overflow-auto scrollbar-hide">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-card">
+                      <tr className="text-xs text-muted-foreground font-medium border-b border-sidebar-border">
+                        <th className="text-left px-5 py-2">Name</th>
+                        <th className="text-left px-5 py-2">Room</th>
+                        <th className="text-left px-5 py-2">Phone</th>
+                        <th className="text-left px-5 py-2">Type</th>
+                        <th className="text-right px-5 py-2">Check-in</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-sidebar-border/50">
+                      {d.joinedTenantsList.map((t) => (
+                        <tr key={t.id} className="hover:bg-white/[0.02]">
+                          <td className="px-5 py-2.5 font-medium">{t.name}</td>
+                          <td className="px-5 py-2.5 text-muted-foreground">{t.roomNumber ? `Rm ${t.roomNumber}` : "—"}</td>
+                          <td className="px-5 py-2.5 text-muted-foreground">{t.phone ?? "—"}</td>
+                          <td className="px-5 py-2.5 text-muted-foreground capitalize">{t.type}</td>
+                          <td className="px-5 py-2.5 text-right text-muted-foreground whitespace-nowrap">{formatDate(t.checkIn)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             {/* Money Owed — ignores the date filter on purpose, so debt older
                 than the selected range can't hide. */}
             {d.receivablesAging && d.receivablesAging.totalOwed > 0 && (() => {
