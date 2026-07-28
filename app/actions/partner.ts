@@ -58,6 +58,12 @@ export interface PartnerTenantPayload {
   food_breakfast: boolean;
   food_lunch: boolean;
   food_dinner: boolean;
+  institute_name: string | null;
+  student_category: string | null;
+  student_specialization: string | null;
+  organization: string | null;
+  organization_type: string | null;
+  department: string | null;
 }
 
 function validateTenantPayload(payload: PartnerTenantPayload): string | null {
@@ -125,6 +131,12 @@ export async function addTenantAsPartner(
       food_breakfast: !!payload.food_breakfast,
       food_lunch: !!payload.food_lunch,
       food_dinner: !!payload.food_dinner,
+      institute_name: payload.institute_name || null,
+      student_category: payload.student_category || null,
+      student_specialization: payload.student_specialization || null,
+      organization: payload.organization || null,
+      organization_type: payload.organization_type || null,
+      department: payload.department || null,
     };
 
     const { data: created, error: insErr } = await admin
@@ -429,6 +441,12 @@ export async function editTenantAsPartner(
       food_breakfast: !!payload.food_breakfast,
       food_lunch: !!payload.food_lunch,
       food_dinner: !!payload.food_dinner,
+      institute_name: payload.institute_name || null,
+      student_category: payload.student_category || null,
+      student_specialization: payload.student_specialization || null,
+      organization: payload.organization || null,
+      organization_type: payload.organization_type || null,
+      department: payload.department || null,
     };
 
     const { error } = await admin

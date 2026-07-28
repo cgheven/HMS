@@ -7,12 +7,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatCurrency, cn } from "@/lib/utils";
 import { buildPackageOptions } from "@/lib/room-pricing";
 import { SEATER_LABELS } from "@/lib/seater-pricing";
-import type { PublicHostelDetail, PublicRoom, PackageTier, FormConfig } from "@/types";
+import type { PublicHostelDetail, PublicRoom, PackageTier, FormConfig, StudentCategory } from "@/types";
 import { DEFAULT_FORM_CONFIG } from "@/types";
+import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets } from "@/lib/student-category-labels";
 
 interface Props {
   hostel: PublicHostelDetail;
@@ -45,7 +47,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
     phone: "",
     email: "",
     cnic: "",
-    type: "general" as "student" | "professional" | "general",
+    type: "student" as "student" | "professional" | "general",
     room_id: preselectedRoom?.id ?? "",
     package_tier: "space_only" as PackageTier,
     move_in_date: "",
@@ -53,9 +55,84 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
     emergency_phone: "",
     emergency_relationship: "",
     notes: "",
+    institute_name: "",
+    student_category: "" as "" | StudentCategory,
+    student_specialization: "",
+    organization: "",
+    organization_type: "" as "" | "private" | "government",
+    department: "",
   });
+  const [customSpecialization, setCustomSpecialization] = useState(false);
+  const [customInstitute, setCustomInstitute] = useState(false);
 
   const selectedRoom: PublicRoom | null = form.room_id ? hostel.rooms.find((r) => r.id === form.room_id) ?? null : null;
+
+  // Institute/Organization only make sense once a Type is picked — never
+  // shown for General, and each only for its matching type. Department
+  // applies to Professional always, and to Student only for categories that
+  // have a meaningful "department" (not Test Prep/Professional Course/Skills
+  // Training, which get a Specialization dropdown instead).
+  const showInstitute = show("institute_name") && form.type === "student";
+  const showStudentCategory = show("student_category") && form.type === "student";
+  const showSpecialization = showStudentCategory && studentCategoryHasSpecialization(form.student_category);
+  const showOrganization = show("organization") && form.type === "professional";
+  const showDepartment = show("department") && (
+    form.type === "professional" || (form.type === "student" && studentCategoryHasDepartment(form.student_category))
+  );
+
+  // Institute Name — rendered right after Student Category for University/College
+  // (no Specialization step to sequence after), or right after Specialization for
+  // Test Preparation/Professional Course/Skills Training (pick what you're doing
+  // before where).
+  function renderInstituteField() {
+    if (!studentCategoryHasInstitutePresets(form.student_category)) {
+      return (
+        <Input
+          placeholder="Academy or institute name"
+          value={form.institute_name}
+          onChange={(e) => setForm({ ...form, institute_name: e.target.value })}
+          required={req("institute_name")}
+        />
+      );
+    }
+    if (customInstitute) {
+      return (
+        <div className="flex gap-2">
+          <Input
+            placeholder={form.student_category === "college" ? "College name" : form.student_category === "university" ? "University name" : "Academy or institute name"}
+            value={form.institute_name}
+            onChange={(e) => setForm({ ...form, institute_name: e.target.value })}
+            autoFocus
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0 h-9 text-xs"
+            onClick={() => { setCustomInstitute(false); setForm({ ...form, institute_name: "" }); }}
+          >
+            List
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <SearchableSelect
+        value={form.institute_name}
+        onValueChange={(v) => {
+          if (v === "other") {
+            setCustomInstitute(true);
+            setForm({ ...form, institute_name: "" });
+          } else {
+            setForm({ ...form, institute_name: v });
+          }
+        }}
+        options={INSTITUTE_PRESETS_BY_CATEGORY[form.student_category]}
+        searchPlaceholder={form.student_category === "college" ? "Search colleges..." : form.student_category === "university" ? "Search universities..." : "Search institutes..."}
+        otherLabel="Other (specify)"
+      />
+    );
+  }
   const packageOptions = selectedRoom ? buildPackageOptions(selectedRoom, hostel.package_config) : [];
   // A room clicked on the browsing page arrives preselected — show just that
   // one room instead of the full list, with a way to expand and pick another.
@@ -183,8 +260,8 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
     if (!form.full_name.trim()) { setError("Full name is required."); return; }
     if (!form.phone.trim()) { setError("WhatsApp number is required."); return; }
     if (show("email") && req("email") && !form.email.trim()) { setError("Email is required."); return; }
-    if (show("cnic") && req("cnic") && !form.cnic.trim()) { setError("CNIC is required."); return; }
-    if (show("type") && req("type") && !form.type) { setError("Please select a type."); return; }
+    if (show("cnic") && !form.cnic.trim()) { setError("CNIC is required."); return; }
+    if (show("type") && !form.type) { setError("Please select a type."); return; }
     if (show("move_in_date") && req("move_in_date") && !form.move_in_date) { setError("Move-in date is required."); return; }
     if (showRoomPicker && req("room_preference") && !form.room_id) {
       setError("Please select a room.");
@@ -193,6 +270,22 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
     if (show("emergency_contact") && req("emergency_contact") &&
         (!form.emergency_contact.trim() || !form.emergency_phone.trim())) {
       setError("Emergency contact name and phone are required.");
+      return;
+    }
+    if (showInstitute && req("institute_name") && !form.institute_name.trim()) {
+      setError("Institute name is required.");
+      return;
+    }
+    if (showStudentCategory && req("student_category") && !form.student_category) {
+      setError("Please select a student category.");
+      return;
+    }
+    if (showOrganization && req("organization") && !form.organization.trim()) {
+      setError("Organization is required.");
+      return;
+    }
+    if (showDepartment && req("department") && !form.department.trim()) {
+      setError("Department / Field is required.");
       return;
     }
 
@@ -212,6 +305,12 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
       emergency_relationship: show("emergency_contact") ? form.emergency_relationship || undefined : undefined,
       notes: show("notes") ? form.notes || undefined : undefined,
       cnic_doc_path: cnicDoc?.path,
+      institute_name: showInstitute ? form.institute_name || undefined : undefined,
+      student_category: showStudentCategory ? form.student_category || undefined : undefined,
+      student_specialization: showSpecialization ? form.student_specialization || undefined : undefined,
+      organization: showOrganization ? form.organization || undefined : undefined,
+      organization_type: showOrganization ? form.organization_type || undefined : undefined,
+      department: showDepartment ? form.department || undefined : undefined,
     });
     setLoading(false);
 
@@ -341,28 +440,30 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
               )}
             </div>
 
-            {/* CNIC — configurable */}
+            {/* CNIC — always required whenever shown, same as Type */}
             {show("cnic") && (
               <div className="space-y-1.5">
                 <Label className="flex items-center gap-1.5">
                   <CreditCard className="w-3.5 h-3.5 text-muted-foreground" />
-                  CNIC {req("cnic") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                  CNIC <span className="text-rose-400">*</span>
                 </Label>
                 <Input
                   placeholder="XXXXX-XXXXXXX-X"
                   value={form.cnic}
                   onChange={(e) => setForm({ ...form, cnic: e.target.value })}
-                  required={req("cnic")}
+                  required
                 />
                 <p className="text-xs text-muted-foreground">Format: 42101-1234567-1</p>
               </div>
             )}
 
-            {/* Type — configurable */}
+            {/* Type — always required whenever shown: it drives Student Category,
+                Institute Name, Specialization, and Organization data, so it can
+                never meaningfully be "optional". Defaults to Student. */}
             {show("type") && (
               <div className="space-y-1.5">
                 <Label>
-                  Type {req("type") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                  Type <span className="text-rose-400">*</span>
                 </Label>
                 <Select
                   value={form.type}
@@ -377,6 +478,152 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                     <SelectItem value="general">General</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+            )}
+
+            {/* Student Category + Institute Name — Student only. Institute Name sits
+                next to Student Category for University/College (no Specialization
+                step to sequence after), or after Specialization for Test Prep/
+                Professional Course/Skills Training — pick what you're doing before
+                where. */}
+            {(showStudentCategory || showInstitute) && (
+              <div className={showSpecialization ? "space-y-1.5" : "grid grid-cols-2 gap-3"}>
+                {showStudentCategory && (
+                  <div className="space-y-1.5">
+                    <Label>
+                      Student Category {req("student_category") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                    </Label>
+                    <Select
+                      value={form.student_category}
+                      onValueChange={(v) => {
+                        const next = v as StudentCategory;
+                        setCustomSpecialization(false);
+                        // Institute presets differ per category — recheck whether the
+                        // current name still matches the new category's list.
+                        const nextPresets = studentCategoryHasInstitutePresets(next) ? INSTITUTE_PRESETS_BY_CATEGORY[next] : [];
+                        setCustomInstitute(!!form.institute_name && !nextPresets.includes(form.institute_name));
+                        setForm({ ...form, student_category: next, student_specialization: "" });
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {STUDENT_CATEGORY_OPTIONS.map((c) => (
+                          <SelectItem key={c} value={c}>{STUDENT_CATEGORY_LABELS[c]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                {showInstitute && !showSpecialization && (
+                  <div className="space-y-1.5">
+                    <Label>
+                      Institute Name {req("institute_name") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                    </Label>
+                    {renderInstituteField()}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Specialization — Test Prep / Professional Course / Skills Training only */}
+            {showStudentCategory && studentCategoryHasSpecialization(form.student_category) && (
+              <div className="space-y-1.5">
+                <Label>
+                  {STUDENT_CATEGORY_LABELS[form.student_category]} <span className="text-muted-foreground text-xs font-normal">(optional)</span>
+                </Label>
+                {customSpecialization ? (
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Type the specific exam, certification, or skill"
+                      value={form.student_specialization}
+                      onChange={(e) => setForm({ ...form, student_specialization: e.target.value })}
+                      autoFocus
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0 h-9 text-xs"
+                      onClick={() => { setCustomSpecialization(false); setForm({ ...form, student_specialization: "" }); }}
+                    >
+                      Choose from list
+                    </Button>
+                  </div>
+                ) : (
+                  <SearchableSelect
+                    value={form.student_specialization}
+                    onValueChange={(v) => {
+                      if (v === "other") {
+                        setCustomSpecialization(true);
+                        setForm({ ...form, student_specialization: "" });
+                      } else {
+                        setForm({ ...form, student_specialization: v });
+                      }
+                    }}
+                    options={STUDENT_SPECIALIZATION_PRESETS[form.student_category]}
+                    searchPlaceholder="Search..."
+                    otherLabel="Other (specify)"
+                  />
+                )}
+              </div>
+            )}
+
+            {/* Institute Name, when there's a Specialization step above it */}
+            {showInstitute && showSpecialization && (
+              <div className="space-y-1.5">
+                <Label>
+                  Institute Name {req("institute_name") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                </Label>
+                {renderInstituteField()}
+              </div>
+            )}
+
+            {/* Organization + Organization Type — Professional only */}
+            {showOrganization && (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>
+                    Organization {req("organization") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                  </Label>
+                  <Input
+                    placeholder="Company / employer name"
+                    value={form.organization}
+                    onChange={(e) => setForm({ ...form, organization: e.target.value })}
+                    required={req("organization")}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Organization Type</Label>
+                  <Select
+                    value={form.organization_type}
+                    onValueChange={(v) => setForm({ ...form, organization_type: v as "private" | "government" })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="private">Private</SelectItem>
+                      <SelectItem value="government">Government</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
+
+            {/* Department / Field — Student or Professional */}
+            {showDepartment && (
+              <div className="space-y-1.5">
+                <Label>
+                  Department / Field {req("department") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                </Label>
+                <Input
+                  placeholder="e.g. Computer Science, Electrical Engineering, Sales"
+                  value={form.department}
+                  onChange={(e) => setForm({ ...form, department: e.target.value })}
+                  required={req("department")}
+                />
               </div>
             )}
 

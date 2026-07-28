@@ -658,6 +658,12 @@ export async function addTenantAsManager(
       food_breakfast: !!payload.food_breakfast,
       food_lunch: !!payload.food_lunch,
       food_dinner: !!payload.food_dinner,
+      institute_name: payload.institute_name || null,
+      student_category: payload.student_category || null,
+      student_specialization: payload.student_specialization || null,
+      organization: payload.organization || null,
+      organization_type: payload.organization_type || null,
+      department: payload.department || null,
     }
 
     const { data: created, error: insErr } = await admin

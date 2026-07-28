@@ -89,6 +89,12 @@ interface ApplicationInput {
   emergency_relationship?: string;
   notes?: string;
   cnic_doc_path?: string;
+  institute_name?: string;
+  student_category?: string;
+  student_specialization?: string;
+  organization?: string;
+  organization_type?: string;
+  department?: string;
 }
 
 export async function submitApplication(hostelId: string, data: ApplicationInput) {
@@ -151,6 +157,12 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     emergency_relationship: data.emergency_relationship?.trim() || null,
     notes: data.notes?.trim() || null,
     cnic_doc_path: data.cnic_doc_path || null,
+    institute_name: data.institute_name?.trim() || null,
+    student_category: data.student_category || null,
+    student_specialization: data.student_specialization?.trim() || null,
+    organization: data.organization?.trim() || null,
+    organization_type: data.organization_type || null,
+    department: data.department?.trim() || null,
     status: "pending",
   });
 
@@ -264,6 +276,12 @@ export interface ConvertFormData {
   emergency_contact?: string | null;
   emergency_phone?: string | null;
   emergency_relationship?: string | null;
+  institute_name?: string | null;
+  student_category?: string | null;
+  student_specialization?: string | null;
+  organization?: string | null;
+  organization_type?: string | null;
+  department?: string | null;
 }
 
 export async function convertToTenant(appId: string, extra: ConvertFormData) {
@@ -308,6 +326,12 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     emergency_contact: extra.emergency_contact ?? app.emergency_contact ?? null,
     emergency_phone: extra.emergency_phone ?? app.emergency_phone ?? null,
     emergency_relationship: extra.emergency_relationship ?? app.emergency_relationship ?? null,
+    institute_name: extra.institute_name ?? app.institute_name ?? null,
+    student_category: extra.student_category ?? app.student_category ?? null,
+    student_specialization: extra.student_specialization ?? app.student_specialization ?? null,
+    organization: extra.organization ?? app.organization ?? null,
+    organization_type: extra.organization_type ?? app.organization_type ?? null,
+    department: extra.department ?? app.department ?? null,
   }).select("id").single();
 
   if (tenantError) return { success: false, error: tenantError.message };

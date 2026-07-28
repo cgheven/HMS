@@ -1,6 +1,7 @@
 import type { SeaterPrices } from "@/lib/seater-pricing";
 
 export type SpaceType = "student" | "professional" | "general";
+export type StudentCategory = "university" | "college" | "test_preparation" | "professional_course" | "skills_training";
 export type RoomStatus = "available" | "occupied" | "maintenance";
 export type BillStatus = "paid" | "unpaid" | "overdue";
 export type BillCategory = "electricity" | "water" | "internet" | "gas" | "maintenance" | "other";
@@ -76,16 +77,26 @@ export interface FormConfig {
   move_in_date?: FormFieldConfig;
   emergency_contact?: FormFieldConfig;
   notes?: FormFieldConfig;
+  // Shown only when Type is Student/Professional respectively (never for
+  // General) — foundational data for a future roommate-matching platform.
+  institute_name?: FormFieldConfig;
+  student_category?: FormFieldConfig;
+  organization?: FormFieldConfig;
+  department?: FormFieldConfig;
 }
 
 export const DEFAULT_FORM_CONFIG: Required<FormConfig> = {
   email:              { enabled: true, required: false },
-  cnic:               { enabled: true, required: false },
-  type:               { enabled: true, required: false },
+  cnic:               { enabled: true, required: true },
+  type:               { enabled: true, required: true },
   room_preference:    { enabled: true, required: false },
   move_in_date:       { enabled: true, required: false },
   emergency_contact:  { enabled: true, required: false },
   notes:              { enabled: true, required: false },
+  institute_name:     { enabled: true, required: false },
+  student_category:   { enabled: true, required: false },
+  organization:       { enabled: true, required: false },
+  department:         { enabled: true, required: false },
 };
 
 export interface PaymentMethodAccount {
@@ -290,6 +301,15 @@ export interface Tenant {
   notice_given_date: string | null;
   intended_checkout_date: string | null;
   leaving_reminder_sent_at: string | null;
+  // Foundational data for a future roommate-matching platform — students
+  // match by institute_name + department, professionals by organization
+  // (+ organization_type) + department. Never required, opt-in per hostel.
+  institute_name: string | null;
+  student_category: StudentCategory | null;
+  student_specialization: string | null;
+  organization: string | null;
+  organization_type: "private" | "government" | null;
+  department: string | null;
   created_at: string;
 }
 
@@ -828,6 +848,12 @@ export interface TenantApplication {
   applied_at: string;
   reviewed_at: string | null;
   reviewed_by: string | null;
+  institute_name: string | null;
+  student_category: StudentCategory | null;
+  student_specialization: string | null;
+  organization: string | null;
+  organization_type: "private" | "government" | null;
+  department: string | null;
 }
 
 export interface WaitlistEntry {

@@ -1008,12 +1008,16 @@ export function SettingsClient() {
             {(
               [
                 { key: "email",              label: "Email Address",        description: "Tenant's email for correspondence" },
-                { key: "cnic",               label: "CNIC",                 description: "National ID number (42101-XXXXXXX-X)" },
-                { key: "type",               label: "Type",                 description: "Student / Professional / General" },
+                { key: "cnic",               label: "CNIC",                 description: "National ID number (42101-XXXXXXX-X) — always required when shown" },
+                { key: "type",               label: "Type",                 description: "Student / Professional / General — always required when shown" },
                 { key: "room_preference",    label: "Room Selection",       description: "Lets applicants pick a specific available room" },
                 { key: "move_in_date",       label: "Preferred Move-in Date", description: "Requested check-in date" },
                 { key: "emergency_contact",  label: "Emergency Contact",    description: "Contact name, phone, and relationship" },
                 { key: "notes",              label: "Message / Questions",  description: "Free text for special requests" },
+                { key: "institute_name",     label: "Institute Name",       description: "Shown only when Type is Student — college, university, or training institute" },
+                { key: "student_category",   label: "Student Category",     description: "Shown only when Type is Student — University/College, Exam Prep, Professional Course, or Skills Training" },
+                { key: "organization",       label: "Organization",         description: "Shown only when Type is Professional — employer name + Private/Government" },
+                { key: "department",         label: "Department / Field",   description: "Shown when Type is Student or Professional" },
               ] as { key: keyof FormConfig; label: string; description: string }[]
             ).map(({ key, label, description }) => {
               const field: FormFieldConfig = formConfig[key] ?? { enabled: true, required: false };
@@ -1023,7 +1027,12 @@ export function SettingsClient() {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-foreground">{label}</p>
                       <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
-                      {field.enabled && (
+                      {/* Type and CNIC are always required whenever shown — Type
+                          drives Student Category/Institute/Specialization/
+                          Organization data, and CNIC is required for identity
+                          verification, so an "Optional" toggle for either would
+                          be misleading. */}
+                      {field.enabled && key !== "type" && key !== "cnic" && (
                         <button
                           type="button"
                           onClick={() =>

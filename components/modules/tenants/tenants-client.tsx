@@ -16,13 +16,15 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates, type FoodAddonFlags } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
+import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets } from "@/lib/student-category-labels";
 import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
-import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
@@ -254,7 +256,7 @@ function getCustomPackageDeposit(customPackages: CustomPackage[], id: string | n
 
 const emptyForm = {
   full_name: "", phone: "", email: "", cnic: "",
-  type: "general" as SpaceType,
+  type: "student" as SpaceType,
   package_tier: "space_only" as PackageTier,
   custom_package_id: null as string | null,
   room_id: "", bed_number: "",
@@ -266,6 +268,7 @@ const emptyForm = {
   is_waiting: false,
   photo_url: "" as string,
   food_breakfast: false, food_lunch: false, food_dinner: false,
+  institute_name: "", student_category: "" as "" | StudentCategory, student_specialization: "", organization: "", organization_type: "" as "" | "private" | "government", department: "",
 };
 
 // ---------------------------------------------------------------------------
@@ -611,10 +614,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostelId, initialPackageConfig]);
   const [viewOnly, setViewOnly] = useState(false);
+  const [customSpecialization, setCustomSpecialization] = useState(false);
+  const [customInstitute, setCustomInstitute] = useState(false);
   const [appActionLoading, setAppActionLoading] = useState<string | null>(null);
   const [approvingApp, setApprovingApp] = useState<TenantApplication | null>(null);
   const [approveForm, setApproveForm] = useState<ConvertFormData>({
-    type: "general",
+    type: "student",
     package_tier: "space_only",
     billing_type: "monthly",
     monthly_rent: 0,
@@ -632,6 +637,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     emergency_contact: null,
     emergency_phone: null,
     emergency_relationship: null,
+    institute_name: null,
+    student_category: null,
+    student_specialization: null,
+    organization: null,
+    organization_type: null,
+    department: null,
   });
   const [approveSaving, setApproveSaving] = useState(false);
   const [editingDocs, setEditingDocs] = useState<TenantDocument[]>([]);
@@ -720,7 +731,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       : null;
     const tier = app.package_tier ?? "space_only";
     setApproveForm({
-      type: app.type ?? matchedRoom?.type ?? "general",
+      type: app.type ?? matchedRoom?.type ?? "student",
       package_tier: tier,
       billing_type: "monthly",
       monthly_rent: matchedRoom ? getSuggestedRent(matchedRoom, tier, pkgPrices, seaterPrices, washroomPremium) : 0,
@@ -740,13 +751,89 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       emergency_contact: app.emergency_contact ?? null,
       emergency_phone: app.emergency_phone ?? null,
       emergency_relationship: app.emergency_relationship ?? null,
+      institute_name: app.institute_name ?? null,
+      student_category: app.student_category ?? null,
+      student_specialization: app.student_specialization ?? null,
+      organization: app.organization ?? null,
+      organization_type: app.organization_type ?? null,
+      department: app.department ?? null,
     });
+    const presets = app.student_category && studentCategoryHasSpecialization(app.student_category)
+      ? STUDENT_SPECIALIZATION_PRESETS[app.student_category]
+      : [];
+    setCustomSpecialization(!!app.student_specialization && !presets.includes(app.student_specialization));
+    const institutePresets = app.student_category && studentCategoryHasInstitutePresets(app.student_category)
+      ? INSTITUTE_PRESETS_BY_CATEGORY[app.student_category]
+      : [];
+    setCustomInstitute(!!app.institute_name && !institutePresets.includes(app.institute_name));
+  }
+
+  // Mirrors the Add/Edit dialog's renderInstituteField, scoped to the Approve
+  // Application dialog's own form/state so an owner can review and correct the
+  // data an applicant submitted before activating them.
+  const approveCategory = (approveForm.student_category ?? "") as "" | StudentCategory;
+  const approveOrgType = (approveForm.organization_type ?? "") as "" | "private" | "government";
+  function renderApproveInstituteField() {
+    if (!studentCategoryHasInstitutePresets(approveCategory)) {
+      return (
+        <Input
+          placeholder="Academy or institute name"
+          value={approveForm.institute_name ?? ""}
+          onChange={(e) => setApproveForm({ ...approveForm, institute_name: e.target.value })}
+        />
+      );
+    }
+    if (customInstitute) {
+      return (
+        <div className="flex gap-2">
+          <Input
+            placeholder={approveCategory === "college" ? "College name" : approveCategory === "university" ? "University name" : "Academy or institute name"}
+            value={approveForm.institute_name ?? ""}
+            onChange={(e) => setApproveForm({ ...approveForm, institute_name: e.target.value })}
+            autoFocus
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0 h-9 text-xs"
+            onClick={() => { setCustomInstitute(false); setApproveForm({ ...approveForm, institute_name: "" }); }}
+          >
+            Choose from list
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <SearchableSelect
+        value={approveForm.institute_name ?? ""}
+        onValueChange={(v) => {
+          if (v === "other") {
+            setCustomInstitute(true);
+            setApproveForm({ ...approveForm, institute_name: "" });
+          } else {
+            setApproveForm({ ...approveForm, institute_name: v });
+          }
+        }}
+        options={INSTITUTE_PRESETS_BY_CATEGORY[approveCategory]}
+        searchPlaceholder={approveCategory === "college" ? "Search colleges..." : approveCategory === "university" ? "Search universities..." : "Search institutes..."}
+        otherLabel="Other (specify)"
+      />
+    );
   }
 
   async function handleApproveApp() {
     if (!approvingApp) return;
     setApproveSaving(true);
-    const result = await convertToTenant(approvingApp.id, approveForm);
+    const result = await convertToTenant(approvingApp.id, {
+      ...approveForm,
+      institute_name: approveForm.type === "student" ? (approveForm.institute_name || null) : null,
+      student_category: approveForm.type === "student" ? (approveForm.student_category || null) : null,
+      student_specialization: approveForm.type === "student" && studentCategoryHasSpecialization(approveCategory) ? (approveForm.student_specialization || null) : null,
+      organization: approveForm.type === "professional" ? (approveForm.organization || null) : null,
+      organization_type: approveForm.type === "professional" ? (approveForm.organization_type || null) : null,
+      department: approveForm.type === "professional" || (approveForm.type === "student" && studentCategoryHasDepartment(approveCategory)) ? (approveForm.department || null) : null,
+    });
     if (result.success) {
       toast({ title: approveForm.is_waiting ? "Added to waiting list" : "Tenant activated", description: `${approvingApp.full_name} has been added.` });
       setApprovingApp(null);
@@ -769,6 +856,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setViewOnly(false);
     setForm({ ...emptyForm, security_deposit: configSecurityDeposit > 0 ? String(configSecurityDeposit) : "" });
     setEditingDocs([]);
+    setCustomSpecialization(false);
+    setCustomInstitute(false);
     setDialogOpen(true);
   }
 
@@ -807,8 +896,75 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       food_breakfast: t.food_breakfast ?? false,
       food_lunch: t.food_lunch ?? false,
       food_dinner: t.food_dinner ?? false,
+      institute_name: t.institute_name ?? "",
+      student_category: t.student_category ?? "",
+      student_specialization: t.student_specialization ?? "",
+      organization: t.organization ?? "",
+      organization_type: t.organization_type ?? "",
+      department: t.department ?? "",
     });
+    const presets = t.student_category && studentCategoryHasSpecialization(t.student_category)
+      ? STUDENT_SPECIALIZATION_PRESETS[t.student_category]
+      : [];
+    setCustomSpecialization(!!t.student_specialization && !presets.includes(t.student_specialization));
+    const institutePresets = t.student_category && studentCategoryHasInstitutePresets(t.student_category)
+      ? INSTITUTE_PRESETS_BY_CATEGORY[t.student_category]
+      : [];
+    setCustomInstitute(!!t.institute_name && !institutePresets.includes(t.institute_name));
     setDialogOpen(true);
+  }
+
+  // Institute Name — rendered right after Student Category for University/College
+  // (no Specialization step to sequence after), or right after Specialization for
+  // Test Preparation/Professional Course/Skills Training (pick what you're doing
+  // before where — matches how someone would naturally answer these questions).
+  function renderInstituteField() {
+    if (!studentCategoryHasInstitutePresets(form.student_category)) {
+      return (
+        <Input
+          placeholder="Academy or institute name"
+          value={form.institute_name}
+          onChange={(e) => setForm({ ...form, institute_name: e.target.value })}
+        />
+      );
+    }
+    if (customInstitute) {
+      return (
+        <div className="flex gap-2">
+          <Input
+            placeholder={form.student_category === "college" ? "College name" : form.student_category === "university" ? "University name" : "Academy or institute name"}
+            value={form.institute_name}
+            onChange={(e) => setForm({ ...form, institute_name: e.target.value })}
+            autoFocus
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0 h-9 text-xs"
+            onClick={() => { setCustomInstitute(false); setForm({ ...form, institute_name: "" }); }}
+          >
+            Choose from list
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <SearchableSelect
+        value={form.institute_name}
+        onValueChange={(v) => {
+          if (v === "other") {
+            setCustomInstitute(true);
+            setForm({ ...form, institute_name: "" });
+          } else {
+            setForm({ ...form, institute_name: v });
+          }
+        }}
+        options={INSTITUTE_PRESETS_BY_CATEGORY[form.student_category]}
+        searchPlaceholder={form.student_category === "college" ? "Search colleges..." : form.student_category === "university" ? "Search universities..." : "Search institutes..."}
+        otherLabel="Other (specify)"
+      />
+    );
   }
 
   async function handleSave() {
@@ -849,6 +1005,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       food_breakfast: form.food_breakfast,
       food_lunch: form.food_lunch,
       food_dinner: form.food_dinner,
+      institute_name: form.type === "student" ? (form.institute_name || null) : null,
+      student_category: form.type === "student" ? (form.student_category || null) : null,
+      student_specialization: form.type === "student" && studentCategoryHasSpecialization(form.student_category) ? (form.student_specialization || null) : null,
+      organization: form.type === "professional" ? (form.organization || null) : null,
+      organization_type: form.type === "professional" ? (form.organization_type || null) : null,
+      department: form.type === "professional" || (form.type === "student" && studentCategoryHasDepartment(form.student_category)) ? (form.department || null) : null,
     };
 
     if (isManager) {
@@ -2015,6 +2177,115 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </Select>
               </div>
 
+              {/* Institute / Organization — carried over from what the applicant
+                  submitted (convertToTenant falls back to the application's own
+                  values if left untouched here), shown so the owner can review
+                  and correct it before activating. */}
+              {approveForm.type === "student" && (
+                <div className={studentCategoryHasSpecialization(approveCategory) ? "space-y-1.5" : "grid grid-cols-2 gap-4"}>
+                  <div className="space-y-1.5"><Label>Student Category</Label>
+                    <Select
+                      value={approveCategory}
+                      onValueChange={(v) => {
+                        const next = v as StudentCategory;
+                        setCustomSpecialization(false);
+                        const nextPresets = studentCategoryHasInstitutePresets(next) ? INSTITUTE_PRESETS_BY_CATEGORY[next] : [];
+                        setCustomInstitute(!!approveForm.institute_name && !nextPresets.includes(approveForm.institute_name));
+                        setApproveForm({ ...approveForm, student_category: next, student_specialization: "" });
+                      }}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                      <SelectContent>
+                        {STUDENT_CATEGORY_OPTIONS.map((c) => (
+                          <SelectItem key={c} value={c}>{STUDENT_CATEGORY_LABELS[c]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {!studentCategoryHasSpecialization(approveCategory) && (
+                    <div className="space-y-1.5"><Label>Institute Name</Label>
+                      {renderApproveInstituteField()}
+                    </div>
+                  )}
+                </div>
+              )}
+              {approveForm.type === "student" && studentCategoryHasSpecialization(approveCategory) && (
+                <div className="space-y-1.5">
+                  <Label>{STUDENT_CATEGORY_LABELS[approveCategory]} — Specialization</Label>
+                  {customSpecialization ? (
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Type the specific exam, certification, or skill"
+                        value={approveForm.student_specialization ?? ""}
+                        onChange={(e) => setApproveForm({ ...approveForm, student_specialization: e.target.value })}
+                        autoFocus
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="shrink-0 h-9 text-xs"
+                        onClick={() => { setCustomSpecialization(false); setApproveForm({ ...approveForm, student_specialization: "" }); }}
+                      >
+                        Choose from list
+                      </Button>
+                    </div>
+                  ) : (
+                    <SearchableSelect
+                      value={approveForm.student_specialization ?? ""}
+                      onValueChange={(v) => {
+                        if (v === "other") {
+                          setCustomSpecialization(true);
+                          setApproveForm({ ...approveForm, student_specialization: "" });
+                        } else {
+                          setApproveForm({ ...approveForm, student_specialization: v });
+                        }
+                      }}
+                      options={STUDENT_SPECIALIZATION_PRESETS[approveCategory]}
+                      searchPlaceholder="Search..."
+                      otherLabel="Other (specify)"
+                    />
+                  )}
+                </div>
+              )}
+              {approveForm.type === "student" && studentCategoryHasSpecialization(approveCategory) && (
+                <div className="space-y-1.5"><Label>Institute Name</Label>
+                  {renderApproveInstituteField()}
+                </div>
+              )}
+              {approveForm.type === "professional" && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5"><Label>Organization</Label>
+                    <Input
+                      placeholder="Company / employer name"
+                      value={approveForm.organization ?? ""}
+                      onChange={(e) => setApproveForm({ ...approveForm, organization: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1.5"><Label>Organization Type</Label>
+                    <Select
+                      value={approveOrgType}
+                      onValueChange={(v) => setApproveForm({ ...approveForm, organization_type: v as "private" | "government" })}
+                    >
+                      <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="private">Private</SelectItem>
+                        <SelectItem value="government">Government</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              )}
+              {(approveForm.type === "professional" || (approveForm.type === "student" && studentCategoryHasDepartment(approveCategory))) && (
+                <div className="space-y-1.5"><Label>Department / Field</Label>
+                  <Input
+                    placeholder="e.g. Computer Science, Electrical Engineering, Sales"
+                    value={approveForm.department ?? ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, department: e.target.value })}
+                  />
+                </div>
+              )}
+
               {/* Room + Bed (only for active) — must come before Package Tier so AC status is known */}
               {!approveForm.is_waiting && (
                 <div className="grid grid-cols-2 gap-4">
@@ -2350,6 +2621,119 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </Select>
               </div>
             </div>
+
+            {/* Institute / Organization — Student or Professional, foundational
+                data for a future roommate-matching platform. Institute Name sits
+                next to Student Category for University/College (no Specialization
+                step to sequence after), or after Specialization for Test Prep/
+                Professional Course/Skills Training — pick what you're doing before
+                where. */}
+            {form.type === "student" && (
+              <div className={studentCategoryHasSpecialization(form.student_category) ? "space-y-1.5" : "grid grid-cols-2 gap-4"}>
+                <div className="space-y-1.5"><Label>Student Category</Label>
+                  <Select
+                    value={form.student_category}
+                    onValueChange={(v) => {
+                      const next = v as StudentCategory;
+                      setCustomSpecialization(false);
+                      // Institute presets differ per category — recheck whether the
+                      // current name still matches the new category's list.
+                      const nextPresets = studentCategoryHasInstitutePresets(next) ? INSTITUTE_PRESETS_BY_CATEGORY[next] : [];
+                      setCustomInstitute(!!form.institute_name && !nextPresets.includes(form.institute_name));
+                      setForm({ ...form, student_category: next, student_specialization: "" });
+                    }}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                    <SelectContent>
+                      {STUDENT_CATEGORY_OPTIONS.map((c) => (
+                        <SelectItem key={c} value={c}>{STUDENT_CATEGORY_LABELS[c]}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {!studentCategoryHasSpecialization(form.student_category) && (
+                  <div className="space-y-1.5"><Label>Institute Name</Label>
+                    {renderInstituteField()}
+                  </div>
+                )}
+              </div>
+            )}
+            {form.type === "student" && studentCategoryHasSpecialization(form.student_category) && (
+              <div className="space-y-1.5">
+                <Label>{STUDENT_CATEGORY_LABELS[form.student_category]} — Specialization</Label>
+                {customSpecialization ? (
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Type the specific exam, certification, or skill"
+                      value={form.student_specialization}
+                      onChange={(e) => setForm({ ...form, student_specialization: e.target.value })}
+                      autoFocus
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0 h-9 text-xs"
+                      onClick={() => { setCustomSpecialization(false); setForm({ ...form, student_specialization: "" }); }}
+                    >
+                      Choose from list
+                    </Button>
+                  </div>
+                ) : (
+                  <SearchableSelect
+                    value={form.student_specialization}
+                    onValueChange={(v) => {
+                      if (v === "other") {
+                        setCustomSpecialization(true);
+                        setForm({ ...form, student_specialization: "" });
+                      } else {
+                        setForm({ ...form, student_specialization: v });
+                      }
+                    }}
+                    options={STUDENT_SPECIALIZATION_PRESETS[form.student_category]}
+                    searchPlaceholder="Search..."
+                    otherLabel="Other (specify)"
+                  />
+                )}
+              </div>
+            )}
+            {form.type === "student" && studentCategoryHasSpecialization(form.student_category) && (
+              <div className="space-y-1.5"><Label>Institute Name</Label>
+                {renderInstituteField()}
+              </div>
+            )}
+            {form.type === "professional" && (
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5"><Label>Organization</Label>
+                  <Input
+                    placeholder="Company / employer name"
+                    value={form.organization}
+                    onChange={(e) => setForm({ ...form, organization: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1.5"><Label>Organization Type</Label>
+                  <Select
+                    value={form.organization_type}
+                    onValueChange={(v) => setForm({ ...form, organization_type: v as "private" | "government" })}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="private">Private</SelectItem>
+                      <SelectItem value="government">Government</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
+            {(form.type === "professional" || (form.type === "student" && studentCategoryHasDepartment(form.student_category))) && (
+              <div className="space-y-1.5"><Label>Department / Field</Label>
+                <Input
+                  placeholder="e.g. Computer Science, Electrical Engineering, Sales"
+                  value={form.department}
+                  onChange={(e) => setForm({ ...form, department: e.target.value })}
+                />
+              </div>
+            )}
 
             {/* Room + Bed — must come before Package Tier so AC status is known */}
             {!form.is_waiting && (
