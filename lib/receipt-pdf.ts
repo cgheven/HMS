@@ -110,6 +110,17 @@ export function generateReceiptPDF(
   const MR = W - 12;  // right edge
   const CX = W / 2;
 
+  // Security deposit is never added on top here — either it's already inside
+  // `payment.amount` (security_deposit_charge, first month) or it's a checkout
+  // refund note that isn't part of what's being collected in this payment.
+  const total = payment.amount + (payment.late_fee ?? 0);
+  // amount_paid being present is NOT the same as this payment being partial —
+  // an installment-scoped receipt link always carries a defined amount_paid
+  // (that installment's running total), even when the single transaction it
+  // represents fully settled the bill. Only actually short of `total` counts
+  // as partial; otherwise this mislabels a fully-paid receipt as partial.
+  const isPartial = payment.amount_paid != null && payment.amount_paid < total - 0.01;
+
   // Collect commands top-down (y=0 at top), convert to PDF coords (y=0 at bottom) after.
   type Cmd =
     | { kind: "text"; x: number; y: number; content: string; size: number; bold: boolean }
@@ -165,7 +176,7 @@ export function generateReceiptPDF(
   if (hostel.address) { addCenter(hostel.address, 7, false); nl(10); }
   if (hostel.phone) { addCenter(`Tel: ${hostel.phone}`, 7, false); nl(10); }
   nl(3); addDash(); nl(10);
-  addCenter(payment.amount_paid != null ? "PARTIAL PAYMENT RECEIPT" : "PAYMENT RECEIPT", 9, true); nl(10);
+  addCenter(isPartial ? "PARTIAL PAYMENT RECEIPT" : "PAYMENT RECEIPT", 9, true); nl(10);
   addDash(); nl(10);
 
   addKv("Receipt #", payment.receipt_number ?? "N/A"); nl(12);
@@ -245,17 +256,12 @@ export function generateReceiptPDF(
   }
   nl(2); addDash(); nl(10);
 
-  // Security deposit is never added on top here — either it's already inside
-  // `payment.amount` (security_deposit_charge, first month) or it's a checkout
-  // refund note that isn't part of what's being collected in this payment.
-  const total = payment.amount + (payment.late_fee ?? 0);
-
-  if (payment.amount_paid != null) {
+  if (isPartial) {
     // Partial payment — show what's owed, what's actually been received, and what's
     // left, so this receipt can't be mistaken for proof the full amount was paid.
-    const remaining = Math.max(0, total - payment.amount_paid);
+    const remaining = Math.max(0, total - payment.amount_paid!);
     addKv("Total Due", pk(total)); nl(12);
-    addKv("Amount Received", pk(payment.amount_paid)); nl(12);
+    addKv("Amount Received", pk(payment.amount_paid!)); nl(12);
     addKv("REMAINING BALANCE", pk(remaining), true); nl(15);
   } else {
     addKv("TOTAL PAID", pk(total), true); nl(15);
@@ -264,7 +270,7 @@ export function generateReceiptPDF(
 
   // For a partial payment, spell out what was actually received — spelling out
   // the full amount due here would misrepresent it as fully paid.
-  const wordsStr = amountInWords(payment.amount_paid ?? total);
+  const wordsStr = amountInWords(isPartial ? payment.amount_paid! : total);
   // Render "In Words: <value>" on one line; wrap remainder if it overflows page width.
   // Use explicit gap rather than trailing space — PDF renderers often discard trailing
   // whitespace in text strings, making the space invisible despite correct positioning.
