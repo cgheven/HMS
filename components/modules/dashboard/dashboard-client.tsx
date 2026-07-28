@@ -7,8 +7,7 @@ import {
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { ExpenseChartClient as ExpenseChart } from "./expense-chart-client";
-import { DailyExpensesSection } from "./daily-expenses-section";
-import type { DashboardStats, Bill, Defaulter, UpcomingVacancy, DailyExpenseRow } from "@/types";
+import type { DashboardStats, Bill, Defaulter, UpcomingVacancy } from "@/types";
 
 interface Props {
   data: {
@@ -18,10 +17,6 @@ interface Props {
     monthlyData: { month: string; expenses: number; kitchen: number; collected: number }[];
     defaulters: Defaulter[];
     upcomingVacancies: UpcomingVacancy[];
-    canSeeDailyExpenses: boolean;
-    dailyExpenses?: DailyExpenseRow[];
-    todayIncome?: number;
-    todayExpense?: number;
   } | null;
 }
 
@@ -35,7 +30,7 @@ export function DashboardClient({ data }: Props) {
     );
   }
 
-  const { stats, upcomingBills, monthlyData, defaulters, upcomingVacancies, canSeeDailyExpenses, dailyExpenses, todayIncome, todayExpense } = data;
+  const { stats, upcomingBills, monthlyData, defaulters, upcomingVacancies } = data;
   const isProfit = stats.net_profit >= 0;
   const monthlyExpected = stats.monthly_collected + stats.monthly_uncollected;
   const collectionRate = monthlyExpected > 0
@@ -160,15 +155,6 @@ export function DashboardClient({ data }: Props) {
           </div>
         ))}
       </div>
-
-      {/* ── Daily Expenses (opt-in, per-partner custom feature) ──────────── */}
-      {canSeeDailyExpenses && dailyExpenses && (
-        <DailyExpensesSection
-          daily={dailyExpenses}
-          todayIncome={todayIncome ?? 0}
-          todayExpense={todayExpense ?? 0}
-        />
-      )}
 
       {/* ── Defaulters + Chart ────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">

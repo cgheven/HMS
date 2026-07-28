@@ -2,9 +2,8 @@
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
-import { getAuthContext } from "@/lib/data";
-import { capitalize } from "@/lib/utils";
-import type { Profile } from "@/types";
+import { capitalize, getMonthRange, formatDateInput } from "@/lib/utils";
+import type { Profile, DailyExpenseRow } from "@/types";
 
 // Reports is pure read — any active partner tier suffices. Owners/super_admin
 // keep their existing hms_hostels.owner_id / hms_owner_hostels check; a
@@ -189,6 +188,44 @@ export interface ReportData {
       isActive: boolean;
     }[];
   };
+
+  // Daily snapshot — standard for every client. Deliberately scoped to the
+  // CURRENT calendar month/day, not the report's selected date range —
+  // "today" wouldn't mean anything for a "Last Month" or "12 Months" view.
+  // The *List fields exist so the owner can verify each figure against their
+  // own physical register — a headcount alone ("3 joined today") isn't
+  // verifiable, but a name + room number is.
+  dailyExpenses: DailyExpenseRow[];
+  todayIncome: number;
+  todayExpense: number;
+  todayJoined: number;
+  todayLeft: number;
+  todayJoinedList: {
+    id: string;
+    name: string;
+    phone: string | null;
+    type: string;
+    packageTier: string;
+    roomNumber: string | null;
+  }[];
+  todayLeftList: {
+    id: string;
+    name: string;
+    phone: string | null;
+    type: string;
+    packageTier: string;
+    roomNumber: string | null;
+  }[];
+  todayPaymentsList: {
+    id: string;
+    tenantName: string;
+    phone: string | null;
+    roomNumber: string | null;
+    amount: number;
+    forMonth: string;
+    method: string;
+    receiptNumber: string | null;
+  }[];
 }
 
 export async function getReportData(
@@ -639,6 +676,104 @@ export async function getReportData(
   const formerDebtorList = allDebtors.filter((d) => !d.isActive);
   const topDebtors = [...allDebtors].sort((a, b) => b.owed - a.owed).slice(0, 5);
 
+  // ── Daily snapshot ───────────────────────────────────────────────────────
+  // Standard for every client with Reports access. Scoped to the CURRENT
+  // calendar month/day regardless of the report's selected from/to range —
+  // "today" wouldn't mean anything for a "Last Month" or "12 Months" view.
+  const { start: curStart, end: curEnd } = getMonthRange();
+  const todayStr = formatDateInput(new Date());
+  const [
+    curExpensesRes, curKitchenRes, monthInstallmentsRes, todayInstallmentsRes, joinedRes, leftRes,
+  ] = await Promise.all([
+    admin.from("hms_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", curStart).lte("date", curEnd),
+    admin.from("hms_kitchen_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", curStart).lte("date", curEnd),
+    admin.from("hms_payment_installments").select("amount,payment_date").eq("hostel_id", hostelId).gte("payment_date", curStart).lte("payment_date", curEnd),
+    // Granular, not just a total — the owner cross-checks this against their
+    // own physical register, so each installment needs a name/room/amount.
+    admin
+      .from("hms_payment_installments")
+      .select("id, amount, for_month, payment_method, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
+      .eq("hostel_id", hostelId)
+      .eq("payment_date", todayStr),
+    admin
+      .from("hms_tenants")
+      .select("id, full_name, phone, type, package_tier, hms_rooms(room_number)")
+      .eq("hostel_id", hostelId)
+      .eq("check_in", todayStr),
+    admin
+      .from("hms_tenants")
+      .select("id, full_name, phone, type, package_tier, hms_rooms(room_number)")
+      .eq("hostel_id", hostelId)
+      .eq("check_out", todayStr),
+  ]);
+
+  const byDate = new Map<string, { expenses: number; kitchen: number; income: number }>();
+  for (const x of curExpensesRes.data ?? []) {
+    const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
+    row.expenses += Number(x.amount);
+    byDate.set(x.date, row);
+  }
+  for (const x of curKitchenRes.data ?? []) {
+    const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
+    row.kitchen += Number(x.amount);
+    byDate.set(x.date, row);
+  }
+  for (const i of monthInstallmentsRes.data ?? []) {
+    const row = byDate.get(i.payment_date) ?? { expenses: 0, kitchen: 0, income: 0 };
+    row.income += Number(i.amount);
+    byDate.set(i.payment_date, row);
+  }
+  const dailyExpenses: DailyExpenseRow[] = Array.from(byDate.entries())
+    .map(([date, { expenses, kitchen, income }]) => ({ date, expenses, kitchen, total: expenses + kitchen, income }))
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  type TodayTenantRow = {
+    id: string;
+    full_name: string;
+    phone: string | null;
+    type: string;
+    package_tier: string;
+    hms_rooms: { room_number: string } | { room_number: string }[] | null;
+  };
+  function roomNumberOf(row: TodayTenantRow): string | null {
+    const r = row.hms_rooms;
+    return (Array.isArray(r) ? r[0] : r)?.room_number ?? null;
+  }
+  const todayJoinedList = ((joinedRes.data ?? []) as unknown as TodayTenantRow[]).map((t) => ({
+    id: t.id, name: t.full_name, phone: t.phone, type: t.type, packageTier: t.package_tier, roomNumber: roomNumberOf(t),
+  }));
+  const todayLeftList = ((leftRes.data ?? []) as unknown as TodayTenantRow[]).map((t) => ({
+    id: t.id, name: t.full_name, phone: t.phone, type: t.type, packageTier: t.package_tier, roomNumber: roomNumberOf(t),
+  }));
+
+  type TodayInstallmentRow = {
+    id: string;
+    amount: unknown;
+    for_month: string;
+    payment_method: string | null;
+    receipt_number: string | null;
+    tenant: { full_name: string; phone: string | null; hms_rooms: { room_number: string } | { room_number: string }[] | null } | null;
+  };
+  const todayPaymentsList = ((todayInstallmentsRes.data ?? []) as unknown as TodayInstallmentRow[]).map((i) => {
+    const roomsRaw = i.tenant?.hms_rooms;
+    const roomEntry = Array.isArray(roomsRaw) ? roomsRaw[0] : roomsRaw;
+    return {
+      id: i.id,
+      tenantName: i.tenant?.full_name ?? "Unknown",
+      phone: i.tenant?.phone ?? null,
+      roomNumber: roomEntry?.room_number ?? null,
+      amount: Number(i.amount),
+      forMonth: i.for_month,
+      method: i.payment_method ?? "cash",
+      receiptNumber: i.receipt_number,
+    };
+  });
+
+  const todayIncome = todayPaymentsList.reduce((s, p) => s + p.amount, 0);
+  const todayExpense = dailyExpenses.find((r) => r.date === todayStr)?.total ?? 0;
+  const todayJoined = todayJoinedList.length;
+  const todayLeft = todayLeftList.length;
+
   return {
     data: {
       hostelId,
@@ -680,6 +815,8 @@ export async function getReportData(
         formerDebtorsOwed: formerDebtorList.reduce((s, d) => s + d.owed, 0),
         topDebtors,
       },
+      dailyExpenses, todayIncome, todayExpense, todayJoined, todayLeft,
+      todayJoinedList, todayLeftList, todayPaymentsList,
     },
     error: null,
   };

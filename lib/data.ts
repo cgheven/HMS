@@ -7,7 +7,7 @@ import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
   Employee, SalaryPayment, PackageConfig, PackageTier, UpcomingVacancy,
-  ClientBilling, PlatformInvoice, PartnerTier, PartnerFeatureFlags, DailyExpenseRow,
+  ClientBilling, PlatformInvoice, PartnerTier, PartnerFeatureFlags,
 } from "@/types";
 
 // React cache() deduplicates within the same server request.
@@ -122,10 +122,6 @@ export async function getDashboardData() {
   const ctx = await getAuthContext();
   if (!ctx?.hostelId) return null;
   const { supabase, hostelId } = ctx;
-  // One-off, opt-in feature (see migration 121) — never on unless a specific
-  // partner's owner explicitly enabled it in Settings.
-  const canSeeDailyExpenses = ctx.profile?.role === "partner" && !!ctx.partnerFeatureFlags?.daily_expenses;
-
   const { start, end } = getMonthRange();
   const now = new Date();
   const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -258,62 +254,6 @@ export async function getDashboardData() {
     collected: allPayments6mo.filter((p) => p.for_month === monthKey && (p.status === "paid" || p.status === "partially_paid")).reduce((sum, p) => sum + Number(p.amount_paid ?? p.amount), 0),
   }));
 
-  // Derived from allExp/allKit (already fetched above for the 6-month chart) —
-  // no extra query for the expenses side. Only built when the viewer actually
-  // has the flag, since nobody else can see it.
-  let dailyExpenses: DailyExpenseRow[] | undefined;
-  if (canSeeDailyExpenses) {
-    const byDate = new Map<string, { expenses: number; kitchen: number; income: number }>();
-    for (const x of allExp.data ?? []) {
-      if (x.date < start || x.date > end) continue;
-      const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
-      row.expenses += Number(x.amount);
-      byDate.set(x.date, row);
-    }
-    for (const x of allKit.data ?? []) {
-      if (x.date < start || x.date > end) continue;
-      const row = byDate.get(x.date) ?? { expenses: 0, kitchen: 0, income: 0 };
-      row.kitchen += Number(x.amount);
-      byDate.set(x.date, row);
-    }
-    // hms_payment_installments (migration 080) is the immutable per-transaction
-    // ledger — hms_payments.amount_paid is a cumulative running total and would
-    // double-count prior partial payments against every date they were touched.
-    const { data: monthInstallments } = await supabase
-      .from("hms_payment_installments")
-      .select("amount,payment_date")
-      .eq("hostel_id", hostelId)
-      .gte("payment_date", start)
-      .lte("payment_date", end);
-    for (const i of monthInstallments ?? []) {
-      const row = byDate.get(i.payment_date) ?? { expenses: 0, kitchen: 0, income: 0 };
-      row.income += Number(i.amount);
-      byDate.set(i.payment_date, row);
-    }
-    dailyExpenses = Array.from(byDate.entries())
-      .map(([date, { expenses, kitchen, income }]) => ({ date, expenses, kitchen, total: expenses + kitchen, income }))
-      .sort((a, b) => b.date.localeCompare(a.date));
-  }
-
-  // Today's income/expense — same opt-in gate as dailyExpenses. Income sums
-  // hms_payment_installments (an immutable per-transaction ledger), NOT
-  // hms_payments.amount_paid, which is a cumulative running total that would
-  // double-count a prior partial payment as if it arrived today.
-  // Deliberately NOT scoped to for_month=currentMonthKey — a tenant settling
-  // last month's arrears today is real cash in hand today.
-  let todayIncome: number | undefined;
-  let todayExpense: number | undefined;
-  if (canSeeDailyExpenses) {
-    const todayStr = formatDateInput(now);
-    const { data: todayInstallments } = await supabase
-      .from("hms_payment_installments")
-      .select("amount")
-      .eq("hostel_id", hostelId)
-      .eq("payment_date", todayStr);
-    todayIncome = (todayInstallments ?? []).reduce((s, i) => s + Number(i.amount), 0);
-    todayExpense = dailyExpenses?.find((d) => d.date === todayStr)?.total ?? 0;
-  }
-
   const stats: DashboardStats = {
     total_rooms: totalRooms,
     occupied_rooms: occupiedRooms,
@@ -336,7 +276,6 @@ export async function getDashboardData() {
 
   return {
     hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters, upcomingVacancies,
-    canSeeDailyExpenses, dailyExpenses, todayIncome, todayExpense,
   };
 }
 

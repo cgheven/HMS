@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import {
   BarChart3, TrendingUp, Users, AlertTriangle, Banknote, BedDouble,
   Download, FileSpreadsheet, RefreshCw, Zap, CreditCard,
-  Receipt, BookOpen, Search, ExternalLink, Loader2, ShieldCheck,
+  Receipt, BookOpen, Search, ExternalLink, Loader2, ShieldCheck, CalendarClock,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
@@ -20,6 +20,7 @@ import { toast } from "@/hooks/use-toast";
 import { getReportData, getLedgerTenants, type ReportData, type LedgerTenantRow } from "@/app/actions/reports";
 import { getTenantTimeline, createInvoiceLink, createInstallmentReceiptLink, type TimelineEvent } from "@/app/actions/tenants";
 import { EventIcon, eventDotColor } from "@/components/modules/tenants/tenant-timeline";
+import { DailyExpensesSection } from "./daily-expenses-section";
 import type { RevenueMonth, AgingBucket } from "@/types";
 
 const RevenueChart = dynamic(() => import("./revenue-chart").then((m) => m.RevenueChart), {
@@ -292,6 +293,7 @@ export function ReportsClient(props: Props) {
       ) : (
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
+            <TabsTrigger value="today"><CalendarClock className="w-3.5 h-3.5" /> Today</TabsTrigger>
             <TabsTrigger value="overview"><BarChart3 className="w-3.5 h-3.5" /> Overview</TabsTrigger>
             <TabsTrigger value="revenue"><TrendingUp className="w-3.5 h-3.5" /> Revenue</TabsTrigger>
             <TabsTrigger value="reconciliation"><CreditCard className="w-3.5 h-3.5" /> Reconciliation</TabsTrigger>
@@ -300,6 +302,24 @@ export function ReportsClient(props: Props) {
             <TabsTrigger value="expenses"><Receipt className="w-3.5 h-3.5" /> Expenses</TabsTrigger>
             <TabsTrigger value="ledger"><BookOpen className="w-3.5 h-3.5" /> Member Ledger</TabsTrigger>
           </TabsList>
+
+          {/* ── TODAY TAB ────────────────────────────────────────────────── */}
+          {/* Deliberately scoped to the CURRENT calendar month/day, independent
+              of whatever range is selected above (a "Last Month" or "12 Months"
+              view wouldn't make "today" meaningful) — its own tab rather than
+              pinned above every other tab regardless of context. */}
+          <TabsContent value="today" className="space-y-6 mt-4">
+            <DailyExpensesSection
+              daily={d.dailyExpenses}
+              todayIncome={d.todayIncome}
+              todayExpense={d.todayExpense}
+              todayJoined={d.todayJoined}
+              todayLeft={d.todayLeft}
+              todayJoinedList={d.todayJoinedList}
+              todayLeftList={d.todayLeftList}
+              todayPaymentsList={d.todayPaymentsList}
+            />
+          </TabsContent>
 
           {/* ── OVERVIEW TAB ─────────────────────────────────────────────── */}
           <TabsContent value="overview" className="space-y-6 mt-4">
