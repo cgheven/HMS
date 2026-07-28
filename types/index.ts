@@ -287,6 +287,10 @@ export interface Tenant {
   security_deposit: number;
   /** One-time, non-refundable — billed only in check_in's month. Hidden on the Tenants page unless the hostel has a non-zero default configured in Settings. */
   registration_fee: number;
+  /** On-file vehicle record for safety verification and parking-dispute resolution — all null when the tenant has no vehicle. */
+  vehicle_type: string | null;
+  vehicle_number: string | null;
+  vehicle_model: string | null;
   joining_meter_reading: number | null;
   food_breakfast: boolean;
   food_lunch: boolean;

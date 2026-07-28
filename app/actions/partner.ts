@@ -49,6 +49,9 @@ export interface PartnerTenantPayload {
   daily_rate: number;
   security_deposit: number;
   registration_fee: number;
+  vehicle_type: string | null;
+  vehicle_number: string | null;
+  vehicle_model: string | null;
   joining_meter_reading: number | null;
   emergency_contact: string | null;
   emergency_relationship: string | null;
@@ -122,6 +125,9 @@ export async function addTenantAsPartner(
       daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
       security_deposit: Number(payload.security_deposit) || 0,
       registration_fee: Number(payload.registration_fee) || 0,
+      vehicle_type: payload.vehicle_type?.trim() || null,
+      vehicle_number: payload.vehicle_number?.trim() || null,
+      vehicle_model: payload.vehicle_model?.trim() || null,
       joining_meter_reading: payload.joining_meter_reading ?? null,
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,
@@ -433,6 +439,9 @@ export async function editTenantAsPartner(
       daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
       security_deposit: Number(payload.security_deposit) || 0,
       registration_fee: Number(payload.registration_fee) || 0,
+      vehicle_type: payload.vehicle_type?.trim() || null,
+      vehicle_number: payload.vehicle_number?.trim() || null,
+      vehicle_model: payload.vehicle_model?.trim() || null,
       joining_meter_reading: payload.joining_meter_reading ?? null,
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,

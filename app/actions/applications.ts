@@ -265,6 +265,9 @@ export interface ConvertFormData {
   daily_rate: number;
   security_deposit: number;
   registration_fee?: number;
+  vehicle_type?: string | null;
+  vehicle_number?: string | null;
+  vehicle_model?: string | null;
   check_in: string;
   room_id: string | null;
   bed_number: string | null;
@@ -316,6 +319,9 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     daily_rate: extra.billing_type === "daily" ? extra.daily_rate : 0,
     security_deposit: extra.security_deposit,
     registration_fee: extra.registration_fee ?? 0,
+    vehicle_type: extra.vehicle_type?.trim() || null,
+    vehicle_number: extra.vehicle_number?.trim() || null,
+    vehicle_model: extra.vehicle_model?.trim() || null,
     room_id: extra.is_waiting ? null : (extra.room_id || null),
     bed_number: extra.bed_number || null,
     is_active: !extra.is_waiting,

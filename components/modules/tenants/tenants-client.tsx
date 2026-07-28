@@ -6,7 +6,7 @@ import {
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, Eye,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
   FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check, UtensilsCrossed,
-  CalendarClock, CalendarX, MessageCircle,
+  CalendarClock, CalendarX, MessageCircle, Car,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -264,6 +264,7 @@ const emptyForm = {
   billing_type: "monthly" as "monthly" | "daily",
   monthly_rent: "", daily_rate: "", check_out: "", security_deposit: "0",
   registration_fee: "",
+  vehicle_type: "", vehicle_number: "", vehicle_model: "",
   joining_meter_reading: "",
   emergency_contact: "", emergency_relationship: "", emergency_phone: "", notes: "",
   is_waiting: false,
@@ -358,6 +359,11 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
           {(t.documents?.length ?? 0) > 0 && (
             <span className="inline-flex items-center gap-0.5 text-xs text-emerald-400 whitespace-nowrap">
               <ShieldCheck className="w-3 h-3" />{t.documents.length}
+            </span>
+          )}
+          {t.vehicle_number && (
+            <span className="text-xs text-muted-foreground whitespace-nowrap flex items-center gap-0.5" title={t.vehicle_model ?? undefined}>
+              <Car className="w-2.5 h-2.5 shrink-0" />{t.vehicle_number}
             </span>
           )}
         </div>
@@ -629,6 +635,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     daily_rate: 0,
     security_deposit: 0,
     registration_fee: 0,
+    vehicle_type: null,
+    vehicle_number: null,
+    vehicle_model: null,
     check_in: formatDateInput(new Date()),
     room_id: null,
     bed_number: null,
@@ -744,6 +753,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         ? getSuggestedDeposit(matchedRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
         : (configSecurityDeposit > 0 ? configSecurityDeposit : 10000),
       registration_fee: configRegistrationFee > 0 ? configRegistrationFee : 0,
+      vehicle_type: null,
+      vehicle_number: null,
+      vehicle_model: null,
       check_in: app.move_in_date ?? formatDateInput(new Date()),
       room_id: matchedRoom?.id ?? null,
       bed_number: null,
@@ -896,6 +908,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       check_out: t.check_out ?? "",
       security_deposit: t.security_deposit?.toString() ?? "0",
       registration_fee: t.registration_fee?.toString() ?? "",
+      vehicle_type: t.vehicle_type ?? "",
+      vehicle_number: t.vehicle_number ?? "",
+      vehicle_model: t.vehicle_model ?? "",
       joining_meter_reading: t.joining_meter_reading?.toString() ?? "",
       emergency_contact: t.emergency_contact ?? "",
       emergency_relationship: t.emergency_relationship ?? "",
@@ -1005,6 +1020,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       daily_rate: form.billing_type === "daily" ? parseFloat(form.daily_rate) || 0 : 0,
       security_deposit: parseFloat(form.security_deposit) || 0,
       registration_fee: parseFloat(form.registration_fee) || 0,
+      vehicle_type: form.vehicle_type.trim() || null,
+      vehicle_number: form.vehicle_number.trim() || null,
+      vehicle_model: form.vehicle_model.trim() || null,
       joining_meter_reading: form.joining_meter_reading.trim() ? parseFloat(form.joining_meter_reading) || null : null,
       emergency_contact: form.emergency_contact || null,
       emergency_relationship: form.emergency_relationship || null,
@@ -1427,7 +1445,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       result = result.filter((t) =>
         t.full_name.toLowerCase().includes(q) ||
         (t.phone ?? "").includes(q) ||
-        (t.cnic ?? "").includes(q)
+        (t.cnic ?? "").includes(q) ||
+        (t.vehicle_number ?? "").toLowerCase().includes(q)
       );
     }
     return result;
@@ -1533,7 +1552,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutDepositReturned(String(checkoutMath.refundable));
   }, [checkingOut, checkoutMath.refundable]);
 
+  // Single source of truth for "what does the Vehicles tab show" — used by
+  // both the on-screen table and the exports below, so exporting while on
+  // that tab can never drift from what's actually displayed.
+  function getVehicleTenants() {
+    return filterList(active)
+      .filter((t) => t.vehicle_number)
+      .sort((a, b) => (a.vehicle_number ?? "").localeCompare(b.vehicle_number ?? ""));
+  }
+
   function getCurrentFilteredList() {
+    if (tab === "vehicles") return getVehicleTenants();
     const map: Record<string, Tenant[]> = { active, waiting, checkedout: checkedOut };
     return filterList(map[tab] ?? active);
   }
@@ -1555,6 +1584,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           Bed: t.bed_number ?? "",
           "Monthly Rent (PKR)": t.monthly_rent,
           "Security Deposit (PKR)": t.security_deposit,
+          "Vehicle Type": t.vehicle_type ?? "",
+          "Plate Number": t.vehicle_number ?? "",
+          "Vehicle Model": t.vehicle_model ?? "",
           "Check In": t.check_in ?? "",
           "Check Out": t.check_out ?? "",
         };
@@ -1597,13 +1629,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           room ? `Rm ${room.room_number}${t.bed_number ? ` · ${t.bed_number}` : ""}` : "—",
           t.monthly_rent ? `Rs ${t.monthly_rent.toLocaleString()}` : "—",
           t.security_deposit > 0 ? `Rs ${t.security_deposit.toLocaleString()}` : "—",
+          t.vehicle_number ?? "—",
           t.check_in ?? "—",
         ];
       });
 
       autoTable(doc, {
         startY: 28,
-        head: [["Name", "Phone", "CNIC", "Type", "Package", "Room", "Rent", "Deposit", "Check In"]],
+        head: [["Name", "Phone", "CNIC", "Type", "Package", "Room", "Rent", "Deposit", "Vehicle", "Check In"]],
         body: rows,
         theme: "striped",
         headStyles: { fillColor: [245, 158, 11], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 9 },
@@ -1678,7 +1711,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input placeholder="Search by name, phone, CNIC…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+          <Input placeholder="Search by name, phone, CNIC, plate number…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
         </div>
         {tab !== "applications" && (
           <div className="flex items-center gap-1.5 shrink-0">
@@ -1832,6 +1865,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   {applications.filter((a) => a.status === "pending").length}
                 </span>
               )}
+            </TabsTrigger>
+            <TabsTrigger value="vehicles" className="shrink-0 gap-1.5 whitespace-nowrap">
+              <Car className="w-3.5 h-3.5 shrink-0" />
+              <span>Vehicles</span>
+              <span className="text-muted-foreground">({active.filter((t) => t.vehicle_number).length})</span>
             </TabsTrigger>
           </TabsList>
         </div>
@@ -1996,6 +2034,57 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               ))}
               </div>
             )}
+          </div>
+        </TabsContent>
+
+        {/* Vehicles — a flat, plate-sorted view across active tenants so an
+            owner/guard can resolve a parking dispute by scanning plates
+            directly, instead of searching one tenant at a time. Reuses
+            already-loaded tenant data; no new fetch, no schema change. */}
+        <TabsContent value="vehicles">
+          <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
+            {(() => {
+              const vehicles = getVehicleTenants();
+              if (vehicles.length === 0) {
+                return (
+                  <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground">
+                    <Car className="w-10 h-10 opacity-20" />
+                    <p className="text-sm">{search ? "No vehicles match" : "No vehicles on file yet"}</p>
+                  </div>
+                );
+              }
+              return (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-xs text-muted-foreground font-medium border-b border-sidebar-border">
+                        <th className="text-left px-4 py-2.5">Plate Number</th>
+                        <th className="text-left px-4 py-2.5">Type</th>
+                        <th className="text-left px-4 py-2.5">Model</th>
+                        <th className="text-left px-4 py-2.5">Tenant</th>
+                        <th className="text-left px-4 py-2.5">Room</th>
+                        <th className="text-left px-4 py-2.5">Phone</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-sidebar-border/50">
+                      {vehicles.map((t) => {
+                        const room = t.room_id ? roomMap[t.room_id] : null;
+                        return (
+                          <tr key={t.id} className="hover:bg-white/[0.02]">
+                            <td className="px-4 py-2.5 font-semibold text-foreground whitespace-nowrap">{t.vehicle_number}</td>
+                            <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">{t.vehicle_type ?? "—"}</td>
+                            <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">{t.vehicle_model ?? "—"}</td>
+                            <td className="px-4 py-2.5 text-foreground whitespace-nowrap">{t.full_name}</td>
+                            <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">{room ? `Rm ${room.room_number}` : "—"}</td>
+                            <td className="px-4 py-2.5 text-muted-foreground whitespace-nowrap">{t.phone ?? "—"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
           </div>
         </TabsContent>
 
@@ -2531,6 +2620,40 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   value={approveForm.check_in}
                   onChange={(e) => setApproveForm({ ...approveForm, check_in: e.target.value })}
                 />
+              </div>
+
+              {/* Vehicle — on-file record for safety verification and resolving
+                  parking disputes. Always optional, no hostel-level gate. */}
+              <div className="grid grid-cols-3 gap-4">
+                <div className="space-y-1.5">
+                  <Label>Vehicle Type</Label>
+                  <Select value={approveForm.vehicle_type ?? ""} onValueChange={(v) => setApproveForm({ ...approveForm, vehicle_type: v })}>
+                    <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Motorcycle">Motorcycle</SelectItem>
+                      <SelectItem value="Car">Car</SelectItem>
+                      <SelectItem value="Rickshaw">Rickshaw</SelectItem>
+                      <SelectItem value="Bicycle">Bicycle</SelectItem>
+                      <SelectItem value="Other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Plate Number</Label>
+                  <Input
+                    placeholder="e.g. ABC-123"
+                    value={approveForm.vehicle_number ?? ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, vehicle_number: e.target.value || null })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Model</Label>
+                  <Input
+                    placeholder="e.g. Honda CD 70"
+                    value={approveForm.vehicle_model ?? ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, vehicle_model: e.target.value || null })}
+                  />
+                </div>
               </div>
 
               {/* Notes */}
@@ -3072,6 +3195,26 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {!form.is_waiting && form.billing_type === "monthly" && (
               <div className="space-y-1.5"><Label>Check-in Date *</Label><Input type="date" value={form.check_in} onChange={(e) => setForm({ ...form, check_in: e.target.value })} /></div>
             )}
+
+            {/* Vehicle — on-file record for safety verification and resolving
+                parking disputes. Always optional, no hostel-level gate. */}
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-1.5">
+                <Label>Vehicle Type</Label>
+                <Select value={form.vehicle_type} onValueChange={(v) => setForm({ ...form, vehicle_type: v })}>
+                  <SelectTrigger><SelectValue placeholder="None" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Motorcycle">Motorcycle</SelectItem>
+                    <SelectItem value="Car">Car</SelectItem>
+                    <SelectItem value="Rickshaw">Rickshaw</SelectItem>
+                    <SelectItem value="Bicycle">Bicycle</SelectItem>
+                    <SelectItem value="Other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5"><Label>Plate Number</Label><Input placeholder="e.g. ABC-123" value={form.vehicle_number} onChange={(e) => setForm({ ...form, vehicle_number: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Model</Label><Input placeholder="e.g. Honda CD 70" value={form.vehicle_model} onChange={(e) => setForm({ ...form, vehicle_model: e.target.value })} /></div>
+            </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5"><Label>Emergency Contact</Label><Input placeholder="Name" value={form.emergency_contact} onChange={(e) => setForm({ ...form, emergency_contact: e.target.value })} /></div>
