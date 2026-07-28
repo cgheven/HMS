@@ -198,8 +198,18 @@ export interface ReportData {
   dailyExpenses: DailyExpenseRow[];
   todayIncome: number;
   todayExpense: number;
+  todayKitchenExpense: number;
+  todayOtherExpense: number;
   todayJoined: number;
   todayLeft: number;
+  todayExpenseList: {
+    id: string;
+    source: "expense" | "kitchen";
+    title: string;
+    category: string;
+    amount: number;
+    notes: string | null;
+  }[];
   todayJoinedList: {
     id: string;
     name: string;
@@ -685,8 +695,11 @@ export async function getReportData(
   const [
     curExpensesRes, curKitchenRes, monthInstallmentsRes, todayInstallmentsRes, joinedRes, leftRes,
   ] = await Promise.all([
-    admin.from("hms_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", curStart).lte("date", curEnd),
-    admin.from("hms_kitchen_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", curStart).lte("date", curEnd),
+    // Full rows, not just amount/date — reused both for the monthly daily
+    // table AND today's line-item detail below, so the owner can verify
+    // exactly what each expense was, not just a total.
+    admin.from("hms_expenses").select("id,title,category,amount,date,notes").eq("hostel_id", hostelId).gte("date", curStart).lte("date", curEnd),
+    admin.from("hms_kitchen_expenses").select("id,title,type,amount,date,notes").eq("hostel_id", hostelId).gte("date", curStart).lte("date", curEnd),
     admin.from("hms_payment_installments").select("amount,payment_date").eq("hostel_id", hostelId).gte("payment_date", curStart).lte("payment_date", curEnd),
     // Granular, not just a total — the owner cross-checks this against their
     // own physical register, so each installment needs a name/room/amount.
@@ -769,8 +782,22 @@ export async function getReportData(
     };
   });
 
+  // Line items, not just a total — the owner needs to see exactly what each
+  // expense was (title, category, amount) to verify against paper receipts.
+  const todayExpenseList = [
+    ...(curExpensesRes.data ?? [])
+      .filter((x) => x.date === todayStr)
+      .map((x) => ({ id: x.id, source: "expense" as const, title: x.title, category: capitalize(x.category), amount: Number(x.amount), notes: x.notes })),
+    ...(curKitchenRes.data ?? [])
+      .filter((x) => x.date === todayStr)
+      .map((x) => ({ id: x.id, source: "kitchen" as const, title: x.title, category: x.type === "monthly_grocery" ? "Monthly Grocery" : "Daily", amount: Number(x.amount), notes: x.notes })),
+  ].sort((a, b) => b.amount - a.amount);
+
   const todayIncome = todayPaymentsList.reduce((s, p) => s + p.amount, 0);
-  const todayExpense = dailyExpenses.find((r) => r.date === todayStr)?.total ?? 0;
+  const todayRow = dailyExpenses.find((r) => r.date === todayStr);
+  const todayExpense = todayRow?.total ?? 0;
+  const todayKitchenExpense = todayRow?.kitchen ?? 0;
+  const todayOtherExpense = todayRow?.expenses ?? 0;
   const todayJoined = todayJoinedList.length;
   const todayLeft = todayLeftList.length;
 
@@ -815,8 +842,8 @@ export async function getReportData(
         formerDebtorsOwed: formerDebtorList.reduce((s, d) => s + d.owed, 0),
         topDebtors,
       },
-      dailyExpenses, todayIncome, todayExpense, todayJoined, todayLeft,
-      todayJoinedList, todayLeftList, todayPaymentsList,
+      dailyExpenses, todayIncome, todayExpense, todayKitchenExpense, todayOtherExpense, todayJoined, todayLeft,
+      todayExpenseList, todayJoinedList, todayLeftList, todayPaymentsList,
     },
     error: null,
   };

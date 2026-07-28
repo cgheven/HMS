@@ -95,7 +95,7 @@ const COLORS = ["#f5a623", "#10b981", "#3b82f6", "#a855f7", "#ef4444"];
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function ReportsClient(props: Props) {
-  const [tab, setTab] = useState("overview");
+  const [tab, setTab] = useState("today");
   const [preset, setPreset] = useState("this_month");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -313,8 +313,11 @@ export function ReportsClient(props: Props) {
               daily={d.dailyExpenses}
               todayIncome={d.todayIncome}
               todayExpense={d.todayExpense}
+              todayKitchenExpense={d.todayKitchenExpense}
+              todayOtherExpense={d.todayOtherExpense}
               todayJoined={d.todayJoined}
               todayLeft={d.todayLeft}
+              todayExpenseList={d.todayExpenseList}
               todayJoinedList={d.todayJoinedList}
               todayLeftList={d.todayLeftList}
               todayPaymentsList={d.todayPaymentsList}
