@@ -2,22 +2,54 @@
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
-import { capitalize, getMonthRange, formatDateInput } from "@/lib/utils";
+import { capitalize, getMonthRange } from "@/lib/utils";
 import type { Profile } from "@/types";
 
-// Per-day, itemized expense/income breakdown for the "Today" tab's monthly
-// overview — each entry only exists for a date with actual activity (an
-// expense row, kitchen row, or installment payment), so an empty array for
-// kitchenItems/expenseItems means that category had nothing that day, not
-// that the query failed.
+// Per-day snapshot for the "Today" tab — one entry per date that had any
+// activity (an expense/kitchen row, a payment, a join, or a checkout) within
+// the current calendar month, so the tab can show any single day the owner
+// picks, not just today. Empty arrays mean that category had nothing that
+// day, not that the query failed.
 export interface DailyExpenseDetail {
   date: string;
   income: number;
   kitchenTotal: number;
   otherTotal: number;
   total: number;
-  kitchenItems: { id: string; title: string; amount: number }[];
-  expenseItems: { id: string; title: string; category: string; amount: number }[];
+  expenseList: {
+    id: string;
+    source: "expense" | "kitchen";
+    title: string;
+    category: string;
+    amount: number;
+    notes: string | null;
+  }[];
+  paymentsList: {
+    id: string;
+    tenantName: string;
+    phone: string | null;
+    roomNumber: string | null;
+    amount: number;
+    forMonth: string;
+    method: string;
+    receiptNumber: string | null;
+  }[];
+  joinedList: {
+    id: string;
+    name: string;
+    phone: string | null;
+    type: string;
+    packageTier: string;
+    roomNumber: string | null;
+  }[];
+  leftList: {
+    id: string;
+    name: string;
+    phone: string | null;
+    type: string;
+    packageTier: string;
+    roomNumber: string | null;
+  }[];
 }
 
 // Reports is pure read — any active partner tier suffices. Owners/super_admin
@@ -207,52 +239,13 @@ export interface ReportData {
   };
 
   // Daily snapshot — standard for every client. Deliberately scoped to the
-  // CURRENT calendar month/day, not the report's selected date range —
-  // "today" wouldn't mean anything for a "Last Month" or "12 Months" view.
-  // The *List fields exist so the owner can verify each figure against their
-  // own physical register — a headcount alone ("3 joined today") isn't
-  // verifiable, but a name + room number is.
+  // CURRENT calendar month, not the report's selected date range — "today"
+  // wouldn't mean anything for a "Last Month" or "12 Months" view. One entry
+  // per day of activity, so the owner can pick any date and see exactly what
+  // happened, not just today. The *List fields inside each entry exist so the
+  // owner can verify each figure against their own physical register — a
+  // headcount alone ("3 joined") isn't verifiable, but a name + room number is.
   dailyExpenseDetails: DailyExpenseDetail[];
-  todayIncome: number;
-  todayExpense: number;
-  todayKitchenExpense: number;
-  todayOtherExpense: number;
-  todayJoined: number;
-  todayLeft: number;
-  todayExpenseList: {
-    id: string;
-    source: "expense" | "kitchen";
-    title: string;
-    category: string;
-    amount: number;
-    notes: string | null;
-  }[];
-  todayJoinedList: {
-    id: string;
-    name: string;
-    phone: string | null;
-    type: string;
-    packageTier: string;
-    roomNumber: string | null;
-  }[];
-  todayLeftList: {
-    id: string;
-    name: string;
-    phone: string | null;
-    type: string;
-    packageTier: string;
-    roomNumber: string | null;
-  }[];
-  todayPaymentsList: {
-    id: string;
-    tenantName: string;
-    phone: string | null;
-    roomNumber: string | null;
-    amount: number;
-    forMonth: string;
-    method: string;
-    receiptNumber: string | null;
-  }[];
 }
 
 export async function getReportData(
@@ -709,43 +702,45 @@ export async function getReportData(
 
   // ── Daily snapshot ───────────────────────────────────────────────────────
   // Standard for every client with Reports access. Scoped to the CURRENT
-  // calendar month/day regardless of the report's selected from/to range —
+  // calendar month regardless of the report's selected from/to range —
   // "today" wouldn't mean anything for a "Last Month" or "12 Months" view.
+  // Every query here is month-scoped (not just "today") so the Today tab's
+  // date picker can show any day, not only the day the page happened to load.
   const { start: curStart, end: curEnd } = getMonthRange();
-  const todayStr = formatDateInput(new Date());
   const [
-    curExpensesRes, curKitchenRes, monthInstallmentsRes, todayInstallmentsRes, joinedRes, leftRes,
+    curExpensesRes, curKitchenRes, monthInstallmentsRes, joinedRes, leftRes,
   ] = await Promise.all([
-    // Full rows, not just amount/date — reused both for the monthly daily
-    // table AND today's line-item detail below, so the owner can verify
-    // exactly what each expense was, not just a total.
+    // Full rows, not just amount/date — the owner needs to verify exactly
+    // what each expense was, not just a total.
     admin.from("hms_expenses").select("id,title,category,amount,date,notes").eq("hostel_id", hostelId).gte("date", curStart).lte("date", curEnd),
     admin.from("hms_kitchen_expenses").select("id,title,type,amount,date,notes").eq("hostel_id", hostelId).gte("date", curStart).lte("date", curEnd),
-    admin.from("hms_payment_installments").select("amount,payment_date").eq("hostel_id", hostelId).gte("payment_date", curStart).lte("payment_date", curEnd),
     // Granular, not just a total — the owner cross-checks this against their
     // own physical register, so each installment needs a name/room/amount.
     admin
       .from("hms_payment_installments")
-      .select("id, amount, for_month, payment_method, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
+      .select("id, amount, payment_date, for_month, payment_method, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
       .eq("hostel_id", hostelId)
-      .eq("payment_date", todayStr),
+      .gte("payment_date", curStart)
+      .lte("payment_date", curEnd),
     admin
       .from("hms_tenants")
-      .select("id, full_name, phone, type, package_tier, hms_rooms(room_number)")
+      .select("id, full_name, phone, type, package_tier, check_in, hms_rooms(room_number)")
       .eq("hostel_id", hostelId)
-      .eq("check_in", todayStr),
+      .gte("check_in", curStart)
+      .lte("check_in", curEnd),
     admin
       .from("hms_tenants")
-      .select("id, full_name, phone, type, package_tier, hms_rooms(room_number)")
+      .select("id, full_name, phone, type, package_tier, check_out, hms_rooms(room_number)")
       .eq("hostel_id", hostelId)
-      .eq("check_out", todayStr),
+      .gte("check_out", curStart)
+      .lte("check_out", curEnd),
   ]);
 
   const detailByDate = new Map<string, DailyExpenseDetail>();
   function getDetailRow(date: string): DailyExpenseDetail {
     let row = detailByDate.get(date);
     if (!row) {
-      row = { date, income: 0, kitchenTotal: 0, otherTotal: 0, total: 0, kitchenItems: [], expenseItems: [] };
+      row = { date, income: 0, kitchenTotal: 0, otherTotal: 0, total: 0, expenseList: [], paymentsList: [], joinedList: [], leftList: [] };
       detailByDate.set(date, row);
     }
     return row;
@@ -755,87 +750,70 @@ export async function getReportData(
     const amount = Number(x.amount);
     row.otherTotal += amount;
     row.total += amount;
-    row.expenseItems.push({ id: x.id, title: x.title, category: capitalize(x.category), amount });
+    row.expenseList.push({ id: x.id, source: "expense", title: x.title, category: capitalize(x.category), amount, notes: x.notes });
   }
   for (const x of curKitchenRes.data ?? []) {
     const row = getDetailRow(x.date);
     const amount = Number(x.amount);
     row.kitchenTotal += amount;
     row.total += amount;
-    row.kitchenItems.push({ id: x.id, title: x.title, amount });
+    row.expenseList.push({ id: x.id, source: "kitchen", title: x.title, category: x.type === "monthly_grocery" ? "Monthly Grocery" : "Daily", amount, notes: x.notes });
   }
-  for (const i of monthInstallmentsRes.data ?? []) {
-    const row = getDetailRow(i.payment_date);
-    row.income += Number(i.amount);
-  }
-  const dailyExpenseDetails: DailyExpenseDetail[] = Array.from(detailByDate.values())
-    .map((row) => ({
-      ...row,
-      kitchenItems: [...row.kitchenItems].sort((a, b) => b.amount - a.amount),
-      expenseItems: [...row.expenseItems].sort((a, b) => b.amount - a.amount),
-    }))
-    .sort((a, b) => b.date.localeCompare(a.date));
 
-  type TodayTenantRow = {
+  type RoomsRel = { room_number: string } | { room_number: string }[] | null;
+  function roomNumberOf(r: RoomsRel): string | null {
+    return (Array.isArray(r) ? r[0] : r)?.room_number ?? null;
+  }
+
+  type InstallmentRow = {
+    id: string;
+    amount: unknown;
+    payment_date: string;
+    for_month: string;
+    payment_method: string | null;
+    receipt_number: string | null;
+    tenant: { full_name: string; phone: string | null; hms_rooms: RoomsRel } | null;
+  };
+  for (const i of (monthInstallmentsRes.data ?? []) as unknown as InstallmentRow[]) {
+    const row = getDetailRow(i.payment_date);
+    const amount = Number(i.amount);
+    row.income += amount;
+    row.paymentsList.push({
+      id: i.id,
+      tenantName: i.tenant?.full_name ?? "Unknown",
+      phone: i.tenant?.phone ?? null,
+      roomNumber: roomNumberOf(i.tenant?.hms_rooms ?? null),
+      amount,
+      forMonth: i.for_month,
+      method: i.payment_method ?? "cash",
+      receiptNumber: i.receipt_number,
+    });
+  }
+
+  type TenantEventRow = {
     id: string;
     full_name: string;
     phone: string | null;
     type: string;
     package_tier: string;
-    hms_rooms: { room_number: string } | { room_number: string }[] | null;
+    hms_rooms: RoomsRel;
   };
-  function roomNumberOf(row: TodayTenantRow): string | null {
-    const r = row.hms_rooms;
-    return (Array.isArray(r) ? r[0] : r)?.room_number ?? null;
+  for (const t of (joinedRes.data ?? []) as unknown as (TenantEventRow & { check_in: string })[]) {
+    const row = getDetailRow(t.check_in);
+    row.joinedList.push({ id: t.id, name: t.full_name, phone: t.phone, type: t.type, packageTier: t.package_tier, roomNumber: roomNumberOf(t.hms_rooms) });
   }
-  const todayJoinedList = ((joinedRes.data ?? []) as unknown as TodayTenantRow[]).map((t) => ({
-    id: t.id, name: t.full_name, phone: t.phone, type: t.type, packageTier: t.package_tier, roomNumber: roomNumberOf(t),
-  }));
-  const todayLeftList = ((leftRes.data ?? []) as unknown as TodayTenantRow[]).map((t) => ({
-    id: t.id, name: t.full_name, phone: t.phone, type: t.type, packageTier: t.package_tier, roomNumber: roomNumberOf(t),
-  }));
+  for (const t of (leftRes.data ?? []) as unknown as (TenantEventRow & { check_out: string })[]) {
+    const row = getDetailRow(t.check_out);
+    row.leftList.push({ id: t.id, name: t.full_name, phone: t.phone, type: t.type, packageTier: t.package_tier, roomNumber: roomNumberOf(t.hms_rooms) });
+  }
 
-  type TodayInstallmentRow = {
-    id: string;
-    amount: unknown;
-    for_month: string;
-    payment_method: string | null;
-    receipt_number: string | null;
-    tenant: { full_name: string; phone: string | null; hms_rooms: { room_number: string } | { room_number: string }[] | null } | null;
-  };
-  const todayPaymentsList = ((todayInstallmentsRes.data ?? []) as unknown as TodayInstallmentRow[]).map((i) => {
-    const roomsRaw = i.tenant?.hms_rooms;
-    const roomEntry = Array.isArray(roomsRaw) ? roomsRaw[0] : roomsRaw;
-    return {
-      id: i.id,
-      tenantName: i.tenant?.full_name ?? "Unknown",
-      phone: i.tenant?.phone ?? null,
-      roomNumber: roomEntry?.room_number ?? null,
-      amount: Number(i.amount),
-      forMonth: i.for_month,
-      method: i.payment_method ?? "cash",
-      receiptNumber: i.receipt_number,
-    };
-  });
-
-  // Line items, not just a total — the owner needs to see exactly what each
-  // expense was (title, category, amount) to verify against paper receipts.
-  const todayExpenseList = [
-    ...(curExpensesRes.data ?? [])
-      .filter((x) => x.date === todayStr)
-      .map((x) => ({ id: x.id, source: "expense" as const, title: x.title, category: capitalize(x.category), amount: Number(x.amount), notes: x.notes })),
-    ...(curKitchenRes.data ?? [])
-      .filter((x) => x.date === todayStr)
-      .map((x) => ({ id: x.id, source: "kitchen" as const, title: x.title, category: x.type === "monthly_grocery" ? "Monthly Grocery" : "Daily", amount: Number(x.amount), notes: x.notes })),
-  ].sort((a, b) => b.amount - a.amount);
-
-  const todayIncome = todayPaymentsList.reduce((s, p) => s + p.amount, 0);
-  const todayDetail = dailyExpenseDetails.find((r) => r.date === todayStr);
-  const todayExpense = todayDetail?.total ?? 0;
-  const todayKitchenExpense = todayDetail?.kitchenTotal ?? 0;
-  const todayOtherExpense = todayDetail?.otherTotal ?? 0;
-  const todayJoined = todayJoinedList.length;
-  const todayLeft = todayLeftList.length;
+  const dailyExpenseDetails: DailyExpenseDetail[] = Array.from(detailByDate.values())
+    .map((row) => ({
+      ...row,
+      expenseList: [...row.expenseList].sort((a, b) => b.amount - a.amount),
+      paymentsList: [...row.paymentsList].sort((a, b) => b.amount - a.amount),
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date));
 
   return {
     data: {
@@ -878,8 +856,7 @@ export async function getReportData(
         formerDebtorsOwed: formerDebtorList.reduce((s, d) => s + d.owed, 0),
         topDebtors,
       },
-      dailyExpenseDetails, todayIncome, todayExpense, todayKitchenExpense, todayOtherExpense, todayJoined, todayLeft,
-      todayExpenseList, todayJoinedList, todayLeftList, todayPaymentsList,
+      dailyExpenseDetails,
     },
     error: null,
   };

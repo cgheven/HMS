@@ -309,19 +309,7 @@ export function ReportsClient(props: Props) {
               view wouldn't make "today" meaningful) — its own tab rather than
               pinned above every other tab regardless of context. */}
           <TabsContent value="today" className="space-y-6 mt-4">
-            <DailyExpensesSection
-              dailyDetails={d.dailyExpenseDetails}
-              todayIncome={d.todayIncome}
-              todayExpense={d.todayExpense}
-              todayKitchenExpense={d.todayKitchenExpense}
-              todayOtherExpense={d.todayOtherExpense}
-              todayJoined={d.todayJoined}
-              todayLeft={d.todayLeft}
-              todayExpenseList={d.todayExpenseList}
-              todayJoinedList={d.todayJoinedList}
-              todayLeftList={d.todayLeftList}
-              todayPaymentsList={d.todayPaymentsList}
-            />
+            <DailyExpensesSection dailyDetails={d.dailyExpenseDetails} />
           </TabsContent>
 
           {/* ── OVERVIEW TAB ─────────────────────────────────────────────── */}
