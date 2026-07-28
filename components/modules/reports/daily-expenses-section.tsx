@@ -44,8 +44,8 @@ export function DailyExpensesSection({
   const selectedDetail = dailyDetails.find((d) => d.date === selectedDate);
 
   return (
-    <div className="rounded-2xl border border-sidebar-border bg-card p-6 animate-fade-up">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-5 pb-5 border-b border-white/5">
+    <div className="rounded-2xl border border-sidebar-border bg-card p-4 sm:p-6 animate-fade-up">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mb-5 pb-5 border-b border-white/5">
         <div className="flex items-center gap-3">
           <div className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 shrink-0">
             <ArrowDownCircle className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />
@@ -231,7 +231,7 @@ export function DailyExpensesSection({
           min={monthStartStr}
           max={monthEndStr}
           onChange={(e) => setSelectedDate(e.target.value)}
-          className="w-auto h-9 text-sm"
+          className="w-full sm:w-auto h-9 text-sm"
         />
       </div>
 
@@ -241,8 +241,8 @@ export function DailyExpensesSection({
           <p className="text-sm">No activity recorded on {formatDate(selectedDate)}</p>
         </div>
       ) : (
-        <div className="rounded-xl border border-white/5 p-4">
-          <div className="flex items-center justify-between gap-3 pb-3 mb-3 border-b border-white/5">
+        <div className="rounded-xl border border-white/5 p-3 sm:p-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 sm:gap-3 pb-3 mb-3 border-b border-white/5">
             <span className="text-sm font-medium text-foreground">{formatDate(selectedDetail.date)}</span>
             <div className="flex items-center gap-4">
               <span className="text-xs sm:text-sm font-semibold text-foreground tabular-nums whitespace-nowrap">Total {formatCurrency(selectedDetail.total)}</span>
