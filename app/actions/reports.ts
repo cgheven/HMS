@@ -3,6 +3,7 @@ import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { capitalize, getMonthRange } from "@/lib/utils";
+import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
 import type { Profile } from "@/types";
 
 // Per-day snapshot for the "Today" tab — one entry per date that had any
@@ -49,6 +50,19 @@ export interface DailyExpenseDetail {
     type: string;
     packageTier: string;
     roomNumber: string | null;
+  }[];
+  // Not an "event that happened on this date" like the lists above — a
+  // projection of which currently-owing tenants would be reminder-worthy on
+  // this specific day of the month (their own due day, or every 3rd day past
+  // it), using the exact same rule the WhatsApp reminder cron uses. Lets the
+  // owner see who's due without leaving Reports for the Payments page.
+  dueList: {
+    id: string;
+    name: string;
+    phone: string | null;
+    roomNumber: string | null;
+    amount: number;
+    forMonth: string;
   }[];
 }
 
@@ -744,7 +758,7 @@ export async function getReportData(
   // date picker can show any day, not only the day the page happened to load.
   const { start: curStart, end: curEnd } = getMonthRange();
   const [
-    curExpensesRes, curKitchenRes, monthInstallmentsRes, joinedRes, leftRes,
+    curExpensesRes, curKitchenRes, monthInstallmentsRes, joinedRes, leftRes, dueRes,
   ] = await Promise.all([
     // Full rows, not just amount/date — the owner needs to verify exactly
     // what each expense was, not just a total.
@@ -770,13 +784,22 @@ export async function getReportData(
       .eq("hostel_id", hostelId)
       .gte("check_out", curStart)
       .lte("check_out", curEnd),
+    // Still-owing payments for the current month — bucketed into dueList below
+    // by whichever days of the month match each tenant's own due-day cadence,
+    // the same rule the WhatsApp reminder cron uses (lib/payment-calc.ts).
+    admin
+      .from("hms_payments")
+      .select("id, tenant_id, amount, late_fee, amount_paid, for_month, tenant:hms_tenants(full_name, phone, check_in, is_active, is_waiting, hms_rooms(room_number))")
+      .eq("hostel_id", hostelId)
+      .eq("for_month", currentMonthKey)
+      .in("status", ["pending", "overdue", "partially_paid"]),
   ]);
 
   const detailByDate = new Map<string, DailyExpenseDetail>();
   function getDetailRow(date: string): DailyExpenseDetail {
     let row = detailByDate.get(date);
     if (!row) {
-      row = { date, income: 0, kitchenTotal: 0, otherTotal: 0, total: 0, expenseList: [], paymentsList: [], joinedList: [], leftList: [] };
+      row = { date, income: 0, kitchenTotal: 0, otherTotal: 0, total: 0, expenseList: [], paymentsList: [], joinedList: [], leftList: [], dueList: [] };
       detailByDate.set(date, row);
     }
     return row;
@@ -843,11 +866,46 @@ export async function getReportData(
     row.leftList.push({ id: t.id, name: t.full_name, phone: t.phone, type: t.type, packageTier: t.package_tier, roomNumber: roomNumberOf(t.hms_rooms) });
   }
 
+  type DuePaymentRow = {
+    id: string;
+    tenant_id: string;
+    amount: unknown;
+    late_fee: unknown;
+    amount_paid: unknown;
+    for_month: string;
+    tenant: { full_name: string; phone: string | null; check_in: string; is_active: boolean; is_waiting: boolean; hms_rooms: RoomsRel } | null;
+  };
+  const [dueY, dueM] = currentMonthKey.split("-").map(Number);
+  const daysInCurrentMonth = new Date(dueY, dueM, 0).getDate();
+  for (const p of (dueRes.data ?? []) as unknown as DuePaymentRow[]) {
+    // Checked-out and waiting-list tenants never get reminded (same guard as
+    // the actual cron in lib/reminder-engine.ts) — a stale unpaid row from
+    // before checkout shouldn't show up as "due" here either.
+    if (!p.tenant || !p.tenant.is_active || p.tenant.is_waiting || !p.tenant.check_in) continue;
+    const remaining = Number(p.amount) + Number(p.late_fee ?? 0) - Number(p.amount_paid ?? 0);
+    if (remaining <= 0) continue;
+    const dueDay = tenantDueDay(p.tenant.check_in, currentMonthKey);
+    for (let day = 1; day <= daysInCurrentMonth; day++) {
+      if (!shouldRemindToday(dueDay, day)) continue;
+      const dateStr = `${currentMonthKey}-${String(day).padStart(2, "0")}`;
+      const row = getDetailRow(dateStr);
+      row.dueList.push({
+        id: p.tenant_id,
+        name: p.tenant.full_name,
+        phone: p.tenant.phone,
+        roomNumber: roomNumberOf(p.tenant.hms_rooms),
+        amount: remaining,
+        forMonth: p.for_month,
+      });
+    }
+  }
+
   const dailyExpenseDetails: DailyExpenseDetail[] = Array.from(detailByDate.values())
     .map((row) => ({
       ...row,
       expenseList: [...row.expenseList].sort((a, b) => b.amount - a.amount),
       paymentsList: [...row.paymentsList].sort((a, b) => b.amount - a.amount),
+      dueList: [...row.dueList].sort((a, b) => b.amount - a.amount),
     }))
     .sort((a, b) => b.date.localeCompare(a.date));
 

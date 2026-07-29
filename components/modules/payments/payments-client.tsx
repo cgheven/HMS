@@ -16,6 +16,8 @@ import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier, StaffPermission } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { countBillableNights } from "@/lib/daily-billing";
+import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
+import { pktTodayDateString } from "@/lib/pkt-time";
 import {
   syncMonthAction,
   markPaymentPaidAction,
@@ -23,6 +25,7 @@ import {
   applyRoomACUnitsAction,
   saveACJoinReadingAction,
   sendBulkRemindersAction,
+  sendDueTodayRemindersAction,
 } from "@/app/actions/payments";
 import { createInvoiceLink, createInstallmentReceiptLink } from "@/app/actions/tenants";
 import { recordPaymentAsPartner } from "@/app/actions/partner";
@@ -147,6 +150,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [sendingBulk, setSendingBulk] = useState(false);
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
   const [bulkResult, setBulkResult] = useState<BulkReminderSummary | null>(null);
+  // "all" = every unpaid tenant regardless of due date (existing bulk button).
+  // "due_today" = only tenants whose own due-day cadence lands on today (Due Today tab).
+  // Both reuse the same confirm/result dialog pair — only the target action and copy differ.
+  const [reminderScope, setReminderScope] = useState<"all" | "due_today">("all");
   const [generatingReceipt, setGeneratingReceipt] = useState<string | null>(null); // paymentId
   const [postPaymentWa, setPostPaymentWa] = useState<{ payment: Payment; amountReceivedNow: number; installmentId?: string } | null>(null);
   const [acUnits, setAcUnits] = useState<Record<string, string>>({});
@@ -521,15 +528,18 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }
 
   // Bulk-sends the same automated WhatsApp reminder the daily cron sends —
-  // via the Meta WhatsApp Business API, no browser tabs — to every tenant still
-  // pending/overdue/partially-paid this month, regardless of their personal
-  // due-day cadence. A per-tenant "already reminded today" guard on the
-  // server means this can be clicked again later without double-messaging
-  // anyone who already got one today.
+  // via the Meta WhatsApp Business API, no browser tabs. "all" targets every
+  // tenant still pending/overdue/partially-paid this month regardless of their
+  // personal due-day cadence; "due_today" targets only whoever's own due-day
+  // cadence lands on today (same filter the Due Today tab displays). A
+  // per-tenant "already reminded today" guard on the server means this can be
+  // clicked again later without double-messaging anyone who already got one today.
   async function confirmSendBulkReminders() {
     setSendingBulk(true);
     try {
-      const result = await sendBulkRemindersAction(selectedMonth);
+      const result = reminderScope === "due_today"
+        ? await sendDueTodayRemindersAction(selectedMonth)
+        : await sendBulkRemindersAction(selectedMonth);
       if (result.error) {
         setBulkConfirmOpen(false);
         toast({ title: "Failed to send reminders", description: result.error, variant: "destructive" });
@@ -641,6 +651,23 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     () => activePayments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid").length,
     [activePayments]
   );
+
+  // "Due today" only means something for the real current month — a tenant's
+  // due day is a day-of-month, and comparing it against today's real
+  // day-of-month while viewing a different month's payment rows would show
+  // an unrelated month's tenants as if they were due right now.
+  const currentRealMonth = useMemo(() => pktTodayDateString().slice(0, 7), []);
+  const isViewingCurrentMonth = selectedMonth === currentRealMonth;
+  const dueTodayPayments = useMemo(() => {
+    if (!isViewingCurrentMonth) return [];
+    const todayDayOfMonth = Number(pktTodayDateString().slice(8, 10));
+    return activePayments.filter((p) => {
+      if (p.status !== "pending" && p.status !== "overdue" && p.status !== "partially_paid") return false;
+      const checkIn = p.tenant?.check_in;
+      if (!checkIn) return false;
+      return shouldRemindToday(tenantDueDay(checkIn, selectedMonth), todayDayOfMonth);
+    });
+  }, [activePayments, isViewingCurrentMonth, selectedMonth]);
 
   // Rooms that have at least one payment this month — for the Room filter
   const roomsInMonth = useMemo(() => {
@@ -887,8 +914,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         ];
         return (
           <div className={`grid gap-3 sm:gap-4 ${hasAc ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-1 sm:grid-cols-3"}`}>
-            {cards.map(({ label, value, icon: Icon, color, bg }) => (
-              <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5">
+            {cards.map(({ label, value, icon: Icon, color, bg }, i) => (
+              <div
+                key={label}
+                className={`rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 ${
+                  // 5 cards can't split evenly across a 2-col mobile grid — the
+                  // last one (AC Pending) was left alone with blank space beside it.
+                  hasAc && i === cards.length - 1 ? "col-span-2 sm:col-span-1" : ""
+                }`}
+              >
                 <div className="flex items-start gap-3">
                   <div className={`flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl ${bg} shrink-0 mt-0.5`}>
                     <Icon className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${color}`} />
@@ -908,11 +942,58 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       <Tabs value={tab} onValueChange={(v) => { setTab(v); if (v === "history") loadHistory(selectedMonth); if (v !== "monthly") { setRoomFilter("all"); setStatusFilter("all"); setSearch(""); } }}>
         <TabsList>
           <TabsTrigger value="monthly"><Banknote className="w-3.5 h-3.5" /> Monthly View</TabsTrigger>
+          <TabsTrigger value="duetoday">
+            <AlertTriangle className="w-3.5 h-3.5" /> Due Today
+            {isViewingCurrentMonth && dueTodayPayments.length > 0 && (
+              <span className="ml-1 rounded-full bg-amber/20 text-amber px-1.5 text-[10px] font-semibold leading-4">{dueTodayPayments.length}</span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="history"><Clock className="w-3.5 h-3.5" /> All History</TabsTrigger>
           {acRooms.length > 0 && (
             <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> AC Billing</TabsTrigger>
           )}
         </TabsList>
+
+        <TabsContent value="duetoday">
+          <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
+            {!isViewingCurrentMonth ? (
+              <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground text-center px-6">
+                <AlertTriangle className="w-10 h-10 opacity-20" />
+                <p className="text-sm">Due Today only applies to the current month</p>
+                <p className="text-xs">Switch the month picker above to {currentRealMonth} to see who&apos;s due today</p>
+              </div>
+            ) : dueTodayPayments.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground">
+                <CheckCircle2 className="w-10 h-10 opacity-20" />
+                <p className="text-sm">Nobody is due today</p>
+                <p className="text-xs">Tenants show up here on their own due-day cadence, not the whole unpaid list</p>
+              </div>
+            ) : (
+              <div className="p-2">
+                <div className="flex flex-wrap items-center gap-2 px-2 pt-1 pb-3">
+                  <p className="text-xs text-muted-foreground">
+                    Whoever the automated reminder would message today — their due day, or every 3rd day past due.
+                  </p>
+                  {autoReminderEnabled && canRecordPayment && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-3 text-xs gap-1.5 text-[#25D366] border-[#25D366]/30 hover:bg-[#25D366]/10 hover:text-[#25D366] ml-auto"
+                      onClick={() => { setReminderScope("due_today"); setBulkConfirmOpen(true); }}
+                    >
+                      {WA_ICON}
+                      Send Reminders to Due Today
+                    </Button>
+                  )}
+                </div>
+                <PaymentTableHeader />
+                <div className="space-y-2 md:space-y-0.5 mt-1">
+                  {dueTodayPayments.map((p) => <PaymentRow key={p.id} p={p} />)}
+                </div>
+              </div>
+            )}
+          </div>
+        </TabsContent>
 
         <TabsContent value="monthly">
           <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
@@ -974,7 +1055,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       size="sm"
                       className="h-7 px-3 text-xs gap-1.5 text-[#25D366] border-[#25D366]/30 hover:bg-[#25D366]/10 hover:text-[#25D366]"
                       disabled={unpaidCount === 0}
-                      onClick={() => setBulkConfirmOpen(true)}
+                      onClick={() => { setReminderScope("all"); setBulkConfirmOpen(true); }}
                     >
                       {WA_ICON}
                       Send Reminders
@@ -1117,7 +1198,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 return (
                   <div key={room.id} className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 space-y-3">
                     {/* Room header + meter reading row */}
-                    <div className="flex items-start gap-3">
+                    <div className="flex flex-col sm:flex-row sm:items-start gap-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-medium">Room {room.room_number}</span>
@@ -1144,7 +1225,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           <p className="text-[10px] text-amber/60 mt-0.5">First reading — enter opening value below if needed</p>
                         )}
                       </div>
-                      <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <div className="flex flex-col items-stretch sm:items-end gap-1.5 sm:shrink-0">
                         {!hasPrevReading && (
                           <div className="flex items-center gap-1.5">
                             <span className="text-[10px] text-muted-foreground/60 whitespace-nowrap">Opening:</span>
@@ -1156,7 +1237,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               value={openingInput}
                               onChange={e => setAcOpeningReadings(prev => ({ ...prev, [room.id]: e.target.value }))}
                               disabled={acTenantCount === 0}
-                              className="w-20 h-7 text-xs text-center disabled:opacity-40"
+                              className="flex-1 sm:w-20 h-7 text-xs text-center disabled:opacity-40"
                             />
                           </div>
                         )}
@@ -1169,12 +1250,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                             value={currentInput}
                             onChange={e => setAcUnits(prev => ({ ...prev, [room.id]: e.target.value }))}
                             disabled={acTenantCount === 0}
-                            className="w-28 h-9 text-sm text-center disabled:opacity-40"
+                            className="flex-1 sm:w-28 h-9 text-sm text-center disabled:opacity-40"
                           />
                           {canRecordPayment && (
                             <Button
                               size="sm"
-                              className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
+                              className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40 shrink-0"
                               variant="ghost"
                               disabled={applyingAC === room.id || !currentInput || acTenantCount === 0}
                               onClick={() => applyACUnits(room.id)}
@@ -1185,7 +1266,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           )}
                         </div>
                         {consumptionPreview != null && (
-                          <p className="text-[10px] text-amber/70">{consumptionPreview} units consumed</p>
+                          <p className="text-[10px] text-amber/70 sm:text-right">{consumptionPreview} units consumed</p>
                         )}
                       </div>
                     </div>
@@ -1214,7 +1295,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                             ? Math.max(0, Number(inputVal) - baseline)
                             : null;
                           return (
-                            <div key={tenant.id} className="flex items-center gap-3">
+                            <div key={tenant.id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
                               <div className="flex-1 min-w-0">
                                 <span className="text-xs text-muted-foreground truncate block">{tenant.full_name}</span>
                                 {joinRelative != null && (
@@ -1224,7 +1305,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                                   <span className="text-[10px] text-muted-foreground/50">Saved from move-in reading — edit to correct</span>
                                 )}
                               </div>
-                              <div className="flex items-center gap-2 shrink-0">
+                              <div className="flex items-center gap-2 sm:shrink-0">
                                 <Input
                                   type="number"
                                   min={0}
@@ -1232,7 +1313,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                                   placeholder="Reading"
                                   value={inputVal}
                                   onChange={e => setJoinUnits(prev => ({ ...prev, [joinKey]: e.target.value }))}
-                                  className="w-28 h-9 text-sm text-center"
+                                  className="flex-1 sm:w-28 h-9 text-sm text-center"
                                 />
                                 {canRecordPayment && (
                                   <Button
@@ -1240,7 +1321,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                                     variant="ghost"
                                     disabled={savingJoin === tenant.id || !inputVal || isSaved}
                                     onClick={() => handleSaveJoinReading(room.id, tenant.id)}
-                                    className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
+                                    className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40 shrink-0"
                                   >
                                     {savingJoin === tenant.id
                                       ? <Loader2 className="w-3 h-3 animate-spin" />
@@ -1552,12 +1633,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3 py-1">
-            <p className="text-sm text-muted-foreground">
-              Send an automated WhatsApp reminder to all{" "}
-              <span className="text-foreground font-semibold">{unpaidCount}</span>{" "}
-              tenant{unpaidCount === 1 ? "" : "s"} with dues pending for{" "}
-              <span className="text-foreground font-medium">{displayMonth}</span>?
-            </p>
+            {reminderScope === "due_today" ? (
+              <p className="text-sm text-muted-foreground">
+                Send an automated WhatsApp reminder to{" "}
+                <span className="text-foreground font-semibold">{dueTodayPayments.length}</span>{" "}
+                tenant{dueTodayPayments.length === 1 ? "" : "s"} due today — not the full unpaid list?
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Send an automated WhatsApp reminder to all{" "}
+                <span className="text-foreground font-semibold">{unpaidCount}</span>{" "}
+                tenant{unpaidCount === 1 ? "" : "s"} with dues pending for{" "}
+                <span className="text-foreground font-medium">{displayMonth}</span>?
+              </p>
+            )}
             <div className="rounded-lg bg-white/5 border border-white/10 px-3 py-2.5">
               <p className="text-xs text-muted-foreground">
                 Anyone already reminded today, on the waiting list, or checked out is skipped

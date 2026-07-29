@@ -1054,7 +1054,10 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
           </div>
           <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.totalsBySource.kitchen)}</p>
         </div>
-        <div className="rounded-2xl border border-amber/20 bg-amber/[0.05] p-4">
+        {/* 5 cards can't split evenly across the 2-col (mobile) or 3-col (sm)
+            grids — spanning the remainder here avoids leaving this one alone
+            with blank space beside it. lg:col-span-1 once all 5 fit one row. */}
+        <div className="col-span-2 lg:col-span-1 rounded-2xl border border-amber/20 bg-amber/[0.05] p-4">
           <div className="flex items-center gap-2 mb-2">
             <Receipt className="w-3 h-3 text-amber shrink-0" />
             <p className="text-xs text-amber font-medium">Grand Total</p>

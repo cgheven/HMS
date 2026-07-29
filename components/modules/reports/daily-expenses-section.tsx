@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CalendarDays, ArrowDownCircle, ArrowUpCircle, UserPlus, UserMinus, Receipt, ChefHat, TrendingUp, TrendingDown } from "lucide-react";
+import { CalendarDays, ArrowDownCircle, ArrowUpCircle, UserPlus, UserMinus, Receipt, ChefHat, TrendingUp, TrendingDown, AlertTriangle } from "lucide-react";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import type { ReportData } from "@/app/actions/reports";
@@ -25,6 +25,7 @@ const EMPTY_DETAIL = {
   paymentsList: [] as ReportData["dailyExpenseDetails"][number]["paymentsList"],
   joinedList: [] as ReportData["dailyExpenseDetails"][number]["joinedList"],
   leftList: [] as ReportData["dailyExpenseDetails"][number]["leftList"],
+  dueList: [] as ReportData["dailyExpenseDetails"][number]["dueList"],
 };
 
 export function DailyExpensesSection({ dailyDetails }: Props) {
@@ -39,6 +40,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
   const d = dailyDetails.find((r) => r.date === selectedDate) ?? EMPTY_DETAIL;
   const profit = d.income - d.total;
   const isSameDay = selectedDate === todayStr;
+  const dueTotal = d.dueList.reduce((s, t) => s + t.amount, 0);
 
   return (
     <div className="rounded-2xl border border-sidebar-border bg-card p-4 sm:p-6 animate-fade-up">
@@ -85,8 +87,15 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
             key: "left", label: "Left", value: String(d.leftList.length), sub: null,
             icon: UserMinus, color: "text-amber", bg: "bg-amber/10 border-amber/20",
           },
-        ].map(({ key, label, value, sub, icon: Icon, color, bg }) => (
-          <div key={key} className="rounded-xl border border-white/5 bg-white/[0.02] p-3 sm:p-4 flex flex-col">
+        ].map(({ key, label, value, sub, icon: Icon, color, bg }, i, arr) => (
+          <div
+            key={key}
+            className={`rounded-xl border border-white/5 bg-white/[0.02] p-3 sm:p-4 flex flex-col ${
+              // 5 cards can't split evenly across a 2-col mobile grid — the
+              // last one was left alone with blank space beside it.
+              i === arr.length - 1 ? "col-span-2 sm:col-span-1" : ""
+            }`}
+          >
             <div className={`flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl border ${bg} mb-2.5 sm:mb-3`}>
               <Icon className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${color}`} />
             </div>
@@ -227,6 +236,64 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Due Today — kept separate from the compact verification grid above and
+          given full width, matching the Payments page's own "Due Today" tab,
+          since this is the one list an owner actually needs to act on (send a
+          reminder), not just cross-check against a register. */}
+      <div className="mt-6 rounded-2xl border border-sidebar-border bg-card overflow-hidden">
+        <div className="flex items-center gap-2 flex-wrap px-5 py-4 border-b border-white/5">
+          <AlertTriangle className="w-4 h-4 text-amber" />
+          <h3 className="text-sm font-semibold text-foreground">
+            {isSameDay ? "Due Today" : `Due on ${formatDate(selectedDate)}`}
+          </h3>
+          {d.dueList.length > 0 && (
+            <span className="ml-auto text-sm font-semibold text-amber">{formatCurrency(dueTotal)} total</span>
+          )}
+        </div>
+
+        {d.dueList.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground">
+            <AlertTriangle className="w-10 h-10 opacity-20" />
+            <p className="text-sm">Nobody is due {isSameDay ? "today" : `on ${formatDate(selectedDate)}`}</p>
+          </div>
+        ) : (
+          <div>
+            {/* Desktop header row (≥ md) */}
+            <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto] gap-6 px-5 py-2.5 border-b border-white/5">
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tenant</span>
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Room</span>
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Phone</span>
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-32">Amount Due</span>
+            </div>
+            <div className="p-2 md:p-0 space-y-2 md:space-y-0 md:divide-y md:divide-white/5">
+              {d.dueList.map((t) => (
+                <div key={t.id}>
+                  {/* Mobile card (< md) */}
+                  <div className="md:hidden rounded-xl border border-white/5 bg-white/[0.02] p-3.5 flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-foreground leading-tight truncate">{t.name}</p>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap text-xs text-muted-foreground">
+                        {t.roomNumber && <span>Room {t.roomNumber}</span>}
+                        {t.phone && <span>{t.phone}</span>}
+                      </div>
+                    </div>
+                    <p className="text-base font-bold text-amber shrink-0 tabular-nums">{formatCurrency(t.amount)}</p>
+                  </div>
+
+                  {/* Desktop row (≥ md) */}
+                  <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto] gap-6 px-5 py-3.5 items-center">
+                    <span className="text-sm font-medium text-foreground truncate">{t.name}</span>
+                    <span className="text-sm text-muted-foreground">{t.roomNumber ? `Room ${t.roomNumber}` : "—"}</span>
+                    <span className="text-sm text-muted-foreground">{t.phone ?? "—"}</span>
+                    <span className="text-sm font-semibold text-amber text-right w-32 tabular-nums">{formatCurrency(t.amount)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

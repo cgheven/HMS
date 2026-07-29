@@ -168,7 +168,7 @@ export function PortalShell({ manager, permissions, hostels, activeHostel, child
           {/* Mobile hamburger */}
           <button
             onClick={() => setSidebarOpen(true)}
-            className="lg:hidden p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+            className="lg:hidden p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors shrink-0"
           >
             <Menu className="w-5 h-5" />
           </button>
@@ -177,7 +177,7 @@ export function PortalShell({ manager, permissions, hostels, activeHostel, child
           <HostelSwitcher activeHostel={switcherActive} hostels={switcherHostels} />
 
           {/* Manager name + session indicator on the right */}
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-3 shrink-0">
             <div className="flex items-center gap-2">
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
               <span className="text-xs text-muted-foreground hidden sm:block">Manager session</span>

@@ -53,11 +53,11 @@ export function HostelSwitcher({ activeHostel, hostels }: Props) {
   // Single-hostel: just show the name, no switcher needed
   if (!multiHostel) {
     return (
-      <div className="flex items-center gap-2 min-w-0">
+      <div className="flex items-center gap-2 min-w-0 flex-1">
         <div className="flex items-center justify-center w-6 h-6 rounded-md bg-amber/10 border border-amber/20 shrink-0">
           <Home className="w-3.5 h-3.5 text-amber" />
         </div>
-        <span className="font-semibold text-sm truncate text-foreground">
+        <span className="font-semibold text-sm truncate text-foreground min-w-0">
           {optimisticName ?? activeHostel?.name ?? "No branch assigned"}
         </span>
       </div>
@@ -65,17 +65,17 @@ export function HostelSwitcher({ activeHostel, hostels }: Props) {
   }
 
   return (
-    <div className="relative flex items-center gap-2 min-w-0">
+    <div className="relative flex items-center gap-2 min-w-0 flex-1">
       <div className="flex items-center justify-center w-6 h-6 rounded-md bg-amber/10 border border-amber/20 shrink-0">
         <Building2 className="w-3.5 h-3.5 text-amber" />
       </div>
 
       <button
         onClick={() => setOpen((p) => !p)}
-        className="flex items-center gap-1.5 font-semibold text-sm text-foreground hover:text-amber transition-colors"
+        className="flex items-center gap-1.5 font-semibold text-sm text-foreground hover:text-amber transition-colors min-w-0"
         disabled={isPending}
       >
-        <span className="truncate max-w-[220px]">
+        <span className="truncate max-w-[130px] sm:max-w-[220px]">
           {optimisticName ?? activeHostel?.name ?? "No branch assigned"}
         </span>
         {isPending ? (

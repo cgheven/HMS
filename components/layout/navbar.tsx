@@ -58,7 +58,7 @@ export function Navbar({ onMenuClick, profile, hostel, hostels }: NavbarProps) {
       {/* Mobile hamburger */}
       <button
         onClick={onMenuClick}
-        className="lg:hidden p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+        className="lg:hidden p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors shrink-0"
       >
         <Menu className="w-5 h-5" />
       </button>
@@ -68,7 +68,7 @@ export function Navbar({ onMenuClick, profile, hostel, hostels }: NavbarProps) {
 
       {/* Admin quick-access */}
       {isAdmin && (
-        <div className="relative ml-auto">
+        <div className="relative ml-auto shrink-0">
           <button
             onClick={() => setAdminDrop((p) => !p)}
             className={cn(
@@ -112,7 +112,7 @@ export function Navbar({ onMenuClick, profile, hostel, hostels }: NavbarProps) {
       )}
 
       {/* Avatar + dropdown */}
-      <div className={cn("flex items-center gap-2 relative", !isAdmin && "ml-auto")}>
+      <div className={cn("flex items-center gap-2 relative shrink-0", !isAdmin && "ml-auto")}>
         <button
           onClick={() => setDropOpen((p) => !p)}
           className="flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/5 transition-colors group"

@@ -225,6 +225,43 @@ export async function sendBulkRemindersAction(
 }
 
 // ---------------------------------------------------------------------------
+// sendDueTodayRemindersAction
+// Same as sendBulkRemindersAction, except scheduleGate=true — only tenants
+// whose own due-day cadence lands on today (the "Due Today" tab's list, not
+// every unpaid tenant regardless of due date). Lets an owner target exactly
+// who the automated cron would message today, on demand.
+// ---------------------------------------------------------------------------
+
+export async function sendDueTodayRemindersAction(
+  month: string
+): Promise<{ data?: ReminderSummary; error?: string }> {
+  try {
+    await requireOwnerOrPartnerTier("standard");
+    const hostelId = await resolveHostelId();
+    if (!MONTH_RE.test(month)) throw new Error(`Invalid month format: "${month}"`);
+
+    const admin = createAdminClient();
+
+    const { data: hostelRow } = await admin
+      .from("hms_hostels")
+      .select("whatsapp_enabled")
+      .eq("id", hostelId)
+      .single();
+
+    if (!hostelRow?.whatsapp_enabled) {
+      throw new Error("WhatsApp isn't enabled for this branch yet. Contact support to have this feature turned on.");
+    }
+
+    await ensureMonthlyPaymentRows(admin, hostelId, month);
+    const summary = await runReminderPass(admin, hostelId, month, true);
+    return { data: summary };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // markPaymentPaidAction
 // Validates all inputs and re-fetches canonical rates before writing.
 // ---------------------------------------------------------------------------

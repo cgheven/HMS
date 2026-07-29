@@ -106,8 +106,11 @@ export function DashboardClient({ data }: Props) {
           </div>
         </div>
 
-        {/* AC Units */}
-        <div className="relative rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 hover:border-blue-500/30 transition-all animate-fade-up" style={{ animationDelay: "225ms" }}>
+        {/* AC Units — full-width on mobile too, same as Net Profit: 4 cards can't
+            split evenly into a 2-column mobile grid once Net Profit spans both
+            columns, so without this AC Units was left alone with a blank cell
+            beside it. */}
+        <div className="col-span-2 lg:col-span-1 relative rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 hover:border-blue-500/30 transition-all animate-fade-up" style={{ animationDelay: "225ms" }}>
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
               <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">AC Units</p>
@@ -136,10 +139,15 @@ export function DashboardClient({ data }: Props) {
               : "No deposits yet",
             icon: ShieldCheck, color: "text-violet-400", iconBg: "bg-violet-500/10 border-violet-500/20", hover: "hover:border-violet-500/30", delay: 450,
           },
-        ].map(({ label, value, sub, icon: Icon, color, iconBg, hover, delay }) => (
+        ].map(({ label, value, sub, icon: Icon, color, iconBg, hover, delay }, i, arr) => (
           <div
             key={label}
-            className={`relative rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 ${hover} transition-all animate-fade-up`}
+            className={`relative rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 ${hover} transition-all animate-fade-up ${
+              // 5 cards can't fill evenly at the 2-col (mobile) or 3-col (sm)
+              // breakpoints — only the last one needs to span the remainder,
+              // and only below lg where all 5 fit one row on their own.
+              i === arr.length - 1 ? "col-span-2 lg:col-span-1" : ""
+            }`}
             style={{ animationDelay: `${delay}ms` }}
           >
             <div className="flex items-start justify-between gap-2">
