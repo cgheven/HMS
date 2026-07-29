@@ -1,11 +1,13 @@
 "use client";
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import {
   Plus, ChefHat, Search, Edit2, Trash2, TrendingDown,
   CalendarDays, X, ShoppingBasket, Pencil, Check, ShoppingCart,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
+import { addKitchenDailyItemsAsManager, addKitchenGroceryItemAsManager } from "@/app/actions/managers";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
-import type { KitchenExpense, PartnerTier } from "@/types";
+import type { KitchenExpense, PartnerTier, StaffPermission } from "@/types";
 
 // ── Quick-add chips (page-level) ─────────────────────────
 const QUICK_DAILY: { label: string; cat: string }[] = [
@@ -118,12 +120,18 @@ interface Props {
   initialItems: KitchenExpense[];
   defaultMonth: string;
   partnerTier?: PartnerTier | null;
+  managerPermissions?: StaffPermission[] | null;
 }
 
 const kitchenCache = new Map<string, KitchenExpense[]>();
 
-export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTier = null }: Props) {
+export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTier = null, managerPermissions = null }: Props) {
+  const router = useRouter();
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
+  const isManager = !!managerPermissions;
+  const canAddKitchen = managerPermissions?.includes("add_kitchen_expenses") ?? false;
+  const canAdd = isManager ? canAddKitchen : canStandardTier;
+  const canEditDelete = isManager ? false : canStandardTier;
 
   const [items, setItems]           = useState<KitchenExpense[]>(initialItems);
   const [monthFilter, setMonthFilter] = useState(defaultMonth);
@@ -159,8 +167,21 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
   const [editForm, setEditForm]   = useState({ title: "", quantity: "", amount: "", date: "", notes: "" });
   const [savingEdit, setSavingEdit] = useState(false);
 
+  // Managers have no RLS read access — the browser client returns nothing for
+  // them, so their list is refetched server-side and arrives as a new prop.
+  useEffect(() => {
+    if (isManager) setItems(initialItems);
+  }, [isManager, initialItems]);
+
   // ── Data loading ──────────────────────────────────────
   async function loadMonth(month: string) {
+    if (isManager) {
+      const params = new URLSearchParams(window.location.search);
+      params.set("month", month);
+      router.replace(`${window.location.pathname}?${params.toString()}`);
+      router.refresh();
+      return;
+    }
     if (!hostelId) return;
     const key = `${hostelId}:${month}`;
     if (kitchenCache.has(key)) { setItems(kitchenCache.get(key)!); return; }
@@ -177,6 +198,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
   }
 
   async function reload() {
+    if (isManager) { router.refresh(); return; }
     if (!hostelId) return;
     kitchenCache.delete(`${hostelId}:${monthFilter}`);
     await loadMonth(monthFilter);
@@ -241,8 +263,21 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
 
   async function handleMultiSave() {
     const valid = selectedItems.filter((i) => i.amount && parseFloat(i.amount) > 0);
-    if (!valid.length || !hostelId) return;
+    if (!valid.length) return;
     setSavingMulti(true);
+
+    if (isManager) {
+      const result = await addKitchenDailyItemsAsManager(
+        valid.map((i) => ({ title: i.title, quantity: i.quantity || null, amount: parseFloat(i.amount) })),
+        addDate,
+      );
+      if (result.error) toast({ title: "Error", description: result.error, variant: "destructive" });
+      else { toast({ title: `${valid.length} item${valid.length > 1 ? "s" : ""} added` }); setAddOpen(false); await reload(); }
+      setSavingMulti(false);
+      return;
+    }
+
+    if (!hostelId) { setSavingMulti(false); return; }
     const supabase = createClient();
     const { error } = await supabase.from("hms_kitchen_expenses").insert(
       valid.map((i) => ({ hostel_id: hostelId, title: i.title, quantity: i.quantity || null, amount: parseFloat(i.amount), date: addDate, type: "daily", notes: null }))
@@ -280,11 +315,25 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
   }
 
   async function handleGrocerySave() {
-    if (!hostelId || !groceryForm.title || !groceryForm.amount) return;
+    if (!groceryForm.title || !groceryForm.amount) return;
     setSavingGrocery(true);
-    const supabase = createClient();
     const [year, m] = monthFilter.split("-");
     const date = `${year}-${m}-01`;
+
+    if (isManager) {
+      // Managers never reach the edit branch — grocery edit is owner-only and
+      // the UI never sets groceryEditing for them — so this is always an add.
+      const result = await addKitchenGroceryItemAsManager(
+        groceryForm.title, groceryForm.quantity || null, parseFloat(groceryForm.amount), date, groceryForm.notes,
+      );
+      if (result.error) toast({ title: "Error", description: result.error, variant: "destructive" });
+      else { toast({ title: "Grocery item added" }); setGroceryOpen(false); await reload(); }
+      setSavingGrocery(false);
+      return;
+    }
+
+    if (!hostelId) { setSavingGrocery(false); return; }
+    const supabase = createClient();
     const payload = {
       hostel_id: hostelId,
       title: groceryForm.title,
@@ -399,7 +448,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
           <p className="text-muted-foreground text-sm mt-1">Track daily and monthly grocery expenses</p>
         </div>
         <div className="flex gap-2">
-          {!canStandardTier ? null : activeTab === "daily" ? (
+          {!canAdd ? null : activeTab === "daily" ? (
             <Button onClick={openAdd} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold w-full sm:w-auto">
               <Plus className="w-4 h-4" /> Add Daily Entry
             </Button>
@@ -446,7 +495,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
         {/* ── Daily tab ────────────────────────────────── */}
         <TabsContent value="daily" className="space-y-4">
           {/* Quick Add */}
-          {canStandardTier && (
+          {canAdd && (
             <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <Plus className="w-3.5 h-3.5 text-muted-foreground" />
@@ -493,7 +542,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
                             {item.quantity && <p className="text-xs text-muted-foreground">{item.quantity}</p>}
                           </div>
                           <span className="font-semibold text-sm shrink-0">{formatCurrency(item.amount)}</span>
-                          {canStandardTier && (
+                          {canEditDelete && (
                             <div className="flex gap-1 shrink-0">
                               <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(item)}><Edit2 className="w-3 h-3" /></Button>
                               <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(item.id)}><Trash2 className="w-3 h-3" /></Button>
@@ -512,7 +561,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
         {/* ── Monthly Grocery tab ───────────────────────── */}
         <TabsContent value="grocery" className="space-y-4">
           {/* Quick Add */}
-          {canStandardTier && (
+          {canAdd && (
             <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <Plus className="w-3.5 h-3.5 text-muted-foreground" />
@@ -562,7 +611,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
                         {item.notes && <p className="text-xs text-muted-foreground italic">{item.notes}</p>}
                       </div>
                       <span className="font-bold text-sm text-blue-400 shrink-0">{formatCurrency(item.amount)}</span>
-                      {canStandardTier && (
+                      {canEditDelete && (
                         <div className="flex gap-1 shrink-0">
                           <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openGroceryEdit(item)}><Edit2 className="w-3 h-3" /></Button>
                           <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(item.id)}><Trash2 className="w-3 h-3" /></Button>

@@ -128,7 +128,7 @@ export async function updateManagerPermissions(
 
   if (!mgr) return { error: "Manager not found or access denied." }
 
-  const VALID_PERMISSIONS = new Set<StaffPermission>(["add_members", "collect_payments", "add_expenses"])
+  const VALID_PERMISSIONS = new Set<StaffPermission>(["add_members", "collect_payments", "add_expenses", "add_kitchen_expenses"])
   for (const p of permissions) {
     if (!VALID_PERMISSIONS.has(p)) return { error: `Invalid permission: ${p}` }
   }
@@ -903,6 +903,78 @@ export async function addExpenseAsManager(
     if (error) return { error: error.message }
 
     revalidatePath("/portal/expenses")
+    return { error: null }
+  } catch (err: unknown) {
+    unstable_rethrow(err)
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
+  }
+}
+
+export async function addKitchenDailyItemsAsManager(
+  items: { title: string; quantity: string | null; amount: number }[],
+  date: string,
+): Promise<{ error: string | null }> {
+  try {
+    const ctx = await requireManagerPermission("add_kitchen_expenses")
+    const hostelId = ctx.activeHostel.id
+    const admin = createAdminClient()
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Invalid date." }
+
+    const valid = items.filter((i) => i.title?.trim() && Number.isFinite(i.amount) && i.amount > 0)
+    if (!valid.length) return { error: "Add at least one valid item." }
+
+    const { error } = await admin.from("hms_kitchen_expenses").insert(
+      valid.map((i) => ({
+        hostel_id: hostelId,
+        title: i.title.trim(),
+        quantity: i.quantity || null,
+        amount: i.amount,
+        date,
+        type: "daily",
+        notes: null,
+      })),
+    )
+
+    if (error) return { error: error.message }
+
+    revalidatePath("/portal/kitchen")
+    return { error: null }
+  } catch (err: unknown) {
+    unstable_rethrow(err)
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
+  }
+}
+
+export async function addKitchenGroceryItemAsManager(
+  title: string,
+  quantity: string | null,
+  amount: number,
+  date: string,
+  notes?: string,
+): Promise<{ error: string | null }> {
+  try {
+    const ctx = await requireManagerPermission("add_kitchen_expenses")
+    const hostelId = ctx.activeHostel.id
+    const admin = createAdminClient()
+
+    if (!title?.trim()) return { error: "Item name is required." }
+    if (!Number.isFinite(amount) || amount <= 0) return { error: "Amount must be greater than 0." }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Invalid date." }
+
+    const { error } = await admin.from("hms_kitchen_expenses").insert({
+      hostel_id: hostelId,
+      title: title.trim(),
+      quantity: quantity || null,
+      amount,
+      date,
+      type: "monthly_grocery",
+      notes: notes?.trim() || null,
+    })
+
+    if (error) return { error: error.message }
+
+    revalidatePath("/portal/kitchen")
     return { error: null }
   } catch (err: unknown) {
     unstable_rethrow(err)

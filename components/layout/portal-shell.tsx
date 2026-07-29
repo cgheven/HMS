@@ -4,7 +4,7 @@ import { useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
-  UserPlus, CreditCard, Receipt, Menu, X, LogOut, Home, ShieldCheck,
+  UserPlus, CreditCard, Receipt, Menu, X, LogOut, Home, ShieldCheck, ChefHat,
 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { cn } from "@/lib/utils"
@@ -20,9 +20,10 @@ interface PortalShellProps {
 }
 
 const navItems = [
-  { href: "/portal/tenants",  label: "Add Member", icon: UserPlus,  permission: "add_members"      as StaffPermission },
-  { href: "/portal/payments", label: "Payments",   icon: CreditCard, permission: "collect_payments" as StaffPermission },
-  { href: "/portal/expenses", label: "Expenses",   icon: Receipt,    permission: "add_expenses"     as StaffPermission },
+  { href: "/portal/tenants",  label: "Add Member", icon: UserPlus,   permission: "add_members"          as StaffPermission },
+  { href: "/portal/payments", label: "Payments",   icon: CreditCard, permission: "collect_payments"      as StaffPermission },
+  { href: "/portal/expenses", label: "Expenses",   icon: Receipt,    permission: "add_expenses"          as StaffPermission },
+  { href: "/portal/kitchen",  label: "Kitchen",    icon: ChefHat,    permission: "add_kitchen_expenses"  as StaffPermission },
 ]
 
 function PortalSidebar({

@@ -31,12 +31,13 @@ interface ManagersClientProps {
 }
 
 const PERMISSION_LABELS: Record<StaffPermission, string> = {
-  add_members:      "Add Members",
-  collect_payments: "Collect Payments",
-  add_expenses:     "Add Expenses",
+  add_members:          "Add Members",
+  collect_payments:     "Collect Payments",
+  add_expenses:         "Add Expenses",
+  add_kitchen_expenses: "Add Kitchen Expenses",
 }
 
-const ALL_PERMISSIONS: StaffPermission[] = ["add_members", "collect_payments", "add_expenses"]
+const ALL_PERMISSIONS: StaffPermission[] = ["add_members", "collect_payments", "add_expenses", "add_kitchen_expenses"]
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false)

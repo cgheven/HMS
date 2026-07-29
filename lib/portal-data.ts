@@ -4,7 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getManagerContext } from "@/lib/manager-auth";
 import { formatDateInput } from "@/lib/utils";
 import type {
-  Room, Tenant, Payment, Expense, PackageConfig, PackageTier, Hostel,
+  Room, Tenant, Payment, Expense, KitchenExpense, PackageConfig, PackageTier, Hostel,
   TenantApplication, WaitlistEntry,
 } from "@/types";
 
@@ -201,4 +201,30 @@ export async function getManagerExpenses(monthFilter: string) {
     .order("created_at", { ascending: false });
 
   return { hostelId, expenses: (data as Expense[]) ?? [] };
+}
+
+// ---------------------------------------------------------------------------
+// getManagerKitchenExpenses — mirrors lib/data.ts getKitchenExpenses()
+// ---------------------------------------------------------------------------
+
+export async function getManagerKitchenExpenses(monthFilter: string) {
+  const scope = await resolveManagerHostel();
+  if (!scope) return { hostelId: null, items: [] as KitchenExpense[] };
+
+  const { hostelId } = scope;
+  const admin = createAdminClient();
+
+  const [year, month] = monthFilter.split("-");
+  const start = `${year}-${month}-01`;
+  const end = formatDateInput(new Date(parseInt(year), parseInt(month), 0));
+
+  const { data } = await admin
+    .from("hms_kitchen_expenses")
+    .select("*")
+    .eq("hostel_id", hostelId)
+    .gte("date", start)
+    .lte("date", end)
+    .order("date", { ascending: false });
+
+  return { hostelId, items: (data as KitchenExpense[]) ?? [] };
 }
