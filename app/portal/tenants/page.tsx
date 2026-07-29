@@ -1,10 +1,10 @@
-import { requireManagerPermission } from "@/lib/manager-auth"
+import { requireManagerPermissionAny } from "@/lib/manager-auth"
 import { getManagerTenants } from "@/lib/portal-data"
 import { TenantsClient } from "@/components/modules/tenants/tenants-client"
 
 export default async function PortalTenantsPage() {
   const [ctx, data] = await Promise.all([
-    requireManagerPermission("add_members"),
+    requireManagerPermissionAny(["add_members", "edit_members"]),
     getManagerTenants(),
   ])
 

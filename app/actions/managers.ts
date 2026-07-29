@@ -8,13 +8,14 @@ import { getAuthContext } from "@/lib/data"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { requireManagerPermission } from "@/lib/manager-auth"
 import { logActivity } from "@/lib/audit"
-import { backfillTenantPaymentsAction } from "@/app/actions/tenants"
+import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
 import { computeACSegmentBilling, deriveOpeningReading } from "@/lib/ac-billing"
 import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge } from "@/lib/payment-calc"
 import { calcFoodAddonCharge } from "@/lib/food-addon"
+import { performTenantCheckout } from "@/lib/tenant-checkout"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
-import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission } from "@/types"
+import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission, CheckoutInput, CheckoutSettlement } from "@/types"
 
 function getPrevMonth(forMonth: string): string {
   const [y, m] = forMonth.split("-").map(Number);
@@ -128,7 +129,10 @@ export async function updateManagerPermissions(
 
   if (!mgr) return { error: "Manager not found or access denied." }
 
-  const VALID_PERMISSIONS = new Set<StaffPermission>(["add_members", "collect_payments", "add_expenses", "add_kitchen_expenses"])
+  const VALID_PERMISSIONS = new Set<StaffPermission>([
+    "add_members", "collect_payments", "add_expenses", "add_kitchen_expenses",
+    "edit_members", "edit_expenses", "edit_kitchen_expenses", "manage_rooms",
+  ])
   for (const p of permissions) {
     if (!VALID_PERMISSIONS.has(p)) return { error: `Invalid permission: ${p}` }
   }
@@ -607,6 +611,23 @@ function validateManagerTenantPayload(payload: ManagerTenantPayload): string | n
   return null
 }
 
+// The back-dated check-in restriction above only makes sense at CREATION time
+// (a brand-new tenant needs backfillTenantPaymentsAction, which no-ops for a
+// manager). Reusing that validator for EDIT would reject saving any change to
+// an already-existing tenant, since almost every real tenant's check_in date
+// is already in a previous month — this is edit validation only, no back-dated
+// restriction.
+function validateManagerTenantEditPayload(payload: ManagerTenantPayload): string | null {
+  if (!payload.full_name?.trim() || payload.full_name.trim().length < 2) {
+    return "Full name must be at least 2 characters."
+  }
+  if (!payload.is_waiting && !payload.check_in) return "Check-in date is required."
+  if (payload.cnic && !/^\d{5}-\d{7}-\d$/.test(payload.cnic)) {
+    return "Invalid CNIC format. Must be XXXXX-XXXXXXX-X."
+  }
+  return null
+}
+
 export async function addTenantAsManager(
   payload: ManagerTenantPayload
 ): Promise<{ error: string | null; tenantId?: string }> {
@@ -733,6 +754,260 @@ export async function addTenantAsManager(
   } catch (err: unknown) {
     unstable_rethrow(err)
     return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
+  }
+}
+
+// Mirrors editTenantAsPartner exactly (app/actions/partner.ts) — same field
+// list, same room-swap/occupancy logic, same ledger events — just gated by
+// edit_members instead of full-tier partnership.
+export async function editTenantAsManager(
+  tenantId: string,
+  payload: ManagerTenantPayload
+): Promise<{ error: string | null }> {
+  try {
+    const ctx = await requireManagerPermission("edit_members")
+    const hostelId = ctx.activeHostel.id
+    const admin = createAdminClient()
+
+    const { data: existing } = await admin
+      .from("hms_tenants")
+      .select("id, hostel_id, room_id, package_tier, is_waiting")
+      .eq("id", tenantId)
+      .maybeSingle()
+
+    if (!existing || existing.hostel_id !== hostelId) {
+      return { error: "Tenant not found in your active branch." }
+    }
+
+    const validationError = validateManagerTenantEditPayload(payload)
+    if (validationError) return { error: validationError }
+
+    const prevRoomId = existing.room_id as string | null
+    const roomId = payload.is_waiting ? null : payload.room_id
+    let newRoom: { id: string; capacity: number; occupied: number } | null = null
+    if (roomId && roomId !== prevRoomId) {
+      const { data: r } = await admin
+        .from("hms_rooms")
+        .select("id, capacity, occupied, status")
+        .eq("id", roomId)
+        .eq("hostel_id", hostelId)
+        .single()
+      if (!r) return { error: "Invalid room selection." }
+      if (r.status === "maintenance") return { error: "Selected room is under maintenance." }
+      if (r.occupied >= r.capacity) return { error: "Selected room is at full capacity." }
+      newRoom = r
+    }
+
+    const billingType = payload.billing_type === "daily" ? "daily" : "monthly"
+    const updatePayload: Record<string, unknown> = {
+      full_name: payload.full_name.trim(),
+      phone: payload.phone?.trim() || null,
+      email: payload.email?.trim() || null,
+      cnic: payload.cnic || null,
+      type: payload.type,
+      package_tier: payload.package_tier,
+      custom_package_id: payload.custom_package_id || null,
+      room_id: roomId,
+      bed_number: payload.bed_number || null,
+      check_in: payload.is_waiting ? new Date().toISOString().slice(0, 10) : payload.check_in,
+      check_out: billingType === "daily" && payload.check_out ? payload.check_out : null,
+      billing_type: billingType,
+      monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
+      daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
+      security_deposit: Number(payload.security_deposit) || 0,
+      registration_fee: Number(payload.registration_fee) || 0,
+      vehicle_type: payload.vehicle_type?.trim() || null,
+      vehicle_number: payload.vehicle_number?.trim() || null,
+      vehicle_model: payload.vehicle_model?.trim() || null,
+      joining_meter_reading: payload.joining_meter_reading ?? null,
+      emergency_contact: payload.emergency_contact || null,
+      emergency_relationship: payload.emergency_relationship || null,
+      emergency_phone: payload.emergency_phone || null,
+      notes: payload.notes || null,
+      is_waiting: payload.is_waiting,
+      is_active: !payload.is_waiting,
+      photo_url: payload.photo_url || null,
+      food_breakfast: !!payload.food_breakfast,
+      food_lunch: !!payload.food_lunch,
+      food_dinner: !!payload.food_dinner,
+      institute_name: payload.institute_name || null,
+      student_category: payload.student_category || null,
+      student_specialization: payload.student_specialization || null,
+      organization: payload.organization || null,
+      organization_type: payload.organization_type || null,
+      department: payload.department || null,
+    }
+
+    const { error } = await admin
+      .from("hms_tenants")
+      .update(updatePayload)
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+
+    if (error) return { error: error.message }
+
+    // Fire-and-forget welcome WhatsApp — only on the waiting-list → active
+    // transition, not on every routine edit of an already-active tenant.
+    if (existing.is_waiting && !payload.is_waiting) {
+      void sendTenantWelcomeMessageAction(tenantId)
+    }
+
+    // Ledger events — best-effort, mirrors the owner/partner flow exactly.
+    if (prevRoomId !== roomId) {
+      const [{ data: oldRoomRow }, { data: newRoomRow }] = await Promise.all([
+        prevRoomId ? admin.from("hms_rooms").select("room_number").eq("id", prevRoomId).maybeSingle() : Promise.resolve({ data: null }),
+        roomId ? admin.from("hms_rooms").select("room_number").eq("id", roomId).maybeSingle() : Promise.resolve({ data: null }),
+      ])
+      await logTenantEvent({
+        tenantId,
+        eventType: "room_changed",
+        fromValue: oldRoomRow?.room_number ?? "None",
+        toValue: newRoomRow?.room_number ?? "None",
+      })
+    }
+    if (existing.package_tier !== payload.package_tier) {
+      await logTenantEvent({
+        tenantId,
+        eventType: "plan_changed",
+        fromValue: existing.package_tier ?? null,
+        toValue: payload.package_tier,
+      })
+    }
+
+    // Room occupancy adjustments — old room decrements, new room increments.
+    if (prevRoomId !== roomId) {
+      if (prevRoomId) {
+        const { data: oldRoom } = await admin.from("hms_rooms").select("occupied, capacity").eq("id", prevRoomId).single()
+        if (oldRoom) {
+          const newOcc = Math.max(0, oldRoom.occupied - 1)
+          await admin
+            .from("hms_rooms")
+            .update({ occupied: newOcc, status: newOcc < oldRoom.capacity ? "available" : "occupied" })
+            .eq("id", prevRoomId)
+        }
+      }
+      if (roomId && newRoom) {
+        const newOcc = newRoom.occupied + 1
+        await admin
+          .from("hms_rooms")
+          .update({ occupied: newOcc, status: newOcc >= newRoom.capacity ? "occupied" : "available" })
+          .eq("id", roomId)
+      }
+    }
+
+    revalidatePath("/portal/tenants")
+    revalidatePath("/portal/payments")
+    return { error: null }
+  } catch (err: unknown) {
+    unstable_rethrow(err)
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
+  }
+}
+
+// Mirrors giveTenantNoticeAction/cancelTenantNoticeAction (app/actions/tenants.ts)
+// — same validation, same hms_tenant_events logging — gated by edit_members
+// since giving/cancelling notice is a variant of editing a tenant's record,
+// not a separate capability of its own.
+export async function giveTenantNoticeAsManager(
+  tenantId: string,
+  intendedCheckoutDate: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const ctx = await requireManagerPermission("edit_members")
+    const hostelId = ctx.activeHostel.id
+    const admin = createAdminClient()
+
+    const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+    if (!DATE_RE.test(intendedCheckoutDate)) throw new Error("Invalid date format")
+    const dateObj = new Date(intendedCheckoutDate + "T00:00:00")
+    if (isNaN(dateObj.getTime())) throw new Error("Invalid date")
+    const today = new Date().toISOString().slice(0, 10)
+    if (intendedCheckoutDate < today) throw new Error("Intended checkout date cannot be in the past")
+
+    const { data: tenant, error: tenantErr } = await admin
+      .from("hms_tenants")
+      .select("id, is_active")
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+      .single()
+    if (tenantErr || !tenant) throw new Error("Tenant not found or access denied")
+    if (!tenant.is_active) throw new Error("Tenant is not active")
+
+    const { error } = await admin
+      .from("hms_tenants")
+      .update({ notice_given_date: today, intended_checkout_date: intendedCheckoutDate, leaving_reminder_sent_at: null })
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+    if (error) throw new Error("Failed to record notice.")
+
+    await admin.from("hms_tenant_events").insert({
+      hostel_id: hostelId,
+      tenant_id: tenantId,
+      event_type: "notice_given",
+      to_value: intendedCheckoutDate,
+    })
+
+    revalidatePath("/portal/tenants")
+    return { success: true }
+  } catch (err: unknown) {
+    unstable_rethrow(err)
+    return { success: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export async function cancelTenantNoticeAsManager(
+  tenantId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const ctx = await requireManagerPermission("edit_members")
+    const hostelId = ctx.activeHostel.id
+    const admin = createAdminClient()
+
+    const { data: tenant, error: tenantErr } = await admin
+      .from("hms_tenants")
+      .select("id, is_active, intended_checkout_date")
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+      .single()
+    if (tenantErr || !tenant) throw new Error("Tenant not found or access denied")
+    if (!tenant.is_active) throw new Error("Tenant is not active")
+
+    const { error } = await admin
+      .from("hms_tenants")
+      .update({ notice_given_date: null, intended_checkout_date: null, leaving_reminder_sent_at: null })
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+    if (error) throw new Error("Failed to cancel notice.")
+
+    await admin.from("hms_tenant_events").insert({
+      hostel_id: hostelId,
+      tenant_id: tenantId,
+      event_type: "notice_cancelled",
+      from_value: tenant.intended_checkout_date,
+    })
+
+    revalidatePath("/portal/tenants")
+    return { success: true }
+  } catch (err: unknown) {
+    unstable_rethrow(err)
+    return { success: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+// Checkout has no separate manager permission of its own — it's a variant of
+// editing a tenant's record (ends their stay), so it's gated the same as edit.
+// No delete permission exists for managers at all; checkout (not delete) is
+// the only way a manager can end a tenancy.
+export async function checkoutTenantAsManager(
+  input: CheckoutInput
+): Promise<{ success: boolean; error?: string; warning?: string; settlement?: CheckoutSettlement }> {
+  try {
+    const ctx = await requireManagerPermission("edit_members")
+    const hostelId = ctx.activeHostel.id
+    return await performTenantCheckout(hostelId, input)
+  } catch (err: unknown) {
+    unstable_rethrow(err)
+    return { success: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
 
@@ -910,6 +1185,51 @@ export async function addExpenseAsManager(
   }
 }
 
+// Edit only — no deleteExpenseAsManager exists. Delete stays owner-only.
+export async function updateExpenseAsManager(
+  expenseId: string,
+  category: string,
+  amount: number,
+  description: string,
+  date: string,
+  notes?: string,
+): Promise<{ error: string | null }> {
+  try {
+    const ctx = await requireManagerPermission("edit_expenses")
+    const hostelId = ctx.activeHostel.id
+    const admin = createAdminClient()
+
+    const VALID_CATEGORIES = new Set(["furniture", "repairs", "cleaning", "security", "utilities", "other"])
+    if (!VALID_CATEGORIES.has(category)) return { error: "Invalid expense category." }
+    if (!Number.isFinite(amount) || amount <= 0) return { error: "Amount must be greater than 0." }
+    if (!description?.trim()) return { error: "Description is required." }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Invalid date." }
+
+    const { data: updated, error } = await admin
+      .from("hms_expenses")
+      .update({
+        title: description.trim(),
+        amount,
+        category,
+        date,
+        notes: notes?.trim() || null,
+      })
+      .eq("id", expenseId)
+      .eq("hostel_id", hostelId)
+      .select("id")
+      .maybeSingle()
+
+    if (error) return { error: error.message }
+    if (!updated) return { error: "Expense not found in your active hostel." }
+
+    revalidatePath("/portal/expenses")
+    return { error: null }
+  } catch (err: unknown) {
+    unstable_rethrow(err)
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
+  }
+}
+
 export async function addKitchenDailyItemsAsManager(
   items: { title: string; quantity: string | null; amount: number }[],
   date: string,
@@ -937,6 +1257,51 @@ export async function addKitchenDailyItemsAsManager(
     )
 
     if (error) return { error: error.message }
+
+    revalidatePath("/portal/kitchen")
+    return { error: null }
+  } catch (err: unknown) {
+    unstable_rethrow(err)
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
+  }
+}
+
+// Shared by both the daily-entry Edit dialog and the grocery Edit dialog —
+// both operate on the same hms_kitchen_expenses row shape, and neither needs
+// to change `type` on an existing row. Edit only — no delete action exists.
+export async function updateKitchenItemAsManager(
+  itemId: string,
+  title: string,
+  quantity: string | null,
+  amount: number,
+  date: string,
+  notes?: string,
+): Promise<{ error: string | null }> {
+  try {
+    const ctx = await requireManagerPermission("edit_kitchen_expenses")
+    const hostelId = ctx.activeHostel.id
+    const admin = createAdminClient()
+
+    if (!title?.trim()) return { error: "Item name is required." }
+    if (!Number.isFinite(amount) || amount <= 0) return { error: "Amount must be greater than 0." }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "Invalid date." }
+
+    const { data: updated, error } = await admin
+      .from("hms_kitchen_expenses")
+      .update({
+        title: title.trim(),
+        quantity: quantity || null,
+        amount,
+        date,
+        notes: notes?.trim() || null,
+      })
+      .eq("id", itemId)
+      .eq("hostel_id", hostelId)
+      .select("id")
+      .maybeSingle()
+
+    if (error) return { error: error.message }
+    if (!updated) return { error: "Kitchen item not found in your active hostel." }
 
     revalidatePath("/portal/kitchen")
     return { error: null }
@@ -975,6 +1340,127 @@ export async function addKitchenGroceryItemAsManager(
     if (error) return { error: error.message }
 
     revalidatePath("/portal/kitchen")
+    return { error: null }
+  } catch (err: unknown) {
+    unstable_rethrow(err)
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
+  }
+}
+
+// ── Rooms/Spaces — manage_rooms bundles add + edit, no delete ──────────────
+// Managers have no client-side storage RLS grant (mirrors the no-RLS-read
+// pattern the rest of this file already relies on), so photo upload happens
+// here via the admin (service-role) storage client instead of the owner's
+// direct browser `supabase.storage.from(...).upload()` call.
+
+const ROOM_PHOTO_FIELDS = ["photo_path", "photo_path_2", "photo_path_3", "photo_path_4", "photo_path_5"] as const
+const ROOM_PHOTO_SUFFIXES = ["", "_2", "_3", "_4", "_5"] as const
+
+function extractRoomFields(formData: FormData) {
+  const floorRaw = formData.get("floor")
+  return {
+    room_number: String(formData.get("room_number") ?? "").trim(),
+    floor: floorRaw ? parseInt(String(floorRaw)) : null,
+    type: String(formData.get("type") ?? "general"),
+    capacity: parseInt(String(formData.get("capacity") ?? "1")) || 1,
+    status: String(formData.get("status") ?? "available"),
+    has_ac: formData.get("has_ac") === "true",
+    has_cooler: formData.get("has_cooler") === "true",
+    has_attached_washroom: formData.get("has_attached_washroom") === "true",
+  }
+}
+
+async function applyRoomPhotosAsManager(
+  admin: ReturnType<typeof createAdminClient>,
+  hostelId: string,
+  roomId: string,
+  formData: FormData,
+): Promise<void> {
+  const dbUpdate: Record<string, string | null> = {}
+
+  await Promise.all(ROOM_PHOTO_FIELDS.map(async (field, i) => {
+    const suffix = ROOM_PHOTO_SUFFIXES[i]
+    const file = formData.get(`photo_${i}`) as File | null
+    const cleared = formData.get(`photo_${i}_cleared`) === "true"
+
+    if (file && file.size > 0) {
+      if (file.size > 5 * 1024 * 1024) return // silently skipped — the client already enforces this limit
+      const fname = file.name.toLowerCase()
+      const ext = fname.endsWith(".png") ? "png" : fname.endsWith(".webp") ? "webp" : "jpg"
+      const contentType = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg"
+      const path = `${hostelId}/${roomId}${suffix}.${ext}`
+      const { error } = await admin.storage.from("room-photos").upload(path, file, { upsert: true, contentType })
+      if (!error) {
+        const { data: { publicUrl } } = admin.storage.from("room-photos").getPublicUrl(path)
+        dbUpdate[field] = publicUrl
+      }
+    } else if (cleared) {
+      const exts = ["jpg", "jpeg", "png", "webp"]
+      await Promise.all(exts.map((ext) => admin.storage.from("room-photos").remove([`${hostelId}/${roomId}${suffix}.${ext}`])))
+      dbUpdate[field] = null
+    }
+  }))
+
+  if (Object.keys(dbUpdate).length > 0) {
+    await admin.from("hms_rooms").update(dbUpdate).eq("id", roomId).eq("hostel_id", hostelId)
+  }
+}
+
+export async function addRoomAsManager(
+  formData: FormData,
+): Promise<{ error: string | null; roomId?: string }> {
+  try {
+    const ctx = await requireManagerPermission("manage_rooms")
+    const hostelId = ctx.activeHostel.id
+    const admin = createAdminClient()
+
+    const fields = extractRoomFields(formData)
+    if (!fields.room_number) return { error: "Room number is required." }
+
+    const { data: inserted, error } = await admin
+      .from("hms_rooms")
+      .insert({ hostel_id: hostelId, ...fields })
+      .select("id")
+      .single()
+
+    if (error || !inserted) return { error: error?.message ?? "Failed to create room." }
+
+    await applyRoomPhotosAsManager(admin, hostelId, inserted.id, formData)
+
+    revalidatePath("/portal/rooms")
+    return { error: null, roomId: inserted.id }
+  } catch (err: unknown) {
+    unstable_rethrow(err)
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
+  }
+}
+
+export async function updateRoomAsManager(
+  roomId: string,
+  formData: FormData,
+): Promise<{ error: string | null }> {
+  try {
+    const ctx = await requireManagerPermission("manage_rooms")
+    const hostelId = ctx.activeHostel.id
+    const admin = createAdminClient()
+
+    const fields = extractRoomFields(formData)
+    if (!fields.room_number) return { error: "Room number is required." }
+
+    const { data: updated, error } = await admin
+      .from("hms_rooms")
+      .update(fields)
+      .eq("id", roomId)
+      .eq("hostel_id", hostelId)
+      .select("id")
+      .maybeSingle()
+
+    if (error) return { error: error.message }
+    if (!updated) return { error: "Room not found in your active hostel." }
+
+    await applyRoomPhotosAsManager(admin, hostelId, roomId, formData)
+
+    revalidatePath("/portal/rooms")
     return { error: null }
   } catch (err: unknown) {
     unstable_rethrow(err)

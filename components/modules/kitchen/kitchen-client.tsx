@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
-import { addKitchenDailyItemsAsManager, addKitchenGroceryItemAsManager } from "@/app/actions/managers";
+import { addKitchenDailyItemsAsManager, addKitchenGroceryItemAsManager, updateKitchenItemAsManager } from "@/app/actions/managers";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -130,8 +130,11 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const isManager = !!managerPermissions;
   const canAddKitchen = managerPermissions?.includes("add_kitchen_expenses") ?? false;
+  const canEditKitchen = managerPermissions?.includes("edit_kitchen_expenses") ?? false;
   const canAdd = isManager ? canAddKitchen : canStandardTier;
-  const canEditDelete = isManager ? false : canStandardTier;
+  const canEdit = isManager ? canEditKitchen : canStandardTier;
+  // Delete is never available to a manager — no delete permission exists for kitchen entries.
+  const canDelete = canStandardTier && !isManager;
 
   const [items, setItems]           = useState<KitchenExpense[]>(initialItems);
   const [monthFilter, setMonthFilter] = useState(defaultMonth);
@@ -321,13 +324,15 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
     const date = `${year}-${m}-01`;
 
     if (isManager) {
-      // Managers never reach the edit branch — grocery edit is owner-only and
-      // the UI never sets groceryEditing for them — so this is always an add.
-      const result = await addKitchenGroceryItemAsManager(
-        groceryForm.title, groceryForm.quantity || null, parseFloat(groceryForm.amount), date, groceryForm.notes,
-      );
+      const result = groceryEditing
+        ? await updateKitchenItemAsManager(
+            groceryEditing.id, groceryForm.title, groceryForm.quantity || null, parseFloat(groceryForm.amount), date, groceryForm.notes,
+          )
+        : await addKitchenGroceryItemAsManager(
+            groceryForm.title, groceryForm.quantity || null, parseFloat(groceryForm.amount), date, groceryForm.notes,
+          );
       if (result.error) toast({ title: "Error", description: result.error, variant: "destructive" });
-      else { toast({ title: "Grocery item added" }); setGroceryOpen(false); await reload(); }
+      else { toast({ title: groceryEditing ? "Updated" : "Grocery item added" }); setGroceryOpen(false); await reload(); }
       setSavingGrocery(false);
       return;
     }
@@ -368,8 +373,20 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
   }
 
   async function handleEdit() {
-    if (!hostelId || !editing || !editForm.title || !editForm.amount) return;
+    if (!editing || !editForm.title || !editForm.amount) return;
     setSavingEdit(true);
+
+    if (isManager) {
+      const result = await updateKitchenItemAsManager(
+        editing.id, editForm.title, editForm.quantity || null, parseFloat(editForm.amount), editForm.date, editForm.notes,
+      );
+      setSavingEdit(false);
+      if (result.error) { toast({ title: "Error", description: result.error, variant: "destructive" }); return; }
+      toast({ title: "Updated" }); setEditOpen(false); await reload();
+      return;
+    }
+
+    if (!hostelId) { setSavingEdit(false); return; }
     const supabase = createClient();
     const { data, error } = await supabase.from("hms_kitchen_expenses").update({
       title: editForm.title, quantity: editForm.quantity || null,
@@ -542,10 +559,10 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
                             {item.quantity && <p className="text-xs text-muted-foreground">{item.quantity}</p>}
                           </div>
                           <span className="font-semibold text-sm shrink-0">{formatCurrency(item.amount)}</span>
-                          {canEditDelete && (
+                          {(canEdit || canDelete) && (
                             <div className="flex gap-1 shrink-0">
-                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(item)}><Edit2 className="w-3 h-3" /></Button>
-                              <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(item.id)}><Trash2 className="w-3 h-3" /></Button>
+                              {canEdit && <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(item)}><Edit2 className="w-3 h-3" /></Button>}
+                              {canDelete && <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(item.id)}><Trash2 className="w-3 h-3" /></Button>}
                             </div>
                           )}
                         </div>
@@ -611,10 +628,10 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
                         {item.notes && <p className="text-xs text-muted-foreground italic">{item.notes}</p>}
                       </div>
                       <span className="font-bold text-sm text-blue-400 shrink-0">{formatCurrency(item.amount)}</span>
-                      {canEditDelete && (
+                      {(canEdit || canDelete) && (
                         <div className="flex gap-1 shrink-0">
-                          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openGroceryEdit(item)}><Edit2 className="w-3 h-3" /></Button>
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(item.id)}><Trash2 className="w-3 h-3" /></Button>
+                          {canEdit && <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openGroceryEdit(item)}><Edit2 className="w-3 h-3" /></Button>}
+                          {canDelete && <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteId(item.id)}><Trash2 className="w-3 h-3" /></Button>}
                         </div>
                       )}
                     </div>

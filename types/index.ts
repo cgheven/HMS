@@ -872,7 +872,9 @@ export interface WaitlistEntry {
   created_at: string;
 }
 
-export type StaffPermission = "add_members" | "collect_payments" | "add_expenses" | "add_kitchen_expenses"
+export type StaffPermission =
+  | "add_members" | "collect_payments" | "add_expenses" | "add_kitchen_expenses"
+  | "edit_members" | "edit_expenses" | "edit_kitchen_expenses" | "manage_rooms"
 
 export interface Manager {
   id: string

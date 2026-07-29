@@ -70,6 +70,19 @@ export async function requireManagerPermission(
   return ctx as BoundContext
 }
 
+// A route can be reached by a manager holding EITHER the add or the edit
+// variant of a capability (e.g. a manager with only edit_members should still
+// reach /portal/tenants, not just one who also has add_members).
+export async function requireManagerPermissionAny(
+  permissions: StaffPermission[],
+): Promise<BoundContext> {
+  const ctx = await getManagerContext()
+  if (!ctx) redirect("/login")
+  if (!permissions.some((p) => ctx.permissions.has(p))) redirect("/portal/access-denied")
+  if (!ctx.activeHostel) redirect("/portal/access-denied")
+  return ctx as BoundContext
+}
+
 export async function requireManagerAuth(): Promise<BoundContext> {
   const ctx = await getManagerContext()
   if (!ctx) redirect("/login")

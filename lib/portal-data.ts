@@ -207,6 +207,25 @@ export async function getManagerExpenses(monthFilter: string) {
 // getManagerKitchenExpenses — mirrors lib/data.ts getKitchenExpenses()
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// getManagerRooms — mirrors lib/data.ts getRooms()
+// ---------------------------------------------------------------------------
+
+export async function getManagerRooms() {
+  const scope = await resolveManagerHostel()
+  if (!scope) return { hostelId: null, rooms: [] as Room[], hostelName: "" }
+
+  const { hostelId } = scope
+  const admin = createAdminClient()
+
+  const [{ data: rooms }, { data: hostel }] = await Promise.all([
+    admin.from("hms_rooms").select("*").eq("hostel_id", hostelId).order("room_number"),
+    admin.from("hms_hostels").select("name").eq("id", hostelId).maybeSingle(),
+  ])
+
+  return { hostelId, rooms: (rooms ?? []) as Room[], hostelName: hostel?.name ?? "" }
+}
+
 export async function getManagerKitchenExpenses(monthFilter: string) {
   const scope = await resolveManagerHostel();
   if (!scope) return { hostelId: null, items: [] as KitchenExpense[] };

@@ -31,13 +31,25 @@ interface ManagersClientProps {
 }
 
 const PERMISSION_LABELS: Record<StaffPermission, string> = {
-  add_members:          "Add Members",
-  collect_payments:     "Collect Payments",
-  add_expenses:         "Add Expenses",
-  add_kitchen_expenses: "Add Kitchen Expenses",
+  add_members:           "Add Members",
+  collect_payments:      "Collect Payments",
+  add_expenses:          "Add Expenses",
+  add_kitchen_expenses:  "Add Kitchen Expenses",
+  edit_members:          "Edit Members",
+  edit_expenses:         "Edit Expenses",
+  edit_kitchen_expenses: "Edit Kitchen Expenses",
+  manage_rooms:          "Manage Rooms (Add/Edit)",
 }
 
-const ALL_PERMISSIONS: StaffPermission[] = ["add_members", "collect_payments", "add_expenses", "add_kitchen_expenses"]
+// Delete is intentionally absent everywhere — no delete permission exists for
+// any of these areas. Room/tenant deletion always stays owner/full-partner only.
+const ALL_PERMISSIONS: StaffPermission[] = [
+  "add_members", "edit_members",
+  "collect_payments",
+  "add_expenses", "edit_expenses",
+  "add_kitchen_expenses", "edit_kitchen_expenses",
+  "manage_rooms",
+]
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false)

@@ -970,15 +970,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               </div>
             ) : (
               <div className="p-2">
-                <div className="flex flex-wrap items-center gap-2 px-2 pt-1 pb-3">
-                  <p className="text-xs text-muted-foreground">
-                    Whoever the automated reminder would message today — their due day, or every 3rd day past due.
-                  </p>
+                <div className="flex flex-wrap items-center justify-end gap-2 px-2 pt-1 pb-3">
                   {autoReminderEnabled && canRecordPayment && (
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-7 px-3 text-xs gap-1.5 text-[#25D366] border-[#25D366]/30 hover:bg-[#25D366]/10 hover:text-[#25D366] ml-auto"
+                      className="h-7 px-3 text-xs gap-1.5 text-[#25D366] border-[#25D366]/30 hover:bg-[#25D366]/10 hover:text-[#25D366]"
                       onClick={() => { setReminderScope("due_today"); setBulkConfirmOpen(true); }}
                     >
                       {WA_ICON}

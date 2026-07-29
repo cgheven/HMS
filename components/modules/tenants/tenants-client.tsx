@@ -30,7 +30,7 @@ import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
 import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, resendTenantWelcomeMessageAction } from "@/app/actions/tenants";
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
-import { addTenantAsManager } from "@/app/actions/managers";
+import { addTenantAsManager, editTenantAsManager, checkoutTenantAsManager, giveTenantNoticeAsManager, cancelTenantNoticeAsManager } from "@/app/actions/managers";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 
 interface Props {
@@ -503,11 +503,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const router = useRouter();
   const isManager = !!managerPermissions;
   const canAddAsManager = managerPermissions?.includes("add_members") ?? false;
+  const canEditAsManager = managerPermissions?.includes("edit_members") ?? false;
   // Every flag below collapses to its pre-existing value when isManager is false,
   // so the owner and partner paths are untouched.
   const canAdd = isManager ? canAddAsManager : canStandardTier;
-  const canMutateRow = canFullTier && !isManager;
-  const canNotice = canStandardTier && !isManager;
+  const canEditRow = isManager ? canEditAsManager : canFullTier;
+  // Delete is never available to a manager, regardless of permissions — no
+  // delete permission exists anywhere in the system; checkout (not delete) is
+  // the only way a manager can end a tenancy.
+  const canDeleteRow = canFullTier && !isManager;
+  // Give/cancel notice is a variant of editing a tenant's record, so it shares
+  // edit_members instead of getting its own dedicated permission.
+  const canNotice = isManager ? canEditAsManager : canStandardTier;
   // Same "add_members"/"standard" gate as adding a tenant — resending the
   // welcome message is a variant of that capability, matches resolveWelcomeMessageHostelId.
   const canSendWelcome = canAdd;
@@ -1044,16 +1051,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     };
 
     if (isManager) {
-      // Managers only ever reach the create path — Edit is hidden for them — and the
-      // action re-resolves the branch server-side, so hostel_id/is_active are dropped.
+      // The action re-resolves the branch server-side, so hostel_id/is_active are dropped.
       const { hostel_id: _mHostelId, is_active: _mIsActive, ...managerPayload } = payload;
-      const result = await addTenantAsManager(managerPayload);
+      const result = editing
+        ? await editTenantAsManager(editing.id, managerPayload)
+        : await addTenantAsManager(managerPayload);
       if (result.error) {
         toast({ title: "Error", description: result.error, variant: "destructive" });
         setSaving(false);
         return;
       }
-      toast({ title: form.is_waiting ? "Added to waiting list" : "Tenant added" });
+      toast({
+        title: editing
+          ? editing.is_waiting && !form.is_waiting ? `${form.full_name} activated` : "Tenant updated"
+          : form.is_waiting ? "Added to waiting list" : "Tenant added",
+      });
       setDialogOpen(false);
       // Managers have no RLS grants, so the client-SDK reload() below would come back
       // empty and blank the list. A full reload re-runs the server page, which reads
@@ -1310,7 +1322,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         : {}),
     };
 
-    const result = isPartner ? await checkoutTenantAsPartner(input) : await checkoutTenantAction(input);
+    const result = isManager
+      ? await checkoutTenantAsManager(input)
+      : isPartner
+      ? await checkoutTenantAsPartner(input)
+      : await checkoutTenantAction(input);
 
     if (!result.success) {
       toast({ title: "Checkout failed", description: result.error, variant: "destructive" });
@@ -1402,7 +1418,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   async function handleGiveNotice() {
     if (!noticeDialogTenant || !noticeDate) return;
     setNoticeSubmitting(true);
-    const result = await giveTenantNoticeAction(noticeDialogTenant.id, noticeDate);
+    const result = isManager
+      ? await giveTenantNoticeAsManager(noticeDialogTenant.id, noticeDate)
+      : await giveTenantNoticeAction(noticeDialogTenant.id, noticeDate);
     if (!result.success) {
       toast({ title: "Failed to record notice", description: result.error, variant: "destructive" });
       setNoticeSubmitting(false);
@@ -1419,7 +1437,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   async function handleCancelNotice() {
     if (!noticeDialogTenant) return;
     setNoticeSubmitting(true);
-    const result = await cancelTenantNoticeAction(noticeDialogTenant.id);
+    const result = isManager
+      ? await cancelTenantNoticeAsManager(noticeDialogTenant.id)
+      : await cancelTenantNoticeAction(noticeDialogTenant.id);
     if (!result.success) {
       toast({ title: "Failed to cancel notice", description: result.error, variant: "destructive" });
       setNoticeSubmitting(false);
@@ -1887,15 +1907,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               <div className="divide-y divide-sidebar-border/50">
                 {filterList(active).map((t) => (
                 <TenantRow
-                  key={t.id} t={t} showCheckout={canMutateRow}
-                  showEdit={canMutateRow} showDelete={canMutateRow} showGiveNotice={canNotice}
+                  key={t.id} t={t} showCheckout={canEditRow}
+                  showEdit={canEditRow} showDelete={canDeleteRow} showGiveNotice={canNotice}
                   showSendWelcome={canSendWelcome}
                   roomMap={roomMap}
                   foodAddonRates={foodAddonRates}
                   noticePeriodDays={noticePeriodDays}
                   currentMonthPaymentByTenant={currentMonthPaymentByTenant}
                   sendingWelcome={sendingWelcomeId === t.id}
-                  onView={isManager ? undefined : openView}
+                  onView={!isManager || canEditAsManager ? openView : undefined}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}
@@ -1922,13 +1942,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <div className="divide-y divide-sidebar-border/50">
                   {filterList(waiting).map((t) => (
                     <TenantRow
-                      key={t.id} t={t} showActivate={canMutateRow}
-                      showEdit={canMutateRow} showDelete={canMutateRow}
+                      key={t.id} t={t} showActivate={canEditRow}
+                      showEdit={canEditRow} showDelete={canDeleteRow}
                       roomMap={roomMap}
                       foodAddonRates={foodAddonRates}
                       noticePeriodDays={noticePeriodDays}
                       currentMonthPaymentByTenant={currentMonthPaymentByTenant}
-                      onView={isManager ? undefined : openView}
+                      onView={!isManager || canEditAsManager ? openView : undefined}
                       onCheckout={openCheckout}
                       onActivate={(tenant) => openEdit(tenant, true)}
                       onEdit={openEdit}
@@ -2022,12 +2042,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 {filterList(checkedOut).map((t) => (
                 <TenantRow
                   key={t.id} t={t}
-                  showEdit={canMutateRow} showDelete={canMutateRow}
+                  showEdit={canEditRow} showDelete={canDeleteRow}
                   roomMap={roomMap}
                   foodAddonRates={foodAddonRates}
                   noticePeriodDays={noticePeriodDays}
                   currentMonthPaymentByTenant={currentMonthPaymentByTenant}
-                  onView={isManager ? undefined : openView}
+                  onView={!isManager || canEditAsManager ? openView : undefined}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}

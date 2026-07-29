@@ -4,7 +4,7 @@ import { useState } from "react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
-  UserPlus, CreditCard, Receipt, Menu, X, LogOut, Home, ShieldCheck, ChefHat,
+  UserPlus, CreditCard, Receipt, Menu, X, LogOut, Home, ShieldCheck, ChefHat, BedDouble,
 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { cn } from "@/lib/utils"
@@ -19,11 +19,15 @@ interface PortalShellProps {
   children: React.ReactNode
 }
 
+// A nav item is visible if the manager holds ANY one of its listed
+// permissions — e.g. a manager with only edit_members (no add_members) still
+// needs to reach /portal/tenants to use their edit access.
 const navItems = [
-  { href: "/portal/tenants",  label: "Add Member", icon: UserPlus,   permission: "add_members"          as StaffPermission },
-  { href: "/portal/payments", label: "Payments",   icon: CreditCard, permission: "collect_payments"      as StaffPermission },
-  { href: "/portal/expenses", label: "Expenses",   icon: Receipt,    permission: "add_expenses"          as StaffPermission },
-  { href: "/portal/kitchen",  label: "Kitchen",    icon: ChefHat,    permission: "add_kitchen_expenses"  as StaffPermission },
+  { href: "/portal/rooms",    label: "Rooms",    icon: BedDouble,  permissions: ["manage_rooms"] as StaffPermission[] },
+  { href: "/portal/tenants",  label: "Members",  icon: UserPlus,   permissions: ["add_members", "edit_members"] as StaffPermission[] },
+  { href: "/portal/payments", label: "Payments", icon: CreditCard, permissions: ["collect_payments"] as StaffPermission[] },
+  { href: "/portal/expenses", label: "Expenses", icon: Receipt,    permissions: ["add_expenses", "edit_expenses"] as StaffPermission[] },
+  { href: "/portal/kitchen",  label: "Kitchen",  icon: ChefHat,    permissions: ["add_kitchen_expenses", "edit_kitchen_expenses"] as StaffPermission[] },
 ]
 
 function PortalSidebar({
@@ -93,7 +97,7 @@ function PortalSidebar({
             Actions
           </p>
           <div className="space-y-0.5">
-            {navItems.filter((item) => permSet.has(item.permission)).map(({ href, label, icon: Icon }) => {
+            {navItems.filter((item) => item.permissions.some((p) => permSet.has(p))).map(({ href, label, icon: Icon }) => {
               const active = pathname === href || pathname.startsWith(href + "/")
               return (
                 <Link

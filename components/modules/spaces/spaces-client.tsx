@@ -1,8 +1,10 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { Plus, BedDouble, Users, Wrench, Search, Edit2, Trash2, ImagePlus, X, FileSpreadsheet, FileText, Loader2 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
+import { addRoomAsManager, updateRoomAsManager } from "@/app/actions/managers";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, capitalize } from "@/lib/utils";
-import type { PartnerTier, Room, RoomStatus, SpaceType } from "@/types";
+import type { PartnerTier, Room, RoomStatus, SpaceType, StaffPermission } from "@/types";
 
 const statusColors: Record<RoomStatus, "success" | "info" | "warning"> = { available: "success", occupied: "info", maintenance: "warning" };
 const emptyRoom = { room_number: "", floor: "", type: "general" as SpaceType, capacity: "1", status: "available" as RoomStatus, has_ac: false, has_cooler: false, has_attached_washroom: false };
@@ -34,10 +36,17 @@ function roomToSlots(room: Room): PhotoSlot[] {
   return PHOTO_FIELDS.map((f) => ({ file: null, preview: room[f] ?? null, cleared: false }));
 }
 
-interface Props { hostelId: string | null; initialRooms: Room[]; partnerTier?: PartnerTier | null; hostelName?: string | null; }
+interface Props { hostelId: string | null; initialRooms: Room[]; partnerTier?: PartnerTier | null; hostelName?: string | null; managerPermissions?: StaffPermission[] | null; }
 
-export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hostelName = null }: Props) {
+export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hostelName = null, managerPermissions = null }: Props) {
+  const router = useRouter();
   const canFullTier = !partnerTier || partnerTier === "full";
+  const isManager = !!managerPermissions;
+  const canManageRooms = managerPermissions?.includes("manage_rooms") ?? false;
+  const canAdd = isManager ? canManageRooms : canFullTier;
+  const canEdit = isManager ? canManageRooms : canFullTier;
+  // Delete is never available to a manager — no delete permission exists for rooms.
+  const canDelete = canFullTier && !isManager;
   const [rooms, setRooms] = useState<Room[]>(initialRooms);
   const [filtered, setFiltered] = useState<Room[]>(initialRooms);
   const [search, setSearch] = useState("");
@@ -94,7 +103,14 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
   // has one — otherwise it's a filter with nothing to filter, pure clutter.
   const hasWashroomRooms = rooms.some((r) => r.has_attached_washroom);
 
+  // Managers have no RLS read access — the browser client returns nothing for
+  // them, so their list is refetched server-side and arrives as a new prop.
+  useEffect(() => {
+    if (isManager) setRooms(initialRooms);
+  }, [isManager, initialRooms]);
+
   async function reload() {
+    if (isManager) { router.refresh(); return; }
     if (!hostelId) return;
     const supabase = createClient();
     const { data } = await supabase.from("hms_rooms").select("*").eq("hostel_id", hostelId).order("room_number");
@@ -142,8 +158,36 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
   }
 
   async function handleSave() {
-    if (!hostelId || !form.room_number) return;
+    if (!form.room_number) return;
     setSaving(true);
+
+    if (isManager) {
+      // Managers have no client-side storage RLS grant, so photo upload is
+      // proxied through the server action (admin storage client) via FormData
+      // instead of the owner's direct browser `supabase.storage` upload above.
+      const fd = new FormData();
+      fd.append("room_number", form.room_number);
+      fd.append("floor", form.floor);
+      fd.append("type", form.type);
+      fd.append("capacity", form.capacity);
+      fd.append("status", form.status);
+      fd.append("has_ac", form.has_ac ? "true" : "false");
+      fd.append("has_cooler", form.has_cooler ? "true" : "false");
+      fd.append("has_attached_washroom", form.has_attached_washroom ? "true" : "false");
+      photos.forEach((slot, i) => {
+        if (slot.file) fd.append(`photo_${i}`, slot.file);
+        if (slot.cleared) fd.append(`photo_${i}_cleared`, "true");
+      });
+      const result = editing ? await updateRoomAsManager(editing.id, fd) : await addRoomAsManager(fd);
+      if (result.error) { toast({ title: "Error", description: result.error, variant: "destructive" }); setSaving(false); return; }
+      toast({ title: editing ? "Room updated" : "Room added" });
+      setDialogOpen(false);
+      router.refresh();
+      setSaving(false);
+      return;
+    }
+
+    if (!hostelId) { setSaving(false); return; }
     const supabase = createClient();
     const payload = {
       hostel_id: hostelId,
@@ -327,7 +371,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
             {exportLoading === "pdf" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5 text-rose-400" />}
             <span className="hidden sm:inline">PDF</span>
           </Button>
-          {canFullTier && <Button onClick={openAdd} className="gap-2 flex-1 sm:flex-none"><Plus className="w-4 h-4" /> Add Room</Button>}
+          {canAdd && <Button onClick={openAdd} className="gap-2 flex-1 sm:flex-none"><Plus className="w-4 h-4" /> Add Room</Button>}
         </div>
       </div>
 
@@ -459,10 +503,10 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
                       {room.has_attached_washroom && <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-violet-500/10 text-violet-400 border border-violet-500/20">Washroom</span>}
                     </div>
                   )}
-                  {canFullTier && (
+                  {(canEdit || canDelete) && (
                     <div className="flex gap-2 pt-2">
-                      <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={() => openEdit(room)}><Edit2 className="w-3 h-3" /> Edit</Button>
-                      <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(room.id)}><Trash2 className="w-3 h-3" /></Button>
+                      {canEdit && <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={() => openEdit(room)}><Edit2 className="w-3 h-3" /> Edit</Button>}
+                      {canDelete && <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(room.id)}><Trash2 className="w-3 h-3" /></Button>}
                     </div>
                   )}
                 </CardContent>

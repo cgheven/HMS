@@ -39,6 +39,10 @@ const nextConfig: NextConfig = {
   experimental: {
     // Tree-shake icon and chart imports — ships only what's used
     optimizePackageImports: ["lucide-react", "recharts", "@radix-ui/react-dialog", "@radix-ui/react-select", "@radix-ui/react-label"],
+    // Default Server Action body limit is 1MB. addRoomAsManager/updateRoomAsManager
+    // (app/actions/managers.ts) submit up to 5 room photos per save, each up to
+    // 5MB per the client-side check in spaces-client.tsx — worst case ~25MB.
+    serverActions: { bodySizeLimit: "30mb" },
   },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];

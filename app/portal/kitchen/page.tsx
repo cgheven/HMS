@@ -1,4 +1,4 @@
-import { requireManagerPermission } from "@/lib/manager-auth"
+import { requireManagerPermissionAny } from "@/lib/manager-auth"
 import { getManagerKitchenExpenses } from "@/lib/portal-data"
 import { KitchenClient } from "@/components/modules/kitchen/kitchen-client"
 
@@ -19,7 +19,7 @@ export default async function PortalKitchenPage({
   const defaultMonth = params.month && MONTH_RE.test(params.month) ? params.month : currentMonth
 
   const [ctx, { hostelId, items }] = await Promise.all([
-    requireManagerPermission("add_kitchen_expenses"),
+    requireManagerPermissionAny(["add_kitchen_expenses", "edit_kitchen_expenses"]),
     getManagerKitchenExpenses(defaultMonth),
   ])
 

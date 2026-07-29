@@ -2,7 +2,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Receipt, Search, Edit2, Trash2, TrendingDown, Filter, Download, X } from "lucide-react";
-import { addExpenseAsManager } from "@/app/actions/managers";
+import { addExpenseAsManager, updateExpenseAsManager } from "@/app/actions/managers";
 import * as XLSX from "xlsx";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -74,8 +74,11 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const isManager = !!managerPermissions;
   const canAddExpense = managerPermissions?.includes("add_expenses") ?? false;
+  const canEditExpense = managerPermissions?.includes("edit_expenses") ?? false;
   const canAdd = isManager ? canAddExpense : canStandardTier;
-  const canEditDelete = isManager ? false : canStandardTier;
+  const canEdit = isManager ? canEditExpense : canStandardTier;
+  // Delete is never available to a manager — no delete permission exists for expenses.
+  const canDelete = canStandardTier && !isManager;
   const [expenses, setExpenses] = useState<Expense[]>(initialExpenses);
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("all");
@@ -145,17 +148,18 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
     if (!form.title || !form.amount) return;
 
     if (isManager) {
-      // Managers never reach the edit branch — Edit is hidden for them — and
-      // the write goes through the admin-client action, which resolves the
+      // The write goes through the admin-client action, which resolves the
       // hostel id server-side from the manager's active branch.
       setSaving(true);
-      const result = await addExpenseAsManager(form.category, parseFloat(form.amount), form.title, form.date, form.notes);
+      const result = editing
+        ? await updateExpenseAsManager(editing.id, form.category, parseFloat(form.amount), form.title, form.date, form.notes)
+        : await addExpenseAsManager(form.category, parseFloat(form.amount), form.title, form.date, form.notes);
       if (result.error) {
         toast({ title: "Error", description: result.error, variant: "destructive" });
         setSaving(false);
         return;
       }
-      toast({ title: "Added" });
+      toast({ title: editing ? "Updated" : "Added" });
       setDialogOpen(false);
       await reload();
       setSaving(false);
@@ -296,7 +300,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
-                <thead><tr className="border-b bg-muted/30"><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Title</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden sm:table-cell">Category</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">Date</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">Amount</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">{canEditDelete ? "Actions" : ""}</th></tr></thead>
+                <thead><tr className="border-b bg-muted/30"><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Title</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden sm:table-cell">Category</th><th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">Date</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">Amount</th><th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">{(canEdit || canDelete) ? "Actions" : ""}</th></tr></thead>
                 <tbody className="divide-y">
                   {filtered.map((exp) => (
                     <tr key={exp.id} className="hover:bg-muted/20 transition-colors">
@@ -305,10 +309,12 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
                       <td className="px-4 py-3 text-sm text-muted-foreground hidden md:table-cell">{formatDate(exp.date)}</td>
                       <td className="px-4 py-3 text-right font-semibold text-sm">{formatCurrency(exp.amount)}</td>
                       <td className="px-4 py-3 text-right"><div className="flex items-center justify-end gap-1">
-                        {canEditDelete && (<>
+                        {canEdit && (
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(exp); setForm({ title: exp.title, amount: exp.amount.toString(), category: exp.category, date: exp.date, notes: exp.notes ?? "" }); setDialogOpen(true); }}><Edit2 className="w-3.5 h-3.5" /></Button>
+                        )}
+                        {canDelete && (
                           <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteId(exp.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
-                        </>)}
+                        )}
                       </div></td>
                     </tr>
                   ))}

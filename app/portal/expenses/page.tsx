@@ -1,4 +1,4 @@
-import { requireManagerPermission } from "@/lib/manager-auth"
+import { requireManagerPermissionAny } from "@/lib/manager-auth"
 import { getManagerExpenses } from "@/lib/portal-data"
 import { ExpensesClient } from "@/components/modules/expenses/expenses-client"
 
@@ -19,7 +19,7 @@ export default async function PortalExpensesPage({
   const defaultMonth = params.month && MONTH_RE.test(params.month) ? params.month : currentMonth
 
   const [ctx, { hostelId, expenses }] = await Promise.all([
-    requireManagerPermission("add_expenses"),
+    requireManagerPermissionAny(["add_expenses", "edit_expenses"]),
     getManagerExpenses(defaultMonth),
   ])
 
