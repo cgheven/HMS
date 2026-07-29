@@ -2291,9 +2291,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       onValueChange={(v) => {
                         const next = v as StudentCategory;
                         setCustomSpecialization(false);
-                        const nextPresets = studentCategoryHasInstitutePresets(next) ? INSTITUTE_PRESETS_BY_CATEGORY[next] : [];
-                        setCustomInstitute(!!approveForm.institute_name && !nextPresets.includes(approveForm.institute_name));
-                        setApproveForm({ ...approveForm, student_category: next, student_specialization: "" });
+                        // Institute name is category-specific (a university name doesn't
+                        // belong to an Exam Prep record) — clear it along with
+                        // specialization instead of carrying the old category's value over.
+                        setCustomInstitute(false);
+                        setApproveForm({ ...approveForm, student_category: next, student_specialization: "", institute_name: "" });
                       }}
                     >
                       <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
@@ -2783,11 +2785,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     onValueChange={(v) => {
                       const next = v as StudentCategory;
                       setCustomSpecialization(false);
-                      // Institute presets differ per category — recheck whether the
-                      // current name still matches the new category's list.
-                      const nextPresets = studentCategoryHasInstitutePresets(next) ? INSTITUTE_PRESETS_BY_CATEGORY[next] : [];
-                      setCustomInstitute(!!form.institute_name && !nextPresets.includes(form.institute_name));
-                      setForm({ ...form, student_category: next, student_specialization: "" });
+                      // Institute name is category-specific (a university name doesn't
+                      // belong to an Exam Prep record) — clear it along with
+                      // specialization instead of carrying the old category's value over.
+                      setCustomInstitute(false);
+                      setForm({ ...form, student_category: next, student_specialization: "", institute_name: "" });
                     }}
                   >
                     <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>

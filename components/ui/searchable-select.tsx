@@ -89,7 +89,20 @@ export function SearchableSelect({
               className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
             />
           </div>
-          <div className="max-h-60 overflow-y-auto p-1">
+          <div
+            className="max-h-60 overflow-y-auto overscroll-contain p-1"
+            // Radix Dialog locks page scroll while open (react-remove-scroll),
+            // which intercepts wheel/touch scroll events on document and blocks
+            // any it doesn't recognize as originating inside the Dialog's own
+            // content. This Popover renders through its own Portal, so — even
+            // though it's visually stacked above the Dialog — it isn't a DOM
+            // descendant of DialogContent, and the lock swallowed scroll
+            // gestures here before they could move this list. Stopping
+            // propagation keeps the event from ever reaching that document
+            // listener, so the list scrolls like any normal element.
+            onWheel={(e) => e.stopPropagation()}
+            onTouchMove={(e) => e.stopPropagation()}
+          >
             {filtered.length === 0 ? (
               <p className="px-3 py-3 text-xs text-muted-foreground text-center">No matches</p>
             ) : (
