@@ -3,7 +3,7 @@
 import { cache } from "react";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWaitlistEmail } from "@/lib/email";
-import type { PublicHostel, PublicHostelDetail, PublicRoom, FoodItem } from "@/types";
+import type { PublicHostel, PublicHostelDetail, PublicHostelComplaintInfo, PublicRoom, FoodItem } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Image validation helpers (F-004: magic-byte check)
@@ -226,6 +226,31 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
         package_config: pkgConfig ?? null,
       },
     };
+  } catch {
+    return { error: "Something went wrong. Please try again." };
+  }
+});
+
+// Resolves a hostel for the public QR complaint form via its short
+// complaint_code. Deliberately NOT gated on listing_enabled — that flag only
+// controls the public directory/marketing listing, and has nothing to do
+// with whether a currently-resident tenant can file a complaint against a
+// hostel that has simply opted out of the public directory.
+export const getPublicHostelByComplaintCode = cache(async function getPublicHostelByComplaintCode(
+  code: string
+): Promise<{ hostel?: PublicHostelComplaintInfo; error?: string }> {
+  try {
+    const admin = createAdminClient();
+
+    const { data, error } = await admin
+      .from("hms_hostels")
+      .select("id,name,city,area")
+      .eq("complaint_code", code)
+      .maybeSingle();
+
+    if (error || !data) return { error: "Hostel not found" };
+
+    return { hostel: data as PublicHostelComplaintInfo };
   } catch {
     return { error: "Something went wrong. Please try again." };
   }

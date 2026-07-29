@@ -9,7 +9,7 @@ export type ExpenseCategory = "furniture" | "repairs" | "cleaning" | "security" 
 export type MealType = "breakfast" | "lunch" | "dinner";
 export type PaymentStatus = "paid" | "pending" | "overdue" | "waived" | "partially_paid";
 export type PaymentMethod = "cash" | "bank_transfer" | "jazzcash" | "easypaisa" | "sadapay" | "other";
-export type ComplaintCategory = "plumbing" | "electricity" | "cleanliness" | "security" | "furniture" | "other";
+export type ComplaintCategory = "kitchen" | "staff" | "cleanliness" | "maintenance" | "security" | "other";
 export type ComplaintPriority = "low" | "medium" | "high";
 export type ComplaintStatus = "open" | "in_progress" | "resolved";
 export type EmployeeRole = "cook" | "guard" | "cleaner" | "manager" | "driver" | "other";
@@ -165,6 +165,7 @@ export interface Hostel {
   amenities: string[];
   listing_enabled: boolean;
   slug: string | null;
+  complaint_code: string | null;
   form_config: FormConfig | null;
   food_closed_on_sundays: boolean;
   food_menu_type: FoodMenuType;
@@ -226,6 +227,16 @@ export interface PublicHostelDetail extends PublicHostel {
   food_menu: FoodItem[];
   package_config: PackageConfig | null;
   form_config: FormConfig | null;
+}
+
+// Minimal hostel info for the public complaint-form header — resolved via
+// complaint_code, deliberately not gated on listing_enabled (see
+// getPublicHostelByComplaintCode).
+export interface PublicHostelComplaintInfo {
+  id: string;
+  name: string;
+  city: string | null;
+  area: string | null;
 }
 
 export interface Room {

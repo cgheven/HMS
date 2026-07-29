@@ -45,6 +45,7 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/onboarding") ||
     pathname.startsWith("/guide") ||
     pathname.startsWith("/join/") ||
+    pathname.startsWith("/complaint/") ||
     pathname.startsWith("/r/") ||
     pathname.startsWith("/invoice/") ||
     pathname.startsWith("/partner/login") ||
