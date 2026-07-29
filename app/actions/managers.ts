@@ -10,8 +10,11 @@ import { requireManagerPermission } from "@/lib/manager-auth"
 import { logActivity } from "@/lib/audit"
 import { backfillTenantPaymentsAction } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
+import { computeACSegmentBilling, deriveOpeningReading } from "@/lib/ac-billing"
+import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge } from "@/lib/payment-calc"
+import { calcFoodAddonCharge } from "@/lib/food-addon"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
-import type { Manager, Payment, StaffPermission } from "@/types"
+import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission } from "@/types"
 
 function getPrevMonth(forMonth: string): string {
   const [y, m] = forMonth.split("-").map(Number);
@@ -330,39 +333,24 @@ export async function applyRoomACUnitsAsManager(
     const currentMonth = forMonth
     const prevMonthStr = getPrevMonth(forMonth)
 
-    // Verify room, get config, and fetch previous month reading in parallel
-    const [{ data: room }, { data: config }, { data: prevRecord }] = await Promise.all([
+    // Verify room, get config, fetch previous month reading, active tenants, join readings, and checkout readings in parallel
+    const [{ data: room }, { data: config }, { data: prevRecord }, { data: allTenants }, { data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
       admin.from("hms_rooms").select("id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
-      admin.from("hms_package_configs").select("ac_per_unit_rate").eq("hostel_id", hostelId).maybeSingle(),
+      admin.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).maybeSingle(),
       admin.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
-    ])
-
-    if (!room) return { error: "Room not found." }
-    if (!room.has_ac) return { error: "This room does not have AC." }
-
-    const perUnitRate = Number(config?.ac_per_unit_rate ?? 0)
-    if (perUnitRate <= 0) {
-      return { error: "AC per-unit rate is not configured. Ask the owner to set it in Settings → Packages." }
-    }
-
-    // Derive consumption from cumulative meter readings
-    const prevReading = prevRecord?.meter_reading != null
-      ? Math.round(Number(prevRecord.meter_reading))
-      : (openingReading != null ? Math.round(Number(openingReading)) : 0)
-
-    if (reading < prevReading)
-      return { error: `Meter reading (${reading}) cannot be less than previous month's reading (${prevReading}).` }
-
-    const units = reading - prevReading
-
-    // Fetch active tenants and checkout readings in parallel
-    const [{ data: allTenants }, { data: checkoutReadingsRaw }] = await Promise.all([
       admin
         .from("hms_tenants")
-        .select("id")
+        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
         .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
         .eq("is_active", true),
+      admin
+        .from("hms_room_ac_join_readings")
+        .select("tenant_id, units_at_join")
+        .eq("room_id", roomId)
+        .eq("for_month", currentMonth)
+        .eq("hostel_id", hostelId)
+        .order("units_at_join", { ascending: true }),
       admin
         .from("hms_room_ac_checkout_readings")
         .select("meter_reading, tenant_count_at_checkout")
@@ -372,30 +360,37 @@ export async function applyRoomACUnitsAsManager(
         .order("meter_reading", { ascending: true }),
     ])
 
+    if (!room) return { error: "Room not found." }
+    if (!room.has_ac) return { error: "This room does not have AC." }
+
+    const perUnitRate = Number(config?.ac_per_unit_rate ?? 0)
+    if (perUnitRate <= 0) {
+      return { error: "AC per-unit rate is not configured. Ask the owner to set it in Settings → Packages." }
+    }
+    const foodRate = Number(config?.food_monthly_rate ?? 0)
+    // Room is already verified has_ac = true above, so AC maintenance applies
+    // unconditionally here — same reasoning as applyRoomACUnitsAction.
+    const acMaintenanceCharge = Number(config?.ac_maintenance_rate ?? 0)
+
     const eligible = allTenants ?? []
     if (eligible.length === 0) {
       return { error: "No active tenants found in this room." }
     }
 
-    const rawCheckoutReadings = checkoutReadingsRaw ?? []
-    const conflictingCheckout = rawCheckoutReadings.find(
-      (cr) => Math.round(Number(cr.meter_reading)) >= reading
-    )
-    if (conflictingCheckout) {
-      return {
-        error:
-          `Month-end reading (${reading}) must be greater than all checkout readings. ` +
-          `Found a checkout reading of ${Math.round(Number(conflictingCheckout.meter_reading))} — ` +
-          `please verify the meter reading is correct.`,
-      }
-    }
+    // No prev-month record and no explicit opening reading typed in? Fall back
+    // to the earliest active tenant's move-in meter reading (captured once at
+    // tenant creation) instead of assuming the meter started at 0.
+    const derivedOpening = deriveOpeningReading(eligible, currentMonth)
 
-    const checkoutSegments = rawCheckoutReadings
-      .map((cr) => ({
-        unitsOffset: Math.max(0, Math.round(Number(cr.meter_reading) - prevReading)),
-        tenantCount: Number(cr.tenant_count_at_checkout),
-      }))
-      .filter((cr) => cr.unitsOffset > 0 && cr.unitsOffset < units)
+    // Derive consumption from cumulative meter readings
+    const prevReading = prevRecord?.meter_reading != null
+      ? Math.round(Number(prevRecord.meter_reading))
+      : (openingReading != null ? Math.round(Number(openingReading)) : (derivedOpening ?? 0))
+
+    if (reading < prevReading)
+      return { error: `Meter reading (${reading}) cannot be less than previous month's reading (${prevReading}).` }
+
+    const units = reading - prevReading
 
     const { data: existingRows } = await admin
       .from("hms_payments")
@@ -406,61 +401,65 @@ export async function applyRoomACUnitsAsManager(
     const existingIds = new Set((existingRows ?? []).map((r) => r.tenant_id))
     const missing = eligible.filter((t) => !existingIds.has(t.id))
     if (missing.length > 0) {
-      await admin.from("hms_payments").insert(
-        missing.map((t) => ({
+      // Fully priced, matching applyRoomACUnitsAction's missing-row insert — the
+      // old stub (amount: 0, payment_package_tier hardcoded to "space_food_ac")
+      // silently dropped registration_fee_charge/security_deposit_charge (the DB
+      // trigger trusts these rather than re-deriving them) and mislabeled every
+      // tenant's tier, whatever it actually was.
+      const newRows = missing.map((t) => {
+        const tier = (t.package_tier ?? "space_only") as PackageTier
+        const billingInfo = {
+          billing_type: t.billing_type ?? "monthly",
+          monthly_rent: t.monthly_rent ?? 0,
+          daily_rate: t.daily_rate ?? 0,
+          check_in: t.check_in,
+          check_out: t.check_out ?? null,
+        }
+        const baseRent = calcBaseRentServer(billingInfo, currentMonth)
+        const daySnapshot = dailySnapshot(billingInfo, currentMonth)
+        const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0
+        const addonFoodCharge = config ? calcFoodAddonCharge(t, config) : 0
+        const foodCharge = tierFoodCharge + addonFoodCharge
+        const depositCharge = computeDepositCharge(
+          { check_in: t.check_in, security_deposit: t.security_deposit },
+          currentMonth
+        )
+        const registrationFeeCharge = computeRegistrationFeeCharge(
+          { check_in: t.check_in, registration_fee: t.registration_fee },
+          currentMonth
+        )
+        return {
           hostel_id: hostelId,
           tenant_id: t.id,
           for_month: currentMonth,
-          amount: 0,
-          status: "pending",
-          payment_package_tier: "space_food_ac",
+          amount: baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge,
+          status: "pending" as PaymentStatus,
+          payment_package_tier: tier,
+          food_charge: foodCharge,
           ac_units_consumed: 0,
           ac_charge: 0,
-        }))
-      )
+          security_deposit_charge: depositCharge,
+          registration_fee_charge: registrationFeeCharge,
+          ac_maintenance_charge: acMaintenanceCharge,
+          ...daySnapshot,
+        }
+      })
+      await admin.from("hms_payments").insert(newRows)
     }
 
-    const n = eligible.length
-    let billing: { id: string; tenantUnits: number; charge: number }[]
-
-    if (checkoutSegments.length > 0) {
-      // Period-based billing: departed tenants already paid their share.
-      // Compute each active tenant's proportional units across all periods.
-      const boundaries = [0, ...checkoutSegments.map((cr) => cr.unitsOffset), units]
-      let perTenantFractionalUnits = 0
-
-      for (let i = 0; i < boundaries.length - 1; i++) {
-        const segUnits = boundaries[i + 1] - boundaries[i]
-        if (segUnits <= 0) continue
-        const count = i < checkoutSegments.length ? checkoutSegments[i].tenantCount : eligible.length
-        if (count > 0) perTenantFractionalUnits += segUnits / count
-      }
-
-      const activeTotalUnits = Math.round(perTenantFractionalUnits * n)
-      const activeTotalCharge = Math.round(perTenantFractionalUnits * n * perUnitRate)
-      const baseUnits = n > 1 ? Math.floor(activeTotalUnits / n) : activeTotalUnits
-      const lastUnits = activeTotalUnits - baseUnits * (n - 1)
-      const baseCharge = n > 1 ? Math.floor(activeTotalCharge / n) : activeTotalCharge
-      const lastCharge = activeTotalCharge - baseCharge * (n - 1)
-
-      billing = eligible.map((t, idx) => ({
-        id: t.id,
-        tenantUnits: idx === n - 1 ? lastUnits : baseUnits,
-        charge: idx === n - 1 ? lastCharge : baseCharge,
-      }))
-    } else {
-      const totalCharge = Math.round(units * perUnitRate)
-      const baseUnits  = n > 1 ? Math.floor(units / n)       : units
-      const lastUnits  = units - baseUnits * (n - 1)
-      const baseCharge = n > 1 ? Math.floor(totalCharge / n) : totalCharge
-      const lastCharge = totalCharge - baseCharge * (n - 1)
-
-      billing = eligible.map((t, idx) => ({
-        id: t.id,
-        tenantUnits: idx === n - 1 ? lastUnits  : baseUnits,
-        charge:      idx === n - 1 ? lastCharge : baseCharge,
-      }))
-    }
+    // Shared with applyRoomACUnitsAction (lib/ac-billing.ts) so this tier can
+    // never bill a mid-month joiner as if present the whole month — this path
+    // used to split units equally regardless of join date.
+    const { tenantBilling: billing } = computeACSegmentBilling({
+      eligible,
+      prevReading,
+      reading,
+      units,
+      perUnitRate,
+      forMonth: currentMonth,
+      joinReadingsRaw: (joinReadingsRaw ?? []).filter((r) => eligible.some((t) => t.id === r.tenant_id)),
+      checkoutReadingsRaw: checkoutReadingsRaw ?? [],
+    })
 
     // Update each tenant's payment row for this month
     const updateResults = await Promise.all(
@@ -498,7 +497,7 @@ export async function applyRoomACUnitsAsManager(
     const first = billing[0]
     return {
       error: null,
-      eligibleCount: n,
+      eligibleCount: eligible.length,
       perTenantUnits: first?.tenantUnits ?? 0,
       perTenantCharge: first?.charge ?? 0,
       derivedUnits: units,
@@ -534,18 +533,23 @@ export async function saveACJoinReadingAsManager(
     }
 
     const prevMonthStr = getPrevMonth(forMonth)
-    const [{ data: room }, { data: tenant }, { data: prevRecord }] = await Promise.all([
+    const [{ data: room }, { data: tenant }, { data: prevRecord }, { data: roommates }] = await Promise.all([
       admin.from("hms_rooms").select("id").eq("id", roomId).eq("hostel_id", hostelId).single(),
       admin.from("hms_tenants").select("id").eq("id", tenantId).eq("hostel_id", hostelId).eq("room_id", roomId).single(),
       admin.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      admin.from("hms_tenants").select("check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", roomId).eq("is_active", true),
     ])
 
     if (!room) return { error: "Room not found." }
     if (!tenant) return { error: "Tenant not found in this room." }
 
+    // Same fallback as applyRoomACUnitsAsManager: derive from the room's
+    // earliest known move-in reading rather than assuming the meter started at 0.
+    const derivedOpening = deriveOpeningReading(roommates ?? [], forMonth)
+
     const prevReading = prevRecord?.meter_reading != null
       ? Math.round(Number(prevRecord.meter_reading))
-      : (openingReading != null ? Math.round(Number(openingReading)) : 0)
+      : (openingReading != null ? Math.round(Number(openingReading)) : (derivedOpening ?? 0))
 
     if (joinReading < prevReading)
       return { error: `Join meter reading (${joinReading}) cannot be less than previous month's reading (${prevReading}).` }

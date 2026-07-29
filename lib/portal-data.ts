@@ -134,7 +134,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false }),
     admin.from("hms_tenants")
-      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, food_breakfast, food_lunch, food_dinner")
+      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
       .eq("hostel_id", hostelId)
       .eq("is_active", true),
     admin.from("hms_rooms")
@@ -163,7 +163,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
   return {
     hostelId,
     payments: (payments ?? []) as Payment[],
-    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "food_breakfast" | "food_lunch" | "food_dinner"> & { package_tier: PackageTier })[],
+    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "food_breakfast" | "food_lunch" | "food_dinner" | "joining_meter_reading"> & { package_tier: PackageTier })[],
     rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor" | "has_ac">[],
     packageConfig,
     hostelName: h?.name ?? "",

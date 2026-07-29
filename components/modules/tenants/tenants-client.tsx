@@ -545,6 +545,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     activeTenantCount: number;
     priorCheckoutUnits: number[];
     joiners: { tenantId: string; unitsAtJoin: number | null; joiningMeterReading: number | null }[];
+    derivedOpening: number | null;
   } | null>(null);
   const [checkoutACContextLoading, setCheckoutACContextLoading] = useState(false);
   const [shareReceipt, setShareReceipt] = useState<{ name: string; phone: string | null; token: string } | null>(null);
@@ -1515,6 +1516,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const acReading = checkoutACReading.trim() !== "" ? Number(checkoutACReading) : NaN;
     const acPrev = checkoutACContext?.prevMonthReading
       ?? (checkoutACOpeningReading.trim() !== "" ? Number(checkoutACOpeningReading) : null)
+      ?? checkoutACContext?.derivedOpening
       ?? 0;
     const acRate = checkoutACContext?.perUnitRate ?? 0;
     const acCount = checkoutACContext?.activeTenantCount ?? 0;
@@ -3352,14 +3354,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       </p>
                     ) : (
                       <div className="space-y-1.5">
-                        <p className="text-xs text-amber/80">No previous month record found — enter the meter reading at the start of this month</p>
+                        <p className="text-xs text-amber/80">
+                          {checkoutACContext?.derivedOpening != null
+                            ? `No previous month record found — auto-using move-in reading ${checkoutACContext.derivedOpening.toLocaleString()} unless overridden below`
+                            : "No previous month record found — enter the meter reading at the start of this month"}
+                        </p>
                         <input
                           type="number"
                           min="0"
                           max="999999"
                           value={checkoutACOpeningReading}
                           onChange={(e) => setCheckoutACOpeningReading(e.target.value)}
-                          placeholder="Opening reading (month start)"
+                          placeholder={checkoutACContext?.derivedOpening != null ? String(checkoutACContext.derivedOpening) : "Opening reading (month start)"}
                           className="h-9 w-full rounded-lg border border-amber/30 bg-transparent px-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50"
                         />
                       </div>
@@ -3380,6 +3386,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       const reading = Number(checkoutACReading);
                       const prev = checkoutACContext?.prevMonthReading
                         ?? (checkoutACOpeningReading.trim() !== "" ? Number(checkoutACOpeningReading) : null)
+                        ?? checkoutACContext?.derivedOpening
                         ?? 0;
                       const rate = checkoutACContext?.perUnitRate ?? 0;
                       const count = checkoutACContext?.activeTenantCount ?? 0;

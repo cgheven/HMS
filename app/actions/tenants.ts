@@ -11,6 +11,7 @@ import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
+import { deriveOpeningReading } from "@/lib/ac-billing";
 import { sendWelcomeMessageNow, type WelcomeSendResult } from "@/lib/whatsapp-welcome-action";
 import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, CheckoutSettlement, TenantEventType } from "@/types";
 
@@ -1029,6 +1030,11 @@ export async function getACCheckoutContextAction(
    * whichever opening reading is in play, which may be one the operator is still typing.
    */
   joiners: { tenantId: string; unitsAtJoin: number | null; joiningMeterReading: number | null }[];
+  /** Earliest active tenant's move-in meter reading — the same fallback baseline
+   *  performTenantCheckout derives server-side when there's no prev-month record
+   *  and no opening reading typed in. Surfaced so the dialog can show it instead
+   *  of leaving the operator to guess or retype a number already on file. */
+  derivedOpening: number | null;
   error?: string;
 }> {
   try {
@@ -1090,6 +1096,8 @@ export async function getACCheckoutContextAction(
       };
     });
 
+    const derivedOpening = deriveOpeningReading(tenants ?? [], checkoutMonth);
+
     return {
       prevMonthReading: prevRecord?.meter_reading != null ? Number(prevRecord.meter_reading) : null,
       prevMonthUnits: prevRecord?.total_units != null ? Number(prevRecord.total_units) : null,
@@ -1097,6 +1105,7 @@ export async function getACCheckoutContextAction(
       activeTenantCount: (tenants ?? []).length + priorCheckoutUnits.length,
       priorCheckoutUnits,
       joiners,
+      derivedOpening,
     };
   } catch (err: unknown) {
     unstable_rethrow(err);
@@ -1107,6 +1116,7 @@ export async function getACCheckoutContextAction(
       activeTenantCount: 0,
       priorCheckoutUnits: [],
       joiners: [],
+      derivedOpening: null,
       error: err instanceof Error ? err.message : "Failed to load AC context",
     };
   }

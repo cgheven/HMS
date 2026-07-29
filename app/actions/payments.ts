@@ -29,6 +29,7 @@ import {
 } from "@/lib/payment-calc";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 import { logActivity } from "@/lib/audit";
+import { computeACSegmentBilling, deriveOpeningReading } from "@/lib/ac-billing";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -575,16 +576,6 @@ export async function loadHistoryAction(forMonth: string): Promise<{ payments?: 
   }
 }
 
-// ac_charge MUST always equal ac_units_consumed × rate. markPaymentPaidAction
-// re-derives the charge that way and refuses to accept a payment that disagrees
-// ("Amount received exceeds the remaining balance"), and receipts itemise it as
-// "N units × Rs rate/unit". Splitting a room rarely lands on whole units, so each
-// share is rounded to whole units first and the charge is derived from that —
-// never computed on its own, which is how the two drifted apart.
-function applyUnitRate(rows: { tenantUnits: number; charge: number }[], perUnitRate: number): void {
-  for (const r of rows) r.charge = Math.round(r.tenantUnits * perUnitRate);
-}
-
 // ---------------------------------------------------------------------------
 // applyRoomACUnitsAction
 // Splits total AC units across all eligible AC-tier tenants in a room and
@@ -647,12 +638,17 @@ export async function applyRoomACUnitsAction(
     const supabase = await createClient();
     const adminDb = createAdminClient();
 
-    // ── Verify room + fetch package config + prev month reading in parallel ──
+    // ── Verify room + fetch package config + prev month reading + tenants in parallel ──
     const prevMonthStr = getPrevMonth(forMonth);
-    const [{ data: room }, { data: pkgConfig }, { data: prevRecord }] = await Promise.all([
+    const [{ data: room }, { data: pkgConfig }, { data: prevRecord }, { data: allTenants }] = await Promise.all([
       supabase.from("hms_rooms").select("id, hostel_id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).single(),
       supabase.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      supabase.from("hms_tenants")
+        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
+        .eq("hostel_id", hostelId)
+        .eq("room_id", roomId)
+        .eq("is_active", true),
     ]);
 
     if (!room) throw new Error("Room not found or access denied");
@@ -666,27 +662,26 @@ export async function applyRoomACUnitsAction(
     // room lookup needed, unlike the general sync paths.
     const acMaintenanceCharge = Number(pkgConfig?.ac_maintenance_rate ?? 0);
 
+    // ── Find all active tenants in this room ─────────────────────
+    const eligible = allTenants ?? [];
+    if (eligible.length === 0)
+      throw new Error("No active tenants found in this room.");
+
     // ── Derive consumption from cumulative meter readings ─────────
+    // No prev-month record and no explicit opening reading typed in? Fall back
+    // to the earliest active tenant's move-in meter reading (captured once at
+    // tenant creation) instead of assuming the meter started at 0 — the same
+    // reading the operator would otherwise have to look up and retype here.
+    const derivedOpening = deriveOpeningReading(eligible, forMonth);
+
     const prevReading = prevRecord?.meter_reading != null
       ? Math.round(Number(prevRecord.meter_reading))
-      : (openingReading != null ? Math.round(Number(openingReading)) : 0);
+      : (openingReading != null ? Math.round(Number(openingReading)) : (derivedOpening ?? 0));
 
     if (reading < prevReading)
       throw new Error(`Meter reading (${reading}) cannot be less than previous month's reading (${prevReading}). Previous month ended at ${prevReading}.`);
 
     const units = reading - prevReading;
-
-    // ── Find all active tenants in this room ─────────────────────
-    const { data: allTenants } = await supabase
-      .from("hms_tenants")
-      .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
-      .eq("hostel_id", hostelId)
-      .eq("room_id", roomId)
-      .eq("is_active", true);
-
-    const eligible = allTenants ?? [];
-    if (eligible.length === 0)
-      throw new Error("No active tenants found in this room.");
 
     // ── Fetch join readings and checkout readings in parallel for segment billing ──
     const [{ data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
@@ -706,186 +701,18 @@ export async function applyRoomACUnitsAction(
         .order("meter_reading", { ascending: true }),
     ]);
 
-    // Use join readings for ALL eligible tenants regardless of join date.
-    // A tenant on the 1st with units_at_join=0 produces equal split (the duplicate 0 is deduplicated by
-    // the Set, leaving one segment [0,total] where they are present for the full range).
-    // A tenant on the 1st with units_at_join=10 correctly assigns those 10 units to whoever came first.
-    const manualJoinReadings = (joinReadingsRaw ?? []).filter(r =>
-      eligible.some(t => t.id === r.tenant_id)
-    ) as { tenant_id: string; units_at_join: number }[];
-
-    // Check-in captures a meter reading on the tenant, but only a hand-typed entry under
-    // "Mid-Month Joiners" ever became a breakpoint — so someone who moved in on the 20th
-    // was billed from unit 0, for AC burned before they arrived. Derive the breakpoint
-    // from what check-in already recorded.
-    //
-    // Derived here rather than stored at check-in on purpose: units_at_join is an offset
-    // from the month's opening reading, and that opening is often only known now, when
-    // the operator types it. Storing it earlier bakes in a baseline that may not survive.
-    //
-    // Scoped to tenants who joined THIS month — anyone from an earlier month was present
-    // from the first unit, and giving them a breakpoint would wrongly excuse them.
-    const manualIds = new Set(manualJoinReadings.map(r => r.tenant_id));
-    const derivedJoinReadings = eligible
-      .filter(t =>
-        !manualIds.has(t.id) &&                       // a typed entry is a correction — it wins
-        t.joining_meter_reading != null &&
-        typeof t.check_in === "string" &&
-        t.check_in.slice(0, 7) === forMonth
-      )
-      .map(t => ({
-        tenant_id: t.id,
-        units_at_join: Math.max(0, Math.round(Number(t.joining_meter_reading) - prevReading)),
-      }));
-
-    const joinReadings = [...manualJoinReadings, ...derivedJoinReadings]
-      .sort((a, b) => a.units_at_join - b.units_at_join);
-
-    // Checkout segments: departed tenants who paid at checkout — their tenure is now breakpoints.
-    // Sorted by meter_reading ascending = chronological departure order.
-    const rawCheckoutReadings = (checkoutReadingsRaw ?? []);
-
-    // Validate: month-end reading must exceed all checkout readings
-    const conflictingCheckout = rawCheckoutReadings.find(
-      cr => Math.round(Number(cr.meter_reading)) >= reading
-    );
-    if (conflictingCheckout) {
-      throw new Error(
-        `Month-end reading (${reading}) must be greater than all checkout readings. ` +
-        `Found a checkout reading of ${Math.round(Number(conflictingCheckout.meter_reading))} — ` +
-        `please verify the meter reading is correct.`
-      );
-    }
-
-    const checkoutSegments = rawCheckoutReadings
-      .map(cr => ({
-        unitsOffset: Math.max(0, Math.round(Number(cr.meter_reading) - prevReading)),
-        tenantCount: Number(cr.tenant_count_at_checkout),
-      }))
-      .filter(cr => cr.unitsOffset > 0 && cr.unitsOffset < units);
-
-    const n = eligible.length;
-    const totalCharge = Math.round(units * perUnitRate);
-    let proRatedCount = 0;
-    let unassignedUnits = 0;
-
-    let tenantBilling: { id: string; tenantUnits: number; charge: number }[];
-
-    if (checkoutSegments.length > 0) {
-      // ── Period + join-aware billing: merges departure checkpoints and mid-month join
-      // readings into a single event timeline. Departed tenants already paid their share at
-      // checkout; this path computes each remaining active tenant's proportional units.
-      //
-      // For each segment [from, to]:
-      //   activePresent  = eligible tenants whose join point ≤ from (or no join reading)
-      //   departedPresent = departed tenants with unitsOffset ≥ to (still in room for whole segment)
-      //   totalCount     = activePresent.length + departedPresent
-      //   each activePresent tenant accumulates segUnits / totalCount
-      const boundarySet = new Set<number>([
-        0,
-        ...checkoutSegments.map(cr => cr.unitsOffset),
-        ...joinReadings.map(r => Math.min(Number(r.units_at_join), units)).filter(x => x > 0),
-        units,
-      ]);
-      const boundaries = Array.from(boundarySet).sort((a, b) => a - b);
-
-      const accumulated = new Map<string, number>(eligible.map(t => [t.id, 0]));
-
-      for (let i = 0; i < boundaries.length - 1; i++) {
-        const from = boundaries[i];
-        const to = boundaries[i + 1];
-        const segUnits = to - from;
-        if (segUnits <= 0) continue;
-
-        const presentActive = eligible.filter(t => {
-          const jr = joinReadings.find(jr => jr.tenant_id === t.id);
-          return !jr || Number(jr.units_at_join) <= from;
-        });
-        const departedPresent = checkoutSegments.filter(cs => cs.unitsOffset >= to).length;
-        const totalCount = presentActive.length + departedPresent;
-
-        if (totalCount > 0) {
-          const share = segUnits / totalCount;
-          for (const t of presentActive) accumulated.set(t.id, (accumulated.get(t.id) ?? 0) + share);
-        }
-      }
-
-      if (units === 0) {
-        tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
-      } else {
-        const totalAccumulated = [...accumulated.values()].reduce((s, v) => s + v, 0);
-        const rows = eligible.map(t => ({
-          id: t.id,
-          tenantUnits: Math.round(accumulated.get(t.id) ?? 0),
-          charge: 0,
-        }));
-        const sumUnitsExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
-        if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, Math.round(totalAccumulated) - sumUnitsExceptLast);
-        applyUnitRate(rows, perUnitRate);
-        tenantBilling = rows;
-      }
-    } else if (joinReadings.length === 0) {
-      // ── Equal split: units are integers, last tenant absorbs remainder ──
-      const baseUnits = n > 1 ? Math.floor(units / n) : units;
-      const lastUnits = units - baseUnits * (n - 1);
-      const rows = eligible.map((t, idx) => ({
-        id: t.id,
-        tenantUnits: idx === n - 1 ? lastUnits : baseUnits,
-        charge: 0,
-      }));
-      applyUnitRate(rows, perUnitRate);
-      tenantBilling = rows;
-    } else {
-      // ── Segment billing ──────────────────────────────────────
-      proRatedCount = joinReadings.length;
-      const joinedIds = new Set(joinReadings.map(r => r.tenant_id));
-      const fullMonth = eligible.filter(t => !joinedIds.has(t.id));
-      const midMonth = eligible.filter(t => joinedIds.has(t.id));
-
-      const eventPoints = Array.from(
-        new Set([0, ...joinReadings.map(r => Math.min(Number(r.units_at_join), units)), units])
-      ).sort((a, b) => a - b);
-
-      const accumulated = new Map<string, number>(eligible.map(t => [t.id, 0]));
-
-      for (let i = 0; i < eventPoints.length - 1; i++) {
-        const from = eventPoints[i];
-        const to = eventPoints[i + 1];
-        const segUnits = to - from;
-        if (segUnits <= 0) continue;
-        const present = [
-          ...fullMonth,
-          ...midMonth.filter(t => {
-            const r = joinReadings.find(jr => jr.tenant_id === t.id);
-            return r ? Number(r.units_at_join) <= from : false;
-          }),
-        ];
-        if (present.length === 0) continue;
-        const share = segUnits / present.length;
-        for (const t of present) accumulated.set(t.id, (accumulated.get(t.id) ?? 0) + share);
-      }
-
-      if (units === 0) {
-        tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
-      } else {
-        const assignedUnits = [...accumulated.values()].reduce((s, v) => s + v, 0);
-        unassignedUnits = Math.max(0, Math.round(units - assignedUnits));
-        const assignedCharge = assignedUnits > 0 ? Math.round(assignedUnits * perUnitRate) : 0;
-        if (assignedUnits === 0) {
-          tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
-        } else {
-          const rows = eligible.map(t => ({
-            id: t.id,
-            tenantUnits: Math.round(accumulated.get(t.id) ?? 0),
-            charge: 0,
-          }));
-          const unitSumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
-          if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, Math.round(assignedUnits) - unitSumExceptLast);
-          applyUnitRate(rows, perUnitRate);
-          tenantBilling = rows;
-        }
-      }
-    }
+    // Shared with applyRoomACUnitsAsManager (lib/ac-billing.ts) so the owner and
+    // manager tiers can never compute two different bills for the same room/month.
+    const { tenantBilling, proRatedCount, unassignedUnits } = computeACSegmentBilling({
+      eligible,
+      prevReading,
+      reading,
+      units,
+      perUnitRate,
+      forMonth,
+      joinReadingsRaw: (joinReadingsRaw ?? []).filter(r => eligible.some(t => t.id === r.tenant_id)),
+      checkoutReadingsRaw: checkoutReadingsRaw ?? [],
+    });
 
     // ── Auto-create missing payment rows so Apply never requires a manual sync ──
     const { data: existingPayRows } = await adminDb
@@ -1109,12 +936,13 @@ export async function saveACJoinReadingAction(
     const supabase = await createClient();
     const adminDb = createAdminClient();
 
-    // Fetch room, tenant, and prev month reading in parallel
+    // Fetch room, tenant, prev month reading, and roommates' move-in readings in parallel
     const prevMonthStr = getPrevMonth(forMonth);
-    const [{ data: room }, { data: tenant }, { data: prevRecord }] = await Promise.all([
+    const [{ data: room }, { data: tenant }, { data: prevRecord }, { data: roommates }] = await Promise.all([
       supabase.from("hms_rooms").select("id").eq("id", roomId).eq("hostel_id", hostelId).single(),
       supabase.from("hms_tenants").select("id, package_tier, room_id, is_active").eq("id", tenantId).eq("hostel_id", hostelId).single(),
       adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      supabase.from("hms_tenants").select("check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", roomId).eq("is_active", true),
     ]);
 
     if (!room) throw new Error("Room not found or access denied");
@@ -1122,10 +950,14 @@ export async function saveACJoinReadingAction(
     if (!tenant.is_active) throw new Error("Tenant is not active");
     if (tenant.room_id !== roomId) throw new Error("Tenant is not in this room");
 
+    // Same fallback as applyRoomACUnitsAction: derive from the room's earliest
+    // known move-in reading rather than assuming the meter started at 0.
+    const derivedOpening = deriveOpeningReading(roommates ?? [], forMonth);
+
     // Derive relative units from cumulative meter readings
     const prevReading = prevRecord?.meter_reading != null
       ? Math.round(Number(prevRecord.meter_reading))
-      : (openingReading != null ? Math.round(Number(openingReading)) : 0);
+      : (openingReading != null ? Math.round(Number(openingReading)) : (derivedOpening ?? 0));
 
     if (joinReading < prevReading)
       throw new Error(`Join meter reading (${joinReading}) cannot be less than previous month's reading (${prevReading})`);

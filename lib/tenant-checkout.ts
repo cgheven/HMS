@@ -3,6 +3,7 @@ import "server-only";
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { calcDailyRent, countBillableNights, proRateMonthlyRent } from "@/lib/daily-billing";
+import { deriveOpeningReading } from "@/lib/ac-billing";
 import type { PaymentMethod, PaymentStatus, CheckoutInput, CheckoutSettlement } from "@/types";
 
 // Deliberately no "use server" directive — every export from a "use server" file
@@ -247,9 +248,15 @@ export async function performTenantCheckout(
       ]);
 
       if (roomInfo?.has_ac) {
+        // Same fallback as applyRoomACUnitsAction: with no previous-month reading
+        // and no explicit opening reading typed in, derive the baseline from the
+        // room's earliest known move-in reading instead of assuming the meter
+        // started at 0 — the same value already captured once at tenant creation.
+        const derivedOpening = deriveOpeningReading(activeTenantsInRoom ?? [], checkoutMonth);
+
         const prevReading = prevRecord?.meter_reading != null
           ? Math.round(Number(prevRecord.meter_reading))
-          : (input.acOpeningReading != null ? Math.round(Number(input.acOpeningReading)) : 0);
+          : (input.acOpeningReading != null ? Math.round(Number(input.acOpeningReading)) : (derivedOpening ?? 0));
         const reading = Math.round(Number(input.acCheckoutReading));
         const perUnitRate = Number(pkgConfig?.ac_per_unit_rate ?? 0);
 

@@ -26,6 +26,7 @@ import {
 } from "@/app/actions/payments";
 import { createInvoiceLink, createInstallmentReceiptLink } from "@/app/actions/tenants";
 import { recordPaymentAsPartner } from "@/app/actions/partner";
+import { deriveOpeningReading } from "@/lib/ac-billing";
 import {
   recordPaymentAsManager,
   applyRoomACUnitsAsManager,
@@ -47,6 +48,7 @@ interface TenantRow {
   food_breakfast?: boolean;
   food_lunch?: boolean;
   food_dinner?: boolean;
+  joining_meter_reading?: number | null;
 }
 
 interface RoomRow { id: string; room_number: string; floor: number | null; has_ac?: boolean | null; }
@@ -544,7 +546,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   async function handleSaveJoinReading(roomId: string, tenantId: string) {
     if (!canRecordPayment) return;
     const key = `${tenantId}_${selectedMonth}`;
-    const raw = joinUnits[key] ?? "";
+    // Falls back to the tenant's own move-in reading when the operator never
+    // touched the field — it's pre-filled on screen, so Save must honor that
+    // same value rather than silently reading blank state.
+    const autoReading = tenants.find(t => t.id === tenantId)?.joining_meter_reading;
+    const raw = joinUnits[key] ?? (autoReading != null ? String(autoReading) : "");
     const value = parseFloat(raw);
     if (!Number.isFinite(value) || value < 0) {
       toast({ title: "Invalid reading", description: "Enter a non-negative meter reading.", variant: "destructive" });
@@ -1097,7 +1103,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 const hasPrevReading = prevMonthReading != null;
                 const currentInput = acUnits[room.id] ?? "";
                 const openingInput = acOpeningReadings[room.id] ?? "";
-                const baseline = hasPrevReading ? prevMonthReading : (openingInput ? Number(openingInput) : null);
+                // Mirrors the server's own fallback (applyRoomACUnitsAction): if this room
+                // has no previous-month reading and nobody typed an opening value, the
+                // earliest active tenant's move-in meter reading is used automatically —
+                // the same number already captured once at tenant creation. Shown here so
+                // the operator isn't left guessing what "leave it blank" actually does.
+                const roomActiveTenants = tenants.filter(t => t.room_id === room.id && t.is_active);
+                const derivedOpening = deriveOpeningReading(roomActiveTenants, selectedMonth);
+                const baseline = hasPrevReading ? prevMonthReading : (openingInput ? Number(openingInput) : derivedOpening);
                 const consumptionPreview = currentInput && baseline != null && Number.isFinite(Number(currentInput))
                   ? Math.max(0, Number(currentInput) - baseline)
                   : null;
@@ -1125,6 +1138,8 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         )}
                         {hasPrevReading ? (
                           <p className="text-[10px] text-muted-foreground/50 mt-0.5">Previous month ended at {prevMonthReading}</p>
+                        ) : derivedOpening != null ? (
+                          <p className="text-[10px] text-amber/60 mt-0.5">First reading — auto-using move-in reading {derivedOpening} unless overridden below</p>
                         ) : (
                           <p className="text-[10px] text-amber/60 mt-0.5">First reading — enter opening value below if needed</p>
                         )}
@@ -1137,7 +1152,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               type="number"
                               min={0}
                               max={999999}
-                              placeholder="0"
+                              placeholder={derivedOpening != null ? String(derivedOpening) : "0"}
                               value={openingInput}
                               onChange={e => setAcOpeningReadings(prev => ({ ...prev, [room.id]: e.target.value }))}
                               disabled={acTenantCount === 0}
@@ -1182,14 +1197,18 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-semibold">
                             Mid-month joiners
                           </p>
-                          <span className="text-[10px] text-muted-foreground/50">— meter reading when they joined</span>
+                          <span className="text-[10px] text-muted-foreground/50">— auto-filled from their move-in reading; edit only to correct it</span>
                         </div>
                         {midMonthJoiners.map(tenant => {
                           const joinKey = `${tenant.id}_${selectedMonth}`;
                           const savedJoin = acJoinReadings.find(
                             r => r.room_id === room.id && r.tenant_id === tenant.id && r.for_month === selectedMonth
                           );
-                          const inputVal = joinUnits[joinKey] ?? "";
+                          // Already captured once at tenant creation — default the field
+                          // to that reading so nobody has to look it up and retype it.
+                          // Explicitly typing a different value still overrides it.
+                          const autoReading = tenant.joining_meter_reading;
+                          const inputVal = joinUnits[joinKey] ?? (autoReading != null ? String(autoReading) : "");
                           const isSaved = !!savedJoin && joinUnits[joinKey] === undefined;
                           const joinRelative = inputVal && baseline != null && Number.isFinite(Number(inputVal))
                             ? Math.max(0, Number(inputVal) - baseline)
@@ -1200,6 +1219,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                                 <span className="text-xs text-muted-foreground truncate block">{tenant.full_name}</span>
                                 {joinRelative != null && (
                                   <span className="text-[10px] text-amber/60">{joinRelative} units from month start</span>
+                                )}
+                                {isSaved && (
+                                  <span className="text-[10px] text-muted-foreground/50">Saved from move-in reading — edit to correct</span>
                                 )}
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
@@ -1216,7 +1238,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                                   <Button
                                     size="sm"
                                     variant="ghost"
-                                    disabled={savingJoin === tenant.id || !joinUnits[joinKey]}
+                                    disabled={savingJoin === tenant.id || !inputVal || isSaved}
                                     onClick={() => handleSaveJoinReading(room.id, tenant.id)}
                                     className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40"
                                   >
