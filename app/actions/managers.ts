@@ -1066,9 +1066,12 @@ export async function recordPaymentAsManager(
     }
 
     if (isAcTier && acUnitsConsumed !== undefined) {
-      if (!Number.isInteger(acUnitsConsumed) || acUnitsConsumed < 0 || acUnitsConsumed > 9999) {
-        return { error: "AC units must be a whole number between 0 and 9999." }
+      // ac_units_consumed is numeric(10,2) — a room's units rarely split into
+      // whole numbers per tenant, so allow up to 2 decimal places.
+      if (!Number.isFinite(acUnitsConsumed) || acUnitsConsumed < 0 || acUnitsConsumed > 9999) {
+        return { error: "AC units must be a non-negative number between 0 and 9999." }
       }
+      const roundedUnits = Math.round(acUnitsConsumed * 100) / 100
       // Fetch AC rate from DB — never trust the client-supplied value
       const { data: config } = await admin
         .from("hms_package_configs")
@@ -1077,8 +1080,8 @@ export async function recordPaymentAsManager(
         .maybeSingle()
 
       const acUnitRate = Number(config?.ac_per_unit_rate ?? 0)
-      newAcCharge = acUnitsConsumed * acUnitRate
-      updatePayload.ac_units_consumed = acUnitsConsumed
+      newAcCharge = Math.round(roundedUnits * acUnitRate)
+      updatePayload.ac_units_consumed = roundedUnits
       updatePayload.ac_charge = newAcCharge
     }
 

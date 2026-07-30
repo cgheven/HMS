@@ -3,7 +3,7 @@ import "server-only";
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { calcDailyRent, countBillableNights, proRateMonthlyRent } from "@/lib/daily-billing";
-import { deriveOpeningReading } from "@/lib/ac-billing";
+import { deriveOpeningReading, round2 } from "@/lib/ac-billing";
 import type { PaymentMethod, PaymentStatus, CheckoutInput, CheckoutSettlement } from "@/types";
 
 // Deliberately no "use server" directive — every export from a "use server" file
@@ -321,10 +321,10 @@ export async function performTenantCheckout(
             }
           }
 
-          // Round to whole units FIRST, then price them. ac_charge has to equal
+          // Round to 2dp FIRST, then price them. ac_charge has to equal
           // ac_units_consumed × rate — markPaymentPaidAction re-derives it that way and
           // rejects the payment otherwise, and the receipt itemises "N units × Rs rate".
-          const tenantUnits = Math.round(tenantUnitShare);
+          const tenantUnits = round2(tenantUnitShare);
           const ac_charge = Math.round(tenantUnits * perUnitRate);
           // units_consumed = total room units — stored as billing breakpoint for month-end algorithm.
           acCheckoutRecord = { units_consumed: units, tenant_count: totalStart, ac_charge, prevReading, tenant_unit_share: tenantUnitShare };
@@ -441,7 +441,7 @@ export async function performTenantCheckout(
             amount_paid: grossDue,
             deposit_applied: depositApplied,
             ...(acCheckoutRecord ? {
-              ac_units_consumed: Math.round(acCheckoutRecord.tenant_unit_share),
+              ac_units_consumed: round2(acCheckoutRecord.tenant_unit_share),
               ac_charge: acCheckoutRecord.ac_charge,
               // Add AC charge to base amount so PDF formula (monthlyRent = amount - ac_charge) stays correct
               amount: Number(verifiedPayment.amount ?? 0) + acCheckoutRecord.ac_charge,
@@ -460,7 +460,7 @@ export async function performTenantCheckout(
           .update({
             status: "waived" as PaymentStatus,
             ...(acCheckoutRecord ? {
-              ac_units_consumed: Math.round(acCheckoutRecord.tenant_unit_share),
+              ac_units_consumed: round2(acCheckoutRecord.tenant_unit_share),
               ac_charge: acCheckoutRecord.ac_charge,
             } : {}),
             ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),

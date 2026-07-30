@@ -223,7 +223,9 @@ export function generateReceiptPDF(
     if (realRate > 0) {
       // Derive units from charge ÷ real rate so the sub-line is always consistent
       // with the actual rate, regardless of what was stored in ac_units_consumed.
-      const displayUnits = Math.round(payment.ac_charge! / realRate);
+      // Rounded to 2dp (ac_units_consumed's DB precision), not a whole unit —
+      // otherwise an even split like 72.5 would display as "73".
+      const displayUnits = Math.round((payment.ac_charge! / realRate) * 100) / 100;
       add(ML + 4, `${displayUnits} units x Rs. ${realRate}/unit`, 6, false); nl(9);
     } else if (storedUnits > 0) {
       // Fallback: back-calculate rate from stored units (regular monthly pay path)

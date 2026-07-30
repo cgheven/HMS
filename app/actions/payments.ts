@@ -335,14 +335,15 @@ export async function markPaymentPaidAction(
     let newAcCharge = Number(existingPayment.ac_charge ?? 0);
 
     if (isAcTier) {
-      // Use parseInt — AC units must be a whole number (F-004)
-      const parsed = parseInt(input.acUnitsConsumed, 10);
-      if (!Number.isInteger(parsed) || parsed < 0 || parsed > MAX_AC_UNITS) {
+      // ac_units_consumed is numeric(10,2) — a room's units rarely split into
+      // whole numbers per tenant, so allow up to 2 decimal places (F-004).
+      const parsed = parseFloat(input.acUnitsConsumed);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_AC_UNITS) {
         throw new Error(
-          `AC units consumed must be a non-negative integer <= ${MAX_AC_UNITS}, got "${input.acUnitsConsumed}"`
+          `AC units consumed must be a non-negative number <= ${MAX_AC_UNITS}, got "${input.acUnitsConsumed}"`
         );
       }
-      acUnitsConsumed = parsed;
+      acUnitsConsumed = Math.round(parsed * 100) / 100;
 
       // Re-fetch the canonical AC rate from DB (never trust the client-supplied rate)
       const { data: configData } = await supabase
@@ -352,7 +353,7 @@ export async function markPaymentPaidAction(
         .maybeSingle();
 
       const acUnitRate = Number(configData?.ac_per_unit_rate ?? 0);
-      newAcCharge = acUnitsConsumed * acUnitRate;
+      newAcCharge = Math.round(acUnitsConsumed * acUnitRate);
 
       // Guard against overflow (F-003)
       assertNonNegativeFinite(newAcCharge, "computed ac_charge", 9_999_999.99);

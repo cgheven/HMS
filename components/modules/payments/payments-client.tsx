@@ -282,7 +282,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       late_fee: "0",
       notes: "",
       receipt_number: genReceipt(tenantName, p.for_month),
-      ac_units_consumed: p.ac_units_consumed ? String(Math.round(p.ac_units_consumed)) : "0",
+      ac_units_consumed: p.ac_units_consumed ? String(p.ac_units_consumed) : "0",
       amount_received: String(remaining),
     });
   }
@@ -296,11 +296,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
     if (isAcTier) {
       const rawAc = markForm.ac_units_consumed.trim();
-      const parsedAc = parseInt(rawAc, 10);
-      if (!Number.isInteger(parsedAc) || parsedAc < 0 || parsedAc > MAX_AC_UNITS || String(parsedAc) !== rawAc) {
+      const parsedAc = parseFloat(rawAc);
+      if (!Number.isFinite(parsedAc) || parsedAc < 0 || parsedAc > MAX_AC_UNITS) {
         toast({
           title: "Invalid AC units",
-          description: `AC units consumed must be a whole number between 0 and ${MAX_AC_UNITS}.`,
+          description: `AC units consumed must be a number between 0 and ${MAX_AC_UNITS}.`,
           variant: "destructive",
         });
         return;
@@ -340,7 +340,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         amountReceived,
         markForm.method,
         markDialog.for_month,
-        isAcTier ? parseInt(markForm.ac_units_consumed, 10) : undefined,
+        isAcTier ? parseFloat(markForm.ac_units_consumed) : undefined,
       );
       if (result.error) {
         toast({ title: "Error", description: result.error, variant: "destructive" });
@@ -368,7 +368,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         amountReceived,
         markForm.method,
         markDialog.for_month,
-        isAcTier ? parseInt(markForm.ac_units_consumed, 10) : undefined,
+        isAcTier ? parseFloat(markForm.ac_units_consumed) : undefined,
         markForm.notes,
       );
       if (result.error) {
@@ -1529,14 +1529,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   placeholder="0"
                   min="0"
                   max={String(MAX_AC_UNITS)}
-                  step="1"
+                  step="0.01"
                   value={markForm.ac_units_consumed}
                   onChange={(e) => setMarkForm({ ...markForm, ac_units_consumed: e.target.value })}
                 />
                 {packageConfig && (
                   <p className="text-xs text-muted-foreground">
                     Rate: {formatCurrency(packageConfig.ac_per_unit_rate)}/unit ·
-                    Est. Charge: {formatCurrency((parseInt(markForm.ac_units_consumed, 10) || 0) * packageConfig.ac_per_unit_rate)}
+                    Est. Charge: {formatCurrency((parseFloat(markForm.ac_units_consumed) || 0) * packageConfig.ac_per_unit_rate)}
                   </p>
                 )}
                 <p className="text-xs text-muted-foreground/60">Final amount is calculated server-side using the current rate.</p>

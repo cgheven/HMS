@@ -38,10 +38,20 @@ export interface ACSegmentBillingResult {
 // re-derives the charge that way and refuses to accept a payment that disagrees
 // ("Amount received exceeds the remaining balance"), and receipts itemise it as
 // "N units × Rs rate/unit". Splitting a room rarely lands on whole units, so each
-// share is rounded to whole units first and the charge is derived from that —
-// never computed on its own, which is how the two drifted apart.
+// share is rounded to 2 decimal places (ac_units_consumed is numeric(10,2)) and
+// the charge is derived from that — never computed on its own, which is how the
+// two drifted apart.
 function applyUnitRate(rows: { tenantUnits: number; charge: number }[], perUnitRate: number): void {
   for (const r of rows) r.charge = Math.round(r.tenantUnits * perUnitRate);
+}
+
+// Round a unit share to 2dp — ac_units_consumed's DB precision. Splitting units
+// evenly should land tenants within a cent-equivalent of each other, never a
+// whole unit apart (a 2-tenant room with 145 units gets 72.5/72.5, not 73/72).
+// Exported so lib/tenant-checkout.ts's mid-month checkout share uses the same
+// rounding granularity as month-end billing.
+export function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 export function computeACSegmentBilling(params: {
@@ -165,23 +175,25 @@ export function computeACSegmentBilling(params: {
       const totalAccumulated = [...accumulated.values()].reduce((s, v) => s + v, 0);
       const rows = eligible.map(t => ({
         id: t.id,
-        tenantUnits: Math.round(accumulated.get(t.id) ?? 0),
+        tenantUnits: round2(accumulated.get(t.id) ?? 0),
         charge: 0,
       }));
       const sumUnitsExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
-      if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, Math.round(totalAccumulated) - sumUnitsExceptLast);
+      if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, round2(totalAccumulated - sumUnitsExceptLast));
       applyUnitRate(rows, perUnitRate);
       tenantBilling = rows;
     }
   } else if (joinReadings.length === 0) {
-    // ── Equal split: units are integers, last tenant absorbs remainder ──
-    const baseUnits = n > 1 ? Math.floor(units / n) : units;
-    const lastUnits = units - baseUnits * (n - 1);
-    const rows = eligible.map((t, idx) => ({
+    // ── Equal split: fractional shares (2dp) — last tenant absorbs only the
+    // sub-cent rounding residual, never a whole unit ──
+    const rawShare = n > 1 ? units / n : units;
+    const rows = eligible.map((t) => ({
       id: t.id,
-      tenantUnits: idx === n - 1 ? lastUnits : baseUnits,
+      tenantUnits: round2(rawShare),
       charge: 0,
     }));
+    const sumExceptLast = rows.slice(0, -1).reduce((s, r) => s + r.tenantUnits, 0);
+    if (rows.length > 0) rows[rows.length - 1].tenantUnits = round2(units - sumExceptLast);
     applyUnitRate(rows, perUnitRate);
     tenantBilling = rows;
   } else {
@@ -218,17 +230,17 @@ export function computeACSegmentBilling(params: {
       tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
     } else {
       const assignedUnits = [...accumulated.values()].reduce((s, v) => s + v, 0);
-      unassignedUnits = Math.max(0, Math.round(units - assignedUnits));
+      unassignedUnits = Math.max(0, round2(units - assignedUnits));
       if (assignedUnits === 0) {
         tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
       } else {
         const rows = eligible.map(t => ({
           id: t.id,
-          tenantUnits: Math.round(accumulated.get(t.id) ?? 0),
+          tenantUnits: round2(accumulated.get(t.id) ?? 0),
           charge: 0,
         }));
         const unitSumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
-        if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, Math.round(assignedUnits) - unitSumExceptLast);
+        if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, round2(assignedUnits - unitSumExceptLast));
         applyUnitRate(rows, perUnitRate);
         tenantBilling = rows;
       }
