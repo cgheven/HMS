@@ -1,4 +1,4 @@
-# HMS — Claude Code Instructions
+# HMS — Claude Code Instructions  
 
 ## Stack
 - Next.js 15 App Router · React 19 · TypeScript · Supabase (PostgreSQL + Auth + Storage)
