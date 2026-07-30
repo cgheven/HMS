@@ -19,26 +19,34 @@ export async function downloadQrFlyerPdf(opts: {
   doc.setLineWidth(1);
   doc.rect(10, 10, pageWidth - 20, pageHeight - 20);
 
+  // Wraps text to maxWidth instead of running off the page (hostelName is
+  // arbitrary-length user data — a long branch name was overflowing past the
+  // border before this), and returns the actual rendered height so the next
+  // block is positioned below it rather than at a fixed offset that assumed
+  // a single line.
+  function centeredText(text: string, y: number, maxWidth: number): number {
+    const lines = doc.splitTextToSize(text, maxWidth);
+    doc.text(lines, centerX, y, { align: "center" });
+    return doc.getTextDimensions(lines).h;
+  }
+
   let y = 38;
   if (opts.hostelName) {
     doc.setFontSize(14);
     doc.setFont("helvetica", "normal");
     doc.setTextColor(110, 110, 110);
-    doc.text(opts.hostelName, centerX, y, { align: "center" });
-    y += 16;
+    y += centeredText(opts.hostelName, y, pageWidth - 40) + 8;
   }
 
   doc.setFontSize(28);
   doc.setFont("helvetica", "bold");
   doc.setTextColor(20, 20, 20);
-  doc.text(opts.heading, centerX, y, { align: "center" });
-  y += 13;
+  y += centeredText(opts.heading, y, pageWidth - 40) + 9;
 
   doc.setFontSize(13);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(90, 90, 90);
-  doc.text(opts.subheading, centerX, y, { align: "center", maxWidth: pageWidth - 50 });
-  y += 22;
+  y += centeredText(opts.subheading, y, pageWidth - 50) + 14;
 
   const qrSize = 110;
   doc.addImage(opts.qrDataUrl, "PNG", centerX - qrSize / 2, y, qrSize, qrSize);
@@ -53,7 +61,7 @@ export async function downloadQrFlyerPdf(opts: {
   doc.setFontSize(11);
   doc.setFont("helvetica", "bold");
   doc.setTextColor(60, 60, 60);
-  doc.text(opts.url, centerX, y, { align: "center", maxWidth: pageWidth - 40 });
+  centeredText(opts.url, y, pageWidth - 40);
 
   doc.save(opts.filename);
 }

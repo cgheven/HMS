@@ -116,9 +116,11 @@ function computeACSegmentCharge(
     const tenants = activesPresent + departedPresent;
     if (tenants > 0 && myJoinOffset <= segStart) share += segUnits / tenants;
   }
-  // Whole units first, then price them — same order as the server, or the quote here
+  // Round the share to 2dp (ac_units_consumed's DB precision) before pricing —
+  // same order and precision as lib/ac-billing.ts's round2, or the quote here
   // and the charge recorded there disagree by the rounding.
-  return Math.round(Math.round(share) * rate);
+  const roundedShare = Math.round(share * 100) / 100;
+  return Math.round(roundedShare * rate);
 }
 
 // Resolve each tenant's arrival offset against the opening reading currently in play —
@@ -550,6 +552,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [checkoutACContext, setCheckoutACContext] = useState<{
     prevMonthReading: number | null;
     prevMonthUnits: number | null;
+    currentMonthReading: number | null;
+    currentMonthUnits: number | null;
     perUnitRate: number;
     activeTenantCount: number;
     priorCheckoutUnits: number[];
@@ -1252,7 +1256,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       setCheckoutACContextLoading(true);
       const month = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
       getACCheckoutContextAction(t.room_id!, month).then((ctx) => {
-        if (!ctx.error) setCheckoutACContext(ctx);
+        if (!ctx.error) {
+          setCheckoutACContext(ctx);
+          // Already entered this month via the AC Units tab (e.g. earlier today) —
+          // default to it instead of leaving the field blank for a re-type of a
+          // number that's already on file.
+          if (ctx.currentMonthReading != null) {
+            setCheckoutACReading(String(ctx.currentMonthReading));
+          }
+        }
         setCheckoutACContextLoading(false);
       });
     }
@@ -1534,13 +1546,26 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
   const checkoutMath = useMemo(() => {
     const deposit = checkingOut?.security_deposit ?? 0;
-    const rawPending = checkoutPendingPayment?.amount ?? 0;
+    // The AC estimate below REPLACES whatever ac_charge is already on the row
+    // (e.g. from an AC Units tab apply earlier this month) — it must not be
+    // billed twice, once already inside `amount` and again as the fresh estimate.
+    const existingAcCharge = checkoutPendingPayment?.ac_charge ?? 0;
+    const rawPending = Math.max(0, (checkoutPendingPayment?.amount ?? 0) - existingAcCharge);
     const proRateDiscount = proRateActive ? (checkoutProRateInfo?.discount ?? 0) : 0;
     const basePending = Math.max(0, rawPending - proRateDiscount);
 
+    // The exact opening the AC Units tab already used, backed out from what it
+    // actually saved (reading - units) — preferred over the generic move-in-reading
+    // fallback, since a manual opening override at apply time (or any other reason
+    // the two derivations diverge) would otherwise make this preview disagree with
+    // what's already billed for the room this month.
+    const impliedCurrentOpening = (checkoutACContext?.currentMonthReading != null && checkoutACContext?.currentMonthUnits != null)
+      ? checkoutACContext.currentMonthReading - checkoutACContext.currentMonthUnits
+      : null;
     const acReading = checkoutACReading.trim() !== "" ? Number(checkoutACReading) : NaN;
     const acPrev = checkoutACContext?.prevMonthReading
       ?? (checkoutACOpeningReading.trim() !== "" ? Number(checkoutACOpeningReading) : null)
+      ?? impliedCurrentOpening
       ?? checkoutACContext?.derivedOpening
       ?? 0;
     const acRate = checkoutACContext?.perUnitRate ?? 0;
@@ -3389,23 +3414,40 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           <span className="ml-2 text-muted-foreground/70">({checkoutACContext.prevMonthUnits.toLocaleString()} units consumed)</span>
                         )}
                       </p>
-                    ) : (
-                      <div className="space-y-1.5">
-                        <p className="text-xs text-amber/80">
-                          {checkoutACContext?.derivedOpening != null
-                            ? `No previous month record found — auto-using move-in reading ${checkoutACContext.derivedOpening.toLocaleString()} unless overridden below`
-                            : "No previous month record found — enter the meter reading at the start of this month"}
-                        </p>
-                        <input
-                          type="number"
-                          min="0"
-                          max="999999"
-                          value={checkoutACOpeningReading}
-                          onChange={(e) => setCheckoutACOpeningReading(e.target.value)}
-                          placeholder={checkoutACContext?.derivedOpening != null ? String(checkoutACContext.derivedOpening) : "Opening reading (month start)"}
-                          className="h-9 w-full rounded-lg border border-amber/30 bg-transparent px-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50"
-                        />
-                      </div>
+                    ) : (() => {
+                      // Prefer the exact opening the AC Units tab already used this
+                      // month (backed out from what it saved) over the generic
+                      // move-in-reading fallback — must match checkoutMath's own
+                      // priority order, or the message and the estimate disagree.
+                      const impliedOpening = (checkoutACContext?.currentMonthReading != null && checkoutACContext?.currentMonthUnits != null)
+                        ? checkoutACContext.currentMonthReading - checkoutACContext.currentMonthUnits
+                        : null;
+                      const suggestedOpening = impliedOpening ?? checkoutACContext?.derivedOpening ?? null;
+                      return (
+                        <div className="space-y-1.5">
+                          <p className="text-xs text-amber/80">
+                            {impliedOpening != null
+                              ? `No previous month record found — using this month's AC Units opening (${impliedOpening.toLocaleString()}) unless overridden below`
+                              : suggestedOpening != null
+                                ? `No previous month record found — auto-using move-in reading ${suggestedOpening.toLocaleString()} unless overridden below`
+                                : "No previous month record found — enter the meter reading at the start of this month"}
+                          </p>
+                          <input
+                            type="number"
+                            min="0"
+                            max="999999"
+                            value={checkoutACOpeningReading}
+                            onChange={(e) => setCheckoutACOpeningReading(e.target.value)}
+                            placeholder={suggestedOpening != null ? String(suggestedOpening) : "Opening reading (month start)"}
+                            className="h-9 w-full rounded-lg border border-amber/30 bg-transparent px-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50"
+                          />
+                        </div>
+                      );
+                    })()}
+                    {checkoutACContext?.currentMonthReading != null && (
+                      <p className="text-xs text-emerald-400/80">
+                        Auto-filled from this month&apos;s AC Units entry ({checkoutACContext.currentMonthReading.toLocaleString()}) — edit below if the meter has moved since.
+                      </p>
                     )}
                     <input
                       id="checkout-ac-reading"

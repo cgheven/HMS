@@ -109,12 +109,12 @@ export function ComplaintFormClient({ hostel, complaintCode }: Props) {
     <div className="min-h-screen bg-background">
       {/* Header */}
       <div className="border-b border-sidebar-border bg-sidebar/90 backdrop-blur-md">
-        <div className="max-w-2xl mx-auto px-4 h-14 flex items-center gap-3">
-          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-amber/10 border border-amber/20">
+        <div className="max-w-2xl mx-auto px-4 min-h-14 py-2.5 flex items-center gap-3">
+          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-amber/10 border border-amber/20 shrink-0">
             <Home className="w-4 h-4 text-amber" />
           </div>
-          <div>
-            <p className="text-sm font-semibold text-foreground leading-none">{hostel.name}</p>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-foreground leading-snug">{hostel.name}</p>
             {(hostel.city || hostel.area) && (
               <p className="text-xs text-muted-foreground mt-0.5">
                 {[hostel.area, hostel.city].filter(Boolean).join(", ")}

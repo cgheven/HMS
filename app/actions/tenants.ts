@@ -1030,6 +1030,18 @@ export async function getACCheckoutContextAction(
    * whichever opening reading is in play, which may be one the operator is still typing.
    */
   joiners: { tenantId: string; unitsAtJoin: number | null; joiningMeterReading: number | null }[];
+  /** This month's meter reading, if the operator already applied AC units for
+   *  this room via the AC Units tab (e.g. earlier the same day the tenant is
+   *  checking out) — surfaced so the checkout dialog can default to it instead
+   *  of leaving the operator to re-type a reading they already entered once. */
+  currentMonthReading: number | null;
+  /** Total units that reading was actually split against. Combined with
+   *  currentMonthReading, lets the checkout preview back out the EXACT opening
+   *  baseline the AC Units tab used (reading - units) instead of re-deriving its
+   *  own — which can legitimately differ (e.g. a manually typed opening
+   *  override), producing a different total and a preview that disagrees with
+   *  what was already billed. */
+  currentMonthUnits: number | null;
   /** Earliest active tenant's move-in meter reading — the same fallback baseline
    *  performTenantCheckout derives server-side when there's no prev-month record
    *  and no opening reading typed in. Surfaced so the dialog can show it instead
@@ -1046,13 +1058,20 @@ export async function getACCheckoutContextAction(
     const prevDate = new Date(y, m - 2, 1);
     const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
 
-    const [{ data: prevRecord }, { data: config }, { data: tenants }, { data: priorCheckouts }, { data: joinRows }] = await Promise.all([
+    const [{ data: prevRecord }, { data: currentRecord }, { data: config }, { data: tenants }, { data: priorCheckouts }, { data: joinRows }] = await Promise.all([
       adminDb
         .from("hms_room_ac_readings")
         .select("meter_reading, total_units")
         .eq("room_id", roomId)
         .eq("hostel_id", hostelId)
         .eq("for_month", prevMonth)
+        .maybeSingle(),
+      adminDb
+        .from("hms_room_ac_readings")
+        .select("meter_reading, total_units")
+        .eq("room_id", roomId)
+        .eq("hostel_id", hostelId)
+        .eq("for_month", checkoutMonth)
         .maybeSingle(),
       adminDb
         .from("hms_package_configs")
@@ -1101,6 +1120,8 @@ export async function getACCheckoutContextAction(
     return {
       prevMonthReading: prevRecord?.meter_reading != null ? Number(prevRecord.meter_reading) : null,
       prevMonthUnits: prevRecord?.total_units != null ? Number(prevRecord.total_units) : null,
+      currentMonthReading: currentRecord?.meter_reading != null ? Number(currentRecord.meter_reading) : null,
+      currentMonthUnits: currentRecord?.total_units != null ? Number(currentRecord.total_units) : null,
       perUnitRate: Number(config?.ac_per_unit_rate ?? 0),
       activeTenantCount: (tenants ?? []).length + priorCheckoutUnits.length,
       priorCheckoutUnits,
@@ -1112,6 +1133,8 @@ export async function getACCheckoutContextAction(
     return {
       prevMonthReading: null,
       prevMonthUnits: null,
+      currentMonthReading: null,
+      currentMonthUnits: null,
       perUnitRate: 0,
       activeTenantCount: 0,
       priorCheckoutUnits: [],
