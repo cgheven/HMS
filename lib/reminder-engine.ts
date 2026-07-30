@@ -11,6 +11,7 @@ export interface ReminderPaymentRow {
   id: string;
   tenant_id: string;
   amount: number;
+  amount_paid: number | null;
   late_fee: number | null;
   for_month: string;
   ac_charge: number | null;
@@ -62,7 +63,7 @@ export async function runReminderPass(
   const { data: payments, error } = await admin
     .from("hms_payments")
     .select(
-      "id, tenant_id, amount, late_fee, for_month, ac_charge, ac_units_consumed, ac_maintenance_charge, registration_fee_charge, last_reminder_sent_at, " +
+      "id, tenant_id, amount, amount_paid, late_fee, for_month, ac_charge, ac_units_consumed, ac_maintenance_charge, registration_fee_charge, last_reminder_sent_at, " +
       "tenant:hms_tenants(full_name, phone, security_deposit, check_in, is_active, is_waiting), " +
       "hostel:hms_hostels(name, payment_methods, reminder_template, whatsapp_enabled)"
     )
@@ -128,7 +129,10 @@ export async function runReminderPass(
 
   await processInBatches(due, SEND_CONCURRENCY, async (p) => {
     const digits = (p.tenant?.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
-    const total = Number(p.amount) + Number(p.late_fee ?? 0);
+    // Remaining balance, not the full bill — a partially_paid row already has
+    // real money against it, and reminding for the original total would ask
+    // the tenant to pay something they've already handed over.
+    const total = Math.max(0, Number(p.amount) + Number(p.late_fee ?? 0) - Number(p.amount_paid ?? 0));
     const message = buildReminderMessage({
       template: p.hostel?.reminder_template,
       tenantName: p.tenant?.full_name ?? "Tenant",

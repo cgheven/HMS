@@ -2,13 +2,13 @@ import type { PaymentMethodAccount } from "@/types";
 
 export const DEFAULT_REMINDER_TEMPLATE = `Assalam o Alaikum {name},
 
-Friendly reminder — your rent of {amount} for {month} is still pending.{ac}{ac_maintenance}{registration_fee}{deposit}
+Friendly reminder - your rent of {amount} for {month} is still pending.{ac}{ac_maintenance}{registration_fee}{deposit}
 
 {accounts}
 
 Please pay at your earliest convenience.
 
-— {hostel}`;
+- {hostel}`;
 
 export function formatAccounts(methods: PaymentMethodAccount[]): string {
   if (!methods || methods.length === 0) return "";
@@ -27,7 +27,7 @@ export function formatAccounts(methods: PaymentMethodAccount[]): string {
 function formatACLine(units?: number, charge?: number, rate?: number): string {
   if (!charge || charge <= 0) return "";
   const parts: string[] = [];
-  if (units && rate) parts.push(`${units} units × Rs ${rate}/unit`);
+  if (units && rate) parts.push(`${units} units x Rs ${rate}/unit`);
   parts.push(`*Rs ${new Intl.NumberFormat("en-PK").format(Math.round(charge))}*`);
   return "⚡ AC: " + parts.join(" = ");
 }

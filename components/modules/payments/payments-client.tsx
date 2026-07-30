@@ -507,7 +507,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       toast({ title: "Invalid phone", variant: "destructive" });
       return;
     }
-    const total = Number(p.amount) + Number(p.late_fee ?? 0);
+    // Remaining balance, not the full bill — a partially_paid tenant has already
+    // handed over real money; reminding for the original total would ask them
+    // to pay something they've already covered.
+    const total = Math.max(0, Number(p.amount) + Number(p.late_fee ?? 0) - Number(p.amount_paid ?? 0));
     const tenantDeposit = tenants.find(t => t.id === p.tenant_id)?.security_deposit ?? 0;
     const message = buildReminderMessage({
       template: reminderTemplate,
@@ -753,7 +756,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Plan</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Amount</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-center w-28">Status</span>
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-44">Action</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-96">Action</span>
       </div>
     );
   }
@@ -778,11 +781,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       <>
         {(p.status === "pending" || p.status === "overdue") && (
           <>
-            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" onClick={() => sendReminder(p)}>
+            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 shrink-0 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" onClick={() => sendReminder(p)}>
               {WA_ICON} Remind
             </Button>
             {canRecordPayment && (
-              <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
+              <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 shrink-0 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
                 <CheckCircle2 className="w-3 h-3" /> Pay
               </Button>
             )}
@@ -790,18 +793,21 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         )}
         {p.status === "partially_paid" && (
           <>
-            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" disabled={sendingWa === p.id} onClick={() => sendWhatsAppReceipt(p)}>
+            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 shrink-0 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" onClick={() => sendReminder(p)}>
+              {WA_ICON} Remind
+            </Button>
+            <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 shrink-0 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" disabled={sendingWa === p.id} onClick={() => sendWhatsAppReceipt(p)}>
               {WA_ICON} Receipt
             </Button>
             {canRecordPayment && (
-              <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
+              <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 shrink-0 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => openMarkPaid(p)}>
                 <CheckCircle2 className="w-3 h-3" /> Collect Rest
               </Button>
             )}
           </>
         )}
         {p.status === "paid" && (
-          <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" disabled={sendingWa === p.id} onClick={() => sendWhatsAppReceipt(p)}>
+          <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 shrink-0 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" disabled={sendingWa === p.id} onClick={() => sendWhatsAppReceipt(p)}>
             {WA_ICON} Receipt
           </Button>
         )}
@@ -885,7 +891,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               {cfg.label}
             </span>
           </div>
-          <div className="flex items-center justify-end gap-2 w-44">
+          {/* Fixed width, not min-w — each row is its own independent CSS grid
+              (not one shared table grid), so if this column's width varied by
+              button count, rows with more buttons would compute a wider auto
+              column than rows with fewer, shifting Amount/Status out of
+              alignment between rows and against the header. A shared fixed
+              width sized for the max case (3 buttons) keeps every row's grid
+              identical regardless of how many buttons it actually renders. */}
+          <div className="flex items-center justify-end gap-2 w-96">
             {actionButtons}
           </div>
         </div>
