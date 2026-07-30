@@ -567,7 +567,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       return;
     }
     const prevReading = prevMonthACReadings.find(r => r.room_id === roomId)?.meter_reading;
-    const openingReading = prevReading == null ? (acOpeningReadings[roomId] ? parseFloat(acOpeningReadings[roomId]) : undefined) : undefined;
+    // Falls back to the derived (move-in-reading-based) opening value when the
+    // operator never touched the field — it's pre-filled on screen (see the
+    // Opening <Input> below), so Save must honor that same value rather than
+    // silently reading blank state.
+    const derivedOpeningForRoom = deriveOpeningReading(tenants.filter(t => t.room_id === roomId && t.is_active), selectedMonth);
+    const rawOpening = acOpeningReadings[roomId] ?? (derivedOpeningForRoom != null ? String(derivedOpeningForRoom) : "");
+    const openingReading = prevReading == null ? (rawOpening ? parseFloat(rawOpening) : undefined) : undefined;
 
     setSavingJoin(tenantId);
     try {
@@ -595,7 +601,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     const meterReading = Number(acUnits[roomId] ?? "");
     if (!Number.isFinite(meterReading) || meterReading < 0) return;
     const prevReading = prevMonthACReadings.find(r => r.room_id === roomId)?.meter_reading;
-    const openingReading = prevReading == null ? (acOpeningReadings[roomId] ? parseFloat(acOpeningReadings[roomId]) : undefined) : undefined;
+    // Falls back to the derived (move-in-reading-based) opening value when the
+    // operator never touched the field — it's pre-filled on screen (see the
+    // Opening <Input> below), so Apply must honor that same value rather than
+    // silently reading blank state.
+    const derivedOpeningForRoom = deriveOpeningReading(tenants.filter(t => t.room_id === roomId && t.is_active), selectedMonth);
+    const rawOpening = acOpeningReadings[roomId] ?? (derivedOpeningForRoom != null ? String(derivedOpeningForRoom) : "");
+    const openingReading = prevReading == null ? (rawOpening ? parseFloat(rawOpening) : undefined) : undefined;
 
     setApplyingAC(roomId);
     try {
@@ -1230,8 +1242,8 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               type="number"
                               min={0}
                               max={999999}
-                              placeholder={derivedOpening != null ? String(derivedOpening) : "0"}
-                              value={openingInput}
+                              placeholder="0"
+                              value={acOpeningReadings[room.id] ?? (derivedOpening != null ? String(derivedOpening) : "")}
                               onChange={e => setAcOpeningReadings(prev => ({ ...prev, [room.id]: e.target.value }))}
                               disabled={acTenantCount === 0}
                               className="flex-1 sm:w-20 h-7 text-xs text-center disabled:opacity-40"
