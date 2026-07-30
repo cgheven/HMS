@@ -391,7 +391,7 @@ export async function getPaymentsData(forMonth: string) {
 
 export async function getComplaints() {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, complaints: [], tenants: [], rooms: [], complaintCode: null };
+  if (!ctx?.hostelId) return { hostelId: null, complaints: [], tenants: [], rooms: [], complaintCode: null, hostelName: null };
   const { supabase, hostelId } = ctx;
 
   const [{ data: complaints }, { data: tenants }, { data: rooms }, { data: hostel }] = await Promise.all([
@@ -408,7 +408,7 @@ export async function getComplaints() {
       .eq("hostel_id", hostelId)
       .order("room_number"),
     supabase.from("hms_hostels")
-      .select("complaint_code")
+      .select("complaint_code, name")
       .eq("id", hostelId)
       .maybeSingle(),
   ]);
@@ -419,6 +419,7 @@ export async function getComplaints() {
     tenants: (tenants ?? []) as Pick<Tenant, "id" | "full_name">[],
     rooms: (rooms ?? []) as Pick<Room, "id" | "room_number">[],
     complaintCode: hostel?.complaint_code ?? null,
+    hostelName: hostel?.name ?? null,
   };
 }
 

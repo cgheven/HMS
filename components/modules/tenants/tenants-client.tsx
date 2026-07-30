@@ -6,7 +6,7 @@ import {
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, Eye,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
   FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check, UtensilsCrossed,
-  CalendarClock, CalendarX, MessageCircle, Car,
+  CalendarClock, CalendarX, MessageCircle, Car, Download,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -32,6 +32,8 @@ import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, 
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 import { addTenantAsManager, editTenantAsManager, checkoutTenantAsManager, giveTenantNoticeAsManager, cancelTenantNoticeAsManager } from "@/app/actions/managers";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
+import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
+import QRCode from "qrcode";
 
 interface Props {
   hostelId: string | null;
@@ -558,6 +560,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [shareReceipt, setShareReceipt] = useState<{ name: string; phone: string | null; token: string } | null>(null);
   const [shareLinkDialog, setShareLinkDialog] = useState(false);
   const [shareLinkPhone, setShareLinkPhone] = useState("");
+  const [formQrDataUrl, setFormQrDataUrl] = useState<string | null>(null);
+  const [formQrGenerating, setFormQrGenerating] = useState(false);
+  const [formQrDownloading, setFormQrDownloading] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null);
@@ -1573,6 +1578,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     if (!checkingOut || checkingOut.security_deposit <= 0) return;
     setCheckoutDepositReturned(String(checkoutMath.refundable));
   }, [checkingOut, checkoutMath.refundable]);
+
+  useEffect(() => {
+    if (!shareLinkDialog || !hostelSlug) return;
+    const formUrl = `${window.location.origin}/join/${hostelSlug}`;
+    setFormQrGenerating(true);
+    QRCode.toDataURL(formUrl, { width: 320, margin: 2 })
+      .then(setFormQrDataUrl)
+      .catch(() => setFormQrDataUrl(null))
+      .finally(() => setFormQrGenerating(false));
+  }, [shareLinkDialog, hostelSlug]);
 
   // Single source of truth for "what does the Vehicles tab show" — used by
   // both the on-screen table and the exports below, so exporting while on
@@ -3876,6 +3891,22 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </Button>
                 </div>
 
+                {/* QR code */}
+                <div className="flex items-center justify-center rounded-xl border border-sidebar-border bg-white p-4">
+                  {formQrGenerating ? (
+                    <div className="w-[180px] h-[180px] flex items-center justify-center text-xs text-muted-foreground">
+                      Generating…
+                    </div>
+                  ) : formQrDataUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={formQrDataUrl} alt="Application form QR code" className="w-[180px] h-[180px]" />
+                  ) : (
+                    <div className="w-[180px] h-[180px] flex items-center justify-center text-xs text-rose-400 text-center px-4">
+                      Could not generate QR code.
+                    </div>
+                  )}
+                </div>
+
                 {/* Optional phone for direct WhatsApp */}
                 <div className="space-y-1.5">
                   <Label>WhatsApp number <span className="text-muted-foreground font-normal">(optional)</span></Label>
@@ -3907,6 +3938,31 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     Send on WhatsApp
                   </Button>
                 </div>
+                <Button
+                  variant="outline"
+                  className="w-full gap-2"
+                  disabled={!formQrDataUrl || formQrDownloading}
+                  onClick={async () => {
+                    if (!formQrDataUrl) return;
+                    setFormQrDownloading(true);
+                    try {
+                      await downloadQrFlyerPdf({
+                        heading: "Scan to Apply",
+                        subheading: "Want to book a room? Scan this code to fill out our application form.",
+                        hostelName,
+                        qrDataUrl: formQrDataUrl,
+                        url: formUrl,
+                        filename: "application-form-qr.pdf",
+                      });
+                    } catch {
+                      toast({ title: "Download failed", description: "Could not generate PDF.", variant: "destructive" });
+                    } finally {
+                      setFormQrDownloading(false);
+                    }
+                  }}
+                >
+                  <Download className="w-3.5 h-3.5" /> {formQrDownloading ? "Preparing…" : "Download PDF"}
+                </Button>
               </div>
             );
           })()}

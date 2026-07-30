@@ -1,6 +1,6 @@
 "use client";
 import { useState, useMemo, useEffect } from "react";
-import { Plus, MessageSquareWarning, CheckCircle2, Clock, AlertTriangle, Trash2, QrCode, Copy, Check } from "lucide-react";
+import { Plus, MessageSquareWarning, CheckCircle2, Clock, AlertTriangle, Trash2, QrCode, Copy, Check, Download } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { formatDate, capitalize } from "@/lib/utils";
+import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
 import QRCode from "qrcode";
 import type { Complaint, ComplaintCategory, ComplaintPriority, ComplaintStatus, Tenant, Room, PartnerTier } from "@/types";
 
@@ -25,6 +26,7 @@ interface Props {
   rooms: RoomRow[];
   partnerTier?: PartnerTier | null;
   complaintCode?: string | null;
+  hostelName?: string | null;
 }
 
 const categoryIcons: Record<ComplaintCategory, string> = {
@@ -63,10 +65,11 @@ function CopyUrlButton({ value }: { value: string }) {
   );
 }
 
-function QrCodeDialog({ open, onOpenChange, complaintCode }: { open: boolean; onOpenChange: (open: boolean) => void; complaintCode: string }) {
+function QrCodeDialog({ open, onOpenChange, complaintCode, hostelName }: { open: boolean; onOpenChange: (open: boolean) => void; complaintCode: string; hostelName?: string | null }) {
   const [url, setUrl] = useState("");
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -78,6 +81,25 @@ function QrCodeDialog({ open, onOpenChange, complaintCode }: { open: boolean; on
       .catch(() => setDataUrl(null))
       .finally(() => setGenerating(false));
   }, [open, complaintCode]);
+
+  async function handleDownloadPdf() {
+    if (!dataUrl) return;
+    setDownloading(true);
+    try {
+      await downloadQrFlyerPdf({
+        heading: "Scan to Report an Issue",
+        subheading: "Facing a problem at the hostel? Scan this code to let us know — no login required.",
+        hostelName,
+        qrDataUrl: dataUrl,
+        url,
+        filename: "complaint-form-qr.pdf",
+      });
+    } catch {
+      toast({ title: "Download failed", description: "Could not generate PDF.", variant: "destructive" });
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -111,13 +133,16 @@ function QrCodeDialog({ open, onOpenChange, complaintCode }: { open: boolean; on
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+          <Button className="gap-1.5" disabled={!dataUrl || downloading} onClick={handleDownloadPdf}>
+            <Download className="w-3.5 h-3.5" /> {downloading ? "Preparing…" : "Download PDF"}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
-export function ComplaintsClient({ hostelId, complaints: initial, tenants, rooms, partnerTier = null, complaintCode = null }: Props) {
+export function ComplaintsClient({ hostelId, complaints: initial, tenants, rooms, partnerTier = null, complaintCode = null, hostelName = null }: Props) {
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const [complaints, setComplaints] = useState<Complaint[]>(initial);
   const [tab, setTab] = useState("all");
@@ -381,7 +406,7 @@ export function ComplaintsClient({ hostelId, complaints: initial, tenants, rooms
       </Dialog>
 
       {complaintCode && (
-        <QrCodeDialog open={qrDialogOpen} onOpenChange={setQrDialogOpen} complaintCode={complaintCode} />
+        <QrCodeDialog open={qrDialogOpen} onOpenChange={setQrDialogOpen} complaintCode={complaintCode} hostelName={hostelName} />
       )}
     </div>
   );
