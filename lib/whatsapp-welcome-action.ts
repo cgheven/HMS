@@ -74,12 +74,14 @@ async function buildWelcomeTextFromTenant(tenant: WelcomeTenantRow): Promise<{ o
 
   // Links straight to the Packages & Menu tab of THIS hostel specifically —
   // not just /find/{slug}. When the owner has more than one publicly-listed
-  // branch, /find/{slug}/page.tsx detects that and shows a "choose your
-  // branch" overview instead of the hostel itself (see
-  // getPublicHostelsByOwner), which would silently swallow ?tab=menu. The
-  // nested /find/{slug}/{slug} route (app/find/[slug]/[branchSlug]/page.tsx)
-  // renders this exact hostel directly regardless of sibling branches, so
-  // using it for both segments works whether the owner has one branch or many.
+  // branch, /find/{slug}/page.tsx shows a "choose your branch" overview
+  // instead of the hostel itself (see getPublicHostelsByOwner), which would
+  // silently swallow ?tab=menu. The nested /find/{slug}/{slug} route
+  // (app/find/[slug]/[branchSlug]/page.tsx) renders this exact hostel
+  // directly regardless of sibling branches, so using it for both segments
+  // works whether the owner has one branch or many — and since slugs are now
+  // short id-derived codes (migration 140), the duplicated segment stays
+  // short too.
   const menuUrl = hostel.listing_enabled && hostel.slug ? `${siteOrigin}/find/${hostel.slug}/${hostel.slug}?tab=menu` : null;
 
   const message = buildWelcomeMessage({

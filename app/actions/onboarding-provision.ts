@@ -28,15 +28,6 @@ function num(v: string | undefined, fallback = 0): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-function slugify(name: string, i: number): string {
-  const base = name
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return (base || `hostel-${i}`) + (i === 0 ? "" : `-${i + 1}`);
-}
-
 function genPassword(): string {
   return `Pulse${randomBytes(12).toString("base64url")}!`;
 }
@@ -139,7 +130,6 @@ export async function provisionOnboarding(submissionId: string): Promise<Provisi
           amenities: cfg.amenities ?? [],
           food_closed_on_sundays: !!cfg.food_closed_on_sundays,
           payment_methods: cfg.payment_methods ?? [],
-          slug: slugify(b.name, i),
           listing_enabled: true,
         })
         .select("id")

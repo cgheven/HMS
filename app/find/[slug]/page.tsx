@@ -12,9 +12,10 @@ interface Props {
 }
 
 // A business with only one listed branch goes straight to that branch's detail
-// page (identical to today's behavior). A business with multiple branches shows
-// all of them here instead — so a business's shareable link never surfaces
-// other owners' hostels the way the global /find directory does.
+// page. A business with multiple branches shows an overview of all of them
+// here instead, each linking to /find/{slug}/{branchSlug} — both segments are
+// short hash codes derived from the hostel's own id (see migration 140), so
+// even the nested URL stays short regardless of how long the hostel's name is.
 export default async function HostelOrBusinessPage({ params }: Props) {
   const { slug } = await params;
   const { branches, ownerName, error } = await getPublicHostelsByOwner(slug);

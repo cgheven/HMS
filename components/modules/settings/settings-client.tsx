@@ -525,14 +525,11 @@ export function SettingsClient() {
       amenities: listingForm.amenities,
       food_closed_on_sundays: listingForm.food_closed_on_sundays,
     };
-    // Auto-generate slug if enabling listing and no slug exists yet
+    // Every hostel already gets a slug from hms_set_hostel_slug on creation
+    // (a short id-derived code, see migration 140) — this is just a safety
+    // net for any legacy row that predates that trigger and still has none.
     if (listingForm.listing_enabled && !hostel?.slug) {
-      const base = (hostelForm.name || hostel?.name || "hostel")
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, "-")
-        .replace(/^-+|-+$/g, "");
-      updatePayload.slug = base || hostelId.slice(0, 8);
+      updatePayload.slug = hostelId.replace(/-/g, "").slice(0, 8);
     }
     const { data, error } = await supabase.from("hms_hostels").update(updatePayload).eq("id", hostelId).select("id");
     setSavingListing(false);
