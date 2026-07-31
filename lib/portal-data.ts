@@ -117,7 +117,7 @@ export async function getManagerTenants() {
 export async function getManagerPaymentsPageData(forMonth: string) {
   const scope = await resolveManagerHostel();
   if (!scope) {
-    return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, acReadings: [], acJoinReadings: [], prevMonthACReadings: [] };
+    return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, acReadings: [], acJoinReadings: [], prevMonthACReadings: [], waitingTenantIds: [] };
   }
 
   const { hostelId } = scope;
@@ -127,7 +127,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
   const prevDate = new Date(y, m - 2, 1);
   const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
 
-  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig, { data: hostel }, { data: acReadings }, { data: acJoinReadings }, { data: prevMonthACReadings }] = await Promise.all([
+  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig, { data: hostel }, { data: acReadings }, { data: acJoinReadings }, { data: prevMonthACReadings }, { data: waitingTenants }] = await Promise.all([
     admin.from("hms_payments")
       .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .eq("hostel_id", hostelId)
@@ -136,7 +136,8 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     admin.from("hms_tenants")
       .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
       .eq("hostel_id", hostelId)
-      .eq("is_active", true),
+      .eq("is_active", true)
+      .eq("is_waiting", false),
     admin.from("hms_rooms")
       .select("id, room_number, floor, has_ac")
       .eq("hostel_id", hostelId),
@@ -156,6 +157,13 @@ export async function getManagerPaymentsPageData(forMonth: string) {
       .select("room_id, meter_reading, total_units")
       .eq("hostel_id", hostelId)
       .eq("for_month", prevMonth),
+    // Mirrors getPaymentsPageData() (lib/data.ts) — the header stats need this
+    // to exclude payment rows for tenants edited back to the waiting list
+    // after their row was already generated.
+    admin.from("hms_tenants")
+      .select("id")
+      .eq("hostel_id", hostelId)
+      .eq("is_waiting", true),
   ]);
 
   const h = hostel as Pick<Hostel, "id" | "name" | "phone" | "whatsapp" | "payment_methods" | "reminder_template"> | null;
@@ -173,6 +181,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     acReadings: (acReadings ?? []) as { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     prevMonthACReadings: (prevMonthACReadings ?? []) as { room_id: string; meter_reading: number | null; total_units: number }[],
+    waitingTenantIds: (waitingTenants ?? []).map((t) => t.id as string),
   };
 }
 

@@ -24,7 +24,7 @@ import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_IN
 import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
 import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets } from "@/lib/student-category-labels";
 import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
-import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, PaymentStatus, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
@@ -535,7 +535,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [editing, setEditing] = useState<Tenant | null>(null);
   const [checkingOut, setCheckingOut] = useState<Tenant | null>(null);
   const [checkoutDate, setCheckoutDate] = useState(formatDateInput(new Date()));
-  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; late_fee: number } | null>(null);
+  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; late_fee: number } | null>(null);
   const [checkoutPaymentLoading, setCheckoutPaymentLoading] = useState(false);
   const [checkoutPaymentError, setCheckoutPaymentError] = useState<string | null>(null);
   const [checkoutPayAction, setCheckoutPayAction] = useState<"pay" | "waive">("pay");
@@ -1131,6 +1131,22 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       void sendTenantWelcomeMessageAction(editing.id);
     }
 
+    // Moving an already-active tenant back to the waiting list leaves behind
+    // any payment row already generated for them — they were never actually
+    // billable, unlike a genuinely checked-out tenant, so it must not linger
+    // as a phantom due. Only ever touches this month/later, and only rows
+    // nothing has been paid against yet — never paid/partially_paid/waived
+    // history, which is real money already handled.
+    if (editing && !editing.is_waiting && form.is_waiting) {
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      await supabase.from("hms_payments")
+        .delete()
+        .eq("tenant_id", editing.id)
+        .eq("hostel_id", hostelId ?? "")
+        .gte("for_month", currentMonth)
+        .in("status", ["pending", "overdue"]);
+    }
+
     // Log room/plan changes and deposit collection to the Member Ledger — best-effort,
     // never blocks the save itself. `hms_tenants.room_id`/`package_tier` are overwritten
     // in place above with no history kept, so this is the only place these are captured.
@@ -1231,7 +1247,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutACContextLoading(false);
   }
 
-  // Bundles all checkout-dialog setup so TenantRow (module scope) can call a single callback
+  // Bundles all checkout-dialog setup so TenantRow (module scope) can call a single callback.
+  // The actual outstanding-payment/AC-context fetches are left to the effect
+  // below, which reacts to checkoutDate too — a backdated checkout (recording
+  // a departure that already happened, common when this is entered a few
+  // days late) needs both to reflect the typed Departure Date, not whatever
+  // date happened to be "today" when the dialog was first opened.
   function openCheckout(t: Tenant) {
     const today = formatDateInput(new Date());
     setCheckingOut(t);
@@ -1240,44 +1261,70 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutPayAction("pay");
     setCheckoutProRate(false);
     setCheckoutPayMethod("cash");
-    setCheckoutPendingPayment(null);
-    setCheckoutPaymentError(null);
-    setCheckoutPaymentLoading(true);
     // Left to the checkoutMath effect, which nets the dues off first.
     setCheckoutDepositReturned("");
     setCheckoutACReading("");
     setCheckoutACOpeningReading("");
-    setCheckoutACContext(null);
-    fetchCheckoutPayment(t.id);
+  }
 
-    // Load AC context if the room has AC
-    const room = t.room_id ? roomMap[t.room_id] : null;
+  // Re-fetches whenever the tenant being checked out changes OR the Departure
+  // Date field is edited — both the outstanding-payment lookup and the AC
+  // context are month-scoped to whatever date is actually in that field, not
+  // to "today". Without this, editing the date after the dialog opens (e.g.
+  // correcting it to a past date) left both fetches stuck on the month the
+  // dialog happened to open in.
+  useEffect(() => {
+    if (!checkingOut || !checkoutDate) return;
+    const month = checkoutDate.slice(0, 7);
+
+    setCheckoutPendingPayment(null);
+    setCheckoutPaymentError(null);
+    setCheckoutPaymentLoading(true);
+    // Bounded to the departure month — a tenant paying in advance already has
+    // next month's row sitting there as "pending" simply because it isn't due
+    // yet, not because anything is actually owed. Without this bound, the
+    // latest-for_month row wins regardless of whether it's in the future, and
+    // checkout tries to collect an advance payment nobody actually owes.
+    fetchCheckoutPayment(checkingOut.id, month);
+
+    const room = checkingOut.room_id ? roomMap[checkingOut.room_id] : null;
     if (room?.has_ac) {
       setCheckoutACContextLoading(true);
-      const month = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
-      getACCheckoutContextAction(t.room_id!, month).then((ctx) => {
+      setCheckoutACContext(null);
+      getACCheckoutContextAction(checkingOut.room_id!, month).then((ctx) => {
         if (!ctx.error) {
           setCheckoutACContext(ctx);
-          // Already entered this month via the AC Units tab (e.g. earlier today) —
-          // default to it instead of leaving the field blank for a re-type of a
-          // number that's already on file.
-          if (ctx.currentMonthReading != null) {
-            setCheckoutACReading(String(ctx.currentMonthReading));
-          }
+          // Already entered this month via the AC Units tab — default to it
+          // instead of leaving the field blank for a re-type of a number
+          // that's already on file. Only when the operator hasn't already
+          // typed something themselves, so re-fetching on a date edit doesn't
+          // clobber a value they just entered.
+          setCheckoutACReading((prev) => (prev === "" && ctx.currentMonthReading != null) ? String(ctx.currentMonthReading) : prev);
         }
         setCheckoutACContextLoading(false);
       });
+    } else {
+      setCheckoutACContext(null);
+      setCheckoutACContextLoading(false);
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkingOut, checkoutDate]);
 
-  async function fetchCheckoutPayment(tenantId: string) {
+  async function fetchCheckoutPayment(tenantId: string, maxMonth: string) {
     const supabase = createClient();
     const { data, error } = await supabase
       .from("hms_payments")
-      .select("id, for_month, amount, late_fee, ac_charge, ac_units_consumed, food_charge, security_deposit_charge")
+      .select("id, for_month, status, amount, amount_paid, late_fee, ac_charge, ac_units_consumed, food_charge, security_deposit_charge")
       .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId ?? "")
-      .in("status", ["pending", "overdue"])
+      // partially_paid included too — a genuine remaining balance (e.g. AC
+      // usage billed after an advance rent payment already settled the rest)
+      // is still real money to collect at checkout, not just a fully-unpaid row.
+      .in("status", ["pending", "overdue", "partially_paid"])
+      // Excludes a future month's not-yet-due advance-payment row — only a
+      // month the tenant is actually departing in (or already past) can be a
+      // real debt to collect at checkout.
+      .lte("for_month", maxMonth)
       .order("for_month", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -1285,13 +1332,19 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     if (error) {
       setCheckoutPaymentError(error.message);
     } else if (data) {
-      // UX-F10: only surface a payment section when there is a real amount to collect
+      // UX-F10: only surface a payment section when there is a real amount to collect.
+      // `amount` here stays the GROSS original bill (checkoutProRateInfo backs
+      // base rent out of it) — amount_paid is threaded through separately so
+      // checkoutMath can net it out where it actually matters.
       const amount = Number(data.amount) + Number(data.late_fee ?? 0);
-      if (amount > 0) {
+      const amountPaid = Number(data.amount_paid ?? 0);
+      if (amount - amountPaid > 0) {
         setCheckoutPendingPayment({
           id: data.id,
           for_month: data.for_month,
+          status: data.status as PaymentStatus,
           amount,
+          amount_paid: amountPaid,
           ac_charge: Number(data.ac_charge ?? 0),
           ac_units_consumed: data.ac_units_consumed != null ? Number(data.ac_units_consumed) : null,
           food_charge: Number(data.food_charge ?? 0),
@@ -1549,8 +1602,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // The AC estimate below REPLACES whatever ac_charge is already on the row
     // (e.g. from an AC Units tab apply earlier this month) — it must not be
     // billed twice, once already inside `amount` and again as the fresh estimate.
+    // Whatever's already been paid toward this row (a partially_paid balance,
+    // e.g. AC billed after an advance rent payment already settled the rest)
+    // is netted out here too, alongside AC — both are already-known quantities,
+    // unlike a genuinely fresh AC reading which isn't computed until below.
     const existingAcCharge = checkoutPendingPayment?.ac_charge ?? 0;
-    const rawPending = Math.max(0, (checkoutPendingPayment?.amount ?? 0) - existingAcCharge);
+    const alreadyPaid = checkoutPendingPayment?.amount_paid ?? 0;
+    const isPartiallyPaid = checkoutPendingPayment?.status === "partially_paid";
+    const rawPending = Math.max(0, (checkoutPendingPayment?.amount ?? 0) - existingAcCharge - alreadyPaid);
     const proRateDiscount = proRateActive ? (checkoutProRateInfo?.discount ?? 0) : 0;
     const basePending = Math.max(0, rawPending - proRateDiscount);
 
@@ -1572,9 +1631,26 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const acCount = checkoutACContext?.activeTenantCount ?? 0;
     const roomHasAC = !!(checkingOut?.room_id && roomMap[checkingOut.room_id]?.has_ac);
     const joinOffsets = acJoinOffsets(checkoutACContext?.joiners, acPrev);
-    const estimatedACCharge = (
-      roomHasAC && Number.isFinite(acReading) && acReading > acPrev && acRate > 0 && acCount > 0
-    ) ? computeACSegmentCharge(
+    // If the meter hasn't actually moved past what the AC Units tab already
+    // applied this month, there's nothing new to bill — recompute from an
+    // independently-fetched join/checkout dataset here instead risks disagreeing
+    // with the allocation already sitting on the row (join-reading corrections
+    // saved after Apply ran, timing drift, etc). Reuse that already-correct
+    // number rather than a fresh, possibly-diverging estimate; only genuinely
+    // newer meter data (past what Apply has already seen) needs computing here.
+    // A partially_paid row never recomputes at all, regardless of the reading
+    // entered — there's no way to tell how much of what's already been paid
+    // covered AC vs. rent, so re-deriving a fresh split here would risk
+    // double-billing or under-billing the AC portion against a payment that
+    // already happened.
+    const currentAppliedReading = checkoutACContext?.currentMonthReading ?? null;
+    const hasNewerACReading = currentAppliedReading == null
+      || (Number.isFinite(acReading) && acReading > currentAppliedReading);
+    const estimatedACCharge = !roomHasAC ? 0
+      : isPartiallyPaid ? existingAcCharge
+      : !hasNewerACReading ? existingAcCharge
+      : (Number.isFinite(acReading) && acReading > acPrev && acRate > 0 && acCount > 0)
+      ? computeACSegmentCharge(
           acReading - acPrev,
           checkoutACContext?.priorCheckoutUnits ?? [],
           joinOffsets.all,
@@ -3504,7 +3580,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   onClick={() => {
                     setCheckoutPaymentError(null);
                     setCheckoutPaymentLoading(true);
-                    if (checkingOut) fetchCheckoutPayment(checkingOut.id);
+                    if (checkingOut) fetchCheckoutPayment(checkingOut.id, checkoutDate.slice(0, 7));
                   }}
                 >
                   Retry
@@ -3518,7 +3594,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 {/* Context line */}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                   {checkoutPendingPayment && (
-                    <span>{checkoutPendingPayment.for_month} · <span className="text-foreground font-medium">{formatCurrency(checkoutPendingPayment.amount)} outstanding</span></span>
+                    <span>{checkoutPendingPayment.for_month} · <span className="text-foreground font-medium">{formatCurrency(checkoutMath.pending)} outstanding</span></span>
                   )}
                   {(checkingOut?.security_deposit ?? 0) > 0 && (
                     <span>{formatCurrency(checkingOut!.security_deposit)} deposit held</span>

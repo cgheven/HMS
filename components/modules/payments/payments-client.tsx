@@ -84,6 +84,10 @@ interface Props {
   acReadings?: { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[];
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
   prevMonthACReadings?: { room_id: string; meter_reading: number | null; total_units: number }[];
+  // Tenants currently on the waiting list — a payment row can outlive an
+  // active tenant being edited back to waiting, so the headline stats below
+  // exclude these tenants' rows the same way the visible list already does.
+  waitingTenantIds?: string[];
   // null/undefined = owner (unrestricted). Recording a payment requires
   // standard+; late fee / receipt number overrides and AC billing management
   // stay owner-only (the partner write path doesn't support them).
@@ -118,7 +122,7 @@ function genReceipt(tenantName: string, month: string) {
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings = [], acJoinReadings = [], prevMonthACReadings = [], partnerTier = null, managerPermissions = null }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings = [], acJoinReadings = [], prevMonthACReadings = [], partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
   const isPartner = !!partnerTier;
   const isManager = !!managerPermissions;
   const canCollect = managerPermissions?.includes("collect_payments") ?? false;
@@ -723,16 +727,43 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // (which never filtered by tenant-active status). activePayments remains
   // the source for the tenant-facing list/filters/reminders below, where
   // showing only current residents is the correct scope.
+  //
+  // A tenant currently on the waiting list is different from a checked-out
+  // one, though: they were never actually billable, so a row that survived
+  // from before they were moved back to waiting (see tenants-client.tsx's
+  // active → waiting edit path) must not inflate these totals.
+  const waitingTenantIdSet = useMemo(() => new Set(waitingTenantIds), [waitingTenantIds]);
+  const billablePayments = useMemo(
+    () => payments.filter((p) => !waitingTenantIdSet.has(p.tenant_id)),
+    [payments, waitingTenantIdSet]
+  );
   const stats = useMemo(() => {
-    const due = payments.reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
-    const collected = payments.filter((p) => p.status === "paid" || p.status === "partially_paid").reduce((s, p) => s + Math.max(0, Number(p.amount_paid ?? p.amount)), 0);
-    const pending = payments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid").reduce((s, p) => s + Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0)), 0);
+    // Waived rows are excluded here the same way Collected/Pending already
+    // exclude them below — otherwise Total Due drifts above
+    // Collected + Pending whenever anything for the month has been waived.
+    const due = billablePayments.filter((p) => p.status !== "waived").reduce((s, p) => s + Math.max(0, Number(p.amount)) + Math.max(0, Number(p.late_fee || 0)), 0);
+    // AC has its own Collected/Pending tiles below, so it's subtracted out
+    // here to avoid counting it twice. Only subtracted for statuses where the
+    // AC portion is unambiguous (status === "paid" ⇒ fully collected;
+    // pending/overdue ⇒ fully outstanding) — a partially_paid row can't be
+    // cleanly attributed between rent and AC (which portion did it cover?),
+    // so its AC charge stays bundled into these totals, same as before.
+    const collected = billablePayments.filter((p) => p.status === "paid" || p.status === "partially_paid").reduce((s, p) => {
+      const paid = Math.max(0, Number(p.amount_paid ?? p.amount));
+      const acPortion = p.status === "paid" ? Math.max(0, Number(p.ac_charge || 0)) : 0;
+      return s + Math.max(0, paid - acPortion);
+    }, 0);
+    const pending = billablePayments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid").reduce((s, p) => {
+      const outstanding = Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0));
+      const acPortion = p.status === "pending" || p.status === "overdue" ? Math.max(0, Number(p.ac_charge || 0)) : 0;
+      return s + Math.max(0, outstanding - acPortion);
+    }, 0);
     // AC collected/pending stay paid-only — a partial payment can't be cleanly
     // attributed between rent and AC (which portion did it cover?).
-    const acCollected = payments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
-    const acPending = payments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
+    const acCollected = billablePayments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
+    const acPending = billablePayments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
     return { due, collected, pending, acCollected, acPending };
-  }, [payments]);
+  }, [billablePayments]);
 
   const TIER_LABEL: Record<string, string> = {
     space_only: "Space Only",

@@ -734,7 +734,13 @@ export async function getReportData(
   // "today" wouldn't mean anything for a "Last Month" or "12 Months" view.
   // Every query here is month-scoped (not just "today") so the Today tab's
   // date picker can show any day, not only the day the page happened to load.
-  const { start: curStart, end: curEnd } = getMonthRange();
+  //
+  // The end bound is widened one month further (through the end of NEXT
+  // month, not just this one) so an expense/kitchen entry someone logs a few
+  // days ahead of today — for their own convenience — doesn't fall off the
+  // edge of the window entirely whenever "today" happens to be near month-end.
+  const { start: curStart } = getMonthRange(now);
+  const { end: curEnd } = getMonthRange(new Date(now.getFullYear(), now.getMonth() + 1, 1));
   const [
     curExpensesRes, curKitchenRes, monthInstallmentsRes, joinedRes, leftRes, dueRes,
   ] = await Promise.all([

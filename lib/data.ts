@@ -778,14 +778,14 @@ export async function updatePaymentCharges(
 
 export async function getPaymentsPageData(forMonth: string) {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, acReadings: [], acJoinReadings: [], prevMonthACReadings: [] };
+  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, acReadings: [], acJoinReadings: [], prevMonthACReadings: [], waitingTenantIds: [] };
   const { supabase, hostelId, hostel } = ctx;
 
   const [y, m] = forMonth.split("-").map(Number);
   const prevDate = new Date(y, m - 2, 1);
   const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
 
-  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig, { data: acReadings }, { data: acJoinReadings }, { data: prevMonthACReadings }] = await Promise.all([
+  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig, { data: acReadings }, { data: acJoinReadings }, { data: prevMonthACReadings }, { data: waitingTenants }] = await Promise.all([
     supabase.from("hms_payments")
       .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .eq("hostel_id", hostelId)
@@ -811,6 +811,14 @@ export async function getPaymentsPageData(forMonth: string) {
       .select("room_id, meter_reading, total_units")
       .eq("hostel_id", hostelId)
       .eq("for_month", prevMonth),
+    // Payment rows can outlive a tenant's active residency (e.g. edited back
+    // to the waiting list after a row was already generated for them) — the
+    // headline stats need this list to exclude those rows, since a waiting
+    // tenant was never actually billable, unlike a genuinely checked-out one.
+    supabase.from("hms_tenants")
+      .select("id")
+      .eq("hostel_id", hostelId)
+      .eq("is_waiting", true),
   ]);
 
   return {
@@ -827,5 +835,6 @@ export async function getPaymentsPageData(forMonth: string) {
     acReadings: (acReadings ?? []) as { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     prevMonthACReadings: (prevMonthACReadings ?? []) as { room_id: string; meter_reading: number | null; total_units: number }[],
+    waitingTenantIds: (waitingTenants ?? []).map((t) => t.id as string),
   };
 }

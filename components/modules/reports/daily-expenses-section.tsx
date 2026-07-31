@@ -32,10 +32,11 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
   const now = new Date();
   const todayStr = formatDateInput(now);
   // A single date filter drives the whole tab — every number and list below
-  // reacts to it. Data is only fetched for the current calendar month, so the
-  // picker is bounded to it.
+  // reacts to it. The server fetches through the end of NEXT month too (see
+  // app/actions/reports.ts), so an entry logged a few days ahead of today
+  // near month-end doesn't fall outside a window this picker can even reach.
   const monthStartStr = formatDateInput(new Date(now.getFullYear(), now.getMonth(), 1));
-  const monthEndStr = formatDateInput(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+  const monthEndStr = formatDateInput(new Date(now.getFullYear(), now.getMonth() + 2, 0));
   const [selectedDate, setSelectedDate] = useState(todayStr);
   const d = dailyDetails.find((r) => r.date === selectedDate) ?? EMPTY_DETAIL;
   const profit = d.income - d.total;
@@ -50,14 +51,14 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
             <CalendarDays className="w-4 h-4 text-blue-400" />
             {isSameDay ? "Today" : formatDate(selectedDate)}
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Pick any day this month to see its numbers</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Pick any day this month or next to see its numbers</p>
         </div>
         <Input
           type="date"
           value={selectedDate}
           min={monthStartStr}
           max={monthEndStr}
-          onChange={(e) => setSelectedDate(e.target.value)}
+          onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
           className="w-full sm:w-auto h-9 text-sm"
         />
       </div>

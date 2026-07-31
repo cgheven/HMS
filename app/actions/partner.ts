@@ -478,6 +478,20 @@ export async function editTenantAsPartner(
       void sendTenantWelcomeMessageAction(tenantId);
     }
 
+    // Moving an already-active tenant back to the waiting list leaves behind
+    // any payment row already generated for them — they were never actually
+    // billable, unlike a genuinely checked-out tenant. Only this month/later,
+    // and only rows nothing has been paid against yet.
+    if (!existing.is_waiting && payload.is_waiting) {
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      await admin.from("hms_payments")
+        .delete()
+        .eq("tenant_id", tenantId)
+        .eq("hostel_id", hostelId)
+        .gte("for_month", currentMonth)
+        .in("status", ["pending", "overdue"]);
+    }
+
     // Ledger events — best-effort, mirrors the owner flow exactly.
     if (prevRoomId !== roomId) {
       const [{ data: oldRoomRow }, { data: newRoomRow }] = await Promise.all([

@@ -83,7 +83,10 @@ export async function performTenantCheckout(
         (action === "pay" && payment.status === "paid") ||
         (action === "waive" && payment.status === "waived");
 
-      if (!paymentAlreadySettled && !["pending", "overdue"].includes(payment.status)) {
+      // partially_paid is a genuine outstanding balance too (e.g. AC billed
+      // after an advance rent payment already settled the rest) — the same
+      // reasoning the base-rent re-price step below already applies.
+      if (!paymentAlreadySettled && !["pending", "overdue", "partially_paid"].includes(payment.status)) {
         throw new Error("Payment has already been settled");
       }
     }
@@ -236,7 +239,7 @@ export async function performTenantCheckout(
       const prevDate = new Date(cy, cm - 2, 1);
       const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
 
-      const [{ data: prevRecord }, { data: pkgConfig }, { data: roomInfo }, { data: activeTenantsInRoom }, { data: priorCheckoutsData }, { data: joinRowsData }] = await Promise.all([
+      const [{ data: prevRecord }, { data: pkgConfig }, { data: roomInfo }, { data: activeTenantsInRoom }, { data: priorCheckoutsData }, { data: joinRowsData }, { data: currentMonthRecord }] = await Promise.all([
         adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
         adminDb.from("hms_package_configs").select("ac_per_unit_rate").eq("hostel_id", hostelId).maybeSingle(),
         adminDb.from("hms_rooms").select("has_ac").eq("id", tenant.room_id).eq("hostel_id", hostelId).single(),
@@ -245,9 +248,28 @@ export async function performTenantCheckout(
         // as segment boundaries — same format as the month-end billing algorithm.
         adminDb.from("hms_room_ac_checkout_readings").select("units_consumed").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth),
         adminDb.from("hms_room_ac_join_readings").select("tenant_id, units_at_join").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth),
+        // The room's own current-month reading, already applied via the AC Units tab
+        // (applyRoomACUnitsAction / computeACSegmentBilling) — the one source of truth
+        // for "what has this tenant already been correctly billed for AC this month."
+        adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth).maybeSingle(),
       ]);
 
-      if (roomInfo?.has_ac) {
+      // If the meter hasn't actually moved past what AC Units already applied this
+      // month, there is nothing new to bill — recomputing here duplicates that
+      // exact same allocation with an independently-fetched, independently-timed
+      // dataset (join/checkout rows can drift between when Apply ran and now),
+      // which is exactly how a departing tenant's estimate silently diverged from
+      // the already-correct number sitting on their payment row. Skipping leaves
+      // whatever ac_charge Apply already computed untouched — the only case that
+      // still needs computing here is a genuinely newer reading, i.e. real
+      // information the room's last Apply never saw.
+      const alreadyAppliedReading = currentMonthRecord?.meter_reading != null
+        ? Math.round(Number(currentMonthRecord.meter_reading))
+        : null;
+      const hasNewerReading = alreadyAppliedReading == null
+        || Math.round(Number(input.acCheckoutReading)) > alreadyAppliedReading;
+
+      if (roomInfo?.has_ac && hasNewerReading) {
         // Same fallback as applyRoomACUnitsAction: with no previous-month reading
         // and no explicit opening reading typed in, derive the baseline from the
         // room's earliest known move-in reading instead of assuming the meter
@@ -501,6 +523,20 @@ export async function performTenantCheckout(
       // SEC-F5: sanitize — do not expose DB internals
       throw new Error("Tenant checkout failed. Please try again.");
     }
+
+    // Step 4a-pre: Clean up any payment rows for months after this one — a
+    // tenant paying everything in advance at check-in already has next
+    // month's row sitting there as "pending" purely because monthly sync
+    // pre-generates it ahead of time, not because they actually owe it. Now
+    // that checkout is confirmed, they will never reach that month, so it's
+    // not a real debt. Only pending/overdue — never paid/partially_paid/waived,
+    // which are real money already handled and must not be erased.
+    await adminDb.from("hms_payments")
+      .delete()
+      .eq("tenant_id", input.tenantId)
+      .eq("hostel_id", hostelId)
+      .gt("for_month", input.checkoutDate.substring(0, 7))
+      .in("status", ["pending", "overdue"]);
 
     // Step 4a: Log the deposit's fate to the Member Ledger — best-effort, non-fatal
     // (checkout itself already succeeded above). Three ways it can go, and every rupee

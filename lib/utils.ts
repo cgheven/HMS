@@ -33,7 +33,16 @@ export function formatDateTime(date: string | Date) {
 }
 
 export function formatDateInput(date: Date) {
-  return date.toISOString().split("T")[0];
+  // toISOString() converts to UTC first — in any timezone ahead of UTC (e.g.
+  // Pakistan, UTC+5), that silently shifts the reported calendar day back by
+  // one for hours after local midnight but before UTC catches up. Building
+  // the string from the date's own local getters instead means this always
+  // reflects the actual wall-clock day wherever it runs (the visitor's own
+  // timezone in a browser, the server's in a server action).
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 export function getMonthRange(date = new Date()) {
