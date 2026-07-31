@@ -491,6 +491,23 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
     const totalsRowH = 17;
     const totalsPad = 12;
     const totalsH = totalsPad * 2 + lines.length * totalsRowH + 26 + (totalSavings > 0 ? 16 : 0);
+
+    // Bank details — shown only while payment is outstanding, placed beside
+    // the totals box (instead of stacked full-width below it) so the empty
+    // left column next to that box gets used rather than wasted.
+    const showBank = invoice.status === "unpaid";
+    const bankRows: [string, string][] = [
+      ["Bank", "UBL"],
+      ["Account Title", "PulseHub SMC Pvt Ltd"],
+      ["Account Number", "0253388111143"],
+    ];
+    const bankX = ML;
+    const bankW = boxX - ML - 20;
+    const bankPad = 12;
+    const bankHeadH = 18;
+    const bankRowH = 15;
+    const bankH = bankPad * 2 + bankHeadH + bankRows.length * bankRowH;
+
     if (doc) {
       doc.setFillColor(...LIGHT_GRAY);
       doc.roundedRect(boxX, y, boxW, totalsH, 6, 6, "F");
@@ -526,10 +543,32 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
         doc.text(`${pk(totalSavings)} saved vs. our standard pricing`, boxX + boxW - 14, ry + 18, { align: "right" });
       }
     }
-    y += totalsH + (totalSavings > 0 ? 40 : 26);
+
+    if (showBank && doc) {
+      doc.setFillColor(...LIGHT_GRAY);
+      doc.roundedRect(bankX, y, bankW, bankH, 6, 6, "F");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(20, 20, 22);
+      doc.text("BANK DETAILS FOR PAYMENT", bankX + 14, y + bankPad + 6);
+      let ry = y + bankPad + bankHeadH + 8;
+      doc.setFontSize(8.5);
+      for (const [k, v] of bankRows) {
+        const label = `${k}: `;
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(...GRAY);
+        doc.text(label, bankX + 14, ry);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(20, 20, 22);
+        doc.text(v, bankX + 14 + doc.getTextWidth(label), ry);
+        ry += bankRowH;
+      }
+    }
+
+    y += Math.max(totalsH, showBank ? bankH : 0) + (totalSavings > 0 ? 40 : 26);
 
     // Payment note — only shown for a settled/cancelled invoice; an unpaid
-    // invoice doesn't need an instructional line, payment is handled over WhatsApp.
+    // invoice shows bank details instead (drawn above, beside the totals box).
     if (invoice.status !== "unpaid") {
       const noteText =
         invoice.status === "paid"
@@ -547,8 +586,6 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
         doc.text(noteText, W / 2, y + 19, { align: "center" });
       }
       y += noteH + 20;
-    } else {
-      y += 6;
     }
 
     if (doc) {
