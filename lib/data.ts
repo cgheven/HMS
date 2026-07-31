@@ -2,6 +2,7 @@ import { cache } from "react";
 import { cookies } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { getMonthRange, formatDateInput } from "@/lib/utils";
+import { pktYearMonth, pktTodayDateString } from "@/lib/pkt-time";
 import { calcDailyRent } from "@/lib/daily-billing";
 import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
@@ -123,17 +124,28 @@ export async function getDashboardData() {
   if (!ctx?.hostelId) return null;
   const { supabase, hostelId } = ctx;
   const { start, end } = getMonthRange();
-  const now = new Date();
-  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  // Anchored to Pakistan time, not the server process's own OS timezone —
+  // otherwise the exact same moment computes a different "current month" on
+  // Vercel (UTC by default) than on a developer's own machine, which is
+  // exactly what made the Dashboard show July on production and August
+  // locally at the same real-world instant.
+  const { year: curYear, month: curMonth } = pktYearMonth(); // curMonth is 1-indexed
+  const currentMonthKey = `${curYear}-${String(curMonth).padStart(2, "0")}`;
 
-  // Compute ranges first so monthKeys are available for queries
+  // Compute ranges first so monthKeys are available for queries. Built in UTC
+  // throughout (Date.UTC + timeZone: "UTC" formatting) so the month
+  // arithmetic never re-introduces a dependency on the running process's own
+  // timezone the way local Date getters would.
   const ranges = Array.from({ length: 6 }, (_, i) => {
-    const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
+    const d = new Date(Date.UTC(curYear, curMonth - 1 - (5 - i), 1));
+    const y = d.getUTCFullYear();
+    const m = d.getUTCMonth(); // 0-indexed
+    const lastDay = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
     return {
-      month: d.toLocaleDateString("en-US", { month: "short" }),
-      monthKey: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
-      start: formatDateInput(new Date(d.getFullYear(), d.getMonth(), 1)),
-      end: formatDateInput(new Date(d.getFullYear(), d.getMonth() + 1, 0)),
+      month: d.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }),
+      monthKey: `${y}-${String(m + 1).padStart(2, "0")}`,
+      start: `${y}-${String(m + 1).padStart(2, "0")}-01`,
+      end: `${y}-${String(m + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
     };
   });
 
@@ -323,8 +335,10 @@ export async function getTenants() {
     };
   }
   const { supabase, hostelId } = ctx;
-  const now = new Date();
-  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  // Pakistan-anchored — see getDashboardData for why this can't be the
+  // server process's own local getters.
+  const { year: pktYear, month: pktMonth } = pktYearMonth();
+  const currentMonthKey = `${pktYear}-${String(pktMonth).padStart(2, "0")}`;
 
   const [{ data: tenants }, { data: rooms }, packageConfig, { data: currentMonthPayments }] = await Promise.all([
     supabase.from("hms_tenants").select("*").eq("hostel_id", hostelId).order("created_at", { ascending: false }),
@@ -447,15 +461,20 @@ export async function getReportsData() {
   if (!ctx?.hostelId) return null;
   const { supabase, hostelId } = ctx;
 
-  const now = new Date();
+  // Pakistan-anchored — see getDashboardData for why this can't be the
+  // server process's own local getters.
+  const { year: curYear, month: curMonth } = pktYearMonth(); // curMonth is 1-indexed
   const ranges = Array.from({ length: 12 }, (_, i) => {
-    const d = new Date(now.getFullYear(), now.getMonth() - (11 - i), 1);
-    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const d = new Date(Date.UTC(curYear, curMonth - 1 - (11 - i), 1));
+    const y = d.getUTCFullYear();
+    const m = d.getUTCMonth(); // 0-indexed
+    const lastDay = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    const monthKey = `${y}-${String(m + 1).padStart(2, "0")}`;
     return {
-      month: d.toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
+      month: d.toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" }),
       monthKey,
-      start: formatDateInput(new Date(d.getFullYear(), d.getMonth(), 1)),
-      end: formatDateInput(new Date(d.getFullYear(), d.getMonth() + 1, 0)),
+      start: `${y}-${String(m + 1).padStart(2, "0")}-01`,
+      end: `${y}-${String(m + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
     };
   });
 
@@ -508,7 +527,9 @@ export async function getReportsData() {
     };
   });
 
-  const today = formatDateInput(now);
+  // Pakistan-anchored, same reasoning as the ranges above — "today" for aging
+  // buckets must agree regardless of which server's OS timezone is running this.
+  const today = pktTodayDateString();
   const overduePayments = payments.filter((p) => p.status === "pending" || p.status === "overdue");
   const aging: { d30: AgingBucket; d60: AgingBucket; d90: AgingBucket; d90plus: AgingBucket } = {
     d30: { count: 0, amount: 0 },

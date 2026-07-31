@@ -3,6 +3,7 @@
 import { cache } from "react";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWaitlistEmail } from "@/lib/email";
+import { getMonthRange } from "@/lib/utils";
 import type { PublicHostel, PublicHostelDetail, PublicHostelComplaintInfo, PublicRoom, FoodItem } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -173,12 +174,10 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
     const isWeeklyMenu = hostelData.food_menu_type === "weekly";
 
     // Current month bounds — only relevant for the monthly menu query below.
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, "0");
-    const monthStart = `${y}-${m}-01`;
-    const lastDay = new Date(y, now.getMonth() + 1, 0).getDate();
-    const monthEnd = `${y}-${m}-${String(lastDay).padStart(2, "0")}`;
+    // Pakistan-anchored (getMonthRange), not the server process's own OS
+    // timezone — this is a public, unauthenticated route that can be served
+    // by any edge/serverless instance regardless of its own default timezone.
+    const { start: monthStart, end: monthEnd } = getMonthRange();
 
     const [{ data: profile }, { data: rooms }, { data: foodItems }, { data: pkgConfig }] = await Promise.all([
       admin.from("hms_profiles").select("full_name").eq("id", hostelData.owner_id).maybeSingle(),

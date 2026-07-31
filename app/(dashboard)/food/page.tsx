@@ -1,9 +1,12 @@
 import { getFoodItems, getAuthContext } from "@/lib/data";
 import { FoodClient } from "@/components/modules/food/food-client";
+import { pktYearMonth } from "@/lib/pkt-time";
 
 export default async function FoodPage() {
-  const now = new Date();
-  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  // Pakistan-anchored, not the server process's own OS timezone — see
+  // app/(dashboard)/payments/page.tsx for why.
+  const { year, month: pktMonth } = pktYearMonth();
+  const month = `${year}-${String(pktMonth).padStart(2, "0")}`;
   const [{ hostelId, items }, ctx] = await Promise.all([getFoodItems(month), getAuthContext()]);
   return (
     <FoodClient

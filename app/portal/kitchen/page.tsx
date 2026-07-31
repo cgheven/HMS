@@ -1,6 +1,7 @@
 import { requireManagerPermissionAny } from "@/lib/manager-auth"
 import { getManagerKitchenExpenses } from "@/lib/portal-data"
 import { KitchenClient } from "@/components/modules/kitchen/kitchen-client"
+import { pktYearMonth } from "@/lib/pkt-time"
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/
 
@@ -9,8 +10,10 @@ export default async function PortalKitchenPage({
 }: {
   searchParams: Promise<{ month?: string }>
 }) {
-  const now = new Date()
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+  // Pakistan-anchored, not the server process's own OS timezone — see
+  // app/(dashboard)/payments/page.tsx for why.
+  const { year, month } = pktYearMonth()
+  const currentMonth = `${year}-${String(month).padStart(2, "0")}`
 
   // In manager mode KitchenClient switches months by pushing ?month=YYYY-MM and
   // calling router.refresh() — it cannot re-query itself, since managers have no

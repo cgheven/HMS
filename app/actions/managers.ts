@@ -14,6 +14,7 @@ import { computeACSegmentBilling, deriveOpeningReading } from "@/lib/ac-billing"
 import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge } from "@/lib/payment-calc"
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
+import { pktYearMonth } from "@/lib/pkt-time"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
 import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission, CheckoutInput, CheckoutSettlement } from "@/types"
 
@@ -602,8 +603,11 @@ function validateManagerTenantPayload(payload: ManagerTenantPayload): string | n
   // — the tenant would be created months in the past owing nothing, and the
   // branch would under-report receivables with nobody aware.
   if (!payload.is_waiting && payload.check_in) {
-    const now = new Date()
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+    // Pakistan-anchored, not the server process's own OS timezone — Vercel's
+    // serverless functions default to UTC, which can silently disagree with
+    // Pakistan on what "this month" is.
+    const { year: curYear, month: curMonth } = pktYearMonth()
+    const currentMonth = `${curYear}-${String(curMonth).padStart(2, "0")}`
     if (payload.check_in.slice(0, 7) < currentMonth) {
       return "Check-in date can't be in a previous month. Ask the owner to add a back-dated tenant so past dues are billed correctly."
     }
@@ -734,8 +738,9 @@ export async function addTenantAsManager(
     // never blocks tenant creation either way.
     if (!payload.is_waiting && payload.check_in) {
       const checkInMonth = payload.check_in.slice(0, 7)
-      const now = new Date()
-      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+      // Pakistan-anchored — see addTenantAsManager above for why.
+      const { year: curYear, month: curMonth } = pktYearMonth()
+      const currentMonth = `${curYear}-${String(curMonth).padStart(2, "0")}`
       if (checkInMonth < currentMonth) {
         try {
           await backfillTenantPaymentsAction(tenantId)

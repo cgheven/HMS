@@ -10,6 +10,7 @@ import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
+import { pktYearMonth } from "@/lib/pkt-time";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
 import { deriveOpeningReading } from "@/lib/ac-billing";
 import { sendWelcomeMessageNow, type WelcomeSendResult } from "@/lib/whatsapp-welcome-action";
@@ -855,9 +856,11 @@ const FOOD_TIERS = new Set<string>(["space_food", "space_3meals", "space_food_ac
 
 function getPastMonths(checkIn: string): string[] {
   const [ciYear, ciMonth] = checkIn.slice(0, 7).split("-").map(Number);
-  const now = new Date();
-  const curYear = now.getFullYear();
-  const curMonth = now.getMonth() + 1; // 1-based
+  // Pakistan-anchored, not the server process's own OS timezone — Vercel's
+  // serverless functions default to UTC, which can silently disagree with
+  // Pakistan on what "this month" is (and therefore which months count as
+  // "past" here).
+  const { year: curYear, month: curMonth } = pktYearMonth(); // curMonth is 1-indexed
   const months: string[] = [];
   let y = ciYear, m = ciMonth;
   while (y < curYear || (y === curYear && m < curMonth)) {

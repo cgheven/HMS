@@ -8,6 +8,7 @@ import { getAuthContext } from "@/lib/data";
 import { performTenantCheckout } from "@/lib/tenant-checkout";
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
+import { pktYearMonth } from "@/lib/pkt-time";
 import type { CheckoutInput, CheckoutSettlement, Payment } from "@/types";
 
 // Partner write actions — the safe, admin-client mutation layer a partner's
@@ -186,8 +187,9 @@ export async function addTenantAsPartner(
     // any other reason (it never blocks tenant creation either way).
     if (!payload.is_waiting && payload.check_in) {
       const checkInMonth = payload.check_in.slice(0, 7);
-      const now = new Date();
-      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      // Pakistan-anchored — see addTenantAsManager (app/actions/managers.ts) for why.
+      const { year: curYear, month: curMonth } = pktYearMonth();
+      const currentMonth = `${curYear}-${String(curMonth).padStart(2, "0")}`;
       if (checkInMonth < currentMonth) {
         await backfillTenantPaymentsAction(tenantId);
       }

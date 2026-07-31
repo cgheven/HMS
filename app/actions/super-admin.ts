@@ -4,6 +4,7 @@ import { randomBytes } from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { writeAuditLog } from "@/lib/audit";
+import { pktYearMonth } from "@/lib/pkt-time";
 import type { PlatformLead } from "@/types";
 
 // ── Guard ─────────────────────────────────────────────────────────────────────
@@ -59,9 +60,12 @@ export async function getSuperAdminStats(): Promise<{
     await requireSuperAdmin();
     const admin = createAdminClient();
 
-    const now = new Date();
-    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
-    const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    // Pakistan-anchored, not the server process's own OS timezone — Vercel's
+    // serverless functions default to UTC, which can silently disagree with
+    // Pakistan on what "this month" is.
+    const { year: curYear, month: curMonth } = pktYearMonth();
+    const monthStart = `${curYear}-${String(curMonth).padStart(2, "0")}-01`;
+    const currentMonthKey = `${curYear}-${String(curMonth).padStart(2, "0")}`;
 
     const [hostelsRes, tenantsRes, revenueRes, leadsRes] = await Promise.all([
       admin.from("hms_hostels").select("id", { count: "exact", head: true }),

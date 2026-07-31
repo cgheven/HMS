@@ -7,3 +7,15 @@ export function pktTodayDateString(now: Date = new Date()): string {
   const shifted = new Date(now.getTime() + PKT_OFFSET_MS);
   return shifted.toISOString().slice(0, 10);
 }
+
+// Same fixed-offset technique as pktTodayDateString, but returns the
+// calendar year/month (month 1-indexed, e.g. 7 = July) instead of a full
+// date string — for any server-side code that needs to know "what month is
+// it, in Pakistan" without caring which OS timezone the process itself
+// happens to be running in (Vercel's serverless functions default to UTC;
+// a developer's own machine is whatever it's set to — both must agree with
+// what a Pakistan-based hostel owner considers "this month").
+export function pktYearMonth(now: Date = new Date()): { year: number; month: number } {
+  const [year, month] = pktTodayDateString(now).slice(0, 7).split("-").map(Number);
+  return { year, month };
+}

@@ -3,6 +3,7 @@ import { cache } from "react";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getManagerContext } from "@/lib/manager-auth";
 import { formatDateInput } from "@/lib/utils";
+import { pktYearMonth } from "@/lib/pkt-time";
 import type {
   Room, Tenant, Payment, Expense, KitchenExpense, PackageConfig, PackageTier, Hostel,
   TenantApplication, WaitlistEntry,
@@ -62,8 +63,11 @@ export async function getManagerTenants() {
 
   const { hostelId } = scope;
   const admin = createAdminClient();
-  const now = new Date();
-  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  // Pakistan-anchored, not the server process's own OS timezone — Vercel's
+  // serverless functions default to UTC, which can silently disagree with
+  // Pakistan on what "this month" is.
+  const { year: curYear, month: curMonth } = pktYearMonth();
+  const currentMonthKey = `${curYear}-${String(curMonth).padStart(2, "0")}`;
 
   const [
     { data: tenants }, { data: rooms }, packageConfig, { data: currentMonthPayments },

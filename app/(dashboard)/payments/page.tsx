@@ -2,10 +2,14 @@ import { getPaymentsPageData, getAuthContext } from "@/lib/data";
 import { syncMonthAction } from "@/app/actions/payments";
 import { countBillableNights } from "@/lib/daily-billing";
 import { PaymentsClient } from "@/components/modules/payments/payments-client";
+import { pktYearMonth } from "@/lib/pkt-time";
 
 export default async function PaymentsPage() {
-  const now = new Date();
-  const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  // Pakistan-anchored, not the server process's own OS timezone — Vercel's
+  // serverless functions default to UTC, a developer's own machine is
+  // whatever it's set to, and "this month" must agree between them.
+  const { year, month } = pktYearMonth();
+  const defaultMonth = `${year}-${String(month).padStart(2, "0")}`;
 
   const [data, ctx] = await Promise.all([getPaymentsPageData(defaultMonth), getAuthContext()]);
 

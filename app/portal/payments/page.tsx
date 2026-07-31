@@ -3,10 +3,13 @@ import { getManagerPaymentsPageData } from "@/lib/portal-data"
 import { syncMonthAction } from "@/app/actions/payments"
 import { countBillableNights } from "@/lib/daily-billing"
 import { PaymentsClient } from "@/components/modules/payments/payments-client"
+import { pktYearMonth } from "@/lib/pkt-time"
 
 export default async function PortalPaymentsPage() {
-  const now = new Date()
-  const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+  // Pakistan-anchored, not the server process's own OS timezone — see
+  // app/(dashboard)/payments/page.tsx for why.
+  const { year, month } = pktYearMonth()
+  const defaultMonth = `${year}-${String(month).padStart(2, "0")}`
 
   const [ctx, data] = await Promise.all([
     requireManagerPermission("collect_payments"),

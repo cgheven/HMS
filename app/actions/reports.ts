@@ -3,6 +3,7 @@ import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { capitalize, getMonthRange } from "@/lib/utils";
+import { pktYearMonth } from "@/lib/pkt-time";
 import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
 import type { Profile } from "@/types";
 
@@ -318,7 +319,11 @@ export async function getReportData(
   const fullEnd = monthKeys[monthKeys.length - 1]?.end ?? to;
 
   const now = new Date();
-  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  // Pakistan-anchored, not the server process's own OS timezone — Vercel's
+  // serverless functions default to UTC, a developer's own machine is
+  // whatever it's set to, and "this month" must agree between them.
+  const { year: curYear, month: curMonth } = pktYearMonth(now); // curMonth is 1-indexed
+  const currentMonthKey = `${curYear}-${String(curMonth).padStart(2, "0")}`;
 
   const [
     paymentsRes,
@@ -740,7 +745,11 @@ export async function getReportData(
   // days ahead of today — for their own convenience — doesn't fall off the
   // edge of the window entirely whenever "today" happens to be near month-end.
   const { start: curStart } = getMonthRange(now);
-  const { end: curEnd } = getMonthRange(new Date(now.getFullYear(), now.getMonth() + 1, 1));
+  // curYear/curMonth (from pktYearMonth above) instead of now's own local
+  // getters — otherwise "next month" is computed relative to whatever month
+  // the server's own OS timezone thinks it is, which can disagree with
+  // Pakistan time for the same reason getMonthRange itself had to be fixed.
+  const { end: curEnd } = getMonthRange(new Date(Date.UTC(curYear, curMonth, 1)));
   const [
     curExpensesRes, curKitchenRes, monthInstallmentsRes, joinedRes, leftRes, dueRes,
   ] = await Promise.all([

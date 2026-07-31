@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { pktYearMonth } from "@/lib/pkt-time";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -45,13 +46,24 @@ export function formatDateInput(date: Date) {
   return `${y}-${m}-${d}`;
 }
 
+// Only ever called server-side (report generation, dashboard queries) — a
+// server process can be running in whatever OS timezone its host defaults to
+// (Vercel's serverless functions default to UTC; a developer's own machine is
+// whatever it's set to), so "this month" is anchored to Pakistan time
+// (pktYearMonth) rather than the process's own local getters. Otherwise the
+// exact same real-world moment computes a different month depending on which
+// server happens to be running the code — which is exactly what caused local
+// dev to show August while Vercel still showed July at the same instant.
 export function getMonthRange(date = new Date()) {
-  const start = new Date(date.getFullYear(), date.getMonth(), 1);
-  const end = new Date(date.getFullYear(), date.getMonth() + 1, 0);
-  return {
-    start: formatDateInput(start),
-    end: formatDateInput(end),
-  };
+  const { year, month } = pktYearMonth(date); // month is 1-indexed (7 = July)
+  const start = `${year}-${String(month).padStart(2, "0")}-01`;
+  // Date.UTC's month argument is 0-indexed, so passing the 1-indexed `month`
+  // here lands one month ahead; day 0 of that rolls back to the last day of
+  // the intended month — pure UTC arithmetic, safe regardless of the running
+  // process's own timezone.
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const end = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+  return { start, end };
 }
 
 export function capitalize(str: string) {
