@@ -7,7 +7,7 @@ import {
   Receipt, BookOpen, Search, ExternalLink, Loader2, ShieldCheck, CalendarClock,
 } from "lucide-react";
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -90,8 +90,6 @@ const currencyTooltip = ({ active, payload, label }: { active?: boolean; payload
     </div>
   );
 };
-
-const COLORS = ["#f5a623", "#10b981", "#3b82f6", "#a855f7", "#ef4444"];
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function ReportsClient(props: Props) {
@@ -647,81 +645,7 @@ export function ReportsClient(props: Props) {
 
           {/* ── AC ANALYTICS TAB ─────────────────────────────────────────── */}
           <TabsContent value="ac" className="space-y-6 mt-4">
-            {/* Stats */}
-            <div className="grid grid-cols-3 gap-4">
-              {[
-                { label: "Avg Units/Tenant", value: `${d.acStats.avgUnitsPerTenant} kWh`, color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
-                { label: "Total AC Revenue", value: formatCurrency(d.acStats.totalAcRevenue), color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
-                { label: "AC Tenants", value: String(d.acStats.totalAcTenants), color: "text-amber", bg: "bg-amber/10 border-amber/20" },
-              ].map(({ label, value, color, bg }) => (
-                <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-5">
-                  <div className={`flex items-center justify-center w-9 h-9 rounded-xl border ${bg} mb-3`}>
-                    <Zap className={`w-4 h-4 ${color}`} />
-                  </div>
-                  <p className="text-xs text-muted-foreground">{label}</p>
-                  <p className={`text-xl font-bold mt-0.5 ${color}`}>{value}</p>
-                </div>
-              ))}
-            </div>
-
-            {d.acByRoom.length > 0 ? (
-              <>
-                {/* Bar chart: top rooms by AC units */}
-                <div className="rounded-2xl border border-sidebar-border bg-card p-6">
-                  <h2 className="text-sm font-semibold mb-1">Top Rooms by AC Units Consumed</h2>
-                  <p className="text-xs text-muted-foreground mb-4">kWh usage</p>
-                  <div className="h-[220px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={d.acTopRooms} layout="vertical">
-                        <XAxis type="number" tick={{ fontSize: 10, fill: "#888" }} axisLine={false} tickLine={false} />
-                        <YAxis type="category" dataKey="roomNumber" tick={{ fontSize: 10, fill: "#888" }} axisLine={false} tickLine={false} width={50} />
-                        <Tooltip formatter={(v: number) => `${v} kWh`} />
-                        <Bar dataKey="unitsConsumed" name="Units (kWh)" fill="#3b82f6" radius={[0, 4, 4, 0]}>
-                          {d.acTopRooms.map((_, idx) => (
-                            <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-
-                {/* Table */}
-                <div className="rounded-2xl border border-sidebar-border bg-card p-6">
-                  <h2 className="text-sm font-semibold mb-4">AC Usage Details</h2>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="text-xs text-muted-foreground font-medium border-b border-sidebar-border">
-                          <th className="text-left pb-2 pr-3">Room</th>
-                          <th className="text-left pb-2 pr-3">Tenant</th>
-                          <th className="text-right pb-2 pr-3">Units (kWh)</th>
-                          <th className="text-right pb-2 pr-3">AC Charge</th>
-                          <th className="text-right pb-2">Month</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-sidebar-border/50">
-                        {d.acByRoom.map((r, i) => (
-                          <tr key={i} className="hover:bg-white/[0.02]">
-                            <td className="py-2.5 pr-3 font-medium">Rm {r.roomNumber}</td>
-                            <td className="py-2.5 pr-3 text-muted-foreground">{r.tenantName}</td>
-                            <td className="py-2.5 pr-3 text-right text-blue-400 font-medium">{r.unitsConsumed}</td>
-                            <td className="py-2.5 pr-3 text-right font-semibold">{formatCurrency(r.acCharge)}</td>
-                            <td className="py-2.5 text-right text-muted-foreground">{r.forMonth}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="flex flex-col items-center justify-center py-20 gap-2 text-muted-foreground rounded-2xl border border-sidebar-border bg-card">
-                <Zap className="w-10 h-10 opacity-20" />
-                <p className="text-sm">No AC usage data for this period</p>
-                <p className="text-xs">Mark payments for Space+Food+AC tenants to see AC analytics</p>
-              </div>
-            )}
+            <AcAnalyticsTab data={d} />
           </TabsContent>
 
           {/* ── EXPENSES TAB ─────────────────────────────────────────────── */}
@@ -736,6 +660,116 @@ export function ReportsClient(props: Props) {
         </Tabs>
       )}
     </div>
+  );
+}
+
+// ── AC Analytics tab ─────────────────────────────────────────────────────────
+const AC_STATUS_LABELS: Record<string, string> = {
+  paid: "Paid",
+  partially_paid: "Partially Paid",
+  pending: "Pending",
+  overdue: "Overdue",
+  waived: "Waived",
+};
+
+function acStatusColor(status: string): string {
+  if (status === "paid") return "text-emerald-400";
+  if (status === "overdue") return "text-rose-400";
+  return "text-amber";
+}
+
+function AcAnalyticsTab({ data: d }: { data: ReportData }) {
+  const [statusFilter, setStatusFilter] = useState("all");
+
+  const filteredRows = useMemo(() => {
+    if (statusFilter === "all") return d.acByRoom;
+    return d.acByRoom.filter((r) => r.status === statusFilter);
+  }, [d.acByRoom, statusFilter]);
+
+  const statusOptions = useMemo(() => {
+    return Array.from(new Set(d.acByRoom.map((r) => r.status)));
+  }, [d.acByRoom]);
+
+  return (
+    <>
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-4">
+        {[
+          { label: "Total AC Tenants", value: String(d.acStats.totalAcTenants), color: "text-amber", bg: "bg-amber/10 border-amber/20" },
+          { label: "AC Bills Paid", value: String(d.acStats.paidAcTenants), color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
+          { label: "Total AC Revenue", value: formatCurrency(d.acStats.totalAcRevenue), color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
+        ].map(({ label, value, color, bg }) => (
+          <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-5">
+            <div className={`flex items-center justify-center w-9 h-9 rounded-xl border ${bg} mb-3`}>
+              <Zap className={`w-4 h-4 ${color}`} />
+            </div>
+            <p className="text-xs text-muted-foreground">{label}</p>
+            <p className={`text-xl font-bold mt-0.5 ${color}`}>{value}</p>
+          </div>
+        ))}
+      </div>
+
+      {d.acByRoom.length > 0 ? (
+        <div className="rounded-2xl border border-sidebar-border bg-card p-6">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+            <div>
+              <h2 className="text-sm font-semibold">AC Usage Details</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {filteredRows.length} tenant{filteredRows.length !== 1 ? "s" : ""}
+                {statusFilter !== "all" && <span className="ml-1 text-amber">· {AC_STATUS_LABELS[statusFilter] ?? statusFilter}</span>}
+              </p>
+            </div>
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="h-8 text-xs w-44">
+                <SelectValue placeholder="All Statuses" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Statuses</SelectItem>
+                {statusOptions.map((s) => (
+                  <SelectItem key={s} value={s}>{AC_STATUS_LABELS[s] ?? s}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-muted-foreground font-medium border-b border-sidebar-border">
+                  <th className="text-left pb-2 pr-3">Room</th>
+                  <th className="text-left pb-2 pr-3">Tenant</th>
+                  <th className="text-right pb-2 pr-3">Units (kWh)</th>
+                  <th className="text-right pb-2 pr-3">AC Charge</th>
+                  <th className="text-right pb-2 pr-3">Month</th>
+                  <th className="text-right pb-2">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-sidebar-border/50">
+                {filteredRows.map((r, i) => (
+                  <tr key={i} className="hover:bg-white/[0.02]">
+                    <td className="py-2.5 pr-3 font-medium">Rm {r.roomNumber}</td>
+                    <td className="py-2.5 pr-3 text-muted-foreground">{r.tenantName}</td>
+                    <td className="py-2.5 pr-3 text-right text-blue-400 font-medium">{r.unitsConsumed}</td>
+                    <td className="py-2.5 pr-3 text-right font-semibold">{formatCurrency(r.acCharge)}</td>
+                    <td className="py-2.5 pr-3 text-right text-muted-foreground">{r.forMonth}</td>
+                    <td className="py-2.5 text-right">
+                      <span className={`text-xs font-medium capitalize ${acStatusColor(r.status)}`}>
+                        {AC_STATUS_LABELS[r.status] ?? r.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col items-center justify-center py-20 gap-2 text-muted-foreground rounded-2xl border border-sidebar-border bg-card">
+          <Zap className="w-10 h-10 opacity-20" />
+          <p className="text-sm">No AC usage data for this period</p>
+          <p className="text-xs">Mark payments for Space+Food+AC tenants to see AC analytics</p>
+        </div>
+      )}
+    </>
   );
 }
 

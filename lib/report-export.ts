@@ -137,13 +137,14 @@ export async function exportReportPDF(data: ReportData, label: string): Promise<
 
     autoTable(doc, {
       startY: y,
-      head: [["Room", "Tenant", "Units (kWh)", "AC Charge", "Month"]],
+      head: [["Room", "Tenant", "Units (kWh)", "AC Charge", "Month", "Status"]],
       body: data.acByRoom.map((r) => [
         r.roomNumber,
         r.tenantName,
         String(r.unitsConsumed),
         pk(r.acCharge),
         r.forMonth,
+        r.status.charAt(0).toUpperCase() + r.status.slice(1),
       ]),
       margin: { left: MARGIN, right: MARGIN },
       headStyles: { fillColor: [50, 50, 50] },
@@ -252,12 +253,12 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
   // Sheet 4 — AC Analytics
   const acRows = [
     ["AC Analytics Summary"],
-    ["Avg Units per Tenant (kWh)", data.acStats.avgUnitsPerTenant],
-    ["Total AC Revenue (Rs.)", data.acStats.totalAcRevenue],
     ["Total AC Tenants", data.acStats.totalAcTenants],
+    ["AC Bills Paid", data.acStats.paidAcTenants],
+    ["Total AC Revenue (Rs.)", data.acStats.totalAcRevenue],
     [],
-    ["Room", "Tenant", "Units Consumed (kWh)", "AC Charge (Rs.)", "Month"],
-    ...data.acByRoom.map((r) => [r.roomNumber, r.tenantName, r.unitsConsumed, r.acCharge, r.forMonth]),
+    ["Room", "Tenant", "Units Consumed (kWh)", "AC Charge (Rs.)", "Month", "Status"],
+    ...data.acByRoom.map((r) => [r.roomNumber, r.tenantName, r.unitsConsumed, r.acCharge, r.forMonth, r.status]),
   ];
   const wsAC = XLSX.utils.aoa_to_sheet(acRows);
   XLSX.utils.book_append_sheet(wb, wsAC, "AC Analytics");

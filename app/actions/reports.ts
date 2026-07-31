@@ -209,14 +209,12 @@ export interface ReportData {
     unitsConsumed: number;
     acCharge: number;
     forMonth: string;
+    status: string;
   }[];
-  /** acByRoom is one row PER TENANT, so a shared room appears several times.
-   *  This is the genuinely per-room rollup the "Top Rooms" chart needs. */
-  acTopRooms: { roomNumber: string; unitsConsumed: number; acCharge: number }[];
   acStats: {
-    avgUnitsPerTenant: number;
     totalAcRevenue: number;
     totalAcTenants: number;
+    paidAcTenants: number;
   };
 
   // Consolidated expense report — bills + staff salaries + general expenses + kitchen
@@ -435,11 +433,6 @@ export async function getReportData(
     });
 
   // Total revenue & pending
-  // "paid" = fully settled rows only, used for breakdowns (rent/food/AC split, AC
-  // analytics) where attributing a partial payment across categories isn't
-  // well-defined. Top-level money figures (totalRevenue, pendingCollections,
-  // topTenants, overduePayments) separately account for partially_paid rows below.
-  const paidPayments = payments.filter((p) => p.status === "paid");
   const collectedPayments = payments.filter((p) => p.status === "paid" || p.status === "partially_paid");
   const totalRevenue = collectedPayments.reduce((s, p) => s + Number(p.amount_paid ?? p.amount), 0);
   const pendingPayments = payments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid");
@@ -535,9 +528,13 @@ export async function getReportData(
     rate: total > 0 ? Math.round((occupied / total) * 100) : 0,
   }));
 
-  // AC analytics — from paid payments with ac_charge > 0
-  const acPayments = paidPayments.filter((p) => Number(p.ac_charge || 0) > 0);
-  const acByRoom = acPayments.map((p) => {
+  // AC analytics — every tenant billed for AC this period, any payment
+  // status, so owners can see everyone who owes an AC bill and filter down
+  // to who's actually paid (rather than only ever seeing the paid ones).
+  const acAllPayments = payments.filter((p) => Number(p.ac_charge || 0) > 0);
+  const acPaidPayments = acAllPayments.filter((p) => p.status === "paid");
+
+  const acByRoom = acAllPayments.map((p) => {
     const t = p.tenant;
     const rooms_raw = t?.hms_rooms;
     const roomEntry = Array.isArray(rooms_raw) ? (rooms_raw as { room_number: string }[])[0] : (rooms_raw as { room_number: string } | null);
@@ -547,32 +544,13 @@ export async function getReportData(
       unitsConsumed: Number(p.ac_units_consumed || 0),
       acCharge: Number(p.ac_charge || 0),
       forMonth: p.for_month,
+      status: p.status,
     };
-  }).sort((a, b) => b.unitsConsumed - a.unitsConsumed).slice(0, 10);
+  }).sort((a, b) => b.unitsConsumed - a.unitsConsumed);
 
-  // Roll the per-tenant rows up to one entry per room. Charting acByRoom
-  // directly repeated a shared room once per occupant — three "Rm 103"
-  // categories on an axis that is supposed to have one.
-  const roomTotals = new Map<string, { unitsConsumed: number; acCharge: number }>();
-  for (const p of acPayments) {
-    const t = p.tenant;
-    const rooms_raw = t?.hms_rooms;
-    const roomEntry = Array.isArray(rooms_raw) ? (rooms_raw as { room_number: string }[])[0] : (rooms_raw as { room_number: string } | null);
-    const key = roomEntry?.room_number ?? "—";
-    const cur = roomTotals.get(key) ?? { unitsConsumed: 0, acCharge: 0 };
-    cur.unitsConsumed += Number(p.ac_units_consumed || 0);
-    cur.acCharge += Number(p.ac_charge || 0);
-    roomTotals.set(key, cur);
-  }
-  const acTopRooms = Array.from(roomTotals, ([roomNumber, v]) => ({ roomNumber, ...v }))
-    .sort((a, b) => b.unitsConsumed - a.unitsConsumed)
-    .slice(0, 10);
-
-  const totalAcRevenue = acPayments.reduce((s, p) => s + Number(p.ac_charge || 0), 0);
-  const totalAcTenants = acPayments.length;
-  const avgUnitsPerTenant = totalAcTenants > 0
-    ? Math.round(acPayments.reduce((s, p) => s + Number(p.ac_units_consumed || 0), 0) / totalAcTenants)
-    : 0;
+  const totalAcRevenue = acPaidPayments.reduce((s, p) => s + Number(p.ac_charge || 0), 0);
+  const totalAcTenants = acAllPayments.length;
+  const paidAcTenants = acPaidPayments.length;
 
   // Payment method breakdown (reconciliation)
   const METHOD_LABELS: Record<string, string> = {
@@ -929,8 +907,7 @@ export async function getReportData(
       totalCapacity,
       totalOccupied,
       acByRoom,
-      acTopRooms,
-      acStats: { avgUnitsPerTenant, totalAcRevenue, totalAcTenants },
+      acStats: { totalAcRevenue, totalAcTenants, paidAcTenants },
       roomOptions: rooms.map((r) => ({ id: r.id, roomNumber: r.room_number })).sort((a, b) => a.roomNumber.localeCompare(b.roomNumber)),
       paymentMethodBreakdown,
       paidPaymentsList,
