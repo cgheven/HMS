@@ -799,14 +799,10 @@ export async function updatePaymentCharges(
 
 export async function getPaymentsPageData(forMonth: string) {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, acReadings: [], acJoinReadings: [], prevMonthACReadings: [], waitingTenantIds: [] };
+  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, acReadings: [], acJoinReadings: [], waitingTenantIds: [] };
   const { supabase, hostelId, hostel } = ctx;
 
-  const [y, m] = forMonth.split("-").map(Number);
-  const prevDate = new Date(y, m - 2, 1);
-  const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
-
-  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig, { data: acReadings }, { data: acJoinReadings }, { data: prevMonthACReadings }, { data: waitingTenants }] = await Promise.all([
+  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig, { data: acReadings }, { data: acJoinReadings }, { data: waitingTenants }] = await Promise.all([
     supabase.from("hms_payments")
       .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .eq("hostel_id", hostelId)
@@ -821,17 +817,18 @@ export async function getPaymentsPageData(forMonth: string) {
       .select("id, room_number, floor, has_ac")
       .eq("hostel_id", hostelId),
     getPackageConfig(hostelId),
+    // Every month, not just this one — the AC tab needs the selected month AND the
+    // one before it (for the opening reading), and the operator can step to any
+    // month. Fetching per-month meant every step waited on a round trip before the
+    // meter reading could appear. This table holds one row per AC room per month,
+    // so the whole history of a large hostel is still a few hundred small rows;
+    // revisit with a date bound only if that stops being true.
     supabase.from("hms_room_ac_readings")
-      .select("room_id, total_units, meter_reading, per_unit_rate, tenant_count")
-      .eq("hostel_id", hostelId)
-      .eq("for_month", forMonth),
+      .select("room_id, for_month, total_units, meter_reading, per_unit_rate, tenant_count")
+      .eq("hostel_id", hostelId),
     supabase.from("hms_room_ac_join_readings")
       .select("room_id, tenant_id, units_at_join, for_month")
       .eq("hostel_id", hostelId),
-    supabase.from("hms_room_ac_readings")
-      .select("room_id, meter_reading, total_units")
-      .eq("hostel_id", hostelId)
-      .eq("for_month", prevMonth),
     // Payment rows can outlive a tenant's active residency (e.g. edited back
     // to the waiting list after a row was already generated for them) — the
     // headline stats need this list to exclude those rows, since a waiting
@@ -853,9 +850,8 @@ export async function getPaymentsPageData(forMonth: string) {
     paymentMethods: hostel?.payment_methods ?? [],
     reminderTemplate: hostel?.reminder_template ?? null,
     autoReminderEnabled: hostel?.whatsapp_enabled ?? false,
-    acReadings: (acReadings ?? []) as { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[],
+    acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
-    prevMonthACReadings: (prevMonthACReadings ?? []) as { room_id: string; meter_reading: number | null; total_units: number }[],
     waitingTenantIds: (waitingTenants ?? []).map((t) => t.id as string),
   };
 }

@@ -81,9 +81,11 @@ interface Props {
   // Super-Admin-curated flag — the "Send Reminders Now" bulk button only
   // renders when this branch has been granted the automated feature.
   autoReminderEnabled?: boolean;
-  acReadings?: { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[];
+  /** Every month's room readings, not just the one on screen — the AC tab derives
+   *  the selected month and the preceding one from this, so stepping months needs
+   *  no round trip. */
+  acReadings?: { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[];
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
-  prevMonthACReadings?: { room_id: string; meter_reading: number | null; total_units: number }[];
   // Tenants currently on the waiting list — a payment row can outlive an
   // active tenant being edited back to waiting, so the headline stats below
   // exclude these tenants' rows the same way the visible list already does.
@@ -122,13 +124,18 @@ function genReceipt(tenantName: string, month: string) {
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
-// Stable identities. These back the two AC-reading props, which are useEffect
-// dependencies — an inline `= []` default would mint a new array on every render
-// and drive that effect (and its setState) in a loop for any caller that omits them.
-const NO_AC_READINGS: NonNullable<Props["acReadings"]> = [];
-const NO_PREV_AC_READINGS: NonNullable<Props["prevMonthACReadings"]> = [];
+// "2026-07" -> "2026-06". Month keys are plain strings here, never Date objects,
+// so this stays clear of the process-timezone drift that a Date round-trip invites.
+function prevMonthOf(month: string): string {
+  const [y, m] = month.split("-").map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+}
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings: initialAcReadings = NO_AC_READINGS, acJoinReadings = [], prevMonthACReadings: initialPrevMonthACReadings = NO_PREV_AC_READINGS, partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
+// Stable identity. This backs the acReadings prop, which feeds a useMemo and a
+// useEffect — an inline `= []` default would mint a new array on every render.
+const NO_AC_READINGS: NonNullable<Props["acReadings"]> = [];
+
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings: allAcReadings = NO_AC_READINGS, acJoinReadings = [], partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
   const isPartner = !!partnerTier;
   const isManager = !!managerPermissions;
   const canCollect = managerPermissions?.includes("collect_payments") ?? false;
@@ -168,11 +175,21 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [postPaymentWa, setPostPaymentWa] = useState<{ payment: Payment; amountReceivedNow: number; installmentId?: string } | null>(null);
   const [acUnits, setAcUnits] = useState<Record<string, string>>({});
   const [applyingAC, setApplyingAC] = useState<string | null>(null);
-  // The server page only ever fetches these for the current month. Held as
-  // state so stepping to another month can swap in that month's records
-  // (see handleMonthChange); props stay authoritative for initialMonth.
-  const [acReadings, setAcReadings] = useState(initialAcReadings);
-  const [prevMonthACReadings, setPrevMonthACReadings] = useState(initialPrevMonthACReadings);
+  // True only while a month switch is in flight. The room readings re-derive from
+  // props instantly, but the per-tenant payment rows still have to be fetched —
+  // without this the allocation block would render the new month's meter against
+  // the previous month's rows and briefly show everyone on zero units.
+  const [monthLoading, setMonthLoading] = useState(false);
+  // Derived, not fetched. Both slices come out of the one all-months prop, so
+  // changing month re-filters in place instead of waiting on the server.
+  const acReadings = useMemo(
+    () => allAcReadings.filter(r => r.for_month === selectedMonth),
+    [allAcReadings, selectedMonth]
+  );
+  const prevMonthACReadings = useMemo(
+    () => allAcReadings.filter(r => r.for_month === prevMonthOf(selectedMonth)),
+    [allAcReadings, selectedMonth]
+  );
   const [roomFilter, setRoomFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "paid" | "unpaid">("all");
   const [search, setSearch] = useState("");
@@ -252,8 +269,6 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       toast({ title: "Failed to sync payments", description: result.error, variant: "destructive" });
       return null;
     }
-    if (result.acReadings) setAcReadings(result.acReadings);
-    if (result.prevMonthACReadings) setPrevMonthACReadings(result.prevMonthACReadings);
     if (result.payments) {
       setPayments(result.payments);
       return result.payments;
@@ -261,15 +276,6 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     return null;
   }, []);
 
-  // router.refresh() re-renders the server page for initialMonth only, so its
-  // props are adopted only while that month is on screen — otherwise a refresh
-  // triggered from another month (e.g. right after Apply) would overwrite that
-  // month's readings with the current month's.
-  useEffect(() => {
-    if (selectedMonth !== initialMonth) return;
-    setAcReadings(initialAcReadings);
-    setPrevMonthACReadings(initialPrevMonthACReadings);
-  }, [selectedMonth, initialMonth, initialAcReadings, initialPrevMonthACReadings]);
 
   // No auto-sync on mount — server already called getPaymentsPageData(defaultMonth)
   // and passed fresh data as initialPayments. syncMonth is called only on user actions.
@@ -293,8 +299,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     // number. Cleared so the prefill effect refills them from the new month.
     setAcUnits({});
     setAcOpeningReadings({});
-    await syncMonth(month);
-    if (tab === "history") await loadHistory(month);
+    setMonthLoading(true);
+    try {
+      await syncMonth(month);
+      if (tab === "history") await loadHistory(month);
+    } finally {
+      setMonthLoading(false);
+    }
   }
 
   function stepMonth(dir: -1 | 1) {
@@ -1424,7 +1435,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     )}
 
                     {/* Unit allocation per tenant — visible after Apply so the split is verifiable */}
-                    {saved && (() => {
+                    {saved && !monthLoading && (() => {
                       const acTenants = tenants.filter(t => t.room_id === room.id && t.is_active);
                       const monthRows = payments.filter(p => p.for_month === selectedMonth && p.tenant?.room_id === room.id);
                       const activeIds = new Set(acTenants.map(t => t.id));
