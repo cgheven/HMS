@@ -999,6 +999,7 @@ export function SettingsClient() {
                 { key: "room_preference",    label: "Room Selection",       description: "Lets applicants pick a specific available room" },
                 { key: "move_in_date",       label: "Preferred Move-in Date", description: "Requested check-in date" },
                 { key: "emergency_contact",  label: "Emergency Contact",    description: "Contact name, phone, and relationship" },
+                { key: "permanent_address",  label: "Permanent Address",    description: "Tenant's home address — where they return to, separate from the hostel" },
                 { key: "notes",              label: "Message / Questions",  description: "Free text for special requests" },
                 { key: "institute_name",     label: "Institute Name",       description: "Shown only when Type is Student — college, university, or training institute" },
                 { key: "student_category",   label: "Student Category",     description: "Shown only when Type is Student — University/College, Exam Prep, Professional Course, or Skills Training" },

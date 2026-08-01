@@ -8,7 +8,8 @@ import { getAuthContext } from "@/lib/data";
 import { performTenantCheckout } from "@/lib/tenant-checkout";
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
-import { pktYearMonth } from "@/lib/pkt-time";
+import { pktYearMonth } from "@/lib/pkt-time"
+import { isValidCnic, normalizeCnic } from "@/lib/cnic";
 import type { CheckoutInput, CheckoutSettlement, Payment } from "@/types";
 
 // Partner write actions — the safe, admin-client mutation layer a partner's
@@ -56,6 +57,7 @@ export interface PartnerTenantPayload {
   joining_meter_reading: number | null;
   emergency_contact: string | null;
   emergency_relationship: string | null;
+  permanent_address: string | null;
   emergency_phone: string | null;
   notes: string | null;
   is_waiting: boolean;
@@ -76,7 +78,7 @@ function validateTenantPayload(payload: PartnerTenantPayload): string | null {
     return "Full name must be at least 2 characters.";
   }
   if (!payload.is_waiting && !payload.check_in) return "Check-in date is required.";
-  if (payload.cnic && !/^\d{5}-\d{7}-\d$/.test(payload.cnic)) {
+  if (payload.cnic && !isValidCnic(normalizeCnic(payload.cnic))) {
     return "Invalid CNIC format. Must be XXXXX-XXXXXXX-X.";
   }
   return null;
@@ -113,7 +115,7 @@ export async function addTenantAsPartner(
       full_name: payload.full_name.trim(),
       phone: payload.phone?.trim() || null,
       email: payload.email?.trim() || null,
-      cnic: payload.cnic || null,
+      cnic: normalizeCnic(payload.cnic),
       type: payload.type,
       package_tier: payload.package_tier,
       custom_package_id: payload.custom_package_id || null,
@@ -132,6 +134,7 @@ export async function addTenantAsPartner(
       joining_meter_reading: payload.joining_meter_reading ?? null,
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,
+      permanent_address: payload.permanent_address?.trim() || null,
       emergency_phone: payload.emergency_phone || null,
       notes: payload.notes || null,
       is_waiting: payload.is_waiting,
@@ -431,7 +434,7 @@ export async function editTenantAsPartner(
       full_name: payload.full_name.trim(),
       phone: payload.phone?.trim() || null,
       email: payload.email?.trim() || null,
-      cnic: payload.cnic || null,
+      cnic: normalizeCnic(payload.cnic),
       type: payload.type,
       package_tier: payload.package_tier,
       custom_package_id: payload.custom_package_id || null,
@@ -450,6 +453,7 @@ export async function editTenantAsPartner(
       joining_meter_reading: payload.joining_meter_reading ?? null,
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,
+      permanent_address: payload.permanent_address?.trim() || null,
       emergency_phone: payload.emergency_phone || null,
       notes: payload.notes || null,
       is_waiting: payload.is_waiting,

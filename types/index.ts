@@ -76,6 +76,7 @@ export interface FormConfig {
   room_preference?: FormFieldConfig;
   move_in_date?: FormFieldConfig;
   emergency_contact?: FormFieldConfig;
+  permanent_address?: FormFieldConfig;
   notes?: FormFieldConfig;
   // Shown only when Type is Student/Professional respectively (never for
   // General) — foundational data for a future roommate-matching platform.
@@ -92,6 +93,7 @@ export const DEFAULT_FORM_CONFIG: Required<FormConfig> = {
   room_preference:    { enabled: true, required: false },
   move_in_date:       { enabled: true, required: false },
   emergency_contact:  { enabled: true, required: false },
+  permanent_address:  { enabled: true, required: false },
   notes:              { enabled: true, required: false },
   institute_name:     { enabled: true, required: false },
   student_category:   { enabled: true, required: false },
@@ -312,6 +314,8 @@ export interface Tenant {
   emergency_contact: string | null;
   emergency_phone: string | null;
   emergency_relationship: string | null;
+  /** Tenant's home/permanent address — distinct from the hostel they live in. */
+  permanent_address: string | null;
   notes: string | null;
   photo_url: string | null;
   documents: TenantDocument[];
@@ -857,6 +861,8 @@ export interface TenantApplication {
   emergency_contact: string | null;
   emergency_phone: string | null;
   emergency_relationship: string | null;
+  /** Applicant's home/permanent address — copied to the tenant on approval. */
+  permanent_address: string | null;
   notes: string | null;
   photo_url: string | null;
   cnic_doc_path: string | null;

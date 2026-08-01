@@ -2,6 +2,7 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { isValidCnic, normalizeCnic } from "@/lib/cnic";
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
@@ -87,6 +88,7 @@ interface ApplicationInput {
   emergency_contact?: string;
   emergency_phone?: string;
   emergency_relationship?: string;
+  permanent_address?: string;
   notes?: string;
   cnic_doc_path?: string;
   institute_name?: string;
@@ -101,6 +103,12 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
   if (!hostelId) return { success: false, error: "Hostel not found" };
   if (!data.full_name?.trim()) return { success: false, error: "Full name is required" };
   if (!data.phone?.trim()) return { success: false, error: "Phone number is required" };
+  // The public form is unauthenticated and directly callable, so the format is
+  // enforced here too — not just in the browser. Digits-only input is accepted
+  // and normalised rather than rejected, matching what the field does on screen.
+  if (data.cnic?.trim() && !isValidCnic(normalizeCnic(data.cnic))) {
+    return { success: false, error: "Enter a valid 13-digit CNIC, e.g. 42101-1234567-1" };
+  }
 
   // F-005: Phone-based rate limit — max 3 applications per phone in 24 hours.
   // This mirrors the DB-level trigger in migration 024 as an early-exit check
@@ -146,7 +154,7 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     full_name: data.full_name.trim(),
     phone: data.phone.trim(),
     email: data.email?.trim() || null,
-    cnic: data.cnic?.trim() || null,
+    cnic: normalizeCnic(data.cnic),
     type: data.type || "general",
     package_tier: data.package_tier,
     room_preference: data.room_preference || null,
@@ -155,6 +163,7 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     emergency_contact: data.emergency_contact?.trim() || null,
     emergency_phone: data.emergency_phone?.trim() || null,
     emergency_relationship: data.emergency_relationship?.trim() || null,
+    permanent_address: data.permanent_address?.trim() || null,
     notes: data.notes?.trim() || null,
     cnic_doc_path: data.cnic_doc_path || null,
     institute_name: data.institute_name?.trim() || null,
@@ -280,6 +289,7 @@ export interface ConvertFormData {
   emergency_contact?: string | null;
   emergency_phone?: string | null;
   emergency_relationship?: string | null;
+  permanent_address?: string | null;
   institute_name?: string | null;
   student_category?: string | null;
   student_specialization?: string | null;
@@ -310,7 +320,9 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     full_name: app.full_name,
     phone: app.phone,
     email: app.email,
-    cnic: app.cnic,
+    // Normalised on the way through: 38 legacy applications hold digits-only
+    // CNICs, and approving one must not carry that malformed value onto the tenant.
+    cnic: normalizeCnic(app.cnic),
     type: extra.type,
     package_tier: extra.package_tier,
     check_in: extra.check_in,
@@ -334,6 +346,9 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     emergency_contact: extra.emergency_contact ?? app.emergency_contact ?? null,
     emergency_phone: extra.emergency_phone ?? app.emergency_phone ?? null,
     emergency_relationship: extra.emergency_relationship ?? app.emergency_relationship ?? null,
+    // Carried over from the application so an approved applicant keeps the
+    // address they submitted, unless the approver edited it in the dialog.
+    permanent_address: extra.permanent_address ?? app.permanent_address ?? null,
     institute_name: extra.institute_name ?? app.institute_name ?? null,
     student_category: extra.student_category ?? app.student_category ?? null,
     student_specialization: extra.student_specialization ?? app.student_specialization ?? null,

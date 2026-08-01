@@ -3,6 +3,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Home, CheckCircle2, Loader2, Phone, Mail, User, CreditCard, Calendar, MessageSquare, Camera, Upload, X, RefreshCw, BedDouble, Check, ShieldAlert } from "lucide-react";
 import { submitApplication } from "@/app/actions/applications";
 import { uploadApplicationCnic } from "@/app/actions/public";
+import { formatCnic, isValidCnic } from "@/lib/cnic";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -51,6 +52,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
     room_id: preselectedRoom?.id ?? "",
     package_tier: "space_only" as PackageTier,
     move_in_date: "",
+    permanent_address: "",
     emergency_contact: "",
     emergency_phone: "",
     emergency_relationship: "",
@@ -261,10 +263,18 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
     if (!form.phone.trim()) { setError("WhatsApp number is required."); return; }
     if (show("email") && req("email") && !form.email.trim()) { setError("Email is required."); return; }
     if (show("cnic") && !form.cnic.trim()) { setError("CNIC is required."); return; }
+    if (show("cnic") && form.cnic.trim() && !isValidCnic(form.cnic)) {
+      setError("Enter a valid 13-digit CNIC, e.g. 42101-1234567-1.");
+      return;
+    }
     if (show("type") && !form.type) { setError("Please select a type."); return; }
     if (show("move_in_date") && req("move_in_date") && !form.move_in_date) { setError("Move-in date is required."); return; }
     if (showRoomPicker && req("room_preference") && !form.room_id) {
       setError("Please select a room.");
+      return;
+    }
+    if (show("permanent_address") && req("permanent_address") && !form.permanent_address.trim()) {
+      setError("Permanent address is required.");
       return;
     }
     if (show("emergency_contact") && req("emergency_contact") &&
@@ -300,6 +310,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
       room_id: showRoomPicker && selectedRoom ? selectedRoom.id : undefined,
       room_preference: showRoomPicker && selectedRoom ? selectedRoom.room_number : undefined,
       move_in_date: show("move_in_date") ? form.move_in_date || undefined : undefined,
+      permanent_address: show("permanent_address") ? form.permanent_address || undefined : undefined,
       emergency_contact: show("emergency_contact") ? form.emergency_contact || undefined : undefined,
       emergency_phone: show("emergency_contact") ? form.emergency_phone || undefined : undefined,
       emergency_relationship: show("emergency_contact") ? form.emergency_relationship || undefined : undefined,
@@ -450,7 +461,9 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                 <Input
                   placeholder="XXXXX-XXXXXXX-X"
                   value={form.cnic}
-                  onChange={(e) => setForm({ ...form, cnic: e.target.value })}
+                  onChange={(e) => setForm({ ...form, cnic: formatCnic(e.target.value) })}
+                  inputMode="numeric"
+                  maxLength={15}
                   required
                 />
                 <p className="text-xs text-muted-foreground">Format: 42101-1234567-1</p>
@@ -800,6 +813,26 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
           )}
 
           {/* Emergency Contact — configurable */}
+          {show("permanent_address") && (
+            <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
+              <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Home className="w-4 h-4 text-muted-foreground" /> Permanent Address
+                {!req("permanent_address") && <span className="text-xs font-normal text-muted-foreground">(optional)</span>}
+              </h2>
+              <div className="space-y-1.5">
+                <Label>Home Address {req("permanent_address") && <span className="text-rose-400">*</span>}</Label>
+                <textarea
+                  rows={3}
+                  placeholder="House / street, area, city"
+                  value={form.permanent_address}
+                  onChange={(e) => setForm({ ...form, permanent_address: e.target.value })}
+                  required={req("permanent_address")}
+                  className="w-full rounded-lg border border-sidebar-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50 resize-y"
+                />
+              </div>
+            </div>
+          )}
+
           {show("emergency_contact") && (
             <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
               <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">

@@ -15,6 +15,7 @@ import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistr
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
 import { pktYearMonth } from "@/lib/pkt-time"
+import { isValidCnic, normalizeCnic } from "@/lib/cnic"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
 import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission, CheckoutInput, CheckoutSettlement } from "@/types"
 
@@ -600,7 +601,7 @@ function validateManagerTenantPayload(payload: ManagerTenantPayload): string | n
     return "Full name must be at least 2 characters."
   }
   if (!payload.is_waiting && !payload.check_in) return "Check-in date is required."
-  if (payload.cnic && !/^\d{5}-\d{7}-\d$/.test(payload.cnic)) {
+  if (payload.cnic && !isValidCnic(normalizeCnic(payload.cnic))) {
     return "Invalid CNIC format. Must be XXXXX-XXXXXXX-X."
   }
   // Back-dated check-ins are rejected rather than silently accepted. The owner
@@ -632,7 +633,7 @@ function validateManagerTenantEditPayload(payload: ManagerTenantPayload): string
     return "Full name must be at least 2 characters."
   }
   if (!payload.is_waiting && !payload.check_in) return "Check-in date is required."
-  if (payload.cnic && !/^\d{5}-\d{7}-\d$/.test(payload.cnic)) {
+  if (payload.cnic && !isValidCnic(normalizeCnic(payload.cnic))) {
     return "Invalid CNIC format. Must be XXXXX-XXXXXXX-X."
   }
   return null
@@ -670,7 +671,7 @@ export async function addTenantAsManager(
       full_name: payload.full_name.trim(),
       phone: payload.phone?.trim() || null,
       email: payload.email?.trim() || null,
-      cnic: payload.cnic || null,
+      cnic: normalizeCnic(payload.cnic),
       type: payload.type,
       package_tier: payload.package_tier,
       custom_package_id: payload.custom_package_id || null,
@@ -689,6 +690,7 @@ export async function addTenantAsManager(
       joining_meter_reading: payload.joining_meter_reading ?? null,
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,
+      permanent_address: payload.permanent_address?.trim() || null,
       emergency_phone: payload.emergency_phone || null,
       notes: payload.notes || null,
       is_waiting: payload.is_waiting,
@@ -814,7 +816,7 @@ export async function editTenantAsManager(
       full_name: payload.full_name.trim(),
       phone: payload.phone?.trim() || null,
       email: payload.email?.trim() || null,
-      cnic: payload.cnic || null,
+      cnic: normalizeCnic(payload.cnic),
       type: payload.type,
       package_tier: payload.package_tier,
       custom_package_id: payload.custom_package_id || null,
@@ -833,6 +835,7 @@ export async function editTenantAsManager(
       joining_meter_reading: payload.joining_meter_reading ?? null,
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,
+      permanent_address: payload.permanent_address?.trim() || null,
       emergency_phone: payload.emergency_phone || null,
       notes: payload.notes || null,
       is_waiting: payload.is_waiting,

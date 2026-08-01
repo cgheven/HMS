@@ -25,6 +25,7 @@ import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seate
 import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets } from "@/lib/student-category-labels";
 import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling } from "@/lib/ac-billing";
+import { formatCnic, isValidCnic, normalizeCnic } from "@/lib/cnic";
 import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, PaymentStatus, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
@@ -215,7 +216,7 @@ const emptyForm = {
   registration_fee: "",
   vehicle_type: "", vehicle_number: "", vehicle_model: "",
   joining_meter_reading: "",
-  emergency_contact: "", emergency_relationship: "", emergency_phone: "", notes: "",
+  emergency_contact: "", emergency_relationship: "", emergency_phone: "", permanent_address: "", notes: "",
   is_waiting: false,
   photo_url: "" as string,
   food_breakfast: false, food_lunch: false, food_dinner: false,
@@ -620,6 +621,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     emergency_contact: null,
     emergency_phone: null,
     emergency_relationship: null,
+    permanent_address: null,
     institute_name: null,
     student_category: null,
     student_specialization: null,
@@ -738,6 +740,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       emergency_contact: app.emergency_contact ?? null,
       emergency_phone: app.emergency_phone ?? null,
       emergency_relationship: app.emergency_relationship ?? null,
+      permanent_address: app.permanent_address ?? null,
       institute_name: app.institute_name ?? null,
       student_category: app.student_category ?? null,
       student_specialization: app.student_specialization ?? null,
@@ -831,13 +834,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setApproveSaving(false);
   }
 
-  function formatCnic(raw: string): string {
-    const digits = raw.replace(/\D/g, "").slice(0, 13);
-    if (digits.length <= 5) return digits;
-    if (digits.length <= 12) return `${digits.slice(0, 5)}-${digits.slice(5)}`;
-    return `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
-  }
-
   function openAdd() {
     setEditing(null);
     setViewOnly(false);
@@ -884,6 +880,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       joining_meter_reading: t.joining_meter_reading?.toString() ?? "",
       emergency_contact: t.emergency_contact ?? "",
       emergency_relationship: t.emergency_relationship ?? "",
+      permanent_address: t.permanent_address ?? "",
       emergency_phone: t.emergency_phone ?? "",
       notes: t.notes ?? "",
       is_waiting: forceActive ? false : t.is_waiting,
@@ -965,7 +962,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   async function handleSave() {
     if ((!hostelId && !isManager) || !form.full_name) return;
     if (!form.is_waiting && !form.check_in) return;
-    if (form.cnic && !/^\d{5}-\d{7}-\d$/.test(form.cnic)) {
+    if (form.cnic && !isValidCnic(form.cnic)) {
       toast({ title: "Invalid CNIC", description: "Format must be XXXXX-XXXXXXX-X (13 digits)", variant: "destructive" });
       return;
     }
@@ -977,7 +974,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       full_name: form.full_name,
       phone: form.phone || null,
       email: form.email || null,
-      cnic: form.cnic || null,
+      cnic: normalizeCnic(form.cnic),
       type: form.type,
       package_tier: form.package_tier,
       custom_package_id: form.custom_package_id || null,
@@ -996,6 +993,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       joining_meter_reading: form.joining_meter_reading.trim() ? parseFloat(form.joining_meter_reading) || null : null,
       emergency_contact: form.emergency_contact || null,
       emergency_relationship: form.emergency_relationship || null,
+      permanent_address: form.permanent_address.trim() || null,
       emergency_phone: form.emergency_phone || null,
       notes: form.notes || null,
       is_waiting: form.is_waiting,
@@ -2870,7 +2868,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   onChange={(e) => setForm({ ...form, cnic: formatCnic(e.target.value) })}
                   maxLength={15}
                 />
-                {form.cnic && !/^\d{5}-\d{7}-\d$/.test(form.cnic) && (
+                {form.cnic && !isValidCnic(form.cnic) && (
                   <p className="text-xs text-rose-400">Format: XXXXX-XXXXXXX-X</p>
                 )}
               </div>
@@ -3334,6 +3332,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
               <div className="space-y-1.5"><Label>Plate Number</Label><Input placeholder="e.g. ABC-123" value={form.vehicle_number} onChange={(e) => setForm({ ...form, vehicle_number: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Model</Label><Input placeholder="e.g. Honda CD 70" value={form.vehicle_model} onChange={(e) => setForm({ ...form, vehicle_model: e.target.value })} /></div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Permanent Address</Label>
+              <textarea
+                rows={2}
+                placeholder="House / street, area, city — the tenant's home address"
+                value={form.permanent_address}
+                onChange={(e) => setForm({ ...form, permanent_address: e.target.value })}
+                className="w-full rounded-lg border border-sidebar-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50 resize-y"
+              />
             </div>
 
             <div className="grid grid-cols-2 gap-4">
