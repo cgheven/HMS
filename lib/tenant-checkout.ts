@@ -2,7 +2,7 @@ import "server-only";
 
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { calcDailyRent, countBillableNights, proRateMonthlyRent } from "@/lib/daily-billing";
+import { calcDailyRent, countBillableNights, daysInMonth, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling, deriveOpeningReading, round2 } from "@/lib/ac-billing";
 import type { PaymentMethod, PaymentStatus, CheckoutInput, CheckoutSettlement } from "@/types";
 
@@ -57,7 +57,7 @@ export async function performTenantCheckout(
 
     // Step 2: Verify payment belongs to this tenant and hostel (prevents IDOR)
     let paymentAlreadySettled = false;
-    let verifiedPayment: { id: string; tenant_id: string; hostel_id: string; status: string; for_month: string; amount: number | null; late_fee: number | null; amount_paid: number | null } | null = null;
+    let verifiedPayment: { id: string; tenant_id: string; hostel_id: string; status: string; for_month: string; amount: number | null; late_fee: number | null; amount_paid: number | null; ac_charge: number | null } | null = null;
     if (input.paymentSettlement) {
       // SEC-F4: Runtime action validation — TypeScript enums are erased at runtime
       if (!new Set(["pay", "waive"]).has(input.paymentSettlement.action as string)) {
@@ -66,7 +66,7 @@ export async function performTenantCheckout(
 
       const { data: payment, error: payErr } = await adminDb
         .from("hms_payments")
-        .select("id, tenant_id, hostel_id, status, for_month, amount, late_fee, amount_paid")
+        .select("id, tenant_id, hostel_id, status, for_month, amount, late_fee, amount_paid, ac_charge")
         .eq("id", input.paymentSettlement.paymentId)
         .eq("tenant_id", input.tenantId)
         .eq("hostel_id", hostelId)
@@ -142,8 +142,14 @@ export async function performTenantCheckout(
         });
         const dailyRate = Number(tenant.daily_rate ?? 0);
 
+        // A tenant who slept every night of the month is not a partial stay, so
+        // the /30 divisor must not discount them. The dialog already blocks this,
+        // but proRateFinalMonth is a client-supplied flag on a directly-callable
+        // server action and cannot be trusted on its own.
         const newBaseRent = isDaily
           ? calcDailyRent({ checkIn, checkOut: input.checkoutDate, month: rentMonth, dailyRate })
+          : nights >= daysInMonth(rentMonth)
+          ? Number(tenant.monthly_rent ?? 0)
           : proRateMonthlyRent({
               monthlyRent: Number(tenant.monthly_rent ?? 0),
               checkIn,
@@ -274,7 +280,7 @@ export async function performTenantCheckout(
         adminDb.from("hms_room_ac_readings").select("meter_reading, total_units").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth).maybeSingle(),
         // This tenant's own already-billed AC for the month, so the breakpoint can
         // record the real figure even on the path where nothing is recomputed.
-        adminDb.from("hms_payments").select("ac_charge, ac_units_consumed").eq("tenant_id", input.tenantId).eq("hostel_id", hostelId).eq("for_month", checkoutMonth).maybeSingle(),
+        adminDb.from("hms_payments").select("ac_charge, ac_units_consumed, status").eq("tenant_id", input.tenantId).eq("hostel_id", hostelId).eq("for_month", checkoutMonth).maybeSingle(),
       ]);
 
       // If the meter hasn't actually moved past what AC Units already applied this
@@ -290,9 +296,23 @@ export async function performTenantCheckout(
       const alreadyAppliedReading = currentMonthRecord?.meter_reading != null
         ? Math.round(Number(currentMonthRecord.meter_reading))
         : null;
-      const hasNewerReading = alreadyAppliedReading == null
+      // A partially-paid row never recomputes, whatever reading is entered —
+      // there is no way to tell how much of what was already collected covered
+      // AC versus rent, so re-deriving the AC share would risk billing it twice
+      // or writing it off. MUST match the identical guard in the dialog's
+      // preview (checkoutMath in tenants-client.tsx), or the quote at the door
+      // and the amount actually settled disagree.
+      // Only when there is an actual prior charge to protect. A partially-paid
+      // row with ac_charge = 0 had nothing collected against AC, so there is
+      // nothing to double-bill — suppressing the recompute there would bill the
+      // tenant Rs 0 for a whole month of AC and never recover it at month-end.
+      const rowPartiallyPaid = ownPaymentRow?.status === "partially_paid"
+        && Number(ownPaymentRow?.ac_charge ?? 0) > 0;
+      const hasNewerReading = !rowPartiallyPaid && (
+        alreadyAppliedReading == null
         || Math.round(Number(input.acCheckoutReading)) > alreadyAppliedReading
-        || input.acOpeningReading != null;
+        || input.acOpeningReading != null
+      );
 
       if (roomInfo?.has_ac) {
         // Same fallback as applyRoomACUnitsAction: with no previous-month reading
@@ -405,7 +425,7 @@ export async function performTenantCheckout(
             // One row per tenant-month (unique index), so: reuse it, or create it.
             const { data: monthRow } = await adminDb
               .from("hms_payments")
-              .select("id, tenant_id, hostel_id, status, for_month, amount, late_fee, amount_paid")
+              .select("id, tenant_id, hostel_id, status, for_month, amount, late_fee, amount_paid, ac_charge")
               .eq("tenant_id", input.tenantId)
               .eq("hostel_id", hostelId)
               .eq("for_month", checkoutMonth)
@@ -433,7 +453,7 @@ export async function performTenantCheckout(
                   .update({
                     ac_units_consumed: tenantUnits,
                     ac_charge,
-                    amount: Number(monthRow.amount ?? 0) + ac_charge,
+                    amount: Number(monthRow.amount ?? 0) - Number(monthRow.ac_charge ?? 0) + ac_charge,
                     updated_at: new Date().toISOString(),
                   })
                   .eq("id", monthRow.id);
@@ -449,7 +469,7 @@ export async function performTenantCheckout(
                   amount: 0,
                   status: "pending",
                 })
-                .select("id, tenant_id, hostel_id, status, for_month, amount, late_fee, amount_paid")
+                .select("id, tenant_id, hostel_id, status, for_month, amount, late_fee, amount_paid, ac_charge")
                 .single();
               adopt(created);
             }
@@ -471,9 +491,23 @@ export async function performTenantCheckout(
     // here now — the client's figure is a preview, never an input.
     const heldDeposit = Number(tenant.security_deposit ?? 0);
     const settleAction = input.paymentSettlement?.action ?? (adoptedACOnlyPayment ? "pay" : null);
+    // The AC charge already sitting inside `amount`. When Step 3a computed a
+    // fresh one it REPLACES this — so the old figure has to come out before the
+    // new one goes in, or the row is billed for AC twice. `amount` already
+    // contains it whenever the AC Units tab applied units earlier in the month
+    // (and Step 2b's read-back preserves it), which is the common case. Left at
+    // 0 when nothing was recomputed, so the untouched charge stays counted once.
+    // Guarded on the row being the SAME month Step 3a computed AC for. When the
+    // checkout month has no row yet, the settled row can be an earlier month —
+    // subtracting that month's AC would silently drop a charge that is still owed.
+    const supersededAcCharge =
+      acCheckoutRecord && verifiedPayment?.for_month === input.checkoutDate.substring(0, 7)
+        ? Number(verifiedPayment.ac_charge ?? 0)
+        : 0;
     // Everything the row bills once the checkout AC charge is folded in.
     const grossDue = verifiedPayment
       ? Number(verifiedPayment.amount ?? 0)
+        - supersededAcCharge
         + Number(verifiedPayment.late_fee ?? 0)
         + (acCheckoutRecord?.ac_charge ?? 0)
       : 0;
@@ -506,13 +540,20 @@ export async function performTenantCheckout(
             // The row ends fully settled — amount_paid is everything it bills, and
             // deposit_applied records how much of that came from the deposit rather than
             // fresh cash, so revenue reporting can tell the two apart.
-            amount_paid: grossDue,
+            // Never below what was actually collected — with the supersede
+            // subtraction a lower recomputed AC could otherwise erase recorded
+            // cash. An overpaid row is honest; a shrunken amount_paid is not.
+            amount_paid: Math.max(grossDue, Number(verifiedPayment.amount_paid ?? 0)),
             deposit_applied: depositApplied,
             ...(acCheckoutRecord ? {
               ac_units_consumed: round2(acCheckoutRecord.tenant_unit_share),
               ac_charge: acCheckoutRecord.ac_charge,
               // Add AC charge to base amount so PDF formula (monthlyRent = amount - ac_charge) stays correct
-              amount: Number(verifiedPayment.amount ?? 0) + acCheckoutRecord.ac_charge,
+              // Same supersede rule as grossDue above — swap the old AC charge
+              // out for the new one rather than stacking them. Monthly rows get
+              // rebuilt by the migration-133 trigger anyway, but DAILY rows keep
+              // the app-supplied amount, so stacking here persisted permanently.
+              amount: Number(verifiedPayment.amount ?? 0) - supersededAcCharge + acCheckoutRecord.ac_charge,
             } : {}),
             ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
             updated_at: new Date().toISOString(),

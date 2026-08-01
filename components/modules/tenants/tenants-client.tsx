@@ -480,7 +480,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [editing, setEditing] = useState<Tenant | null>(null);
   const [checkingOut, setCheckingOut] = useState<Tenant | null>(null);
   const [checkoutDate, setCheckoutDate] = useState(formatDateInput(new Date()));
-  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; late_fee: number } | null>(null);
+  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; registration_fee_charge: number; ac_maintenance_charge: number; late_fee: number } | null>(null);
   const [checkoutPaymentLoading, setCheckoutPaymentLoading] = useState(false);
   const [checkoutPaymentError, setCheckoutPaymentError] = useState<string | null>(null);
   const [checkoutPayAction, setCheckoutPayAction] = useState<"pay" | "waive">("pay");
@@ -1289,6 +1289,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           ac_units_consumed: payment.ac_units_consumed,
           food_charge: payment.food_charge,
           security_deposit_charge: payment.security_deposit_charge,
+          registration_fee_charge: payment.registration_fee_charge,
+          ac_maintenance_charge: payment.ac_maintenance_charge,
           late_fee: payment.late_fee,
         });
       }
@@ -1523,10 +1525,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
     // What the outstanding total actually drops by: the server swaps the row's
     // stored base rent for the pro-rated one, keeping extras and late fee intact.
+    // MUST mirror lib/tenant-checkout.ts Step 2b's `extras` exactly — every
+    // non-rent component of the row. Dropping registration fee / AC maintenance
+    // here overstated storedBaseRent, so the dialog quoted less than the server
+    // billed (Rs 3,000-5,000 at hostels that charge them).
     const extras =
       checkoutPendingPayment.ac_charge +
       checkoutPendingPayment.food_charge +
       checkoutPendingPayment.security_deposit_charge +
+      checkoutPendingPayment.registration_fee_charge +
+      checkoutPendingPayment.ac_maintenance_charge +
       checkoutPendingPayment.late_fee;
     const storedBaseRent = Math.max(0, checkoutPendingPayment.amount - extras);
     const discount = Math.max(0, storedBaseRent - proRatedRent);
@@ -1549,7 +1557,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const existingAcCharge = checkoutPendingPayment?.ac_charge ?? 0;
     const alreadyPaid = checkoutPendingPayment?.amount_paid ?? 0;
     const isPartiallyPaid = checkoutPendingPayment?.status === "partially_paid";
-    const rawPending = Math.max(0, (checkoutPendingPayment?.amount ?? 0) - existingAcCharge - alreadyPaid);
+    // Only netted out when the row IS the departure month's — otherwise the
+    // fresh AC belongs to a different month than this row's charge and the two
+    // must not be swapped. Mirrors supersededAcCharge in lib/tenant-checkout.ts.
+    const rowIsDepartureMonth = checkoutPendingPayment?.for_month === checkoutDate.slice(0, 7);
+    const supersededAc = rowIsDepartureMonth ? existingAcCharge : 0;
+    const rawPending = Math.max(0, (checkoutPendingPayment?.amount ?? 0) - supersededAc - alreadyPaid);
     const proRateDiscount = proRateActive ? (checkoutProRateInfo?.discount ?? 0) : 0;
     const basePending = Math.max(0, rawPending - proRateDiscount);
 
@@ -1621,7 +1634,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     };
 
     const estimatedACCharge = !roomHasAC ? 0
-      : isPartiallyPaid ? existingAcCharge
+      : (isPartiallyPaid && existingAcCharge > 0) ? existingAcCharge
       : !hasNewerACReading ? existingAcCharge
       : previewACCharge();
 
@@ -3619,7 +3632,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         <div>
                           <p className="text-sm font-medium">Charge for the final month</p>
                           <p className="text-xs text-muted-foreground mt-0.5">
-                            Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} of {checkoutProRateInfo.totalDays} days stayed in {checkoutProRateInfo.month}. Food, AC and deposit charges are never pro-rated.
+                            Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} nights stayed in {checkoutProRateInfo.month}, charged at {formatCurrency(Math.round(checkoutProRateInfo.fullRent / 30))}/day (rent ÷ 30). Food, AC and deposit charges are never pro-rated.
                           </p>
                         </div>
                         <div className="grid grid-cols-2 gap-2">
@@ -3646,7 +3659,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                             <p className="text-xs text-muted-foreground">Days stayed</p>
                             <p className="text-sm font-semibold mt-0.5">{formatCurrency(checkoutProRateInfo.proRatedRent)}</p>
                             <p className="text-[11px] text-muted-foreground mt-0.5">
-                              Default — {checkoutProRateInfo.nights} of {checkoutProRateInfo.totalDays} days
+                              Default — {checkoutProRateInfo.nights} nights
                             </p>
                           </button>
                         </div>
@@ -3731,7 +3744,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     {proRateDiscount > 0 && (
                       <div className="flex justify-between text-xs">
                         <span className="text-muted-foreground">
-                          Pro-rated ({checkoutProRateInfo?.nights} of {checkoutProRateInfo?.totalDays} days)
+                          Pro-rated ({checkoutProRateInfo?.nights} nights at rent ÷ 30)
                         </span>
                         <span className="text-emerald-400">− {formatCurrency(proRateDiscount)}</span>
                       </div>

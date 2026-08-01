@@ -73,9 +73,20 @@ export function calcDailyRent(opts: {
   return Math.round(nights * Number(opts.dailyRate || 0));
 }
 
-// RULE 2 — optional pro-rating of a MONTHLY tenant at checkout. Never applied
-// automatically: the owner opts in from the checkout dialog. Base rent only —
-// food, AC and deposit charges are not pro-rated.
+// A month is treated as 30 days for per-day purposes, regardless of whether the
+// calendar month is 28, 30 or 31 days long. Dividing by the real length instead
+// made the same night cost a different amount depending on the month (Rs 785 in
+// February vs Rs 709 in August on a Rs 22,000 rent), which is not how the rent
+// is actually quoted to a tenant — "a day" is a fixed fraction of the month.
+const PRORATE_DAYS_PER_MONTH = 30;
+
+// RULE 2 — pro-rating a MONTHLY tenant's final month at checkout. Base rent
+// only: food, AC and deposit charges are never day-scaled.
+//
+// Charges nights actually slept at monthlyRent/30, then CAPS at the full
+// monthly rent. The cap matters in 31-day months: 31 nights x (22,000/30) is
+// Rs 22,733, so without it a tenant who stayed the whole month would be billed
+// more than the month costs. A part-month can never exceed a full month.
 export function proRateMonthlyRent(opts: {
   monthlyRent: number;
   checkIn: string;
@@ -83,8 +94,9 @@ export function proRateMonthlyRent(opts: {
   month: string;
 }): number {
   const { monthlyRent, checkIn, checkOut, month } = opts;
-  const total = daysInMonth(month);
-  if (!total) return 0;
+  const rent = Number(monthlyRent || 0);
+  if (rent <= 0) return 0;
   const nights = countBillableNights({ checkIn, checkOut, month });
-  return Math.round((Number(monthlyRent || 0) / total) * nights);
+  if (nights <= 0) return 0;
+  return Math.min(rent, Math.round((rent / PRORATE_DAYS_PER_MONTH) * nights));
 }

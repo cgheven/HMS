@@ -749,7 +749,13 @@ export async function applyRoomACUnitsAction(
       perUnitRate,
       forMonth,
       joinReadingsRaw: (joinReadingsRaw ?? []).filter(r => eligible.some(t => t.id === r.tenant_id)),
-      checkoutReadingsRaw: checkoutReadingsRaw ?? [],
+      // Only readings strictly BELOW this one. computeACSegmentBilling rejects a
+      // checkout reading >= the month-end reading, but equality is legitimate —
+      // a tenant departs at reading X and no AC is used after, so the month
+      // closes at X too. Those create no segment boundary inside [0, units]
+      // (the function filters them out anyway), so dropping them changes no
+      // arithmetic; it only stops a valid room from becoming un-appliable.
+      checkoutReadingsRaw: (checkoutReadingsRaw ?? []).filter(r => Math.round(Number(r.meter_reading)) < reading),
     });
 
     // ── Auto-create missing payment rows so Apply never requires a manual sync ──

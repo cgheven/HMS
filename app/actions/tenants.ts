@@ -1031,6 +1031,7 @@ export async function getCheckoutPendingPaymentAction(
     id: string; for_month: string; status: PaymentStatus; amount: number; amount_paid: number;
     late_fee: number; ac_charge: number; ac_units_consumed: number | null;
     food_charge: number; security_deposit_charge: number;
+    registration_fee_charge: number; ac_maintenance_charge: number;
   } | null;
   error?: string;
 }> {
@@ -1048,7 +1049,7 @@ export async function getCheckoutPendingPaymentAction(
 
     const { data, error } = await adminDb
       .from("hms_payments")
-      .select("id, for_month, status, amount, amount_paid, late_fee, ac_charge, ac_units_consumed, food_charge, security_deposit_charge")
+      .select("id, for_month, status, amount, amount_paid, late_fee, ac_charge, ac_units_consumed, food_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge")
       .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId)
       // partially_paid included too — a genuine remaining balance (e.g. AC
@@ -1078,6 +1079,11 @@ export async function getCheckoutPendingPaymentAction(
         ac_units_consumed: data.ac_units_consumed != null ? Number(data.ac_units_consumed) : null,
         food_charge: Number(data.food_charge ?? 0),
         security_deposit_charge: Number(data.security_deposit_charge ?? 0),
+        // Both are part of the row total and are never day-scaled, so the
+        // pro-rate preview must subtract them when isolating base rent —
+        // omitting them made the dialog quote Rs 3,000-5,000 under the server.
+        registration_fee_charge: Number(data.registration_fee_charge ?? 0),
+        ac_maintenance_charge: Number(data.ac_maintenance_charge ?? 0),
       },
     };
   } catch (err: unknown) {
