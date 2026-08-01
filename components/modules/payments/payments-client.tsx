@@ -122,7 +122,7 @@ function genReceipt(tenantName: string, month: string) {
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings = [], acJoinReadings = [], prevMonthACReadings = [], partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings: initialAcReadings = [], acJoinReadings = [], prevMonthACReadings: initialPrevMonthACReadings = [], partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
   const isPartner = !!partnerTier;
   const isManager = !!managerPermissions;
   const canCollect = managerPermissions?.includes("collect_payments") ?? false;
@@ -162,6 +162,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [postPaymentWa, setPostPaymentWa] = useState<{ payment: Payment; amountReceivedNow: number; installmentId?: string } | null>(null);
   const [acUnits, setAcUnits] = useState<Record<string, string>>({});
   const [applyingAC, setApplyingAC] = useState<string | null>(null);
+  // The server page only ever fetches these for the current month. Held as
+  // state so stepping to another month can swap in that month's records
+  // (see handleMonthChange); props stay authoritative for initialMonth.
+  const [acReadings, setAcReadings] = useState(initialAcReadings);
+  const [prevMonthACReadings, setPrevMonthACReadings] = useState(initialPrevMonthACReadings);
   const [roomFilter, setRoomFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "paid" | "unpaid">("all");
   const [search, setSearch] = useState("");
@@ -213,10 +218,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
   // Pre-populate join reading inputs — reconstruct absolute meter reading from relative + prev month
   useEffect(() => {
-    if (acJoinReadings.length === 0) return;
+    // units_at_join is an offset from the month's own opening reading, so only
+    // rows for the month currently on screen can be reconstructed — prevMonthACReadings
+    // holds that one month's baseline and no other.
+    const forThisMonth = acJoinReadings.filter(r => r.for_month === selectedMonth);
+    if (forThisMonth.length === 0) return;
     setJoinUnits(prev => {
       const next = { ...prev };
-      acJoinReadings.forEach(r => {
+      forThisMonth.forEach(r => {
         const k = `${r.tenant_id}_${r.for_month}`;
         if (!(k in next)) {
           const prevReading = prevMonthACReadings.find(pr => pr.room_id === r.room_id)?.meter_reading ?? 0;
@@ -225,7 +234,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       });
       return next;
     });
-  }, [acJoinReadings, prevMonthACReadings]);
+  }, [acJoinReadings, prevMonthACReadings, selectedMonth]);
 
   // All payment mutations go through Server Actions — not the browser Supabase client
   // Returns the freshly-synced rows so callers can read back the row they just
@@ -237,12 +246,24 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       toast({ title: "Failed to sync payments", description: result.error, variant: "destructive" });
       return null;
     }
+    if (result.acReadings) setAcReadings(result.acReadings);
+    if (result.prevMonthACReadings) setPrevMonthACReadings(result.prevMonthACReadings);
     if (result.payments) {
       setPayments(result.payments);
       return result.payments;
     }
     return null;
   }, []);
+
+  // router.refresh() re-renders the server page for initialMonth only, so its
+  // props are adopted only while that month is on screen — otherwise a refresh
+  // triggered from another month (e.g. right after Apply) would overwrite that
+  // month's readings with the current month's.
+  useEffect(() => {
+    if (selectedMonth !== initialMonth) return;
+    setAcReadings(initialAcReadings);
+    setPrevMonthACReadings(initialPrevMonthACReadings);
+  }, [selectedMonth, initialMonth, initialAcReadings, initialPrevMonthACReadings]);
 
   // No auto-sync on mount — server already called getPaymentsPageData(defaultMonth)
   // and passed fresh data as initialPayments. syncMonth is called only on user actions.
@@ -261,6 +282,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   async function handleMonthChange(month: string) {
     setSelectedMonth(month);
     setHistoryRoomFilter("all");
+    // Meter inputs are per-room, not per-room-per-month — carrying one month's
+    // typed reading into the next would silently offer to apply the wrong
+    // number. Cleared so the prefill effect refills them from the new month.
+    setAcUnits({});
+    setAcOpeningReadings({});
     await syncMonth(month);
     if (tab === "history") await loadHistory(month);
   }

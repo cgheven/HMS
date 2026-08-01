@@ -139,7 +139,12 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
 
 export async function syncMonthAction(
   month: string
-): Promise<{ payments?: Payment[]; error?: string }> {
+): Promise<{
+  payments?: Payment[];
+  acReadings?: { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[];
+  prevMonthACReadings?: { room_id: string; meter_reading: number | null; total_units: number }[];
+  error?: string;
+}> {
   try {
     // read_only, not just standard+: this only fills in missing pending rows
     // and refreshes pending amounts (paid/waived rows are never touched), so
@@ -164,16 +169,39 @@ export async function syncMonthAction(
     // a tenant's rent differently.
     await ensureMonthlyPaymentRows(supabase, hostelId, month);
 
-    const { data: payments, error: fetchErr } = await supabase
-      .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
-      .eq("hostel_id", hostelId)
-      .eq("for_month", month)
-      .order("created_at", { ascending: false });
+    // The AC reading sets are month-scoped, so they have to travel with the
+    // payments whenever the client moves to a different month. The server page
+    // only ever fetches them for the current month; without this, stepping back
+    // to any earlier month left the AC Billing tab reading the wrong month's
+    // records — showing "no reading yet" for a month that was already applied,
+    // and labelling the current month's reading as the "previous" one.
+    const prevMonth = getPrevMonth(month);
+    const [{ data: payments, error: fetchErr }, { data: acReadings }, { data: prevMonthACReadings }] = await Promise.all([
+      supabase
+        .from("hms_payments")
+        .select("*, tenant:hms_tenants(full_name, room_id, phone)")
+        .eq("hostel_id", hostelId)
+        .eq("for_month", month)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("hms_room_ac_readings")
+        .select("room_id, total_units, meter_reading, per_unit_rate, tenant_count")
+        .eq("hostel_id", hostelId)
+        .eq("for_month", month),
+      supabase
+        .from("hms_room_ac_readings")
+        .select("room_id, meter_reading, total_units")
+        .eq("hostel_id", hostelId)
+        .eq("for_month", prevMonth),
+    ]);
 
     if (fetchErr) throw new Error(fetchErr.message);
 
-    return { payments: (payments ?? []) as Payment[] };
+    return {
+      payments: (payments ?? []) as Payment[],
+      acReadings: (acReadings ?? []) as { room_id: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[],
+      prevMonthACReadings: (prevMonthACReadings ?? []) as { room_id: string; meter_reading: number | null; total_units: number }[],
+    };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };
