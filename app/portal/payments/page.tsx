@@ -2,6 +2,8 @@ import { requireManagerPermission } from "@/lib/manager-auth"
 import { getManagerPaymentsPageData } from "@/lib/portal-data"
 import { syncMonthAction } from "@/app/actions/payments"
 import { countBillableNights } from "@/lib/daily-billing"
+import { expectedChargesFor } from "@/lib/monthly-payment-sync"
+import { splitPaymentCharges } from "@/lib/payment-calc"
 import { PaymentsClient } from "@/components/modules/payments/payments-client"
 import { pktYearMonth } from "@/lib/pkt-time"
 
@@ -41,7 +43,26 @@ export default async function PortalPaymentsPage() {
     return row.billed_days !== nights
   })
 
-  if (hasMissingRows || hasStaleDailyRow) {
+  // Monthly rows go stale the same way — a rent or plan edit writes to
+  // hms_tenants, which nothing on hms_payments reacts to. See the owner page.
+  const roomAcMap = new Map(data.rooms.map((r) => [r.id, !!r.has_ac]))
+  const hasStaleMonthlyRow = data.tenants.some((t) => {
+    if (t.billing_type === "daily") return false
+    const row = paymentByTenant.get(t.id)
+    if (!row || row.status !== "pending") return false
+    const want = expectedChargesFor(t, defaultMonth, { config: data.packageConfig, roomAcMap })
+    const differs = (a: number, b: number) => Math.abs(a - b) > 0.01
+    return (
+      differs(splitPaymentCharges(row).rent, want.baseRent) ||
+      differs(Number(row.food_charge ?? 0), want.foodCharge) ||
+      differs(Number(row.security_deposit_charge ?? 0), want.depositCharge) ||
+      differs(Number(row.registration_fee_charge ?? 0), want.registrationFeeCharge) ||
+      differs(Number(row.ac_maintenance_charge ?? 0), want.acMaintenanceCharge) ||
+      (row.payment_package_tier ?? "space_only") !== want.tier
+    )
+  })
+
+  if (hasMissingRows || hasStaleDailyRow || hasStaleMonthlyRow) {
     await syncMonthAction(defaultMonth)
     const synced = await getManagerPaymentsPageData(defaultMonth)
     return (

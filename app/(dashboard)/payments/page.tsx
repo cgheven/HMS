@@ -1,6 +1,8 @@
 import { getPaymentsPageData, getAuthContext } from "@/lib/data";
 import { syncMonthAction } from "@/app/actions/payments";
 import { countBillableNights } from "@/lib/daily-billing";
+import { expectedChargesFor } from "@/lib/monthly-payment-sync";
+import { splitPaymentCharges } from "@/lib/payment-calc";
 import { PaymentsClient } from "@/components/modules/payments/payments-client";
 import { pktYearMonth } from "@/lib/pkt-time";
 
@@ -26,16 +28,11 @@ export default async function PaymentsPage() {
   const tenantIdsWithPayments = new Set(data.payments.map((p) => p.tenant_id));
   const hasMissingRows = data.tenants.some((t) => !tenantIdsWithPayments.has(t.id));
 
-  // Daily tenants need a second trigger. "Missing row" alone never fires for a
-  // tenant who already has one, so a pending daily row kept its original day
-  // count forever — even after the check-out date changed. Monthly rows don't
-  // have this problem: the migration-082 trigger re-derives their amount from
-  // monthly_rent on any write, so they self-heal. For daily rows that trigger
-  // deliberately preserves the app-supplied amount, which makes syncMonthAction
-  // the only thing that can correct them — and it was never being called.
-  // Restricted to 'pending' because that is exactly the set syncMonthAction
-  // refreshes; widening it here would re-render on every load without fixing
-  // anything.
+  // "Missing row" alone never fires for a tenant who already has one, so an
+  // existing pending row has to be checked against the tenant's current rates
+  // directly. Restricted to 'pending' because that is exactly the set
+  // syncMonthAction refreshes; widening it would re-render on every load
+  // without fixing anything.
   const paymentByTenant = new Map(data.payments.map((p) => [p.tenant_id, p]));
   const hasStaleDailyRow = data.tenants.some((t) => {
     if (t.billing_type !== "daily") return false;
@@ -49,7 +46,36 @@ export default async function PaymentsPage() {
     return row.billed_days !== nights;
   });
 
-  if (hasMissingRows || hasStaleDailyRow) {
+  // Monthly rows were assumed to self-heal, on the grounds that the payment
+  // trigger re-derives `amount` from monthly_rent on every write. It does — but
+  // it only runs on writes to hms_payments, and editing a tenant writes to
+  // hms_tenants. So changing someone's rent left their pending row on the old
+  // figure until something unrelated happened to touch it (a new tenant forcing
+  // a sync, or the reminders cron), which is why the Payments page appeared to
+  // update "eventually" instead of on the next load.
+  //
+  // Compared component by component rather than against `amount`, because the
+  // trigger folds ac_charge back into the stored total and metered AC is
+  // deliberately preserved across a sync — a total-vs-total check would flag
+  // every AC row as stale forever.
+  const roomAcMap = new Map(data.rooms.map((r) => [r.id, !!r.has_ac]));
+  const hasStaleMonthlyRow = data.tenants.some((t) => {
+    if (t.billing_type === "daily") return false;
+    const row = paymentByTenant.get(t.id);
+    if (!row || row.status !== "pending") return false;
+    const want = expectedChargesFor(t, defaultMonth, { config: data.packageConfig, roomAcMap });
+    const differs = (a: number, b: number) => Math.abs(a - b) > 0.01;
+    return (
+      differs(splitPaymentCharges(row).rent, want.baseRent) ||
+      differs(Number(row.food_charge ?? 0), want.foodCharge) ||
+      differs(Number(row.security_deposit_charge ?? 0), want.depositCharge) ||
+      differs(Number(row.registration_fee_charge ?? 0), want.registrationFeeCharge) ||
+      differs(Number(row.ac_maintenance_charge ?? 0), want.acMaintenanceCharge) ||
+      (row.payment_package_tier ?? "space_only") !== want.tier
+    );
+  });
+
+  if (hasMissingRows || hasStaleDailyRow || hasStaleMonthlyRow) {
     await syncMonthAction(defaultMonth);
     const synced = await getPaymentsPageData(defaultMonth);
     return <PaymentsClient key={synced.hostelId ?? ''} {...synced} initialMonth={defaultMonth} partnerTier={ctx?.partnerTier} />;

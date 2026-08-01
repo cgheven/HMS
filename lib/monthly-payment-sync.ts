@@ -13,6 +13,56 @@ import type { PackageTier } from "@/types";
 // month's rows to already exist before it can find who to remind. Never
 // touches paid/waived rows. Upsert (not plain insert) so a concurrent manual
 // page-load can't collide into a duplicate-key error on (tenant_id, for_month).
+// The charge set a pending row for `month` SHOULD hold, given the tenant's
+// current rates. Exported so the Payments page can tell whether an existing row
+// has fallen behind without re-deriving any of this itself — the writer below and
+// that check must agree, or the page either syncs forever or never syncs at all.
+export type ExpectedCharges = {
+  tier: PackageTier;
+  baseRent: number;
+  foodCharge: number;
+  depositCharge: number;
+  registrationFeeCharge: number;
+  acMaintenanceCharge: number;
+};
+
+export function expectedChargesFor(
+  t: {
+    billing_type: string; monthly_rent: number; daily_rate: number;
+    check_in: string; check_out: string | null;
+    // Required, not optional: a caller whose SELECT omits one of these would
+    // otherwise read undefined, quietly compute a 0 charge, and mark every
+    // affected row permanently stale — re-syncing on every page load forever.
+    package_tier: string | null; security_deposit: number | null;
+    registration_fee: number | null; room_id: string | null;
+    food_breakfast: boolean; food_lunch: boolean; food_dinner: boolean;
+  },
+  month: string,
+  ctx: {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    config: any | null;
+    roomAcMap: Map<string, boolean>;
+  }
+): ExpectedCharges {
+  const tier = (t.package_tier ?? "space_only") as PackageTier;
+  if (!VALID_TIERS.has(tier)) throw new Error(`Invalid package_tier in DB: ${tier}`);
+
+  const foodRate = Number(ctx.config?.food_monthly_rate ?? 0);
+  const acMaintenanceRate = Number(ctx.config?.ac_maintenance_rate ?? 0);
+  const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
+  const addonFoodCharge = ctx.config ? calcFoodAddonCharge(t, ctx.config) : 0;
+  const roomHasAc = t.room_id ? (ctx.roomAcMap.get(t.room_id) ?? false) : false;
+
+  return {
+    tier,
+    baseRent: calcBaseRentServer(t as never, month),
+    foodCharge: tierFoodCharge + addonFoodCharge,
+    depositCharge: computeDepositCharge(t, month),
+    registrationFeeCharge: computeRegistrationFeeCharge(t, month),
+    acMaintenanceCharge: computeAcMaintenanceCharge(roomHasAc, acMaintenanceRate),
+  };
+}
+
 export async function ensureMonthlyPaymentRows(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   admin: SupabaseClient<any, any, any>,
@@ -59,18 +109,9 @@ export async function ensureMonthlyPaymentRows(
   const pendingUpdates: object[] = [];
 
   for (const t of activeTenants) {
-    const tier = (t.package_tier ?? "space_only") as PackageTier;
-    if (!VALID_TIERS.has(tier)) throw new Error(`Invalid package_tier in DB for tenant ${t.id}`);
-
-    const baseRent = calcBaseRentServer(t, month);
+    const { tier, baseRent, foodCharge, depositCharge, registrationFeeCharge, acMaintenanceCharge } =
+      expectedChargesFor(t, month, { config: configData, roomAcMap });
     const daySnapshot = dailySnapshot(t, month);
-    const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
-    const addonFoodCharge = configData ? calcFoodAddonCharge(t, configData) : 0;
-    const foodCharge = tierFoodCharge + addonFoodCharge;
-    const depositCharge = computeDepositCharge(t, month);
-    const registrationFeeCharge = computeRegistrationFeeCharge(t, month);
-    const roomHasAc = t.room_id ? (roomAcMap.get(t.room_id) ?? false) : false;
-    const acMaintenanceCharge = computeAcMaintenanceCharge(roomHasAc, acMaintenanceRate);
 
     const existing = existingMap.get(t.id);
 
