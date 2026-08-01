@@ -32,6 +32,12 @@ export interface ACSegmentBillingResult {
   tenantBilling: ACTenantBillingRow[];
   proRatedCount: number;
   unassignedUnits: number;
+  /** Departed tenants who shared this month's meter and are therefore part of
+   *  the divisor, even though they hold no row in `tenantBilling` (they were
+   *  charged at checkout). The room's real head count is
+   *  `tenantBilling.length + departedCounted` — anything less makes the split
+   *  look like it divided by too few people. */
+  departedCounted: number;
 }
 
 // ac_charge MUST always equal ac_units_consumed × rate. markPaymentPaidAction
@@ -105,24 +111,33 @@ export function computeACSegmentBilling(params: {
   // Sorted by meter_reading ascending = chronological departure order.
   const rawCheckoutReadings = (checkoutReadingsRaw ?? []);
 
-  // Validate: month-end reading must exceed all checkout readings
+  // Validate: a checkout reading ABOVE the month-end reading means the meter ran
+  // backwards, which is impossible — one of the two numbers is a typo. Equality
+  // is not: a tenant departs at reading X and no AC is used afterwards, so the
+  // month closes at X too. That case is billed below, not rejected.
   const conflictingCheckout = rawCheckoutReadings.find(
-    cr => Math.round(Number(cr.meter_reading)) >= reading
+    cr => Math.round(Number(cr.meter_reading)) > reading
   );
   if (conflictingCheckout) {
     throw new Error(
-      `Month-end reading (${reading}) must be greater than all checkout readings. ` +
+      `Month-end reading (${reading}) cannot be less than a checkout reading. ` +
       `Found a checkout reading of ${Math.round(Number(conflictingCheckout.meter_reading))} — ` +
       `please verify the meter reading is correct.`
     );
   }
 
+  // `<= units`, not `< units`. A departure at exactly the month-end reading opens
+  // no new interval inside [0, units] — but it still means that tenant was in the
+  // room for the whole window, so they belong in the divisor of every segment.
+  // Excluding them re-split the entire month across only the tenants who stayed,
+  // on top of the share the departing tenant was already charged at checkout, and
+  // the room billed more units than the meter recorded.
   const checkoutSegments = rawCheckoutReadings
     .map(cr => ({
       unitsOffset: Math.max(0, Math.round(Number(cr.meter_reading) - prevReading)),
       tenantCount: Number(cr.tenant_count_at_checkout),
     }))
-    .filter(cr => cr.unitsOffset > 0 && cr.unitsOffset < units);
+    .filter(cr => cr.unitsOffset > 0 && cr.unitsOffset <= units);
 
   const n = eligible.length;
   let proRatedCount = 0;
@@ -247,7 +262,7 @@ export function computeACSegmentBilling(params: {
     }
   }
 
-  return { tenantBilling, proRatedCount, unassignedUnits };
+  return { tenantBilling, proRatedCount, unassignedUnits, departedCounted: checkoutSegments.length };
 }
 
 // A mid-month joiner's move-in reading only marks the start of THEIR presence,

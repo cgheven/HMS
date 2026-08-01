@@ -27,3 +27,6 @@ next-env.d.ts
 
 # supabase cli temp files (auto-generated, never commit)
 supabase/.temp/
+
+# claude code local worktrees / session state — never commit
+.claude/

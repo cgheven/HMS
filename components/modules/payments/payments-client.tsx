@@ -122,7 +122,13 @@ function genReceipt(tenantName: string, month: string) {
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings: initialAcReadings = [], acJoinReadings = [], prevMonthACReadings: initialPrevMonthACReadings = [], partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
+// Stable identities. These back the two AC-reading props, which are useEffect
+// dependencies — an inline `= []` default would mint a new array on every render
+// and drive that effect (and its setState) in a loop for any caller that omits them.
+const NO_AC_READINGS: NonNullable<Props["acReadings"]> = [];
+const NO_PREV_AC_READINGS: NonNullable<Props["prevMonthACReadings"]> = [];
+
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings: initialAcReadings = NO_AC_READINGS, acJoinReadings = [], prevMonthACReadings: initialPrevMonthACReadings = NO_PREV_AC_READINGS, partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
   const isPartner = !!partnerTier;
   const isManager = !!managerPermissions;
   const canCollect = managerPermissions?.includes("collect_payments") ?? false;
@@ -1420,11 +1426,32 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     {/* Unit allocation per tenant — visible after Apply so the split is verifiable */}
                     {saved && (() => {
                       const acTenants = tenants.filter(t => t.room_id === room.id && t.is_active);
-                      const rows = acTenants.map(t => ({
-                        name: t.full_name,
-                        units: Number(payments.find(p => p.tenant_id === t.id && p.for_month === selectedMonth)?.ac_units_consumed ?? 0),
-                        charge: Number(payments.find(p => p.tenant_id === t.id && p.for_month === selectedMonth)?.ac_charge ?? 0),
-                      }));
+                      const monthRows = payments.filter(p => p.for_month === selectedMonth && p.tenant?.room_id === room.id);
+                      const activeIds = new Set(acTenants.map(t => t.id));
+                      const rows = acTenants.map(t => {
+                        const pay = monthRows.find(p => p.tenant_id === t.id);
+                        return {
+                          id: t.id,
+                          name: t.full_name,
+                          units: Number(pay?.ac_units_consumed ?? 0),
+                          charge: Number(pay?.ac_charge ?? 0),
+                          departed: false,
+                        };
+                      });
+                      // A tenant who checked out mid-month keeps their payment row but
+                      // disappears from `tenants` (active-only). Leaving them out made a
+                      // month the meter was divided five ways read as a split of four,
+                      // and the listed units never added up to the reading.
+                      const departedRows = monthRows
+                        .filter(p => !activeIds.has(p.tenant_id) && Number(p.ac_charge ?? 0) > 0)
+                        .map(p => ({
+                          id: p.tenant_id,
+                          name: p.tenant?.full_name ?? "Checked out",
+                          units: Number(p.ac_units_consumed ?? 0),
+                          charge: Number(p.ac_charge ?? 0),
+                          departed: true,
+                        }));
+                      const allRows = [...rows, ...departedRows];
                       // Tenants on 0 units used to be filtered out here. That hid the
                       // commonest real fault: a tenant present in the room who was
                       // never billed (joined after the last apply, or the roster
@@ -1432,25 +1459,33 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       // absorbs" and had no way to tell the difference between
                       // genuine pre-occupancy usage and someone simply missing.
                       const unbilled = rows.filter(r => r.units === 0);
-                      if (rows.length === 0) return null;
-                      const assignedUnits = rows.reduce((s, r) => s + r.units, 0);
-                      const assignedCharge = rows.reduce((s, r) => s + r.charge, 0);
+                      const billedRows = allRows.filter(r => r.units > 0);
+                      if (allRows.length === 0) return null;
+                      const assignedUnits = Math.round(allRows.reduce((s, r) => s + r.units, 0) * 100) / 100;
+                      const assignedCharge = allRows.reduce((s, r) => s + r.charge, 0);
                       const unassignedUnits = Math.max(0, saved.total_units - assignedUnits);
+                      // The sum of the per-tenant rows exceeding the meter means the room
+                      // is being billed for units it never consumed. Surfaced rather than
+                      // clamped away — it is the one number that proves a split is wrong.
+                      const overAssignedUnits = Math.round(Math.max(0, assignedUnits - saved.total_units) * 100) / 100;
                       const unassignedCharge = Math.round(unassignedUnits * saved.per_unit_rate);
                       const totalCharge = Math.round(saved.total_units * saved.per_unit_rate);
                       return (
                         <div className="border-t border-white/5 pt-2.5 space-y-1">
                           <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-semibold">Allocated per tenant</p>
-                          {rows.map(r => (
-                            <div key={r.name} className="flex items-center gap-2 text-xs">
-                              <span className="text-muted-foreground flex-1 min-w-0 truncate">{r.name}</span>
+                          {billedRows.map(r => (
+                            <div key={r.id} className="flex items-center gap-2 text-xs">
+                              <span className="text-muted-foreground flex-1 min-w-0 truncate">
+                                {r.name}
+                                {r.departed && <span className="text-muted-foreground/50"> — checked out, charged at departure</span>}
+                              </span>
                               <span className="tabular-nums text-foreground">{r.units} units</span>
                               <span className="text-muted-foreground/40">·</span>
                               <span className="tabular-nums text-emerald-400">{formatCurrency(r.charge)}</span>
                             </div>
                           ))}
                           {unbilled.map(r => (
-                            <div key={r.name} className="flex items-center gap-2 text-xs">
+                            <div key={r.id} className="flex items-center gap-2 text-xs">
                               <span className="text-rose-400/80 flex-1 min-w-0 truncate">{r.name} — not billed</span>
                               <span className="tabular-nums text-rose-400/80">0 units</span>
                               <span className="text-muted-foreground/40">·</span>
@@ -1469,11 +1504,21 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               <span className="tabular-nums text-amber/70">{formatCurrency(unassignedCharge)}</span>
                             </div>
                           )}
+                          {overAssignedUnits > 0 && (
+                            <div className="flex items-center gap-2 text-xs">
+                              <span className="text-rose-400 flex-1 min-w-0 truncate">
+                                Billed above the meter — press Apply to recalculate
+                              </span>
+                              <span className="tabular-nums text-rose-400">+{overAssignedUnits} units</span>
+                              <span className="text-muted-foreground/40">·</span>
+                              <span className="tabular-nums text-rose-400">{formatCurrency(Math.round(overAssignedUnits * saved.per_unit_rate))}</span>
+                            </div>
+                          )}
                           <div className="flex items-center gap-2 text-xs pt-0.5 border-t border-white/5 mt-1">
                             <span className="text-muted-foreground flex-1">{unassignedUnits > 0 ? "Total entered" : "Total"}</span>
                             <span className="tabular-nums text-foreground font-medium">{saved.total_units} units</span>
                             <span className="text-muted-foreground/40">·</span>
-                            <span className="tabular-nums text-emerald-400 font-medium">{formatCurrency(unassignedUnits > 0 ? totalCharge : assignedCharge)}</span>
+                            <span className="tabular-nums text-emerald-400 font-medium">{formatCurrency(unassignedUnits > 0 || overAssignedUnits > 0 ? totalCharge : assignedCharge)}</span>
                           </div>
                         </div>
                       );

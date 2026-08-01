@@ -769,7 +769,7 @@ export async function applyRoomACUnitsAction(
 
     // Shared with applyRoomACUnitsAsManager (lib/ac-billing.ts) so the owner and
     // manager tiers can never compute two different bills for the same room/month.
-    const { tenantBilling, proRatedCount, unassignedUnits } = computeACSegmentBilling({
+    const { tenantBilling, proRatedCount, unassignedUnits, departedCounted } = computeACSegmentBilling({
       eligible,
       prevReading,
       reading,
@@ -777,13 +777,11 @@ export async function applyRoomACUnitsAction(
       perUnitRate,
       forMonth,
       joinReadingsRaw: (joinReadingsRaw ?? []).filter(r => eligible.some(t => t.id === r.tenant_id)),
-      // Only readings strictly BELOW this one. computeACSegmentBilling rejects a
-      // checkout reading >= the month-end reading, but equality is legitimate —
-      // a tenant departs at reading X and no AC is used after, so the month
-      // closes at X too. Those create no segment boundary inside [0, units]
-      // (the function filters them out anyway), so dropping them changes no
-      // arithmetic; it only stops a valid room from becoming un-appliable.
-      checkoutReadingsRaw: (checkoutReadingsRaw ?? []).filter(r => Math.round(Number(r.meter_reading)) < reading),
+      // Passed through unfiltered. A departure at exactly this reading has to
+      // reach computeACSegmentBilling — it counts toward the divisor for the
+      // month even though it opens no new segment, and dropping it here billed
+      // the room's units twice over.
+      checkoutReadingsRaw: checkoutReadingsRaw ?? [],
     });
 
     // ── Auto-create missing payment rows so Apply never requires a manual sync ──
@@ -925,7 +923,10 @@ export async function applyRoomACUnitsAction(
           total_units: units,
           meter_reading: reading,
           per_unit_rate: perUnitRate,
-          tenant_count: eligible.length,
+          // Everyone the meter was split across, not just whoever is still here.
+          // Departed tenants paid their share at checkout; omitting them made the
+          // panel read "4 tenants billed" for a month that was divided by five.
+          tenant_count: eligible.length + departedCounted,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "room_id,for_month" }
@@ -942,7 +943,7 @@ export async function applyRoomACUnitsAction(
       action: "ac_reading.submit",
       entity: "ac_reading",
       entity_id: roomId,
-      meta: { for_month: forMonth, meter_reading: reading, total_units: units, tenant_count: eligible.length },
+      meta: { for_month: forMonth, meter_reading: reading, total_units: units, tenant_count: eligible.length + departedCounted },
     });
 
     return {

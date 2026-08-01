@@ -389,17 +389,19 @@ export async function performTenantCheckout(
               tenant_id: j.tenant_id as string,
               units_at_join: Number(j.units_at_join),
             })),
-            // Only readings STRICTLY BELOW this one are kept. A prior checkout at
-            // or past the current reading creates no boundary inside [0, units]
-            // (computeACSegmentBilling filters those out anyway, so the arithmetic
-            // is identical) — but passing one in trips its "month-end must exceed
-            // all checkout readings" guard and would hard-fail the checkout. That
-            // is a real, present-day shape: a tenant departs at reading X and no
-            // AC is used after, so the next reading is also X. The old checkout
-            // code never rejected that, and a departing tenant must not be blocked
-            // at the door over it.
+            // `<=`, not `<`. A tenant who left earlier at exactly this reading (no AC
+            // burned between the two departures) was present for the whole window and
+            // must stay in the divisor — dropping them handed their share to whoever
+            // is left, on top of what they already paid.
+            //
+            // Readings strictly ABOVE this one are still dropped. They mean the
+            // departures are being processed out of order (a back-dated checkout
+            // entered after a later one) or a reading was mistyped. The shared
+            // function rejects that outright, which is right at month-end — the
+            // operator can retype the closing reading — but here it would block a
+            // tenant from leaving over a row that isn't theirs.
             checkoutReadingsRaw: (priorCheckoutsData ?? [])
-              .filter(r => Number(r.meter_reading) < reading)
+              .filter(r => Math.round(Number(r.meter_reading)) <= reading)
               .map(r => ({
                 meter_reading: Number(r.meter_reading),
                 tenant_count_at_checkout: Number(r.tenant_count_at_checkout),

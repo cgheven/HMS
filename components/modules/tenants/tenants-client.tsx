@@ -1632,11 +1632,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           perUnitRate: acRate,
           forMonth: checkoutDate.slice(0, 7),
           joinReadingsRaw: checkoutACContext?.joinReadingsRaw ?? [],
-          // Mirrors the same strictly-below filter the server applies — see
-          // lib/tenant-checkout.ts for why a prior checkout at/past this reading
-          // must not reach the shared function.
+          // Same `<=` bound the server applies — the preview has to divide by the
+          // exact head count the real checkout will. See lib/tenant-checkout.ts.
           checkoutReadingsRaw: (checkoutACContext?.checkoutReadingsRaw ?? [])
-            .filter(r => r.meter_reading < acReading),
+            .filter(r => Math.round(Number(r.meter_reading)) <= acReading),
         });
         return tenantBilling.find(r => r.id === checkingOut?.id)?.charge ?? 0;
       } catch {

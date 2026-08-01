@@ -456,7 +456,7 @@ export async function applyRoomACUnitsAsManager(
     // Shared with applyRoomACUnitsAction (lib/ac-billing.ts) so this tier can
     // never bill a mid-month joiner as if present the whole month — this path
     // used to split units equally regardless of join date.
-    const { tenantBilling: billing } = computeACSegmentBilling({
+    const { tenantBilling: billing, departedCounted } = computeACSegmentBilling({
       eligible,
       prevReading,
       reading,
@@ -464,13 +464,9 @@ export async function applyRoomACUnitsAsManager(
       perUnitRate,
       forMonth: currentMonth,
       joinReadingsRaw: (joinReadingsRaw ?? []).filter((r) => eligible.some((t) => t.id === r.tenant_id)),
-      // Only readings strictly BELOW this one. computeACSegmentBilling rejects a
-      // checkout reading >= the month-end reading, but equality is legitimate —
-      // a tenant departs at reading X and no AC is used after, so the month
-      // closes at X too. Those create no segment boundary inside [0, units]
-      // (the function filters them out anyway), so dropping them changes no
-      // arithmetic; it only stops a valid room from becoming un-appliable.
-      checkoutReadingsRaw: (checkoutReadingsRaw ?? []).filter(r => Math.round(Number(r.meter_reading)) < reading),
+      // Passed through unfiltered — see applyRoomACUnitsAction for why a
+      // departure at exactly this reading must reach the billing function.
+      checkoutReadingsRaw: checkoutReadingsRaw ?? [],
     })
 
     // Update each tenant's payment row for this month
@@ -499,7 +495,8 @@ export async function applyRoomACUnitsAsManager(
           total_units: units,
           meter_reading: reading,
           per_unit_rate: perUnitRate,
-          tenant_count: eligible.length,
+          // Includes departures that shared the meter — see applyRoomACUnitsAction.
+          tenant_count: eligible.length + departedCounted,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "room_id,for_month" }
