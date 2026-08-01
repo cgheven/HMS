@@ -266,3 +266,142 @@ export const INSTITUTE_PRESETS_BY_CATEGORY: Record<StudentCategory, string[]> = 
 export function studentCategoryHasInstitutePresets(category: StudentCategory | ""): category is StudentCategory {
   return category !== "";
 }
+
+// Academic departments for University/College students. Free text is still what
+// gets stored — this is a browsing convenience with an "Other (specify)" escape
+// hatch, exactly like INSTITUTE_PRESETS_BY_CATEGORY. Deliberately NOT used for
+// Professionals: their "department" means a workplace function (HR, Finance,
+// Operations), which is a different vocabulary, so that stays a free-text field.
+//
+// Ordered by how common each is in hostel intake rather than alphabetically —
+// the list is searchable, so the first screen should show the likeliest picks.
+export const DEPARTMENT_PRESETS: string[] = [
+  // Computing
+  "Computer Science",
+  "Software Engineering",
+  "Information Technology",
+  "Artificial Intelligence",
+  "Data Science",
+  "Cyber Security",
+  // Engineering
+  "Electrical Engineering",
+  "Mechanical Engineering",
+  "Civil Engineering",
+  "Chemical Engineering",
+  "Electronics Engineering",
+  "Mechatronics Engineering",
+  "Telecommunication Engineering",
+  "Biomedical Engineering",
+  "Industrial Engineering",
+  "Textile Engineering",
+  "Aerospace / Aviation",
+  "Architecture",
+  // Medical & health
+  "MBBS (Medicine)",
+  "BDS (Dentistry)",
+  "Pharmacy (Pharm-D)",
+  "Nursing",
+  "Physiotherapy (DPT)",
+  "Medical Lab Technology",
+  "Radiology & Imaging",
+  "Human Nutrition & Dietetics",
+  "Veterinary Sciences",
+  // Business
+  "Business Administration (BBA/MBA)",
+  "Accounting & Finance",
+  "Commerce (B.Com / M.Com)",
+  "Banking & Finance",
+  "Marketing",
+  "Human Resource Management",
+  "Supply Chain Management",
+  "Economics",
+  // Natural sciences
+  "Mathematics",
+  "Physics",
+  "Chemistry",
+  "Statistics",
+  "Biotechnology",
+  "Microbiology",
+  "Biochemistry",
+  "Botany",
+  "Zoology",
+  "Environmental Science",
+  "Geology",
+  "Agriculture",
+  "Food Science & Technology",
+  // Arts, social sciences & law
+  "Law (LLB)",
+  "English Literature",
+  "Mass Communication / Media",
+  "Psychology",
+  "Sociology",
+  "Political Science",
+  "International Relations",
+  "Education",
+  "Islamic Studies",
+  "History",
+  "Urdu",
+  "Fine Arts & Design",
+  "Tourism & Hospitality",
+  "Physical Education & Sports",
+];
+
+// Workplace departments for Professionals. A separate vocabulary from the
+// academic list above — a professional's "department" is the function they work
+// in (Finance, Operations) or their field of practice, not a degree programme.
+// Same contract: plain text is stored, "Other (specify)" covers anything missing.
+export const PROFESSIONAL_DEPARTMENT_PRESETS: string[] = [
+  // Common corporate functions
+  "Information Technology (IT)",
+  "Software Development",
+  "Sales",
+  "Marketing",
+  "Finance & Accounts",
+  "Human Resources (HR)",
+  "Operations",
+  "Administration",
+  "Customer Support",
+  "Business Development",
+  "Project Management",
+  "Procurement & Supply Chain",
+  "Logistics & Distribution",
+  "Quality Assurance",
+  "Research & Development (R&D)",
+  "Data & Analytics",
+  "Design & Creative",
+  "Legal",
+  "Audit",
+  "Taxation",
+  "Public Relations",
+  "Training & Development",
+  "Health & Safety (HSE)",
+  "Maintenance",
+  "Production & Manufacturing",
+  "Security",
+  // Sector-specific roles common in hostel intake
+  "Medical / Clinical",
+  "Nursing",
+  "Pharmacy",
+  "Teaching / Faculty",
+  "Banking Operations",
+  "Engineering (Field)",
+  "Civil Works & Construction",
+  "Telecom / Network Operations",
+  "Agriculture Extension",
+  "Journalism / Media",
+  "Government / Civil Service",
+  "Armed Forces",
+  "Police / Law Enforcement",
+  "Aviation",
+  "Hospitality & Food Service",
+  "Retail",
+  "Transport & Driving",
+  "Freelance / Self-employed",
+];
+
+// Which preset list a given tenant type should browse. Keeps the three forms
+// (public application, Add Tenant, Approve Application) from each deciding for
+// themselves and drifting apart.
+export function departmentPresetsFor(type: string): string[] {
+  return type === "professional" ? PROFESSIONAL_DEPARTMENT_PRESETS : DEPARTMENT_PRESETS;
+}

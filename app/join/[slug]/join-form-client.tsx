@@ -9,13 +9,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
+import { organizationPresetsFor } from "@/lib/organization-presets";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatCurrency, cn } from "@/lib/utils";
 import { buildPackageOptions } from "@/lib/room-pricing";
 import { SEATER_LABELS } from "@/lib/seater-pricing";
 import type { PublicHostelDetail, PublicRoom, PackageTier, FormConfig, StudentCategory } from "@/types";
 import { DEFAULT_FORM_CONFIG } from "@/types";
-import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets } from "@/lib/student-category-labels";
+import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets, departmentPresetsFor } from "@/lib/student-category-labels";
 
 interface Props {
   hostel: PublicHostelDetail;
@@ -140,6 +141,8 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
   // one room instead of the full list, with a way to expand and pick another.
   const [showRoomList, setShowRoomList] = useState(!preselectedRoom);
   const [customRelationship, setCustomRelationship] = useState(false);
+  const [customDepartment, setCustomDepartment] = useState(false);
+  const [customOrganization, setCustomOrganization] = useState(false);
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -593,25 +596,21 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
               </div>
             )}
 
-            {/* Organization + Organization Type — Professional only */}
+            {/* Organization Type then Organization — the same sequence the
+                student side uses (Category before Institute): pick the kind of
+                employer first, then name it. */}
             {showOrganization && (
               <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label>
-                    Organization {req("organization") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
-                  </Label>
-                  <Input
-                    placeholder="Company / employer name"
-                    value={form.organization}
-                    onChange={(e) => setForm({ ...form, organization: e.target.value })}
-                    required={req("organization")}
-                  />
-                </div>
                 <div className="space-y-1.5">
                   <Label>Organization Type</Label>
                   <Select
                     value={form.organization_type}
-                    onValueChange={(v) => setForm({ ...form, organization_type: v as "private" | "government" })}
+                    onValueChange={(v) => {
+                      // Switching type switches vocabulary — a name picked from
+                      // the old list would be wrong under the new one.
+                      setCustomOrganization(false);
+                      setForm({ ...form, organization_type: v as "private" | "government", organization: "" });
+                    }}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Select" />
@@ -622,6 +621,48 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="space-y-1.5">
+                  <Label>
+                    Organization {req("organization") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                  </Label>
+                  {/* The list follows the Type picked just above. Before a type
+                      is chosen there is no right vocabulary to offer, so it
+                      stays a plain input until then. */}
+                  {organizationPresetsFor(form.organization_type).length > 0 && !customOrganization ? (
+                    <SearchableSelect
+                      value={form.organization}
+                      onValueChange={(v) => {
+                        if (v === "other") { setCustomOrganization(true); setForm({ ...form, organization: "" }); }
+                        else setForm({ ...form, organization: v });
+                      }}
+                      options={organizationPresetsFor(form.organization_type)}
+                      placeholder="Select organization"
+                      searchPlaceholder="Search organizations..."
+                      otherLabel="Other (specify)"
+                    />
+                  ) : organizationPresetsFor(form.organization_type).length > 0 ? (
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Company / employer name"
+                        value={form.organization}
+                        onChange={(e) => setForm({ ...form, organization: e.target.value })}
+                        required={req("organization")}
+                        autoFocus
+                      />
+                      <Button type="button" variant="outline" size="sm" className="shrink-0 h-9 text-xs"
+                        onClick={() => { setCustomOrganization(false); setForm({ ...form, organization: "" }); }}>
+                        List
+                      </Button>
+                    </div>
+                  ) : (
+                    <Input
+                      placeholder="Company / employer name"
+                      value={form.organization}
+                      onChange={(e) => setForm({ ...form, organization: e.target.value })}
+                      required={req("organization")}
+                    />
+                  )}
+                </div>
               </div>
             )}
 
@@ -631,12 +672,40 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                 <Label>
                   Department / Field {req("department") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
                 </Label>
-                <Input
-                  placeholder="e.g. Computer Science, Electrical Engineering, Sales"
-                  value={form.department}
-                  onChange={(e) => setForm({ ...form, department: e.target.value })}
-                  required={req("department")}
-                />
+                {/* Both types get a dropdown — students browse academic
+                    programmes, professionals browse workplace functions. */}
+                {!customDepartment ? (
+                  <SearchableSelect
+                    value={form.department}
+                    onValueChange={(v) => {
+                      if (v === "other") { setCustomDepartment(true); setForm({ ...form, department: "" }); }
+                      else setForm({ ...form, department: v });
+                    }}
+                    options={departmentPresetsFor(form.type)}
+                    placeholder="Select department / field"
+                    searchPlaceholder={form.type === "professional" ? "Search departments..." : "Search programmes..."}
+                    otherLabel="Other (specify)"
+                  />
+                ) : (
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Type your department / field"
+                      value={form.department}
+                      onChange={(e) => setForm({ ...form, department: e.target.value })}
+                      required={req("department")}
+                      autoFocus
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0 h-9 text-xs"
+                      onClick={() => { setCustomDepartment(false); setForm({ ...form, department: "" }); }}
+                    >
+                      List
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
 

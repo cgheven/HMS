@@ -17,12 +17,13 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
+import { organizationPresetsFor } from "@/lib/organization-presets";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates, type FoodAddonFlags } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
-import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets } from "@/lib/student-category-labels";
+import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets , departmentPresetsFor } from "@/lib/student-category-labels";
 import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling } from "@/lib/ac-billing";
 import { formatCnic, isValidCnic, normalizeCnic } from "@/lib/cnic";
@@ -596,6 +597,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [viewOnly, setViewOnly] = useState(false);
   const [customSpecialization, setCustomSpecialization] = useState(false);
   const [customInstitute, setCustomInstitute] = useState(false);
+  const [customDepartment, setCustomDepartment] = useState(false);
+  const [customApproveDepartment, setCustomApproveDepartment] = useState(false);
+  const [customOrganization, setCustomOrganization] = useState(false);
+  const [customApproveOrganization, setCustomApproveOrganization] = useState(false);
   const [appActionLoading, setAppActionLoading] = useState<string | null>(null);
   const [approvingApp, setApprovingApp] = useState<TenantApplication | null>(null);
   const [approveForm, setApproveForm] = useState<ConvertFormData>({
@@ -756,6 +761,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       ? INSTITUTE_PRESETS_BY_CATEGORY[app.student_category]
       : [];
     setCustomInstitute(!!app.institute_name && !institutePresets.includes(app.institute_name));
+    // A department saved before this list existed (or a genuine 'Other') opens
+    // in free-text mode with the stored value intact, not an empty dropdown.
+    setCustomApproveDepartment(!!app.department && !departmentPresetsFor(app.type ?? "").includes(app.department));
+    setCustomApproveOrganization(!!app.organization && !organizationPresetsFor(app.organization_type).includes(app.organization));
   }
 
   // Mirrors the Add/Edit dialog's renderInstituteField, scoped to the Approve
@@ -845,6 +854,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setEditingDocs([]);
     setCustomSpecialization(false);
     setCustomInstitute(false);
+    setCustomDepartment(false);
+    setCustomOrganization(false);
     setDialogOpen(true);
   }
 
@@ -903,6 +914,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       ? INSTITUTE_PRESETS_BY_CATEGORY[t.student_category]
       : [];
     setCustomInstitute(!!t.institute_name && !institutePresets.includes(t.institute_name));
+    setCustomDepartment(!!t.department && !departmentPresetsFor(t.type ?? "").includes(t.department));
+    setCustomOrganization(!!t.organization && !organizationPresetsFor(t.organization_type).includes(t.organization));
     setDialogOpen(true);
   }
 
@@ -2473,17 +2486,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               )}
               {approveForm.type === "professional" && (
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label>Organization</Label>
-                    <Input
-                      placeholder="Company / employer name"
-                      value={approveForm.organization ?? ""}
-                      onChange={(e) => setApproveForm({ ...approveForm, organization: e.target.value })}
-                    />
-                  </div>
+                  {/* Type before name — matches the public form and Add Tenant. */}
                   <div className="space-y-1.5"><Label>Organization Type</Label>
                     <Select
                       value={approveOrgType}
-                      onValueChange={(v) => setApproveForm({ ...approveForm, organization_type: v as "private" | "government" })}
+                      onValueChange={(v) => { setCustomApproveOrganization(false); setApproveForm({ ...approveForm, organization_type: v as "private" | "government", organization: "" }); }}
                     >
                       <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
                       <SelectContent>
@@ -2492,15 +2499,63 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       </SelectContent>
                     </Select>
                   </div>
+                  <div className="space-y-1.5"><Label>Organization</Label>
+                    {organizationPresetsFor(approveOrgType).length > 0 && !customApproveOrganization ? (
+                      <SearchableSelect
+                        value={approveForm.organization ?? ""}
+                        onValueChange={(v) => {
+                          if (v === "other") { setCustomApproveOrganization(true); setApproveForm({ ...approveForm, organization: "" }); }
+                          else setApproveForm({ ...approveForm, organization: v });
+                        }}
+                        options={organizationPresetsFor(approveOrgType)}
+                        placeholder="Select organization"
+                        searchPlaceholder="Search organizations..."
+                        otherLabel="Other (specify)"
+                      />
+                    ) : organizationPresetsFor(approveOrgType).length > 0 ? (
+                      <div className="flex gap-2">
+                        <Input placeholder="Company / employer name" value={approveForm.organization ?? ""} autoFocus
+                          onChange={(e) => setApproveForm({ ...approveForm, organization: e.target.value })} />
+                        <Button type="button" variant="outline" size="sm" className="shrink-0 h-9 text-xs"
+                          onClick={() => { setCustomApproveOrganization(false); setApproveForm({ ...approveForm, organization: "" }); }}>
+                          List
+                        </Button>
+                      </div>
+                    ) : (
+                      <Input placeholder="Company / employer name" value={approveForm.organization ?? ""}
+                        onChange={(e) => setApproveForm({ ...approveForm, organization: e.target.value })} />
+                    )}
+                  </div>
                 </div>
               )}
               {(approveForm.type === "professional" || (approveForm.type === "student" && studentCategoryHasDepartment(approveCategory))) && (
                 <div className="space-y-1.5"><Label>Department / Field</Label>
-                  <Input
-                    placeholder="e.g. Computer Science, Electrical Engineering, Sales"
-                    value={approveForm.department ?? ""}
-                    onChange={(e) => setApproveForm({ ...approveForm, department: e.target.value })}
-                  />
+                  {!customApproveDepartment ? (
+                    <SearchableSelect
+                      value={approveForm.department ?? ""}
+                      onValueChange={(v) => {
+                        if (v === "other") { setCustomApproveDepartment(true); setApproveForm({ ...approveForm, department: "" }); }
+                        else setApproveForm({ ...approveForm, department: v });
+                      }}
+                      options={departmentPresetsFor(approveForm.type)}
+                      placeholder="Select department / field"
+                      searchPlaceholder={approveForm.type === "professional" ? "Search departments..." : "Search programmes..."}
+                      otherLabel="Other (specify)"
+                    />
+                  ) : (
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Type department / field"
+                        value={approveForm.department ?? ""}
+                        onChange={(e) => setApproveForm({ ...approveForm, department: e.target.value })}
+                        autoFocus
+                      />
+                      <Button type="button" variant="outline" size="sm" className="shrink-0 h-9 text-xs"
+                        onClick={() => { setCustomApproveDepartment(false); setApproveForm({ ...approveForm, department: "" }); }}>
+                        List
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -2967,17 +3022,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             )}
             {form.type === "professional" && (
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1.5"><Label>Organization</Label>
-                  <Input
-                    placeholder="Company / employer name"
-                    value={form.organization}
-                    onChange={(e) => setForm({ ...form, organization: e.target.value })}
-                  />
-                </div>
+                {/* Type before name — pick the kind of employer, then name it. */}
                 <div className="space-y-1.5"><Label>Organization Type</Label>
                   <Select
                     value={form.organization_type}
-                    onValueChange={(v) => setForm({ ...form, organization_type: v as "private" | "government" })}
+                    onValueChange={(v) => { setCustomOrganization(false); setForm({ ...form, organization_type: v as "private" | "government", organization: "" }); }}
                   >
                     <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
                     <SelectContent>
@@ -2986,15 +3035,65 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="space-y-1.5"><Label>Organization</Label>
+                  {organizationPresetsFor(form.organization_type).length > 0 && !customOrganization ? (
+                    <SearchableSelect
+                      value={form.organization}
+                      onValueChange={(v) => {
+                        if (v === "other") { setCustomOrganization(true); setForm({ ...form, organization: "" }); }
+                        else setForm({ ...form, organization: v });
+                      }}
+                      options={organizationPresetsFor(form.organization_type)}
+                      placeholder="Select organization"
+                      searchPlaceholder="Search organizations..."
+                      otherLabel="Other (specify)"
+                    />
+                  ) : organizationPresetsFor(form.organization_type).length > 0 ? (
+                    <div className="flex gap-2">
+                      <Input placeholder="Company / employer name" value={form.organization} autoFocus
+                        onChange={(e) => setForm({ ...form, organization: e.target.value })} />
+                      <Button type="button" variant="outline" size="sm" className="shrink-0 h-9 text-xs"
+                        onClick={() => { setCustomOrganization(false); setForm({ ...form, organization: "" }); }}>
+                        List
+                      </Button>
+                    </div>
+                  ) : (
+                    <Input placeholder="Company / employer name" value={form.organization}
+                      onChange={(e) => setForm({ ...form, organization: e.target.value })} />
+                  )}
+                </div>
               </div>
             )}
             {(form.type === "professional" || (form.type === "student" && studentCategoryHasDepartment(form.student_category))) && (
               <div className="space-y-1.5"><Label>Department / Field</Label>
-                <Input
-                  placeholder="e.g. Computer Science, Electrical Engineering, Sales"
-                  value={form.department}
-                  onChange={(e) => setForm({ ...form, department: e.target.value })}
-                />
+                {/* Both types get a dropdown — academic programmes for students,
+                    workplace functions for professionals. */}
+                {!customDepartment ? (
+                  <SearchableSelect
+                    value={form.department}
+                    onValueChange={(v) => {
+                      if (v === "other") { setCustomDepartment(true); setForm({ ...form, department: "" }); }
+                      else setForm({ ...form, department: v });
+                    }}
+                    options={departmentPresetsFor(form.type)}
+                    placeholder="Select department / field"
+                    searchPlaceholder={form.type === "professional" ? "Search departments..." : "Search programmes..."}
+                    otherLabel="Other (specify)"
+                  />
+                ) : (
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="Type department / field"
+                      value={form.department}
+                      onChange={(e) => setForm({ ...form, department: e.target.value })}
+                      autoFocus
+                    />
+                    <Button type="button" variant="outline" size="sm" className="shrink-0 h-9 text-xs"
+                      onClick={() => { setCustomDepartment(false); setForm({ ...form, department: "" }); }}>
+                      List
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
 

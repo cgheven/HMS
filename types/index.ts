@@ -93,7 +93,7 @@ export const DEFAULT_FORM_CONFIG: Required<FormConfig> = {
   room_preference:    { enabled: true, required: false },
   move_in_date:       { enabled: true, required: false },
   emergency_contact:  { enabled: true, required: false },
-  permanent_address:  { enabled: true, required: false },
+  permanent_address:  { enabled: true, required: true },
   notes:              { enabled: true, required: false },
   institute_name:     { enabled: true, required: false },
   student_category:   { enabled: true, required: false },
