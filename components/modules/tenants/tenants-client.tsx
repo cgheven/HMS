@@ -24,11 +24,12 @@ import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_IN
 import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
 import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets } from "@/lib/student-category-labels";
 import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
+import { computeACSegmentBilling } from "@/lib/ac-billing";
 import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, PaymentStatus, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, resendTenantWelcomeMessageAction } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, resendTenantWelcomeMessageAction } from "@/app/actions/tenants";
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 import { addTenantAsManager, editTenantAsManager, checkoutTenantAsManager, giveTenantNoticeAsManager, cancelTenantNoticeAsManager } from "@/app/actions/managers";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
@@ -83,62 +84,6 @@ const SELECTABLE_TIERS: { tier: PackageTier; label: string }[] = [
   { tier: "space_3meals",       label: "Space + 3 Meals" },
   { tier: "space_meals_cooler", label: "Space + Meals + Cooler" },
 ];
-
-// Segment-based AC charge preview — must mirror checkoutTenantAction exactly, or the
-// dialog quotes one number and the tenant is billed another.
-// priorCheckoutUnits: units_consumed of tenants who already left this month — each is a
-//   boundary where the head count dropped.
-// activeJoinOffsets: arrival offset of everyone still in the room (including whoever is
-//   leaving), so nobody is charged for units burned before they moved in.
-function computeACSegmentCharge(
-  units: number,
-  priorCheckoutUnits: number[],
-  activeJoinOffsets: number[],
-  myJoinOffset: number,
-  rate: number,
-): number {
-  if (units <= 0 || rate <= 0 || activeJoinOffsets.length === 0) return 0;
-  const boundaries = Array.from(new Set([
-    0,
-    ...priorCheckoutUnits.filter(u => u > 0 && u < units),
-    ...activeJoinOffsets.filter(u => u > 0 && u < units),
-    units,
-  ])).sort((a, b) => a - b);
-
-  let share = 0;
-  for (let i = 0; i < boundaries.length - 1; i++) {
-    const segStart = boundaries[i];
-    const segEnd = boundaries[i + 1];
-    const segUnits = segEnd - segStart;
-    if (segUnits <= 0) continue;
-    const activesPresent = activeJoinOffsets.filter(u => u <= segStart).length;
-    const departedPresent = priorCheckoutUnits.filter(u => u >= segEnd).length;
-    const tenants = activesPresent + departedPresent;
-    if (tenants > 0 && myJoinOffset <= segStart) share += segUnits / tenants;
-  }
-  // Round the share to 2dp (ac_units_consumed's DB precision) before pricing —
-  // same order and precision as lib/ac-billing.ts's round2, or the quote here
-  // and the charge recorded there disagree by the rounding.
-  const roundedShare = Math.round(share * 100) / 100;
-  return Math.round(roundedShare * rate);
-}
-
-// Resolve each tenant's arrival offset against the opening reading currently in play —
-// which may be one the operator is still typing, so it can't be precomputed server-side.
-function acJoinOffsets(
-  joiners: { tenantId: string; unitsAtJoin: number | null; joiningMeterReading: number | null }[] | undefined,
-  prevReading: number,
-): { all: number[]; byTenant: Record<string, number> } {
-  const byTenant: Record<string, number> = {};
-  for (const j of joiners ?? []) {
-    byTenant[j.tenantId] = j.unitsAtJoin != null
-      ? Math.max(0, Math.round(j.unitsAtJoin))
-      : j.joiningMeterReading != null
-        ? Math.max(0, Math.round(j.joiningMeterReading - prevReading))
-        : 0;
-  }
-  return { all: Object.values(byTenant), byTenant };
-}
 
 function getPkgPrice(prices: Partial<Record<PackageTier, { no_ac: number; ac: number }>>, tier: PackageTier, hasAc: boolean): string {
   const p = prices[tier];
@@ -541,7 +486,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [checkoutPayAction, setCheckoutPayAction] = useState<"pay" | "waive">("pay");
   // RULE 2 opt-in. MUST default false: an owner who clicks straight through gets
   // the full month, exactly as before.
-  const [checkoutProRate, setCheckoutProRate] = useState(false);
+  // Defaults to ON: rent is collected in advance for the period ahead, so a
+  // tenant who leaves on their own next payment date has slept 0 nights of it
+  // and owes nothing for that month — only AC and the deposit settle. Charging
+  // the full month by default produced a phantom "outstanding" for money the
+  // tenant was never going to owe. The owner can still switch to Full month.
+  const [checkoutProRate, setCheckoutProRate] = useState(true);
   const [checkoutPayDate, setCheckoutPayDate] = useState(formatDateInput(new Date()));
   const [checkoutPayMethod, setCheckoutPayMethod] = useState<string>("cash");
   const [checkoutNotes, setCheckoutNotes] = useState("");
@@ -559,6 +509,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     priorCheckoutUnits: number[];
     joiners: { tenantId: string; unitsAtJoin: number | null; joiningMeterReading: number | null }[];
     derivedOpening: number | null;
+    eligibleTenants: { id: string; check_in: string; joining_meter_reading: number | null }[];
+    joinReadingsRaw: { tenant_id: string; units_at_join: number }[];
+    checkoutReadingsRaw: { meter_reading: number; tenant_count_at_checkout: number }[];
   } | null>(null);
   const [checkoutACContextLoading, setCheckoutACContextLoading] = useState(false);
   const [shareReceipt, setShareReceipt] = useState<{ name: string; phone: string | null; token: string } | null>(null);
@@ -1259,7 +1212,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckoutDate(t.intended_checkout_date ?? today);
     setCheckoutPayDate(today);
     setCheckoutPayAction("pay");
-    setCheckoutProRate(false);
+    setCheckoutProRate(true);
     setCheckoutPayMethod("cash");
     // Left to the checkoutMath effect, which nets the dues off first.
     setCheckoutDepositReturned("");
@@ -1311,45 +1264,32 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   }, [checkingOut, checkoutDate]);
 
   async function fetchCheckoutPayment(tenantId: string, maxMonth: string) {
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("hms_payments")
-      .select("id, for_month, status, amount, amount_paid, late_fee, ac_charge, ac_units_consumed, food_charge, security_deposit_charge")
-      .eq("tenant_id", tenantId)
-      .eq("hostel_id", hostelId ?? "")
-      // partially_paid included too — a genuine remaining balance (e.g. AC
-      // usage billed after an advance rent payment already settled the rest)
-      // is still real money to collect at checkout, not just a fully-unpaid row.
-      .in("status", ["pending", "overdue", "partially_paid"])
-      // Excludes a future month's not-yet-due advance-payment row — only a
-      // month the tenant is actually departing in (or already past) can be a
-      // real debt to collect at checkout.
-      .lte("for_month", maxMonth)
-      .order("for_month", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Routed through a server action (not a direct client-side Supabase call)
+    // — hms_payments only has RLS SELECT policies for owners and partners, so
+    // a manager's own browser session silently got zero rows back here,
+    // always showing "nothing outstanding" regardless of the real balance.
+    const { payment, error } = await getCheckoutPendingPaymentAction(tenantId, maxMonth);
 
     if (error) {
-      setCheckoutPaymentError(error.message);
-    } else if (data) {
+      setCheckoutPaymentError(error);
+    } else if (payment) {
       // UX-F10: only surface a payment section when there is a real amount to collect.
       // `amount` here stays the GROSS original bill (checkoutProRateInfo backs
       // base rent out of it) — amount_paid is threaded through separately so
       // checkoutMath can net it out where it actually matters.
-      const amount = Number(data.amount) + Number(data.late_fee ?? 0);
-      const amountPaid = Number(data.amount_paid ?? 0);
-      if (amount - amountPaid > 0) {
+      const amount = payment.amount + payment.late_fee;
+      if (amount - payment.amount_paid > 0) {
         setCheckoutPendingPayment({
-          id: data.id,
-          for_month: data.for_month,
-          status: data.status as PaymentStatus,
+          id: payment.id,
+          for_month: payment.for_month,
+          status: payment.status,
           amount,
-          amount_paid: amountPaid,
-          ac_charge: Number(data.ac_charge ?? 0),
-          ac_units_consumed: data.ac_units_consumed != null ? Number(data.ac_units_consumed) : null,
-          food_charge: Number(data.food_charge ?? 0),
-          security_deposit_charge: Number(data.security_deposit_charge ?? 0),
-          late_fee: Number(data.late_fee ?? 0),
+          amount_paid: payment.amount_paid,
+          ac_charge: payment.ac_charge,
+          ac_units_consumed: payment.ac_units_consumed,
+          food_charge: payment.food_charge,
+          security_deposit_charge: payment.security_deposit_charge,
+          late_fee: payment.late_fee,
         });
       }
     }
@@ -1630,7 +1570,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const acRate = checkoutACContext?.perUnitRate ?? 0;
     const acCount = checkoutACContext?.activeTenantCount ?? 0;
     const roomHasAC = !!(checkingOut?.room_id && roomMap[checkingOut.room_id]?.has_ac);
-    const joinOffsets = acJoinOffsets(checkoutACContext?.joiners, acPrev);
     // If the meter hasn't actually moved past what the AC Units tab already
     // applied this month, there's nothing new to bill — recompute from an
     // independently-fetched join/checkout dataset here instead risks disagreeing
@@ -1644,19 +1583,47 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // double-billing or under-billing the AC portion against a payment that
     // already happened.
     const currentAppliedReading = checkoutACContext?.currentMonthReading ?? null;
+    // An explicit opening-reading correction also forces a recompute, even if
+    // the closing reading is left at whatever was already applied — otherwise
+    // a typed correction here silently gets ignored (only reachable when there's
+    // no previous-month record, since that's the only time this field shows).
     const hasNewerACReading = currentAppliedReading == null
-      || (Number.isFinite(acReading) && acReading > currentAppliedReading);
+      || (Number.isFinite(acReading) && acReading > currentAppliedReading)
+      || checkoutACOpeningReading.trim() !== "";
+
+    // Computed by the SAME function the Payments page's AC Units tab bills with
+    // (computeACSegmentBilling), fed the same raw join/checkout rows — so this
+    // preview and the charge the server actually records can no longer disagree.
+    // It throws when a prior checkout reading is >= this one (a real validation
+    // the server surfaces on submit); a preview must never crash the dialog, so
+    // that case just shows 0 until the operator corrects the reading.
+    const previewACCharge = (): number => {
+      if (!Number.isFinite(acReading) || acReading <= acPrev || acRate <= 0 || acCount <= 0) return 0;
+      try {
+        const { tenantBilling } = computeACSegmentBilling({
+          eligible: checkoutACContext?.eligibleTenants ?? [],
+          prevReading: acPrev,
+          reading: acReading,
+          units: acReading - acPrev,
+          perUnitRate: acRate,
+          forMonth: checkoutDate.slice(0, 7),
+          joinReadingsRaw: checkoutACContext?.joinReadingsRaw ?? [],
+          // Mirrors the same strictly-below filter the server applies — see
+          // lib/tenant-checkout.ts for why a prior checkout at/past this reading
+          // must not reach the shared function.
+          checkoutReadingsRaw: (checkoutACContext?.checkoutReadingsRaw ?? [])
+            .filter(r => r.meter_reading < acReading),
+        });
+        return tenantBilling.find(r => r.id === checkingOut?.id)?.charge ?? 0;
+      } catch {
+        return 0;
+      }
+    };
+
     const estimatedACCharge = !roomHasAC ? 0
       : isPartiallyPaid ? existingAcCharge
       : !hasNewerACReading ? existingAcCharge
-      : (Number.isFinite(acReading) && acReading > acPrev && acRate > 0 && acCount > 0)
-      ? computeACSegmentCharge(
-          acReading - acPrev,
-          checkoutACContext?.priorCheckoutUnits ?? [],
-          joinOffsets.all,
-          checkingOut ? (joinOffsets.byTenant[checkingOut.id] ?? 0) : 0,
-          acRate,
-        ) : 0;
+      : previewACCharge();
 
     const pending = basePending + estimatedACCharge;
     // "waive" forgives the dues outright, so there is nothing for the deposit to cover.
@@ -3666,7 +3633,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           >
                             <p className="text-xs text-muted-foreground">Full month</p>
                             <p className="text-sm font-semibold mt-0.5">{formatCurrency(checkoutProRateInfo.fullRent)}</p>
-                            <p className="text-[11px] text-muted-foreground mt-0.5">Default — whole month&apos;s rent</p>
+                            <p className="text-[11px] text-muted-foreground mt-0.5">Charge the whole month anyway</p>
                           </button>
                           <button
                             type="button"
@@ -3679,7 +3646,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                             <p className="text-xs text-muted-foreground">Days stayed</p>
                             <p className="text-sm font-semibold mt-0.5">{formatCurrency(checkoutProRateInfo.proRatedRent)}</p>
                             <p className="text-[11px] text-muted-foreground mt-0.5">
-                              {checkoutProRateInfo.nights} of {checkoutProRateInfo.totalDays} days
+                              Default — {checkoutProRateInfo.nights} of {checkoutProRateInfo.totalDays} days
                             </p>
                           </button>
                         </div>

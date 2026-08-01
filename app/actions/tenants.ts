@@ -1012,6 +1012,81 @@ export async function backfillTenantPaymentsAction(
 }
 
 // ---------------------------------------------------------------------------
+// getCheckoutPendingPaymentAction
+// The checkout dialog's "outstanding balance" lookup used to run as a plain
+// client-side Supabase query. hms_payments only has RLS SELECT policies for
+// owners (owner_id = auth.uid()) and partners (hms_partner_hostel_ids()) —
+// there is no manager policy — so for any manager-initiated checkout that
+// query silently returned zero rows, and the dialog always showed "nothing
+// outstanding" regardless of the tenant's real balance. Moved server-side so
+// it can go through the admin client, the same fix applied to
+// getACCheckoutContextAction just above for the same underlying reason.
+// ---------------------------------------------------------------------------
+
+export async function getCheckoutPendingPaymentAction(
+  tenantId: string,
+  maxMonth: string,
+): Promise<{
+  payment?: {
+    id: string; for_month: string; status: PaymentStatus; amount: number; amount_paid: number;
+    late_fee: number; ac_charge: number; ac_units_consumed: number | null;
+    food_charge: number; security_deposit_charge: number;
+  } | null;
+  error?: string;
+}> {
+  try {
+    const mgr = await getManagerContext();
+    let hostelId: string;
+    if (mgr?.activeHostel) {
+      if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      hostelId = mgr.activeHostel.id;
+    } else {
+      await requireOwnerOrPartnerTier("standard");
+      hostelId = await resolveHostelId();
+    }
+    const adminDb = createAdminClient();
+
+    const { data, error } = await adminDb
+      .from("hms_payments")
+      .select("id, for_month, status, amount, amount_paid, late_fee, ac_charge, ac_units_consumed, food_charge, security_deposit_charge")
+      .eq("tenant_id", tenantId)
+      .eq("hostel_id", hostelId)
+      // partially_paid included too — a genuine remaining balance (e.g. AC
+      // usage billed after an advance rent payment already settled the rest)
+      // is still real money to collect at checkout, not just a fully-unpaid row.
+      .in("status", ["pending", "overdue", "partially_paid"])
+      // Excludes a future month's not-yet-due advance-payment row — only a
+      // month the tenant is actually departing in (or already past) can be a
+      // real debt to collect at checkout.
+      .lte("for_month", maxMonth)
+      .order("for_month", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return { payment: null };
+
+    return {
+      payment: {
+        id: data.id,
+        for_month: data.for_month,
+        status: data.status as PaymentStatus,
+        amount: Number(data.amount ?? 0),
+        amount_paid: Number(data.amount_paid ?? 0),
+        late_fee: Number(data.late_fee ?? 0),
+        ac_charge: Number(data.ac_charge ?? 0),
+        ac_units_consumed: data.ac_units_consumed != null ? Number(data.ac_units_consumed) : null,
+        food_charge: Number(data.food_charge ?? 0),
+        security_deposit_charge: Number(data.security_deposit_charge ?? 0),
+      },
+    };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to load payment data" };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // getACCheckoutContextAction
 // Returns the data needed to compute and preview the partial AC charge at checkout.
 // Called by the checkout dialog when the tenant is in an AC room.
@@ -1033,6 +1108,16 @@ export async function getACCheckoutContextAction(
    * whichever opening reading is in play, which may be one the operator is still typing.
    */
   joiners: { tenantId: string; unitsAtJoin: number | null; joiningMeterReading: number | null }[];
+  /**
+   * Raw inputs for computeACSegmentBilling (lib/ac-billing.ts) — the exact same
+   * function the Payments page's AC Units tab bills with. Surfaced so the
+   * checkout preview can call it directly instead of re-deriving the same
+   * segment math in its own copy, which is how the dialog's estimate drifted
+   * away from what the AC Units tab had already computed for the same room.
+   */
+  eligibleTenants: { id: string; check_in: string; joining_meter_reading: number | null }[];
+  joinReadingsRaw: { tenant_id: string; units_at_join: number }[];
+  checkoutReadingsRaw: { meter_reading: number; tenant_count_at_checkout: number }[];
   /** This month's meter reading, if the operator already applied AC units for
    *  this room via the AC Units tab (e.g. earlier the same day the tenant is
    *  checking out) — surfaced so the checkout dialog can default to it instead
@@ -1053,8 +1138,23 @@ export async function getACCheckoutContextAction(
   error?: string;
 }> {
   try {
-    await requireOwnerOrPartnerTier("standard");
-    const hostelId = await resolveHostelId();
+    // Checkout itself (checkoutTenantAsManager, app/actions/managers.ts) is
+    // reachable by a manager holding edit_members — but this preview action
+    // only ever checked requireOwnerOrPartnerTier, which redirects to /login
+    // for a manager role outright (managers live in hms_managers, not
+    // hms_profiles, so getProfile() finds nothing for them). That silently
+    // broke the AC section of the checkout dialog for every manager on every
+    // AC room. Same "try manager context first" pattern already used in
+    // app/actions/payments.ts's resolvePaymentsReadScope.
+    const mgr = await getManagerContext();
+    let hostelId: string;
+    if (mgr?.activeHostel) {
+      if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      hostelId = mgr.activeHostel.id;
+    } else {
+      await requireOwnerOrPartnerTier("standard");
+      hostelId = await resolveHostelId();
+    }
     const adminDb = createAdminClient();
 
     const [y, m] = checkoutMonth.split("-").map(Number);
@@ -1092,7 +1192,7 @@ export async function getACCheckoutContextAction(
       // the same boundary format used by the month-end AC billing algorithm.
       adminDb
         .from("hms_room_ac_checkout_readings")
-        .select("units_consumed")
+        .select("units_consumed, meter_reading, tenant_count_at_checkout")
         .eq("room_id", roomId)
         .eq("hostel_id", hostelId)
         .eq("for_month", checkoutMonth),
@@ -1130,6 +1230,19 @@ export async function getACCheckoutContextAction(
       priorCheckoutUnits,
       joiners,
       derivedOpening,
+      eligibleTenants: (tenants ?? []).map(t => ({
+        id: t.id as string,
+        check_in: t.check_in as string,
+        joining_meter_reading: t.joining_meter_reading != null ? Number(t.joining_meter_reading) : null,
+      })),
+      joinReadingsRaw: (joinRows ?? []).map(j => ({
+        tenant_id: j.tenant_id as string,
+        units_at_join: Number(j.units_at_join),
+      })),
+      checkoutReadingsRaw: (priorCheckouts ?? []).map(r => ({
+        meter_reading: Number(r.meter_reading),
+        tenant_count_at_checkout: Number(r.tenant_count_at_checkout),
+      })),
     };
   } catch (err: unknown) {
     unstable_rethrow(err);
@@ -1143,6 +1256,9 @@ export async function getACCheckoutContextAction(
       priorCheckoutUnits: [],
       joiners: [],
       derivedOpening: null,
+      eligibleTenants: [],
+      joinReadingsRaw: [],
+      checkoutReadingsRaw: [],
       error: err instanceof Error ? err.message : "Failed to load AC context",
     };
   }

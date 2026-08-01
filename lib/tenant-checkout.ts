@@ -3,7 +3,7 @@ import "server-only";
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { calcDailyRent, countBillableNights, proRateMonthlyRent } from "@/lib/daily-billing";
-import { deriveOpeningReading, round2 } from "@/lib/ac-billing";
+import { computeACSegmentBilling, deriveOpeningReading, round2 } from "@/lib/ac-billing";
 import type { PaymentMethod, PaymentStatus, CheckoutInput, CheckoutSettlement } from "@/types";
 
 // Deliberately no "use server" directive — every export from a "use server" file
@@ -233,52 +233,88 @@ export async function performTenantCheckout(
       tenant_unit_share: number;
     } | null = null;
 
+    // The departure breakpoint, persisted whenever a reading is supplied for an
+    // AC room — deliberately SEPARATE from acCheckoutRecord, which only exists
+    // when a fresh charge is actually computed. When the meter hasn't moved past
+    // what the AC Units tab already applied we reuse that existing charge rather
+    // than recomputing (see hasNewerReading below), and the breakpoint would
+    // otherwise never get written: month-end re-billing then has no record that
+    // this tenant left partway, so the REMAINING tenants silently absorb a share
+    // this tenant already paid for at the door, and the room is billed twice.
+    let acBreakpoint: {
+      meter_reading: number;
+      units_consumed: number;
+      tenant_count: number;
+      ac_charge: number;
+    } | null = null;
+
     if (input.acCheckoutReading !== undefined && tenant.room_id) {
       const checkoutMonth = input.checkoutDate.substring(0, 7);
       const [cy, cm] = checkoutMonth.split("-").map(Number);
       const prevDate = new Date(cy, cm - 2, 1);
       const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
 
-      const [{ data: prevRecord }, { data: pkgConfig }, { data: roomInfo }, { data: activeTenantsInRoom }, { data: priorCheckoutsData }, { data: joinRowsData }, { data: currentMonthRecord }] = await Promise.all([
+      const [{ data: prevRecord }, { data: pkgConfig }, { data: roomInfo }, { data: activeTenantsInRoom }, { data: priorCheckoutsData }, { data: joinRowsData }, { data: currentMonthRecord }, { data: ownPaymentRow }] = await Promise.all([
         adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
         adminDb.from("hms_package_configs").select("ac_per_unit_rate").eq("hostel_id", hostelId).maybeSingle(),
         adminDb.from("hms_rooms").select("has_ac").eq("id", tenant.room_id).eq("hostel_id", hostelId).single(),
         adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", tenant.room_id).eq("is_active", true),
         // Fetch prior checkout unit offsets (reading - prevMonthReading) so we can use them
         // as segment boundaries — same format as the month-end billing algorithm.
-        adminDb.from("hms_room_ac_checkout_readings").select("units_consumed").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth),
+        // meter_reading + tenant_count_at_checkout are what computeACSegmentBilling
+        // consumes; units_consumed is kept for the tenant_count headcount below.
+        adminDb.from("hms_room_ac_checkout_readings").select("units_consumed, meter_reading, tenant_count_at_checkout").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth),
         adminDb.from("hms_room_ac_join_readings").select("tenant_id, units_at_join").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth),
         // The room's own current-month reading, already applied via the AC Units tab
         // (applyRoomACUnitsAction / computeACSegmentBilling) — the one source of truth
         // for "what has this tenant already been correctly billed for AC this month."
-        adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth).maybeSingle(),
+        // total_units is fetched alongside it so the exact opening that Apply used
+        // (reading - total_units) can be reconstructed below, the same way the
+        // checkout dialog's own preview already does.
+        adminDb.from("hms_room_ac_readings").select("meter_reading, total_units").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth).maybeSingle(),
+        // This tenant's own already-billed AC for the month, so the breakpoint can
+        // record the real figure even on the path where nothing is recomputed.
+        adminDb.from("hms_payments").select("ac_charge, ac_units_consumed").eq("tenant_id", input.tenantId).eq("hostel_id", hostelId).eq("for_month", checkoutMonth).maybeSingle(),
       ]);
 
       // If the meter hasn't actually moved past what AC Units already applied this
-      // month, there is nothing new to bill — recomputing here duplicates that
-      // exact same allocation with an independently-fetched, independently-timed
-      // dataset (join/checkout rows can drift between when Apply ran and now),
-      // which is exactly how a departing tenant's estimate silently diverged from
-      // the already-correct number sitting on their payment row. Skipping leaves
-      // whatever ac_charge Apply already computed untouched — the only case that
-      // still needs computing here is a genuinely newer reading, i.e. real
-      // information the room's last Apply never saw.
+      // month AND the operator isn't correcting the opening reading either, there
+      // is nothing new to bill — recomputing here duplicates that exact same
+      // allocation with an independently-fetched, independently-timed dataset
+      // (join/checkout rows can drift between when Apply ran and now), which is
+      // exactly how a departing tenant's estimate silently diverged from the
+      // already-correct number sitting on their payment row. Skipping leaves
+      // whatever ac_charge Apply already computed untouched — the only cases that
+      // still need computing here are a genuinely newer reading or an explicit
+      // opening correction, i.e. real information the room's last Apply never saw.
       const alreadyAppliedReading = currentMonthRecord?.meter_reading != null
         ? Math.round(Number(currentMonthRecord.meter_reading))
         : null;
       const hasNewerReading = alreadyAppliedReading == null
-        || Math.round(Number(input.acCheckoutReading)) > alreadyAppliedReading;
+        || Math.round(Number(input.acCheckoutReading)) > alreadyAppliedReading
+        || input.acOpeningReading != null;
 
-      if (roomInfo?.has_ac && hasNewerReading) {
+      if (roomInfo?.has_ac) {
         // Same fallback as applyRoomACUnitsAction: with no previous-month reading
         // and no explicit opening reading typed in, derive the baseline from the
         // room's earliest known move-in reading instead of assuming the meter
         // started at 0 — the same value already captured once at tenant creation.
         const derivedOpening = deriveOpeningReading(activeTenantsInRoom ?? [], checkoutMonth);
+        // The exact opening this month's AC Units Apply already used, backed out
+        // from what it actually saved — preferred over derivedOpening whenever an
+        // apply has already happened, so a checkout recompute doesn't silently
+        // rebase the whole month onto a different opening than what's already
+        // billed. Ranked the same as the checkout dialog's own preview: an
+        // explicit typed override still wins over this inferred value.
+        const impliedCurrentOpening = (currentMonthRecord?.meter_reading != null && currentMonthRecord?.total_units != null)
+          ? Math.round(Number(currentMonthRecord.meter_reading)) - Math.round(Number(currentMonthRecord.total_units))
+          : null;
 
         const prevReading = prevRecord?.meter_reading != null
           ? Math.round(Number(prevRecord.meter_reading))
-          : (input.acOpeningReading != null ? Math.round(Number(input.acOpeningReading)) : (derivedOpening ?? 0));
+          : input.acOpeningReading != null
+          ? Math.round(Number(input.acOpeningReading))
+          : impliedCurrentOpening ?? (derivedOpening ?? 0);
         const reading = Math.round(Number(input.acCheckoutReading));
         const perUnitRate = Number(pkgConfig?.ac_per_unit_rate ?? 0);
 
@@ -294,62 +330,72 @@ export async function performTenantCheckout(
         if (reading < prevReading) {
           throw new Error(`AC meter reading (${reading}) cannot be less than previous month's reading (${prevReading})`);
         }
-        if (perUnitRate > 0 && totalStart > 0) {
+        if (perUnitRate > 0 && totalStart > 0 && !hasNewerReading) {
+          // Nothing new to bill — the AC Units tab already computed and recorded
+          // this tenant's share for the month. Record the departure breakpoint
+          // anyway (see acBreakpoint above) so month-end re-billing knows they
+          // left partway and the remaining tenants aren't handed their share.
+          const units = reading - prevReading;
+          acBreakpoint = {
+            meter_reading: reading,
+            units_consumed: units,
+            tenant_count: totalStart,
+            ac_charge: Number(ownPaymentRow?.ac_charge ?? 0),
+          };
+        } else if (perUnitRate > 0 && totalStart > 0) {
           const units = reading - prevReading;
 
-          // The unit offset at which each tenant still in the room arrived. Month-end
-          // billing honours these; checkout used to ignore them and split flatly, so a
-          // departing tenant was diluted by people who had not moved in yet — and the
-          // difference was billed to nobody. Same precedence as month-end: a hand-typed
-          // entry beats the reading captured at check-in.
-          const joinOffsetOf = (t: { id: string; check_in: string | null; joining_meter_reading: number | null }) => {
-            const manual = (joinRowsData ?? []).find(j => j.tenant_id === t.id);
-            if (manual) return Math.max(0, Math.round(Number(manual.units_at_join)));
-            if (t.joining_meter_reading != null && t.check_in?.slice(0, 7) === checkoutMonth) {
-              return Math.max(0, Math.round(Number(t.joining_meter_reading) - prevReading));
-            }
-            return 0; // already here when the month opened
-          };
-          // The departing tenant is still is_active at this point, so they are in here.
-          const activeJoinOffsets = (activeTenantsInRoom ?? []).map(joinOffsetOf);
-          const myJoinOffset = joinOffsetOf({
-            id: tenant.id,
-            check_in: (tenant.check_in as string | null) ?? null,
-            joining_meter_reading: (tenant as { joining_meter_reading?: number | null }).joining_meter_reading ?? null,
+          // Delegated to the SAME function the Payments page's AC Units tab uses
+          // (computeACSegmentBilling). Checkout used to carry its own hand-written
+          // copy of this segment math — a third independent implementation
+          // alongside the client preview's — and nothing forced the three to agree,
+          // which is exactly how a departing tenant's charge drifted away from the
+          // allocation the AC Units tab had already computed for the same room and
+          // month. One implementation now owns mid-month joiners, prior-checkout
+          // breakpoints, and the 2dp unit rounding that ac_charge must match.
+          const { tenantBilling } = computeACSegmentBilling({
+            // The departing tenant is still is_active at this point, so they are in here.
+            eligible: (activeTenantsInRoom ?? []).map(t => ({
+              id: t.id as string,
+              check_in: t.check_in as string,
+              joining_meter_reading: t.joining_meter_reading != null ? Number(t.joining_meter_reading) : null,
+            })),
+            prevReading,
+            reading,
+            units,
+            perUnitRate,
+            forMonth: checkoutMonth,
+            joinReadingsRaw: (joinRowsData ?? []).map(j => ({
+              tenant_id: j.tenant_id as string,
+              units_at_join: Number(j.units_at_join),
+            })),
+            // Only readings STRICTLY BELOW this one are kept. A prior checkout at
+            // or past the current reading creates no boundary inside [0, units]
+            // (computeACSegmentBilling filters those out anyway, so the arithmetic
+            // is identical) — but passing one in trips its "month-end must exceed
+            // all checkout readings" guard and would hard-fail the checkout. That
+            // is a real, present-day shape: a tenant departs at reading X and no
+            // AC is used after, so the next reading is also X. The old checkout
+            // code never rejected that, and a departing tenant must not be blocked
+            // at the door over it.
+            checkoutReadingsRaw: (priorCheckoutsData ?? [])
+              .filter(r => Number(r.meter_reading) < reading)
+              .map(r => ({
+                meter_reading: Number(r.meter_reading),
+                tenant_count_at_checkout: Number(r.tenant_count_at_checkout),
+              })),
           });
 
-          // Segment-based share calculation — mirrors the month-end billing algorithm.
-          // Checkout and join offsets both create boundaries within [0, units]. Each
-          // segment is divided only among tenants actually in the room for it.
-          const boundaries = Array.from(new Set([
-            0,
-            ...priorUnitsOffsets.filter(u => u > 0 && u < units),
-            ...activeJoinOffsets.filter(u => u > 0 && u < units),
-            units,
-          ])).sort((a, b) => a - b);
-
-          let tenantUnitShare = 0;
-          for (let i = 0; i < boundaries.length - 1; i++) {
-            const segStart = boundaries[i];
-            const segEnd = boundaries[i + 1];
-            const segUnits = segEnd - segStart;
-            if (segUnits <= 0) continue;
-            const activesPresent = activeJoinOffsets.filter(u => u <= segStart).length;
-            const departedPresent = priorUnitsOffsets.filter(u => u >= segEnd).length;
-            const tenantsInSeg = activesPresent + departedPresent;
-            // Nothing owed for units burned before this tenant moved in.
-            if (tenantsInSeg > 0 && myJoinOffset <= segStart) {
-              tenantUnitShare += segUnits / tenantsInSeg;
-            }
-          }
-
-          // Round to 2dp FIRST, then price them. ac_charge has to equal
-          // ac_units_consumed × rate — markPaymentPaidAction re-derives it that way and
-          // rejects the payment otherwise, and the receipt itemises "N units × Rs rate".
-          const tenantUnits = round2(tenantUnitShare);
-          const ac_charge = Math.round(tenantUnits * perUnitRate);
+          const mine = tenantBilling.find(r => r.id === tenant.id);
+          // tenantUnits is already 2dp-rounded and ac_charge already derived from it
+          // inside computeACSegmentBilling — ac_charge MUST equal units × rate, since
+          // markPaymentPaidAction re-derives it that way and rejects a payment that
+          // disagrees, and receipts itemise it as "N units × Rs rate/unit".
+          const tenantUnits = mine?.tenantUnits ?? 0;
+          const ac_charge = mine?.charge ?? 0;
           // units_consumed = total room units — stored as billing breakpoint for month-end algorithm.
-          acCheckoutRecord = { units_consumed: units, tenant_count: totalStart, ac_charge, prevReading, tenant_unit_share: tenantUnitShare };
+          acCheckoutRecord = { units_consumed: units, tenant_count: totalStart, ac_charge, prevReading, tenant_unit_share: tenantUnits };
+          acBreakpoint = { meter_reading: reading, units_consumed: units, tenant_count: totalStart, ac_charge };
 
           if (!input.paymentSettlement) {
             // The dialog only offers a settle choice for dues it could already see when
@@ -585,7 +631,7 @@ export async function performTenantCheckout(
     // Step 4b: Persist AC checkout reading record — stored AFTER tenant deactivation
     // so it only exists if the checkout actually completed.
     let acReadingWarning: string | undefined;
-    if (acCheckoutRecord && tenant.room_id) {
+    if (acBreakpoint && tenant.room_id) {
       const checkoutMonth = input.checkoutDate.substring(0, 7);
       const { error: acReadingErr } = await adminDb
         .from("hms_room_ac_checkout_readings")
@@ -595,10 +641,10 @@ export async function performTenantCheckout(
             room_id: tenant.room_id,
             tenant_id: input.tenantId,
             for_month: checkoutMonth,
-            meter_reading: input.acCheckoutReading!,
-            units_consumed: acCheckoutRecord.units_consumed,
-            tenant_count_at_checkout: acCheckoutRecord.tenant_count,
-            ac_charge: acCheckoutRecord.ac_charge,
+            meter_reading: acBreakpoint.meter_reading,
+            units_consumed: acBreakpoint.units_consumed,
+            tenant_count_at_checkout: acBreakpoint.tenant_count,
+            ac_charge: acBreakpoint.ac_charge,
             checkout_date: input.checkoutDate,
             updated_at: new Date().toISOString(),
           },
