@@ -132,7 +132,7 @@ const isUnpaidStatus = (s: PaymentStatus) => s === "pending" || s === "overdue" 
 
 // One template shared by the header and every row. They are separate CSS grids,
 // so any drift between the two silently misaligns every column.
-const PAYMENT_GRID = "grid-cols-[minmax(0,1.8fr)_minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_auto_auto]";
+const PAYMENT_GRID = "grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,0.95fr)_minmax(0,0.7fr)_minmax(0,1.25fr)_auto_auto]";
 
 type StatusChip = "all" | "paid" | "unpaid" | "partial";
 
@@ -884,14 +884,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // Desktop-only table header
   function PaymentTableHeader() {
     return (
-      <div className={cn("hidden md:grid gap-5 px-5 py-2.5 border-b border-white/5", PAYMENT_GRID)}>
+      <div className={cn("hidden md:grid gap-x-6 px-5 py-2.5 border-b border-white/5", PAYMENT_GRID)}>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tenant</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Plan</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Rent</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">AC</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Total</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-center w-28">Status</span>
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-96">Action</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-80">Action</span>
       </div>
     );
   }
@@ -1008,7 +1008,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         </div>
 
         {/* ── Desktop table row (≥ md) ───────────────────────── */}
-        <div className={cn("hidden md:grid gap-5 items-center px-5 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5", PAYMENT_GRID)}>
+        <div className={cn("hidden md:grid gap-x-6 items-center px-5 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5", PAYMENT_GRID)}>
           <div className="min-w-0">
             <p className="text-sm font-medium text-foreground truncate">{p.tenant?.full_name ?? "—"}</p>
             <div className="flex items-center gap-2 flex-wrap mt-0.5">
@@ -1025,29 +1025,32 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               service, so folding either in here would overstate rental income. */}
           <div className="text-right">
             <p className="text-sm text-foreground tabular-nums">{formatCurrency(charges.rent)}</p>
-            {basis && <p className="text-xs text-muted-foreground whitespace-nowrap">{dailyBasisLabel(basis)}</p>}
+            {basis && <p className="text-[10px] leading-tight text-muted-foreground">{dailyBasisLabel(basis)}</p>}
           </div>
 
-          {/* AC — metered electricity, the same figure the AC Collected tile counts. */}
+          {/* AC — metered electricity only, the figure the AC Collected tile counts.
+              Flat AC maintenance used to hang below this as "+Rs 3,000 mnt", which is
+              wider than this column ever gets: nowrap meant it spilled left over Rent.
+              It belongs with the other fixed extras under Total anyway. */}
           <div className="text-right">
             {charges.ac > 0 ? (
               <p className="text-sm text-cyan-400 tabular-nums">{formatCurrency(charges.ac)}</p>
             ) : (
               <p className="text-sm text-muted-foreground/30">—</p>
             )}
-            {charges.acMaintenance > 0 && (
-              <p className="text-xs text-muted-foreground whitespace-nowrap">+{formatCurrency(charges.acMaintenance)} mnt</p>
-            )}
           </div>
 
+          {/* Sub-lines wrap rather than nowrap. Held on one line they were wider than
+              the column and bled into Status, which is what made these read as merged. */}
           <div className="text-right">
             <p className="text-sm font-semibold text-foreground tabular-nums">{formatCurrency(total)}</p>
-            {charges.food > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.food)} food</p>}
-            {charges.deposit > 0 && <p className="text-xs text-violet-400 whitespace-nowrap">incl. {formatCurrency(charges.deposit)} deposit</p>}
-            {charges.registrationFee > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.registrationFee)} reg.</p>}
-            {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
+            {charges.food > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {formatCurrency(charges.food)} food</p>}
+            {charges.deposit > 0 && <p className="text-[10px] leading-tight text-violet-400">incl. {formatCurrency(charges.deposit)} deposit</p>}
+            {charges.acMaintenance > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {formatCurrency(charges.acMaintenance)} AC mnt</p>}
+            {charges.registrationFee > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {formatCurrency(charges.registrationFee)} reg.</p>}
+            {Number(p.late_fee) > 0 && <p className="text-[10px] leading-tight text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
             {p.status === "partially_paid" && (
-              <p className="text-xs text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
+              <p className="text-[10px] leading-tight text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
             )}
           </div>
           <div className="flex justify-center w-28">
@@ -1062,7 +1065,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               alignment between rows and against the header. A shared fixed
               width sized for the max case (3 buttons) keeps every row's grid
               identical regardless of how many buttons it actually renders. */}
-          <div className="flex items-center justify-end gap-2 w-96">
+          <div className="flex items-center justify-end gap-2 w-80">
             {actionButtons}
           </div>
         </div>
