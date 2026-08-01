@@ -1256,6 +1256,12 @@ function MemberLedgerTab({
   const [roomFilter, setRoomFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<"active" | "waiting" | "checked_out" | "all">("active");
   const [packageFilter, setPackageFilter] = useState("all");
+  // Derived from totalOwed, which is already on every row — filtering here rather
+  // than server-side keeps it instant and guarantees it agrees with the Owed
+  // column on screen. "paid" additionally requires totalCharged > 0: a member with
+  // no bills at all in this period (a waiting-list entry, or someone who joined
+  // after it) has settled nothing, and listing them as Paid overstates collection.
+  const [paymentFilter, setPaymentFilter] = useState<"all" | "paid" | "unpaid">("all");
   const [depositFilter, setDepositFilter] = useState(false);
   const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState<"pdf" | "xlsx" | null>(null);
@@ -1289,12 +1295,27 @@ function MemberLedgerTab({
     return () => { signal.cancelled = true; };
   }, [fetchRows]);
 
-  const filteredRows = useMemo(() => {
+  const searchedRows = useMemo(() => {
     if (!rows) return [];
     const q = search.trim().toLowerCase();
-    const filtered = q
+    return q
       ? rows.filter((r) => r.fullName.toLowerCase().includes(q) || (r.phone ?? "").toLowerCase().includes(q))
       : rows;
+  }, [rows, search]);
+
+  // Members with nothing billed in this period fall outside both Paid and Unpaid.
+  // Counted so the filter can say so — silently dropping a third of the list reads
+  // as a broken filter.
+  const noBillCount = useMemo(
+    () => searchedRows.filter((r) => r.totalCharged <= 0 && r.totalOwed <= 0).length,
+    [searchedRows]
+  );
+
+  const filteredRows = useMemo(() => {
+    const filtered =
+      paymentFilter === "unpaid" ? searchedRows.filter((r) => r.totalOwed > 0)
+      : paymentFilter === "paid" ? searchedRows.filter((r) => r.totalOwed <= 0 && r.totalCharged > 0)
+      : searchedRows;
     // Sort by room number ascending (numeric-aware, e.g. Rm 2 before Rm 10); tenants
     // with no room assigned (waiting list) sort to the end.
     return [...filtered].sort((a, b) => {
@@ -1303,12 +1324,13 @@ function MemberLedgerTab({
       if (!b.roomNumber) return -1;
       return a.roomNumber.localeCompare(b.roomNumber, undefined, { numeric: true, sensitivity: "base" });
     });
-  }, [rows, search]);
+  }, [searchedRows, paymentFilter]);
 
   const roomFilterLabel = roomFilter === "all" ? "All Rooms" : `Rm ${roomOptions.find((r) => r.id === roomFilter)?.roomNumber ?? roomFilter}`;
   const statusFilterLabel = statusFilter === "all" ? "All Statuses" : LEDGER_STATUS_LABELS[statusFilter];
   const packageFilterLabel = packageFilter === "all" ? null : LEDGER_PACKAGE_OPTIONS.find((p) => p.value === packageFilter)?.label ?? packageFilter;
-  const exportFilterLabel = [statusFilterLabel, roomFilterLabel, packageFilterLabel, depositFilter ? "With Deposit" : null]
+  const paymentFilterLabel = paymentFilter === "all" ? null : paymentFilter === "paid" ? "Paid" : "Unpaid";
+  const exportFilterLabel = [statusFilterLabel, roomFilterLabel, packageFilterLabel, paymentFilterLabel, depositFilter ? "With Deposit" : null]
     .filter(Boolean)
     .join(" · ");
 
@@ -1406,6 +1428,17 @@ function MemberLedgerTab({
             </SelectContent>
           </Select>
 
+          <Select value={paymentFilter} onValueChange={(v) => setPaymentFilter(v as typeof paymentFilter)}>
+            <SelectTrigger className="h-8 text-xs w-32">
+              <SelectValue placeholder="Payment" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Payments</SelectItem>
+              <SelectItem value="unpaid">Unpaid</SelectItem>
+              <SelectItem value="paid">Paid</SelectItem>
+            </SelectContent>
+          </Select>
+
           <button
             onClick={() => setDepositFilter((v) => !v)}
             className={cn(
@@ -1447,6 +1480,9 @@ function MemberLedgerTab({
         </div>
         <p className="text-xs text-muted-foreground mt-2">
           Room filter reflects each tenant&apos;s current room only — room history before this feature shipped isn&apos;t recoverable.
+          {paymentFilter !== "all" && noBillCount > 0 && (
+            <> · {noBillCount} member{noBillCount === 1 ? " has" : "s have"} nothing billed in this period and show only under All Payments.</>
+          )}
         </p>
       </div>
 

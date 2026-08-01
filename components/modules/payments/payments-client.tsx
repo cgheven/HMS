@@ -124,6 +124,11 @@ function genReceipt(tenantName: string, month: string) {
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
+// One definition of "unpaid", shared by the Monthly View chips and the All History
+// chips. Waived is deliberately neither: the money was forgiven, so it is not owed
+// and was never collected.
+const isUnpaidStatus = (s: PaymentStatus) => s === "pending" || s === "overdue" || s === "partially_paid";
+
 // "2026-07" -> "2026-06". Month keys are plain strings here, never Date objects,
 // so this stays clear of the process-timezone drift that a Date round-trip invites.
 function prevMonthOf(month: string): string {
@@ -199,6 +204,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // acOpeningReadings: per-room opening reading input, shown only when no previous month record exists
   const [acOpeningReadings, setAcOpeningReadings] = useState<Record<string, string>>({});
   const [historyRoomFilter, setHistoryRoomFilter] = useState("all");
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<"all" | "paid" | "unpaid">("all");
   const [acRoomFilter, setAcRoomFilter] = useState("all");
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
@@ -743,10 +749,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     return rooms.filter(r => ids.has(r.id)).sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
   }, [allHistory, rooms]);
 
-  const filteredHistory = useMemo(() => {
+  const historyByRoom = useMemo(() => {
     if (historyRoomFilter === "all") return allHistory;
     return allHistory.filter(p => p.tenant?.room_id === historyRoomFilter);
   }, [allHistory, historyRoomFilter]);
+
+  const filteredHistory = useMemo(() => {
+    if (historyStatusFilter === "paid") return historyByRoom.filter(p => p.status === "paid");
+    if (historyStatusFilter === "unpaid") return historyByRoom.filter(p => isUnpaidStatus(p.status));
+    return historyByRoom;
+  }, [historyByRoom, historyStatusFilter]);
 
   const filteredAcRooms = useMemo(() => {
     if (acRoomFilter === "all") return acRooms;
@@ -759,7 +771,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       if (q && !p.tenant?.full_name?.toLowerCase().includes(q)) return false;
       if (roomFilter !== "all" && p.tenant?.room_id !== roomFilter) return false;
       if (statusFilter === "paid") return p.status === "paid";
-      if (statusFilter === "unpaid") return p.status === "pending" || p.status === "overdue" || p.status === "partially_paid";
+      if (statusFilter === "unpaid") return isUnpaidStatus(p.status);
       return true;
     });
   }, [activePayments, roomFilter, statusFilter, search]);
@@ -1108,7 +1120,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     {(["all", "paid", "unpaid"] as const).map((s) => {
                       const count = s === "all" ? activePayments.length
                         : s === "paid" ? activePayments.filter(p => p.status === "paid").length
-                        : activePayments.filter(p => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid").length;
+                        : activePayments.filter(p => isUnpaidStatus(p.status)).length;
                       const label = s === "all" ? "All" : s === "paid" ? "Paid" : "Unpaid";
                       const active = statusFilter === s;
                       return (
@@ -1193,8 +1205,36 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">No payment history yet</div>
             ) : (
               <div className="p-2">
-                {roomsInHistory.length > 1 && (
-                  <div className="flex items-center gap-2 px-2 pt-1 pb-3">
+                <div className="flex flex-wrap items-center gap-2 px-2 pt-1 pb-3">
+                  {/* Status chips — same wording, colours and meaning as Monthly View.
+                      Counts follow the room selection, so they always describe the
+                      rows actually on screen. */}
+                  <div className="flex items-center gap-1">
+                    {(["all", "paid", "unpaid"] as const).map((s) => {
+                      const count = s === "all" ? historyByRoom.length
+                        : s === "paid" ? historyByRoom.filter(p => p.status === "paid").length
+                        : historyByRoom.filter(p => isUnpaidStatus(p.status)).length;
+                      const label = s === "all" ? "All" : s === "paid" ? "Paid" : "Unpaid";
+                      const active = historyStatusFilter === s;
+                      return (
+                        <button
+                          key={s}
+                          onClick={() => setHistoryStatusFilter(s)}
+                          className={cn(
+                            "h-7 px-3 rounded-full text-xs font-medium border transition-all",
+                            active && s === "paid"   ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400" :
+                            active && s === "unpaid" ? "bg-amber/15 border-amber/40 text-amber" :
+                            active                   ? "bg-sidebar-accent border-sidebar-border text-foreground" :
+                            "border-transparent text-muted-foreground hover:text-foreground hover:border-sidebar-border"
+                          )}
+                        >
+                          {label} <span className="opacity-60">{count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {roomsInHistory.length > 1 && (
                     <Select value={historyRoomFilter} onValueChange={setHistoryRoomFilter}>
                       <SelectTrigger className="h-7 w-40 text-xs">
                         <SelectValue placeholder="All Rooms" />
@@ -1206,8 +1246,8 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         ))}
                       </SelectContent>
                     </Select>
-                  </div>
-                )}
+                  )}
+                </div>
                 <div className="space-y-1">
                   {filteredHistory.map((p) => (
                     <div key={p.id} className="flex items-center gap-3 px-4 py-2.5 rounded-xl hover:bg-white/[0.03]">
@@ -1237,7 +1277,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   ))}
                   {filteredHistory.length === 0 && (
                     <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
-                      No payments for this room
+                      No {historyStatusFilter !== "all" ? historyStatusFilter : ""} payments{historyRoomFilter !== "all" ? " for this room" : ""}
                     </div>
                   )}
                 </div>
