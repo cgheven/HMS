@@ -85,6 +85,41 @@ export function computeAcMaintenanceCharge(
 // auto-reminder cron anchors off this instead of a single hostel-wide day.
 // Capped to the target month's actual last day, so a tenant who joined on the
 // 31st still gets reminded once in a 30/28-day month instead of never.
+// A saved row's `amount` is the sum of every charge on it, so rent is what is
+// left once the named charges are taken back out. Rent is never stored — the
+// migration-133 trigger rebuilds `amount` from the parts on every write, and
+// only the parts are columns.
+//
+// Shared because this subtraction was already written out twice (the Mark Paid
+// dialog and the receipt PDF) and was about to be written a third time for the
+// payments table. Three hand-kept copies of one formula is exactly how the AC
+// segment math drifted into billing two different answers for the same room.
+export function splitPaymentCharges(p: {
+  amount: number;
+  food_charge?: number | null;
+  ac_charge?: number | null;
+  security_deposit_charge?: number | null;
+  registration_fee_charge?: number | null;
+  ac_maintenance_charge?: number | null;
+}): {
+  rent: number;
+  food: number;
+  ac: number;
+  deposit: number;
+  registrationFee: number;
+  acMaintenance: number;
+  /** Everything that is neither rent nor metered AC — food, deposit, reg fee, AC maintenance. */
+  otherCharges: number;
+} {
+  const food = Math.max(0, Number(p.food_charge ?? 0));
+  const ac = Math.max(0, Number(p.ac_charge ?? 0));
+  const deposit = Math.max(0, Number(p.security_deposit_charge ?? 0));
+  const registrationFee = Math.max(0, Number(p.registration_fee_charge ?? 0));
+  const acMaintenance = Math.max(0, Number(p.ac_maintenance_charge ?? 0));
+  const rent = Math.max(0, Number(p.amount ?? 0) - food - ac - deposit - registrationFee - acMaintenance);
+  return { rent, food, ac, deposit, registrationFee, acMaintenance, otherCharges: food + deposit + registrationFee + acMaintenance };
+}
+
 export function tenantDueDay(checkIn: string, forMonth: string): number {
   const checkInDay = Number(checkIn.slice(8, 10));
   const [y, m] = forMonth.split("-").map(Number);

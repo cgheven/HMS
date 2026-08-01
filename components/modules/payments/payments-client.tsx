@@ -16,6 +16,7 @@ import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier, StaffPermission } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { countBillableNights } from "@/lib/daily-billing";
+import { splitPaymentCharges } from "@/lib/payment-calc";
 import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import {
@@ -129,6 +130,46 @@ const MAX_AC_UNITS = 10_000;
 // and was never collected.
 const isUnpaidStatus = (s: PaymentStatus) => s === "pending" || s === "overdue" || s === "partially_paid";
 
+// One template shared by the header and every row. They are separate CSS grids,
+// so any drift between the two silently misaligns every column.
+const PAYMENT_GRID = "grid-cols-[minmax(0,1.8fr)_minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,0.9fr)_auto_auto]";
+
+type StatusChip = "all" | "paid" | "unpaid" | "partial";
+
+// Partial is a drill-down, not a fourth bucket: those rows stay inside Unpaid so
+// "who owes me money" keeps its full answer. Paid + Unpaid still equals All; the
+// Partial count is a subset of Unpaid, which the chip's tooltip says outright.
+const STATUS_CHIPS: { key: StatusChip; label: string; title?: string }[] = [
+  { key: "all", label: "All" },
+  { key: "paid", label: "Paid" },
+  { key: "unpaid", label: "Unpaid", title: "Pending, overdue and partially paid" },
+  { key: "partial", label: "Partial", title: "Part-paid, balance still owed — also counted under Unpaid" },
+];
+
+function countByChip(rows: Payment[], key: StatusChip): number {
+  if (key === "all") return rows.length;
+  if (key === "paid") return rows.filter(p => p.status === "paid").length;
+  if (key === "partial") return rows.filter(p => p.status === "partially_paid").length;
+  return rows.filter(p => isUnpaidStatus(p.status)).length;
+}
+
+// AC is a separate axis from paid/unpaid — it has to compose with the status
+// chips, not replace them, so "AC + Paid" (which reconciles to the AC Collected
+// tile) and "AC + Unpaid" are both reachable. Matches ac_charge, the exact field
+// the AC tiles sum; flat AC maintenance is a different charge and is not metered.
+const hasAcCharge = (p: Payment) => Number(p.ac_charge ?? 0) > 0;
+
+function chipClass(key: StatusChip, active: boolean): string {
+  return cn(
+    "h-7 px-3 rounded-full text-xs font-medium border transition-all",
+    active && key === "paid"    ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400" :
+    active && key === "unpaid"  ? "bg-amber/15 border-amber/40 text-amber" :
+    active && key === "partial" ? "bg-blue-500/15 border-blue-500/40 text-blue-400" :
+    active                      ? "bg-sidebar-accent border-sidebar-border text-foreground" :
+    "border-transparent text-muted-foreground hover:text-foreground hover:border-sidebar-border"
+  );
+}
+
 // "2026-07" -> "2026-06". Month keys are plain strings here, never Date objects,
 // so this stays clear of the process-timezone drift that a Date round-trip invites.
 function prevMonthOf(month: string): string {
@@ -196,7 +237,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     [allAcReadings, selectedMonth]
   );
   const [roomFilter, setRoomFilter] = useState<string>("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "paid" | "unpaid">("all");
+  const [statusFilter, setStatusFilter] = useState<StatusChip>("all");
   const [search, setSearch] = useState("");
   // joinUnits keyed by `${tenantId}_${month}` — stores the absolute meter reading at join time
   const [joinUnits, setJoinUnits] = useState<Record<string, string>>({});
@@ -204,7 +245,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // acOpeningReadings: per-room opening reading input, shown only when no previous month record exists
   const [acOpeningReadings, setAcOpeningReadings] = useState<Record<string, string>>({});
   const [historyRoomFilter, setHistoryRoomFilter] = useState("all");
-  const [historyStatusFilter, setHistoryStatusFilter] = useState<"all" | "paid" | "unpaid">("all");
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<StatusChip>("all");
+  const [acOnly, setAcOnly] = useState(false);
+  const [historyAcOnly, setHistoryAcOnly] = useState(false);
   const [acRoomFilter, setAcRoomFilter] = useState("all");
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
@@ -755,10 +798,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }, [allHistory, historyRoomFilter]);
 
   const filteredHistory = useMemo(() => {
-    if (historyStatusFilter === "paid") return historyByRoom.filter(p => p.status === "paid");
-    if (historyStatusFilter === "unpaid") return historyByRoom.filter(p => isUnpaidStatus(p.status));
-    return historyByRoom;
-  }, [historyByRoom, historyStatusFilter]);
+    const base = historyAcOnly ? historyByRoom.filter(hasAcCharge) : historyByRoom;
+    if (historyStatusFilter === "paid") return base.filter(p => p.status === "paid");
+    if (historyStatusFilter === "partial") return base.filter(p => p.status === "partially_paid");
+    if (historyStatusFilter === "unpaid") return base.filter(p => isUnpaidStatus(p.status));
+    return base;
+  }, [historyByRoom, historyStatusFilter, historyAcOnly]);
 
   const filteredAcRooms = useMemo(() => {
     if (acRoomFilter === "all") return acRooms;
@@ -770,11 +815,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     return activePayments.filter(p => {
       if (q && !p.tenant?.full_name?.toLowerCase().includes(q)) return false;
       if (roomFilter !== "all" && p.tenant?.room_id !== roomFilter) return false;
+      if (acOnly && !hasAcCharge(p)) return false;
       if (statusFilter === "paid") return p.status === "paid";
+      if (statusFilter === "partial") return p.status === "partially_paid";
       if (statusFilter === "unpaid") return isUnpaidStatus(p.status);
       return true;
     });
-  }, [activePayments, roomFilter, statusFilter, search]);
+  }, [activePayments, roomFilter, statusFilter, search, acOnly]);
 
   // Headline stats deliberately use ALL payment rows for the month, not just
   // activePayments — a checked-out tenant's unpaid/paid balance for a month
@@ -837,10 +884,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // Desktop-only table header
   function PaymentTableHeader() {
     return (
-      <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-6 px-5 py-2.5 border-b border-white/5">
+      <div className={cn("hidden md:grid gap-5 px-5 py-2.5 border-b border-white/5", PAYMENT_GRID)}>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tenant</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Plan</span>
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Amount</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Rent</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">AC</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Total</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-center w-28">Status</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-96">Action</span>
       </div>
@@ -853,6 +902,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     const isLate = (p.status === "pending" || p.status === "overdue") && p.for_month < selectedMonth;
     const tierLabel = p.payment_package_tier ? TIER_LABEL[p.payment_package_tier] : "Space Only";
     const total = Number(p.amount) + Number(p.late_fee || 0);
+    // Rent and metered AC get their own columns; everything else (food, deposit,
+    // registration fee, AC maintenance) is itemised under Total so Rent + AC and
+    // the total never look like they disagree.
+    const charges = splitPaymentCharges(p);
     const basis = dailyBasis(p);
 
     const statusColors: Record<PaymentStatus, string> = {
@@ -919,6 +972,24 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             <div className="text-right shrink-0">
               <p className="text-base font-bold text-foreground">{formatCurrency(total)}</p>
               {basis && <p className="text-xs text-muted-foreground">{dailyBasisLabel(basis)}</p>}
+              {/* One line each. Joined with a separator these were the widest
+                  element in the card, so the nowrap forced the right column wide
+                  enough to crowd the plan label beside it. */}
+              <p className="text-xs text-muted-foreground whitespace-nowrap">Rent {formatCurrency(charges.rent)}</p>
+              {charges.ac > 0 && (
+                <p className="text-xs text-cyan-400 whitespace-nowrap">
+                  AC {formatCurrency(charges.ac)}
+                  {charges.acMaintenance > 0 && (
+                    <span className="text-muted-foreground"> +{formatCurrency(charges.acMaintenance)} mnt</span>
+                  )}
+                </p>
+              )}
+              {charges.ac === 0 && charges.acMaintenance > 0 && (
+                <p className="text-xs text-muted-foreground whitespace-nowrap">AC mnt {formatCurrency(charges.acMaintenance)}</p>
+              )}
+              {charges.food > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.food)} food</p>}
+              {charges.deposit > 0 && <p className="text-xs text-violet-400 whitespace-nowrap">incl. {formatCurrency(charges.deposit)} deposit</p>}
+              {charges.registrationFee > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.registrationFee)} reg.</p>}
               {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
               {p.status === "partially_paid" && (
                 <p className="text-xs text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
@@ -937,7 +1008,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         </div>
 
         {/* ── Desktop table row (≥ md) ───────────────────────── */}
-        <div className="hidden md:grid grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_minmax(0,1fr)_auto_auto] gap-6 items-center px-5 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5">
+        <div className={cn("hidden md:grid gap-5 items-center px-5 py-3 rounded-xl hover:bg-white/[0.03] transition-colors border border-transparent hover:border-white/5", PAYMENT_GRID)}>
           <div className="min-w-0">
             <p className="text-sm font-medium text-foreground truncate">{p.tenant?.full_name ?? "—"}</p>
             <div className="flex items-center gap-2 flex-wrap mt-0.5">
@@ -948,25 +1019,32 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           </div>
           <div className="min-w-0">
             <span className="text-sm text-blue-400 font-medium">{tierLabel}</span>
-            {Number(p.ac_charge) > 0 && (
-              <div className="mt-0.5">
-                <span className="text-xs text-muted-foreground">AC: {formatCurrency(p.ac_charge!)}</span>
-              </div>
+          </div>
+
+          {/* Rent — base rent only. Deposit is refundable and food is a separate
+              service, so folding either in here would overstate rental income. */}
+          <div className="text-right">
+            <p className="text-sm text-foreground tabular-nums">{formatCurrency(charges.rent)}</p>
+            {basis && <p className="text-xs text-muted-foreground whitespace-nowrap">{dailyBasisLabel(basis)}</p>}
+          </div>
+
+          {/* AC — metered electricity, the same figure the AC Collected tile counts. */}
+          <div className="text-right">
+            {charges.ac > 0 ? (
+              <p className="text-sm text-cyan-400 tabular-nums">{formatCurrency(charges.ac)}</p>
+            ) : (
+              <p className="text-sm text-muted-foreground/30">—</p>
             )}
-            {Number(p.ac_maintenance_charge) > 0 && (
-              <div className="mt-0.5">
-                <span className="text-xs text-muted-foreground">AC Maintenance: {formatCurrency(p.ac_maintenance_charge!)}</span>
-              </div>
-            )}
-            {Number(p.registration_fee_charge) > 0 && (
-              <div className="mt-0.5">
-                <span className="text-xs text-muted-foreground">Reg. Fee: {formatCurrency(p.registration_fee_charge!)}</span>
-              </div>
+            {charges.acMaintenance > 0 && (
+              <p className="text-xs text-muted-foreground whitespace-nowrap">+{formatCurrency(charges.acMaintenance)} mnt</p>
             )}
           </div>
+
           <div className="text-right">
-            <p className="text-sm font-semibold text-foreground">{formatCurrency(total)}</p>
-            {basis && <p className="text-xs text-muted-foreground whitespace-nowrap">{dailyBasisLabel(basis)}</p>}
+            <p className="text-sm font-semibold text-foreground tabular-nums">{formatCurrency(total)}</p>
+            {charges.food > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.food)} food</p>}
+            {charges.deposit > 0 && <p className="text-xs text-violet-400 whitespace-nowrap">incl. {formatCurrency(charges.deposit)} deposit</p>}
+            {charges.registrationFee > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.registrationFee)} reg.</p>}
             {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
             {p.status === "partially_paid" && (
               <p className="text-xs text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
@@ -1116,24 +1194,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 {/* Filters bar */}
                 <div className="flex flex-wrap items-center gap-2 px-2 pt-1 pb-3">
                   {/* Status chips */}
-                  <div className="flex items-center gap-1">
-                    {(["all", "paid", "unpaid"] as const).map((s) => {
-                      const count = s === "all" ? activePayments.length
-                        : s === "paid" ? activePayments.filter(p => p.status === "paid").length
-                        : activePayments.filter(p => isUnpaidStatus(p.status)).length;
-                      const label = s === "all" ? "All" : s === "paid" ? "Paid" : "Unpaid";
-                      const active = statusFilter === s;
+                  <div className="flex flex-wrap items-center gap-1">
+                    {STATUS_CHIPS.map(({ key, label, title }) => {
+                      const count = countByChip(activePayments, key);
+                      // A drill-down with nothing to drill into is noise — the chip
+                      // only appears once the month actually has a partial payment.
+                      if (key === "partial" && count === 0 && statusFilter !== "partial") return null;
+                      const active = statusFilter === key;
                       return (
                         <button
-                          key={s}
-                          onClick={() => setStatusFilter(s)}
-                          className={cn(
-                            "h-7 px-3 rounded-full text-xs font-medium border transition-all",
-                            active && s === "paid"   ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400" :
-                            active && s === "unpaid" ? "bg-amber/15 border-amber/40 text-amber" :
-                            active                   ? "bg-sidebar-accent border-sidebar-border text-foreground" :
-                            "border-transparent text-muted-foreground hover:text-foreground hover:border-sidebar-border"
-                          )}
+                          key={key}
+                          title={title}
+                          onClick={() => setStatusFilter(key)}
+                          className={chipClass(key, active)}
                         >
                           {label} <span className="ml-1 opacity-60">{count}</span>
                         </button>
@@ -1141,10 +1214,28 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     })}
                   </div>
 
+                  {/* AC toggle — composes with the status chips above, so AC + Paid
+                      lists exactly the rows behind the AC Collected tile. */}
+                  {activePayments.some(hasAcCharge) && (
+                    <button
+                      onClick={() => setAcOnly(v => !v)}
+                      title="Only rows with metered AC — combine with Paid to reconcile the AC Collected tile"
+                      className={cn(
+                        "h-7 px-3 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0",
+                        acOnly
+                          ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-400"
+                          : "border-sidebar-border text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      <Zap className="w-3 h-3 shrink-0" />
+                      AC <span className="opacity-60">{activePayments.filter(hasAcCharge).length}</span>
+                    </button>
+                  )}
+
                   {/* Room filter dropdown */}
                   {roomsInMonth.length > 1 && (
                     <Select value={roomFilter} onValueChange={setRoomFilter}>
-                      <SelectTrigger className="h-7 w-40 text-xs">
+                      <SelectTrigger className="h-7 text-xs flex-1 min-w-[8rem] sm:flex-none sm:w-40">
                         <SelectValue placeholder="All Rooms" />
                       </SelectTrigger>
                       <SelectContent>
@@ -1170,14 +1261,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     </Button>
                   )}
 
-                  {/* Name search */}
-                  <div className="relative ml-auto">
+                  {/* Name search — ml-auto only once there is room to sit beside the
+                      filters. On a phone it wraps to its own line, and a right-pushed
+                      half-width box there just leaves a dead gap to its left. */}
+                  <div className="relative w-full sm:w-auto sm:ml-auto">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
                     <Input
                       placeholder="Search by name…"
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
-                      className="h-7 pl-7 text-xs w-40 sm:w-48"
+                      className="h-7 pl-7 text-xs w-full sm:w-48"
                     />
                   </div>
                 </div>
@@ -1185,11 +1278,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 <div className="space-y-2 md:space-y-0.5 mt-1">
                   {filteredPayments.map((p) => <PaymentRow key={p.id} p={p} />)}
                 </div>
-                {filteredPayments.length === 0 && (search || roomFilter !== "all" || statusFilter !== "all") && (
+                {filteredPayments.length === 0 && (search || roomFilter !== "all" || statusFilter !== "all" || acOnly) && (
                   <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
                     {search
                       ? `No results for "${search}"`
-                      : `No ${statusFilter !== "all" ? statusFilter : ""} payments${roomFilter !== "all" ? " for this room" : ""}`}
+                      : `No ${statusFilter !== "all" ? statusFilter : ""}${acOnly ? " AC" : ""} payments${roomFilter !== "all" ? " for this room" : ""}`}
                   </div>
                 )}
               </div>
@@ -1209,24 +1302,17 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   {/* Status chips — same wording, colours and meaning as Monthly View.
                       Counts follow the room selection, so they always describe the
                       rows actually on screen. */}
-                  <div className="flex items-center gap-1">
-                    {(["all", "paid", "unpaid"] as const).map((s) => {
-                      const count = s === "all" ? historyByRoom.length
-                        : s === "paid" ? historyByRoom.filter(p => p.status === "paid").length
-                        : historyByRoom.filter(p => isUnpaidStatus(p.status)).length;
-                      const label = s === "all" ? "All" : s === "paid" ? "Paid" : "Unpaid";
-                      const active = historyStatusFilter === s;
+                  <div className="flex flex-wrap items-center gap-1">
+                    {STATUS_CHIPS.map(({ key, label, title }) => {
+                      const count = countByChip(historyByRoom, key);
+                      if (key === "partial" && count === 0 && historyStatusFilter !== "partial") return null;
+                      const active = historyStatusFilter === key;
                       return (
                         <button
-                          key={s}
-                          onClick={() => setHistoryStatusFilter(s)}
-                          className={cn(
-                            "h-7 px-3 rounded-full text-xs font-medium border transition-all",
-                            active && s === "paid"   ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400" :
-                            active && s === "unpaid" ? "bg-amber/15 border-amber/40 text-amber" :
-                            active                   ? "bg-sidebar-accent border-sidebar-border text-foreground" :
-                            "border-transparent text-muted-foreground hover:text-foreground hover:border-sidebar-border"
-                          )}
+                          key={key}
+                          title={title}
+                          onClick={() => setHistoryStatusFilter(key)}
+                          className={chipClass(key, active)}
                         >
                           {label} <span className="opacity-60">{count}</span>
                         </button>
@@ -1234,9 +1320,27 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     })}
                   </div>
 
+                  {/* AC toggle — composes with the status chips above, so AC + Paid
+                      lists exactly the rows behind the AC Collected tile. */}
+                  {historyByRoom.some(hasAcCharge) && (
+                    <button
+                      onClick={() => setHistoryAcOnly(v => !v)}
+                      title="Only rows with metered AC — combine with Paid to reconcile the AC Collected tile"
+                      className={cn(
+                        "h-7 px-3 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0",
+                        historyAcOnly
+                          ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-400"
+                          : "border-sidebar-border text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      <Zap className="w-3 h-3 shrink-0" />
+                      AC <span className="opacity-60">{historyByRoom.filter(hasAcCharge).length}</span>
+                    </button>
+                  )}
+
                   {roomsInHistory.length > 1 && (
                     <Select value={historyRoomFilter} onValueChange={setHistoryRoomFilter}>
-                      <SelectTrigger className="h-7 w-40 text-xs">
+                      <SelectTrigger className="h-7 text-xs flex-1 min-w-[8rem] sm:flex-none sm:w-40">
                         <SelectValue placeholder="All Rooms" />
                       </SelectTrigger>
                       <SelectContent>
@@ -1277,7 +1381,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   ))}
                   {filteredHistory.length === 0 && (
                     <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
-                      No {historyStatusFilter !== "all" ? historyStatusFilter : ""} payments{historyRoomFilter !== "all" ? " for this room" : ""}
+                      No {historyStatusFilter !== "all" ? historyStatusFilter : ""}{historyAcOnly ? " AC" : ""} payments{historyRoomFilter !== "all" ? " for this room" : ""}
                     </div>
                   )}
                 </div>
@@ -1600,12 +1704,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               </div>
               {/* Charge breakdown — key/value rows */}
               {markDialog && (() => {
-                const food = markDialog.food_charge ?? 0;
-                const ac = markDialog.ac_charge ?? 0;
-                const depositCharge = markDialog.security_deposit_charge ?? 0;
-                const registrationFeeCharge = markDialog.registration_fee_charge ?? 0;
-                const acMaintenanceCharge = markDialog.ac_maintenance_charge ?? 0;
-                const baseRent = (markDialog.amount ?? 0) - food - ac - depositCharge - registrationFeeCharge - acMaintenanceCharge;
+                const {
+                  rent: baseRent, food, ac,
+                  deposit: depositCharge,
+                  registrationFee: registrationFeeCharge,
+                  acMaintenance: acMaintenanceCharge,
+                } = splitPaymentCharges(markDialog);
                 const tenant = tenants.find(t => t.id === markDialog.tenant_id);
                 const deposit = tenant?.security_deposit ?? 0;
                 const mealsLabel = [tenant?.food_breakfast && "Breakfast", tenant?.food_lunch && "Lunch", tenant?.food_dinner && "Dinner"]

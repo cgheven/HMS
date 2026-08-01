@@ -3,6 +3,8 @@
  * No external dependency; pure PDF 1.4 text stream, no jsPDF.
  */
 
+import { splitPaymentCharges } from "@/lib/payment-calc";
+
 interface ReceiptPayment {
   receipt_number?: string | null;
   for_month: string;
@@ -198,8 +200,7 @@ export function generateReceiptPDF(
   add(ML, "Breakdown:", 8, true); nl(12);
   // Food-inclusive package tiers bundle food into monthly_rent with no separate
   // food_charge (0), so this only itemizes food when it was billed as an add-on.
-  const baseRent = payment.amount - (payment.ac_charge ?? 0) - (payment.food_charge ?? 0) - (payment.security_deposit_charge ?? 0)
-    - (payment.registration_fee_charge ?? 0) - (payment.ac_maintenance_charge ?? 0);
+  const { rent: baseRent } = splitPaymentCharges(payment);
   // A daily tenant is not on a monthly rent, and printing that label on their
   // receipt is simply wrong. Use the snapshot taken when the row was billed
   // rather than recomputing from the tenant's dates — those keep moving after
