@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { CalendarDays, ArrowDownCircle, ArrowUpCircle, UserPlus, UserMinus, Receipt, ChefHat, TrendingUp, TrendingDown, AlertTriangle } from "lucide-react";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -20,7 +20,7 @@ interface Props {
 }
 
 const EMPTY_DETAIL = {
-  income: 0, kitchenTotal: 0, otherTotal: 0, total: 0,
+  income: 0, kitchenTotal: 0, otherTotal: 0, salaryTotal: 0, total: 0,
   expenseList: [] as ReportData["dailyExpenseDetails"][number]["expenseList"],
   paymentsList: [] as ReportData["dailyExpenseDetails"][number]["paymentsList"],
   joinedList: [] as ReportData["dailyExpenseDetails"][number]["joinedList"],
@@ -37,10 +37,52 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
   // near month-end doesn't fall outside a window this picker can even reach.
   const monthStartStr = formatDateInput(new Date(now.getFullYear(), now.getMonth(), 1));
   const monthEndStr = formatDateInput(new Date(now.getFullYear(), now.getMonth() + 2, 0));
-  const [selectedDate, setSelectedDate] = useState(todayStr);
-  const d = dailyDetails.find((r) => r.date === selectedDate) ?? EMPTY_DETAIL;
+  const [fromDate, setFromDate] = useState(todayStr);
+  const [toDate, setToDate] = useState(todayStr);
+
+  // Defaults to today–today, so the tab opens on exactly what it always showed.
+  const d = useMemo(() => {
+    const days = dailyDetails.filter((r) => r.date >= fromDate && r.date <= toDate);
+    if (days.length === 0) return EMPTY_DETAIL;
+    if (days.length === 1) return days[0];
+    const merged = {
+      ...EMPTY_DETAIL,
+      income: 0, kitchenTotal: 0, otherTotal: 0, salaryTotal: 0, total: 0,
+      expenseList: [] as typeof EMPTY_DETAIL.expenseList,
+      paymentsList: [] as typeof EMPTY_DETAIL.paymentsList,
+      joinedList: [] as typeof EMPTY_DETAIL.joinedList,
+      leftList: [] as typeof EMPTY_DETAIL.leftList,
+      dueList: [] as typeof EMPTY_DETAIL.dueList,
+    };
+    // A tenant's due day repeats on their own cadence, so the same person can
+    // appear on several days inside a range. Summing those would invent money
+    // that is owed once — keyed by tenant, so each is counted a single time.
+    const dueSeen = new Map<string, typeof merged.dueList[number]>();
+    for (const day of days) {
+      merged.income += day.income;
+      merged.kitchenTotal += day.kitchenTotal;
+      merged.otherTotal += day.otherTotal;
+      merged.salaryTotal += day.salaryTotal;
+      merged.total += day.total;
+      merged.expenseList.push(...day.expenseList);
+      merged.paymentsList.push(...day.paymentsList);
+      merged.joinedList.push(...day.joinedList);
+      merged.leftList.push(...day.leftList);
+      for (const t of day.dueList) if (!dueSeen.has(t.id)) dueSeen.set(t.id, t);
+    }
+    merged.dueList = [...dueSeen.values()].sort((a, b) => b.amount - a.amount);
+    merged.expenseList.sort((a, b) => b.amount - a.amount);
+    merged.paymentsList.sort((a, b) => b.amount - a.amount);
+    return merged;
+  }, [dailyDetails, fromDate, toDate]);
+
   const profit = d.income - d.total;
-  const isSameDay = selectedDate === todayStr;
+  const isRange = fromDate !== toDate;
+  const isSameDay = !isRange && fromDate === todayStr;
+  // What the "on <date>" copy below reads as, for one day or many.
+  const periodLabel = isRange
+    ? `${formatDate(fromDate)} – ${formatDate(toDate)}`
+    : formatDate(fromDate);
   const dueTotal = d.dueList.reduce((s, t) => s + t.amount, 0);
 
   return (
@@ -49,18 +91,37 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
         <div>
           <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
             <CalendarDays className="w-4 h-4 text-blue-400" />
-            {isSameDay ? "Today" : formatDate(selectedDate)}
+            {isSameDay ? "Today" : periodLabel}
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Pick any day this month or next to see its numbers</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Pick a day — or a range — anywhere in this month or next
+          </p>
         </div>
-        <Input
-          type="date"
-          value={selectedDate}
-          min={monthStartStr}
-          max={monthEndStr}
-          onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
-          className="w-full sm:w-auto h-9 text-sm"
-        />
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <Input
+            type="date"
+            value={fromDate}
+            min={monthStartStr}
+            max={monthEndStr}
+            // Dragging the start past the end would show an empty range rather
+            // than an error, so the end follows it instead.
+            onChange={(e) => {
+              if (!e.target.value) return;
+              setFromDate(e.target.value);
+              if (e.target.value > toDate) setToDate(e.target.value);
+            }}
+            className="flex-1 sm:flex-none sm:w-auto h-9 text-sm"
+          />
+          <span className="text-xs text-muted-foreground shrink-0">to</span>
+          <Input
+            type="date"
+            value={toDate}
+            min={fromDate}
+            max={monthEndStr}
+            onChange={(e) => e.target.value && setToDate(e.target.value)}
+            className="flex-1 sm:flex-none sm:w-auto h-9 text-sm"
+          />
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4 mb-6">
@@ -71,7 +132,13 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
           },
           {
             key: "expense", label: "Expense", value: formatCurrency(d.total),
-            sub: `Kitchen ${formatCurrency(d.kitchenTotal)} · Other ${formatCurrency(d.otherTotal)}`,
+            // Salaries only earn a slot on days one was actually paid — most days
+            // have none, and a permanent "Salary Rs 0" is noise.
+            sub: [
+              `Kitchen ${formatCurrency(d.kitchenTotal)}`,
+              `Other ${formatCurrency(d.otherTotal)}`,
+              ...(d.salaryTotal > 0 ? [`Salary ${formatCurrency(d.salaryTotal)}`] : []),
+            ].join(" · "),
             icon: ArrowUpCircle, color: "text-rose-400", bg: "bg-rose-500/10 border-rose-500/20",
           },
           {
@@ -117,7 +184,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
             <Receipt className="w-3.5 h-3.5" /> Payments Collected
           </h3>
           {d.paymentsList.length === 0 ? (
-            <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No payments collected on {formatDate(selectedDate)}</p>
+            <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No payments collected on {periodLabel}</p>
           ) : (
             <div className="max-h-[220px] overflow-auto scrollbar-hide rounded-xl border border-white/5">
               <table className="w-full text-xs">
@@ -150,7 +217,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
             <ChefHat className="w-3.5 h-3.5" /> Expenses
           </h3>
           {d.expenseList.length === 0 ? (
-            <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No expenses recorded on {formatDate(selectedDate)}</p>
+            <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No expenses recorded on {periodLabel}</p>
           ) : (
             <div className="max-h-[220px] overflow-auto scrollbar-hide rounded-xl border border-white/5">
               <table className="w-full text-xs">
@@ -167,7 +234,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
                       <td className="px-2.5 py-2 text-foreground font-medium">{e.title}</td>
                       <td className="px-2.5 py-2 text-muted-foreground whitespace-nowrap">
                         {e.category}
-                        <span className="text-muted-foreground/60"> · {e.source === "kitchen" ? "Kitchen" : "Other"}</span>
+                        <span className="text-muted-foreground/60"> · {e.source === "kitchen" ? "Kitchen" : e.source === "salary" ? "Salary" : "Other"}</span>
                       </td>
                       <td className="px-2.5 py-2 text-right text-rose-400 tabular-nums whitespace-nowrap">{formatCurrency(e.amount)}</td>
                     </tr>
@@ -183,7 +250,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
             <UserPlus className="w-3.5 h-3.5" /> New Members Joined
           </h3>
           {d.joinedList.length === 0 ? (
-            <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No new members joined on {formatDate(selectedDate)}</p>
+            <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No new members joined on {periodLabel}</p>
           ) : (
             <div className="max-h-[220px] overflow-auto scrollbar-hide rounded-xl border border-white/5">
               <table className="w-full text-xs">
@@ -213,7 +280,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
             <UserMinus className="w-3.5 h-3.5" /> Checked Out
           </h3>
           {d.leftList.length === 0 ? (
-            <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No one checked out on {formatDate(selectedDate)}</p>
+            <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No one checked out on {periodLabel}</p>
           ) : (
             <div className="max-h-[220px] overflow-auto scrollbar-hide rounded-xl border border-white/5">
               <table className="w-full text-xs">
@@ -247,7 +314,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
         <div className="flex items-center gap-2 flex-wrap px-5 py-4 border-b border-white/5">
           <AlertTriangle className="w-4 h-4 text-amber" />
           <h3 className="text-sm font-semibold text-foreground">
-            {isSameDay ? "Due Today" : `Due on ${formatDate(selectedDate)}`}
+            {isSameDay ? "Due Today" : isRange ? `Due between ${periodLabel}` : `Due on ${periodLabel}`}
           </h3>
           {d.dueList.length > 0 && (
             <span className="ml-auto text-sm font-semibold text-amber">{formatCurrency(dueTotal)} total</span>
@@ -257,7 +324,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
         {d.dueList.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground">
             <AlertTriangle className="w-10 h-10 opacity-20" />
-            <p className="text-sm">Nobody is due {isSameDay ? "today" : `on ${formatDate(selectedDate)}`}</p>
+            <p className="text-sm">Nobody is due {isSameDay ? "today" : isRange ? `between ${periodLabel}` : `on ${periodLabel}`}</p>
           </div>
         ) : (
           <div>

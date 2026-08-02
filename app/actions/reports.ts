@@ -17,10 +17,14 @@ export interface DailyExpenseDetail {
   income: number;
   kitchenTotal: number;
   otherTotal: number;
+  /** Staff salaries actually paid out on this date. Counted in `total` like any
+   *  other cash leaving the hostel — this tab is the daily register, and a
+   *  salary handed over is as real an expense as a bag of flour. */
+  salaryTotal: number;
   total: number;
   expenseList: {
     id: string;
-    source: "expense" | "kitchen";
+    source: "expense" | "kitchen" | "salary";
     title: string;
     category: string;
     amount: number;
@@ -751,12 +755,24 @@ export async function getReportData(
   // Pakistan time for the same reason getMonthRange itself had to be fixed.
   const { end: curEnd } = getMonthRange(new Date(Date.UTC(curYear, curMonth, 1)));
   const [
-    curExpensesRes, curKitchenRes, monthInstallmentsRes, joinedRes, leftRes, dueRes,
+    curExpensesRes, curKitchenRes, curSalariesRes, monthInstallmentsRes, joinedRes, leftRes, dueRes,
   ] = await Promise.all([
     // Full rows, not just amount/date — the owner needs to verify exactly
     // what each expense was, not just a total.
     admin.from("hms_expenses").select("id,title,category,amount,date,notes").eq("hostel_id", hostelId).gte("date", curStart).lte("date", curEnd),
     admin.from("hms_kitchen_expenses").select("id,title,type,amount,date,notes").eq("hostel_id", hostelId).gte("date", curStart).lte("date", curEnd),
+    // Keyed on payment_date, not for_month: this tab answers "what left the till
+    // on this day". Only paid rows — an unpaid salary is a liability, not a
+    // day's spend. Fetched separately from salariesRes above because that one is
+    // scoped to the selected report range, which need not cover this month.
+    admin
+      .from("hms_salary_payments")
+      .select("id, amount, payment_date, notes, employee:hms_employees(full_name, role)")
+      .eq("hostel_id", hostelId)
+      .eq("status", "paid")
+      .not("payment_date", "is", null)
+      .gte("payment_date", curStart)
+      .lte("payment_date", curEnd),
     // Granular, not just a total — the owner cross-checks this against their
     // own physical register, so each installment needs a name/room/amount.
     admin
@@ -792,7 +808,7 @@ export async function getReportData(
   function getDetailRow(date: string): DailyExpenseDetail {
     let row = detailByDate.get(date);
     if (!row) {
-      row = { date, income: 0, kitchenTotal: 0, otherTotal: 0, total: 0, expenseList: [], paymentsList: [], joinedList: [], leftList: [], dueList: [] };
+      row = { date, income: 0, kitchenTotal: 0, otherTotal: 0, salaryTotal: 0, total: 0, expenseList: [], paymentsList: [], joinedList: [], leftList: [], dueList: [] };
       detailByDate.set(date, row);
     }
     return row;
@@ -810,6 +826,24 @@ export async function getReportData(
     row.kitchenTotal += amount;
     row.total += amount;
     row.expenseList.push({ id: x.id, source: "kitchen", title: x.title, category: x.type === "monthly_grocery" ? "Monthly Grocery" : "Daily", amount, notes: x.notes });
+  }
+
+  for (const x of curSalariesRes.data ?? []) {
+    if (!x.payment_date) continue;
+    const row = getDetailRow(x.payment_date);
+    const amount = Number(x.amount);
+    const empRaw = (x as unknown as { employee: { full_name: string; role: string } | { full_name: string; role: string }[] | null }).employee;
+    const emp = Array.isArray(empRaw) ? empRaw[0] : empRaw;
+    row.salaryTotal += amount;
+    row.total += amount;
+    row.expenseList.push({
+      id: x.id,
+      source: "salary",
+      title: emp?.full_name ?? "Staff salary",
+      category: emp?.role ? capitalize(emp.role) : "Staff",
+      amount,
+      notes: x.notes,
+    });
   }
 
   type RoomsRel = { room_number: string } | { room_number: string }[] | null;
