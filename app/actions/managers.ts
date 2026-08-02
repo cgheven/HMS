@@ -19,6 +19,11 @@ import { isValidCnic, normalizeCnic } from "@/lib/cnic"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
 import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission, CheckoutInput, CheckoutSettlement } from "@/types"
 
+function firstOfNextMonth(forMonth: string): string {
+  const [y, m] = forMonth.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+}
+
 function getPrevMonth(forMonth: string): string {
   const [y, m] = forMonth.split("-").map(Number);
   const d = new Date(y, m - 2, 1);
@@ -344,12 +349,16 @@ export async function applyRoomACUnitsAsManager(
       admin.from("hms_rooms").select("id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       admin.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).maybeSingle(),
       admin.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      // Scoped to tenants who had moved in by the month being billed — see
+      // applyRoomACUnitsAction for why a back-dated apply otherwise charges
+      // later arrivals for a month they were not there.
       admin
         .from("hms_tenants")
         .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
         .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
-        .eq("is_active", true),
+        .eq("is_active", true)
+        .lt("check_in", firstOfNextMonth(currentMonth)),
       admin
         .from("hms_room_ac_join_readings")
         .select("tenant_id, units_at_join")
@@ -483,6 +492,27 @@ export async function applyRoomACUnitsAsManager(
 
     const firstError = updateResults.find((r) => r.error)?.error
     if (firstError) return { error: firstError.message }
+
+    // Reopen bills that were settled before this reading and are now short by the
+    // AC just applied — see applyRoomACUnitsAction for why "paid" with a balance
+    // outstanding breaks every total that adds Collected + Pending.
+    const { data: touchedRows } = await admin
+      .from("hms_payments")
+      .select("id, status, amount, late_fee, amount_paid")
+      .eq("hostel_id", hostelId)
+      .eq("for_month", currentMonth)
+      .in("tenant_id", billing.map((b) => b.id))
+    const nowUnderpaid = (touchedRows ?? []).filter(
+      (r) => r.status === "paid" && r.amount_paid != null
+        && Number(r.amount) + Number(r.late_fee ?? 0) - Number(r.amount_paid) > 0.01
+    )
+    if (nowUnderpaid.length > 0) {
+      await admin
+        .from("hms_payments")
+        .update({ status: "partially_paid" as PaymentStatus, updated_at: new Date().toISOString() })
+        .in("id", nowUnderpaid.map((r) => r.id))
+        .eq("hostel_id", hostelId)
+    }
 
     // Persist the room-level reading so the UI can show it on next load
     await admin

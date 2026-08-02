@@ -666,12 +666,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       return;
     }
     const prevReading = prevMonthACReadings.find(r => r.room_id === roomId)?.meter_reading;
-    // Falls back to the derived (move-in-reading-based) opening value when the
-    // operator never touched the field — it's pre-filled on screen (see the
-    // Opening <Input> below), so Save must honor that same value rather than
-    // silently reading blank state.
-    const derivedOpeningForRoom = deriveOpeningReading(tenants.filter(t => t.room_id === roomId && t.is_active), selectedMonth);
-    const rawOpening = acOpeningReadings[roomId] ?? (derivedOpeningForRoom != null ? String(derivedOpeningForRoom) : "");
+    // Falls back to whatever the Opening box is showing when the operator never
+    // touched it, so Save can't silently bill against a different baseline.
+    const baselineOpening = openingBaselineFor(roomId);
+    const rawOpening = acOpeningReadings[roomId] ?? (baselineOpening != null ? String(baselineOpening) : "");
     const openingReading = prevReading == null ? (rawOpening ? parseFloat(rawOpening) : undefined) : undefined;
 
     setSavingJoin(tenantId);
@@ -695,17 +693,34 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }
   }
 
+  // The opening this month's Apply actually used, backed out from what it saved
+  // (meter_reading - total_units). Once a reading exists this is the only correct
+  // baseline: deriveOpeningReading() answers a different question — "where does
+  // this room's tracked history start" — and the two disagree whenever the
+  // operator typed an opening by hand. lib/tenant-checkout.ts has always
+  // preferred the implied value for exactly this reason; the AC tab did not, so
+  // the Opening box redrew from move-in readings on every load and looked like it
+  // had thrown the edit away.
+  const openingBaselineFor = useCallback((roomId: string): number | null => {
+    const savedRow = acReadings.find(r => r.room_id === roomId);
+    if (savedRow && savedRow.meter_reading != null && savedRow.total_units != null) {
+      return Math.round(Number(savedRow.meter_reading)) - Math.round(Number(savedRow.total_units));
+    }
+    return deriveOpeningReading(tenants.filter(t => t.room_id === roomId && t.is_active), selectedMonth);
+  }, [acReadings, tenants, selectedMonth]);
+
   async function applyACUnits(roomId: string) {
     if (!canRecordPayment) return;
     const meterReading = Number(acUnits[roomId] ?? "");
     if (!Number.isFinite(meterReading) || meterReading < 0) return;
     const prevReading = prevMonthACReadings.find(r => r.room_id === roomId)?.meter_reading;
-    // Falls back to the derived (move-in-reading-based) opening value when the
-    // operator never touched the field — it's pre-filled on screen (see the
-    // Opening <Input> below), so Apply must honor that same value rather than
-    // silently reading blank state.
-    const derivedOpeningForRoom = deriveOpeningReading(tenants.filter(t => t.room_id === roomId && t.is_active), selectedMonth);
-    const rawOpening = acOpeningReadings[roomId] ?? (derivedOpeningForRoom != null ? String(derivedOpeningForRoom) : "");
+    // Falls back to whatever the Opening box is showing when the operator never
+    // touched it. Using the move-in-derived value here instead would re-apply the
+    // month against a baseline nobody chose — Room 3 sat on a saved opening of 0
+    // while this resolved to 1, so a no-op Apply would have silently rebilled the
+    // month at 62 units instead of 63.
+    const baselineOpening = openingBaselineFor(roomId);
+    const rawOpening = acOpeningReadings[roomId] ?? (baselineOpening != null ? String(baselineOpening) : "");
     const openingReading = prevReading == null ? (rawOpening ? parseFloat(rawOpening) : undefined) : undefined;
 
     setApplyingAC(roomId);
@@ -715,7 +730,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       const result = isManager
         ? await (async () => {
             const r = await applyRoomACUnitsAsManager(roomId, selectedMonth, meterReading, openingReading);
-            return { ...r, success: !r.error, proRatedCount: undefined as number | undefined, unassignedUnits: undefined as number | undefined };
+            return { ...r, success: !r.error, proRatedCount: undefined as number | undefined, unassignedUnits: undefined as number | undefined, reopenedCount: undefined as number | undefined };
           })()
         : await applyRoomACUnitsAction(roomId, selectedMonth, meterReading, openingReading);
       if (!result.success) {
@@ -723,6 +738,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       } else {
         const derivedUnits = result.derivedUnits ?? 0;
         const cleared = derivedUnits === 0;
+        // A bill that was already settled and is now short by this AC gets reopened
+        // as partially paid — say so, or the balance appears from nowhere.
+        if (result.reopenedCount && result.reopenedCount > 0) {
+          toast({
+            title: `${result.reopenedCount} paid bill${result.reopenedCount === 1 ? "" : "s"} reopened`,
+            description: `Settled before this reading, so the AC just applied is still outstanding. Now shown as Partial with the balance collectable.`,
+          });
+        }
         toast({
           title: cleared ? "AC charge cleared" : "AC units applied",
           description: cleared
@@ -797,31 +820,50 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     return allHistory.filter(p => p.tenant?.room_id === historyRoomFilter);
   }, [allHistory, historyRoomFilter]);
 
+  const historyBase = useMemo(
+    () => (historyAcOnly ? historyByRoom.filter(hasAcCharge) : historyByRoom),
+    [historyByRoom, historyAcOnly]
+  );
+
   const filteredHistory = useMemo(() => {
-    const base = historyAcOnly ? historyByRoom.filter(hasAcCharge) : historyByRoom;
+    const base = historyBase;
     if (historyStatusFilter === "paid") return base.filter(p => p.status === "paid");
     if (historyStatusFilter === "partial") return base.filter(p => p.status === "partially_paid");
     if (historyStatusFilter === "unpaid") return base.filter(p => isUnpaidStatus(p.status));
     return base;
-  }, [historyByRoom, historyStatusFilter, historyAcOnly]);
+  }, [historyBase, historyStatusFilter]);
 
   const filteredAcRooms = useMemo(() => {
     if (acRoomFilter === "all") return acRooms;
     return acRooms.filter(r => r.id === acRoomFilter);
   }, [acRooms, acRoomFilter]);
 
-  const filteredPayments = useMemo(() => {
+  // Split so the chips can count the rows they would actually reveal. Counting
+  // the whole month regardless of the room and AC filters read as a bug: Room 5
+  // listed two partial bills under a chip saying "Partial 3", the third being a
+  // tenant in another room.
+  const monthlyScope = useMemo(() => {
     const q = search.trim().toLowerCase();
     return activePayments.filter(p => {
       if (q && !p.tenant?.full_name?.toLowerCase().includes(q)) return false;
       if (roomFilter !== "all" && p.tenant?.room_id !== roomFilter) return false;
-      if (acOnly && !hasAcCharge(p)) return false;
-      if (statusFilter === "paid") return p.status === "paid";
-      if (statusFilter === "partial") return p.status === "partially_paid";
-      if (statusFilter === "unpaid") return isUnpaidStatus(p.status);
       return true;
     });
-  }, [activePayments, roomFilter, statusFilter, search, acOnly]);
+  }, [activePayments, roomFilter, search]);
+
+  // Everything the status chips are counted against — scope narrowed by the AC
+  // toggle, but never by the chips themselves.
+  const monthlyBase = useMemo(
+    () => (acOnly ? monthlyScope.filter(hasAcCharge) : monthlyScope),
+    [monthlyScope, acOnly]
+  );
+
+  const filteredPayments = useMemo(() => {
+    if (statusFilter === "paid") return monthlyBase.filter(p => p.status === "paid");
+    if (statusFilter === "partial") return monthlyBase.filter(p => p.status === "partially_paid");
+    if (statusFilter === "unpaid") return monthlyBase.filter(p => isUnpaidStatus(p.status));
+    return monthlyBase;
+  }, [monthlyBase, statusFilter]);
 
   // Headline stats deliberately use ALL payment rows for the month, not just
   // activePayments — a checked-out tenant's unpaid/paid balance for a month
@@ -1097,7 +1139,23 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         const hasAc = (stats.acCollected + stats.acPending) > 0;
         const cards = [
           { label: "Total Due",       value: formatCurrency(stats.due),        icon: CreditCard, color: "text-foreground",   bg: "bg-white/5 border border-white/10" },
-          { label: "Collected",       value: formatCurrency(stats.collected),   icon: Wallet,     color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20" },
+          // The sub-line exists because "Collected" means two different things
+          // across the app: this card strips metered AC into its own tile, while
+          // the Dashboard's Collected is the whole cash figure. Spelling out
+          // "+ AC = received" here reconciles the two on sight, instead of
+          // leaving a Rs 12,325 gap between screens that reads as a bug.
+          {
+            label: "Collected",
+            value: formatCurrency(stats.collected),
+            // Deliberately terse: the AC figure itself is already on the AC Collected
+            // tile two cards along, so this only has to carry the combined total.
+            // Spelling both out wrapped onto a second line, which stretched this
+            // card and pulled every other card in the row taller with it.
+            sub: stats.acCollected > 0
+              ? `+ AC = ${formatCurrency(stats.collected + stats.acCollected)}`
+              : undefined,
+            icon: Wallet, color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20",
+          },
           { label: "Pending",         value: formatCurrency(stats.pending),     icon: Clock,      color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
           ...(hasAc ? [
             { label: "AC Collected",  value: formatCurrency(stats.acCollected), icon: Zap,        color: "text-cyan-400",    bg: "bg-cyan-500/10 border border-cyan-500/20" },
@@ -1106,7 +1164,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         ];
         return (
           <div className={`grid gap-3 sm:gap-4 ${hasAc ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-1 sm:grid-cols-3"}`}>
-            {cards.map(({ label, value, icon: Icon, color, bg }, i) => (
+            {cards.map(({ label, value, sub, icon: Icon, color, bg }, i) => (
               <div
                 key={label}
                 className={`rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 ${
@@ -1122,6 +1180,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   <div className="min-w-0 flex-1">
                     <p className="text-[10px] sm:text-xs text-muted-foreground uppercase tracking-wide leading-tight">{label}</p>
                     <p className={`text-base sm:text-xl font-bold leading-none mt-1.5 ${color}`}>{value}</p>
+                    {sub && (
+                      <p className="text-[10px] sm:text-xs text-muted-foreground leading-tight mt-1.5 whitespace-nowrap">{sub}</p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1199,7 +1260,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   {/* Status chips */}
                   <div className="flex flex-wrap items-center gap-1">
                     {STATUS_CHIPS.map(({ key, label, title }) => {
-                      const count = countByChip(activePayments, key);
+                      const count = countByChip(monthlyBase, key);
                       // A drill-down with nothing to drill into is noise — the chip
                       // only appears once the month actually has a partial payment.
                       if (key === "partial" && count === 0 && statusFilter !== "partial") return null;
@@ -1219,7 +1280,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
                   {/* AC toggle — composes with the status chips above, so AC + Paid
                       lists exactly the rows behind the AC Collected tile. */}
-                  {activePayments.some(hasAcCharge) && (
+                  {monthlyScope.some(hasAcCharge) && (
                     <button
                       onClick={() => setAcOnly(v => !v)}
                       title="Only rows with metered AC — combine with Paid to reconcile the AC Collected tile"
@@ -1231,7 +1292,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       )}
                     >
                       <Zap className="w-3 h-3 shrink-0" />
-                      AC <span className="opacity-60">{activePayments.filter(hasAcCharge).length}</span>
+                      AC <span className="opacity-60">{monthlyScope.filter(hasAcCharge).length}</span>
                     </button>
                   )}
 
@@ -1307,7 +1368,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       rows actually on screen. */}
                   <div className="flex flex-wrap items-center gap-1">
                     {STATUS_CHIPS.map(({ key, label, title }) => {
-                      const count = countByChip(historyByRoom, key);
+                      const count = countByChip(historyBase, key);
                       if (key === "partial" && count === 0 && historyStatusFilter !== "partial") return null;
                       const active = historyStatusFilter === key;
                       return (
@@ -1427,13 +1488,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 const hasPrevReading = prevMonthReading != null;
                 const currentInput = acUnits[room.id] ?? "";
                 const openingInput = acOpeningReadings[room.id] ?? "";
-                // Mirrors the server's own fallback (applyRoomACUnitsAction): if this room
-                // has no previous-month reading and nobody typed an opening value, the
-                // earliest active tenant's move-in meter reading is used automatically —
-                // the same number already captured once at tenant creation. Shown here so
-                // the operator isn't left guessing what "leave it blank" actually does.
-                const roomActiveTenants = tenants.filter(t => t.room_id === room.id && t.is_active);
-                const derivedOpening = deriveOpeningReading(roomActiveTenants, selectedMonth);
+                // Once this month has been applied, the opening it used is the one that
+                // matters — read back out of the saved row. Only before any apply does
+                // the move-in-derived value stand in, and it is labelled as such below.
+                const derivedOpening = openingBaselineFor(room.id);
                 const baseline = hasPrevReading ? prevMonthReading : (openingInput ? Number(openingInput) : derivedOpening);
                 const consumptionPreview = currentInput && baseline != null && Number.isFinite(Number(currentInput))
                   ? Math.max(0, Number(currentInput) - baseline)
@@ -1463,7 +1521,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         {hasPrevReading ? (
                           <p className="text-[10px] text-muted-foreground/50 mt-0.5">Previous month ended at {prevMonthReading}</p>
                         ) : derivedOpening != null ? (
-                          <p className="text-[10px] text-amber/60 mt-0.5">First reading — auto-using move-in reading {derivedOpening} unless overridden below</p>
+                          <p className="text-[10px] text-amber/60 mt-0.5">
+                            {saved
+                              ? `Opening ${derivedOpening} — the value this month was applied with`
+                              : `First reading — auto-using move-in reading ${derivedOpening} unless overridden below`}
+                          </p>
                         ) : (
                           <p className="text-[10px] text-amber/60 mt-0.5">First reading — enter opening value below if needed</p>
                         )}
@@ -1625,7 +1687,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       // The sum of the per-tenant rows exceeding the meter means the room
                       // is being billed for units it never consumed. Surfaced rather than
                       // clamped away — it is the one number that proves a split is wrong.
-                      const overAssignedUnits = Math.round(Math.max(0, assignedUnits - saved.total_units) * 100) / 100;
+                      //
+                      // Ignored below a tenth of a unit: shares are stored to 2dp, so a
+                      // room can legitimately land a hundredth over. Flagging that told the
+                      // operator to press Apply to fix Rs 1, which Apply cannot do, and the
+                      // warning came straight back.
+                      const overAssignedRaw = Math.round(Math.max(0, assignedUnits - saved.total_units) * 100) / 100;
+                      const overAssignedUnits = overAssignedRaw >= 0.1 ? overAssignedRaw : 0;
                       const unassignedCharge = Math.round(unassignedUnits * saved.per_unit_rate);
                       const totalCharge = Math.round(saved.total_units * saved.per_unit_rate);
                       return (

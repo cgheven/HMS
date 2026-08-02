@@ -65,6 +65,13 @@ function assertNonNegativeFinite(v: number, field: string, max = MAX_LATE_FEE) {
 // Internal helper: compute previous month string (e.g. "2026-06" → "2026-05")
 // ---------------------------------------------------------------------------
 
+// "2026-07" -> "2026-08-01". Exclusive upper bound for "moved in during or before
+// this month", without needing to know how many days the month has.
+function firstOfNextMonth(forMonth: string): string {
+  const [y, m] = forMonth.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+}
+
 function getPrevMonth(forMonth: string): string {
   const [y, m] = forMonth.split("-").map(Number);
   const d = new Date(y, m - 2, 1);
@@ -639,6 +646,9 @@ export async function applyRoomACUnitsAction(
   unassignedUnits?: number;
   /** Stale AC charges wiped from tenants who left the room since the last apply. */
   clearedStaleCount?: number;
+  /** Bills that were settled before this reading and are now short by the AC just
+   *  applied — reopened as partially paid so the balance is visible and collectable. */
+  reopenedCount?: number;
   /** Departed tenants whose stale AC charge could NOT be cleared because the
    *  bill is already settled — the operator has to refund or adjust manually. */
   lockedStale?: { name: string; units: number; charge: number }[];
@@ -682,11 +692,16 @@ export async function applyRoomACUnitsAction(
       supabase.from("hms_rooms").select("id, hostel_id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).single(),
       supabase.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      // `.lt("check_in", ...)` matters for any back-dated apply: without it the
+      // eligible set is "whoever lives in this room now", so closing an earlier
+      // month would split it across tenants who had not moved in yet. Applying
+      // July for Room 5 billed two August arrivals Rs 3,239 each.
       supabase.from("hms_tenants")
         .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
         .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
-        .eq("is_active", true),
+        .eq("is_active", true)
+        .lt("check_in", firstOfNextMonth(forMonth)),
     ]);
 
     if (!room) throw new Error("Room not found or access denied");
@@ -830,6 +845,37 @@ export async function applyRoomACUnitsAction(
     const firstError = updateResults.find(r => r.error)?.error;
     if (firstError) throw new Error(`AC billing DB error: ${firstError.message} (code: ${firstError.code})`);
 
+    // ── A bill settled before the meter was read is now short by the AC ──
+    // The recalculation trigger has just raised `amount` on these rows, but the
+    // status still says paid. That combination is a state nothing downstream can
+    // represent: the outstanding balance counts as neither collected (only
+    // amount_paid was) nor pending (the status is paid), so Total Due stops
+    // equalling Collected + Pending + AC on every screen that adds them up.
+    // partially_paid is what the row already means, and it is the status the
+    // "Collect Rest" button keys off.
+    //
+    // Only demoted, never promoted: a partially paid bill whose AC is later
+    // reduced is the owner's call to close, not something to settle silently.
+    const { data: touchedRows } = await adminDb
+      .from("hms_payments")
+      .select("id, status, amount, late_fee, amount_paid")
+      .eq("hostel_id", hostelId)
+      .eq("for_month", forMonth)
+      .in("tenant_id", tenantBilling.map(t => t.id));
+
+    const nowUnderpaid = (touchedRows ?? []).filter(
+      r => r.status === "paid" && r.amount_paid != null
+        && Number(r.amount) + Number(r.late_fee ?? 0) - Number(r.amount_paid) > 0.01
+    );
+    if (nowUnderpaid.length > 0) {
+      const { error: demoteErr } = await adminDb
+        .from("hms_payments")
+        .update({ status: "partially_paid" as PaymentStatus, updated_at: new Date().toISOString() })
+        .in("id", nowUnderpaid.map(r => r.id))
+        .eq("hostel_id", hostelId);
+      if (demoteErr) throw new Error(`Failed to reopen underpaid bills: ${demoteErr.message}`);
+    }
+
     // ── Clear stale AC charges left on tenants who are no longer eligible ──
     // The eligible set above is is_active = true, so a tenant who checked out
     // after a previous apply is invisible to it: their old ac_charge is never
@@ -928,6 +974,7 @@ export async function applyRoomACUnitsAction(
       proRatedCount,
       unassignedUnits,
       clearedStaleCount: clearable.length,
+      reopenedCount: nowUnderpaid.length,
       lockedStale: lockedStale.map((r) => {
         const t = r.tenant as unknown as { full_name?: string } | { full_name?: string }[] | null;
         const name = Array.isArray(t) ? t[0]?.full_name : t?.full_name;

@@ -60,6 +60,28 @@ export function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+// Force the rows to sum to `target` exactly, by pushing the sub-cent rounding
+// residual onto the tenant with the most units.
+//
+// It used to land on whichever tenant happened to be LAST, clamped at zero. When
+// that tenant was billed 0 units — a joiner whose move-in reading equals the
+// month-end reading, so they consumed nothing — the clamp discarded a negative
+// correction instead of applying it, and the room billed 0.01 units more than the
+// meter recorded. Rs 1 on Room 5, but it also tripped the "billed above the meter"
+// warning, which told the operator to press Apply on something Apply could not fix.
+//
+// The largest row is chosen because it is the only one guaranteed to absorb a
+// negative residual without itself going negative.
+function absorbResidual(rows: ACTenantBillingRow[], target: number): void {
+  if (rows.length === 0) return;
+  const sum = rows.reduce((s, r) => s + r.tenantUnits, 0);
+  const residual = round2(target - sum);
+  if (residual === 0) return;
+  let sink = rows[0];
+  for (const r of rows) if (r.tenantUnits > sink.tenantUnits) sink = r;
+  sink.tenantUnits = Math.max(0, round2(sink.tenantUnits + residual));
+}
+
 export function computeACSegmentBilling(params: {
   eligible: ACEligibleTenant[];
   prevReading: number;
@@ -193,8 +215,7 @@ export function computeACSegmentBilling(params: {
         tenantUnits: round2(accumulated.get(t.id) ?? 0),
         charge: 0,
       }));
-      const sumUnitsExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
-      if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, round2(totalAccumulated - sumUnitsExceptLast));
+      absorbResidual(rows, round2(totalAccumulated));
       applyUnitRate(rows, perUnitRate);
       tenantBilling = rows;
     }
@@ -207,8 +228,7 @@ export function computeACSegmentBilling(params: {
       tenantUnits: round2(rawShare),
       charge: 0,
     }));
-    const sumExceptLast = rows.slice(0, -1).reduce((s, r) => s + r.tenantUnits, 0);
-    if (rows.length > 0) rows[rows.length - 1].tenantUnits = round2(units - sumExceptLast);
+    absorbResidual(rows, units);
     applyUnitRate(rows, perUnitRate);
     tenantBilling = rows;
   } else {
@@ -254,8 +274,7 @@ export function computeACSegmentBilling(params: {
           tenantUnits: round2(accumulated.get(t.id) ?? 0),
           charge: 0,
         }));
-        const unitSumExceptLast = rows.slice(0, -1).reduce((s, x) => s + x.tenantUnits, 0);
-        if (rows.length > 0) rows[rows.length - 1].tenantUnits = Math.max(0, round2(assignedUnits - unitSumExceptLast));
+        absorbResidual(rows, round2(assignedUnits));
         applyUnitRate(rows, perUnitRate);
         tenantBilling = rows;
       }
