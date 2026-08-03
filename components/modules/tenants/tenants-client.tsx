@@ -2284,9 +2284,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
           {/* Room filter — dropdown */}
           {(() => {
-            const allTenants = [...active, ...waiting, ...checkedOut];
             const occupiedRooms = rooms
-              .filter((r) => allTenants.some((t) => t.room_id === r.id))
+              .filter((r) => r.id === roomFilter || active.some((t) => t.room_id === r.id))
               .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
             if (occupiedRooms.length === 0) return null;
             return (
@@ -2307,7 +2306,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   <SelectContent>
                     <SelectItem value="all">All Rooms</SelectItem>
                     {occupiedRooms.map((r) => {
-                      const count = allTenants.filter((t) => t.room_id === r.id).length;
+                      const count = active.filter((t) => t.room_id === r.id).length;
                       return (
                         <SelectItem key={r.id} value={r.id}>
                           Room {r.room_number}
