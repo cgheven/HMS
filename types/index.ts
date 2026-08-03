@@ -1009,3 +1009,100 @@ export const EMPTY_ONBOARDING_BRANCH: OnboardingBranch = {
   phone: "",
   total_capacity: "",
 }
+
+// ─── RedFlag (cross-organization defaulter registry) ──────────────────────────
+// Every row below crosses an organization boundary, so the identifier fields are
+// named for what they actually hold. `*Masked` values are redacted by SQL before
+// they ever reach this process and must be rendered as-is; `*Display` values are
+// only ever populated for reports the caller's own branch filed.
+
+export type RedflagStatus = "reported" | "resolved"
+
+/** RedFlag only operates on single-gender branches — a mixed/family branch has
+ *  no sensible peer group to share a listing with. */
+export type RedflagGender = "boys" | "girls"
+
+/** Why the money is owed. Mirrors the CHECK constraint on hms_redflags.reason —
+ *  keep the two in step, and validate against REDFLAG_REASONS server-side
+ *  before any insert. */
+export type RedflagReason = "unpaid_rent" | "unpaid_utilities" | "damage" | "theft" | "other"
+
+/** Order is the order shown in the picker and the filter: commonest first. */
+export const REDFLAG_REASONS: readonly RedflagReason[] = [
+  "unpaid_rent",
+  "unpaid_utilities",
+  "damage",
+  "theft",
+  "other",
+]
+
+/** THE wording. Every surface — the report dialog, the registry table, the
+ *  filter, any future receipt — reads from this map. A registry that calls the
+ *  same report "Theft" in one place and "Stolen items" in another is a registry
+ *  nobody trusts, so there is deliberately no second, shorter copy of these
+ *  strings anywhere. */
+export const REDFLAG_REASON_LABELS: Record<RedflagReason, string> = {
+  unpaid_rent: "Unpaid rent",
+  unpaid_utilities: "Unpaid bills (AC / electricity)",
+  damage: "Damage to property",
+  theft: "Theft",
+  other: "Other",
+}
+
+export function isRedflagReason(v: unknown): v is RedflagReason {
+  return typeof v === "string" && (REDFLAG_REASONS as readonly string[]).includes(v)
+}
+
+/** One hit from a CNIC/phone lookup (hms_redflag_search).
+ *
+ *  Lives here rather than in app/actions/redflag.ts because that file carries
+ *  the "use server" directive, and Turbopack permits ONLY async function
+ *  exports there — a type alias or a `export type { … } from` re-export is a
+ *  build error even though tsc and the webpack build both accept it. */
+export interface RedflagMatch {
+  id: string
+  fullName: string
+  cnicMasked: string | null
+  phoneMasked: string | null
+  amount: number
+  /** Only meaningful when reason === 'unpaid_rent'. */
+  monthsUnpaid: number | null
+  reason: RedflagReason
+  status: RedflagStatus
+  reportedAt: string
+  /** 'cnic' is authoritative; 'phone' is a weak signal — one number is shared by
+   *  up to 28 tenants in real data, so the UI must render it as "possible". */
+  matchKind: "cnic" | "phone"
+  reportedBySelf: boolean
+  /** The hostel that filed this report, and how to reach them. Unmasked on
+   *  purpose: the disclaimer holds the reporting organisation responsible for
+   *  accuracy, so a reader must be able to see who to weigh and who to ring.
+   *  Null only if that branch has since been deleted. */
+  reportedByHostelName: string | null
+  reportedByHostelPhone: string | null
+}
+
+/** A row of the cross-organization listing (hms_redflag_list). */
+export interface RedflagListRow {
+  id: string
+  fullName: string
+  cnicMasked: string | null
+  phoneMasked: string | null
+  amount: number
+  /** Only meaningful when reason === 'unpaid_rent'. */
+  monthsUnpaid: number | null
+  reason: RedflagReason
+  status: RedflagStatus
+  notes: string | null
+  reportedAt: string
+  resolvedAt: string | null
+  /** True when the caller's own branch filed this report — drives the
+   *  "Resolve" affordance, which is denied for everyone else's rows. */
+  reportedBySelf: boolean
+  /** The hostel that filed this report, and how to reach them. Unmasked on
+   *  purpose: the disclaimer holds the reporting organisation responsible for
+   *  accuracy, so a reader must be able to see who to weigh and who to ring.
+   *  Null only if that branch has since been deleted. */
+  reportedByHostelName: string | null
+  reportedByHostelPhone: string | null
+}

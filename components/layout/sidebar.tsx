@@ -3,11 +3,12 @@ import { memo } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { REDFLAG_ENABLED } from "@/lib/redflag-flag";
 import {
   LayoutDashboard, BedDouble, Users, CreditCard, Receipt,
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
   MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2, Globe,
-  ClipboardList, ShieldCheck, Search, Wallet,
+  ClipboardList, ShieldCheck, Search, Wallet, Flag,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
@@ -21,7 +22,23 @@ import { useHostelContext } from "@/contexts/hostel-context";
 //              branch, keyed to owner_id, so a partner would see an empty page
 // Settings is shown, but its Branches and Partners cards are hidden inside the
 // page for the same reason (see settings-client.tsx).
-const navGroups = [
+interface NavItem { href: string; label: string; icon: typeof LayoutDashboard; ownerOnly?: boolean; newTab?: boolean }
+
+
+
+// RedFlag is behind a rollout flag — the migration can be applied without
+// the feature appearing for anyone. See lib/redflag-flag.ts.
+// One page, one item: searching the registry IS the check, and "My Reports" is
+// a filter on that same list rather than a screen of its own.
+const REDFLAG_GROUP: { label: string; items: NavItem[] } = {
+    label: "RedFlag",
+    items: [
+      { href: "/redflag", label: "RedFlag", icon: Flag },
+    ],
+  }
+
+const navGroups: { label: string; items: NavItem[] }[] = [
+  ...(REDFLAG_ENABLED ? [REDFLAG_GROUP] : []),
   {
     label: "Residents",
     items: [

@@ -8,6 +8,8 @@ import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { sendApplicationEmail } from "@/lib/email";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
+import { checkTenantRedflagAction } from "@/app/actions/redflag";
+import type { RedflagMatch } from "@/types";
 import type { ApplicationStatus, PackageTier, Profile } from "@/types";
 
 /**
@@ -298,7 +300,30 @@ export interface ConvertFormData {
   department?: string | null;
 }
 
-export async function convertToTenant(appId: string, extra: ConvertFormData) {
+export interface ConvertToTenantResult {
+  success: boolean;
+  error?: string;
+  /**
+   * Unresolved RedFlag reports matching the applicant. Advisory: the approval
+   * was paused, not refused — re-calling with `{ ignoreRedflag: true }`
+   * completes it unchanged.
+   */
+  redflagWarning?: RedflagMatch[];
+  /**
+   * True when the registry could not answer — over budget, unreachable, or the
+   * session expired mid-approval. Set on a SUCCESSFUL approval, because the
+   * approval is never blocked by a RedFlag outage; it exists so the approver is
+   * told "nobody looked" instead of being shown the same silence as a clean
+   * applicant.
+   */
+  redflagUnavailable?: boolean;
+}
+
+export async function convertToTenant(
+  appId: string,
+  extra: ConvertFormData,
+  opts?: { ignoreRedflag?: boolean }
+): Promise<ConvertToTenantResult> {
   const actor = await resolveApplicationActor("standard");
   const admin = createAdminClient();
 
@@ -313,6 +338,30 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
 
   if (!(await actorHasAccess(actor, app.hostel_id))) {
     return { success: false, error: "Unauthorized" };
+  }
+
+  // Advisory RedFlag check against the applicant's own submitted CNIC/phone —
+  // the approver cannot edit either, so it has to happen here. Any failure of
+  // the registry is swallowed and the approval proceeds: a RedFlag outage must
+  // never stop an application being approved.
+  // Tracked so a registry that could not answer is reported as exactly that.
+  // "No reports" and "nobody looked" are the same empty list and opposite
+  // meanings, and showing the second as the first tells the approver a flagged
+  // applicant is clean.
+  let redflagUnavailable = false;
+  if (!opts?.ignoreRedflag && (app.cnic || app.phone)) {
+    try {
+      const check = await checkTenantRedflagAction({
+        cnic: app.cnic || undefined,
+        phone: app.phone || undefined,
+      });
+      if (check.degraded || check.error) redflagUnavailable = true;
+      const live = check.error ? [] : (check.matches ?? []).filter((m) => m.status === "reported");
+      if (live.length > 0) return { success: false, redflagWarning: live };
+    } catch {
+      // The approval still proceeds — see above — but the approver is told.
+      redflagUnavailable = true;
+    }
   }
 
   const { data: newTenant, error: tenantError } = await admin.from("hms_tenants").insert({
@@ -404,5 +453,5 @@ export async function convertToTenant(appId: string, extra: ConvertFormData) {
     })
     .eq("id", appId);
 
-  return { success: true };
+  return { success: true, redflagUnavailable };
 }

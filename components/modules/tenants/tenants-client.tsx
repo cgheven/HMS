@@ -34,6 +34,8 @@ import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "
 import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, resendTenantWelcomeMessageAction } from "@/app/actions/tenants";
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 import { addTenantAsManager, editTenantAsManager, checkoutTenantAsManager, giveTenantNoticeAsManager, cancelTenantNoticeAsManager } from "@/app/actions/managers";
+import { checkTenantRedflagAction } from "@/app/actions/redflag";
+import type { RedflagMatch } from "@/types";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
 import QRCode from "qrcode";
@@ -447,6 +449,111 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
 
 // ---------------------------------------------------------------------------
 
+// Advisory RedFlag warning shown before a tenant is actually written. A CNIC
+// hit is treated as an identity match (rose); a phone-only hit is treated as a
+// weak signal (amber) — one real number in the registry is shared by 28
+// different tenants, so a phone match can never be presented as a confirmed
+// defaulter. Never renders a raw CNIC: the action hands back masked values and
+// they are printed exactly as given.
+function RedflagWarningDialog({
+  matches,
+  proceedLabel,
+  onCancel,
+  onProceed,
+}: {
+  matches: RedflagMatch[] | null;
+  proceedLabel: string;
+  onCancel: () => void;
+  onProceed: () => void;
+}) {
+  const list = matches ?? [];
+  const identityMatch = list.some((m) => m.matchKind === "cnic");
+  return (
+    <Dialog open={list.length > 0} onOpenChange={(o) => !o && onCancel()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className={cn("flex items-center gap-2", identityMatch ? "text-rose-400" : "text-amber")}>
+            {identityMatch ? "🚩 RedFlag Alert" : "Possible RedFlag match"}
+          </DialogTitle>
+          <DialogDescription>
+            {identityMatch
+              ? list.every((m) => m.matchKind === "cnic")
+                ? "This person has a RedFlag record reported by another hostel."
+                : "This person has a RedFlag record reported by another hostel. Some entries below matched on phone number only — those need checking against the name."
+              : "Only the phone number matched, and phone numbers are sometimes shared between people — check that the name below is actually this person before you decide."}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-2 max-h-[45vh] overflow-y-auto scrollbar-thin">
+          {list.map((m) => (
+            <div
+              key={m.id}
+              className={cn(
+                "rounded-xl border p-3",
+                m.matchKind === "cnic" ? "bg-rose-500/15 border-rose-500/25" : "bg-amber/15 border-amber/25"
+              )}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-sm font-semibold">{m.fullName}</span>
+                <span className={cn("text-[10px] font-semibold uppercase tracking-wide shrink-0 pt-0.5", m.matchKind === "cnic" ? "text-rose-400" : "text-amber")}>
+                  {m.matchKind === "cnic" ? "CNIC match" : "Phone match"}
+                </span>
+              </div>
+              <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                {m.cnicMasked && <span>CNIC {m.cnicMasked}</span>}
+                {m.phoneMasked && <span>Phone {m.phoneMasked}</span>}
+                <span className={m.matchKind === "cnic" ? "text-rose-400" : "text-amber"}>Owes {formatCurrency(m.amount)}</span>
+                {m.monthsUnpaid != null && (
+                  <span>{m.monthsUnpaid} month{m.monthsUnpaid === 1 ? "" : "s"} unpaid</span>
+                )}
+                <span className="col-span-2">
+                  Reported {formatDate(m.reportedAt)}{m.reportedBySelf ? " · by your own hostel" : ""}
+                </span>
+                {/* The most useful thing on this screen. The operator is deciding
+                    right now whether to give this person a bed; one call to the
+                    hostel that filed it answers what a status pill cannot. */}
+                {!m.reportedBySelf && m.reportedByHostelName && (
+                  <span className="col-span-2 text-foreground/80">
+                    Reported by {m.reportedByHostelName}
+                    {m.reportedByHostelPhone && (
+                      <>
+                        {" · "}
+                        <a
+                          href={`tel:${m.reportedByHostelPhone.replace(/\s/g, "")}`}
+                          className="underline underline-offset-2 hover:text-amber"
+                        >
+                          {m.reportedByHostelPhone}
+                        </a>
+                        <span className="text-muted-foreground"> — call to verify</span>
+                      </>
+                    )}
+                  </span>
+                )}
+                {m.matchKind === "phone" && (
+                  <span className="col-span-2 text-amber/80">
+                    Phone numbers are sometimes shared — check the name matches before deciding.
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button variant="outline" onClick={onCancel}>Cancel</Button>
+          <Button
+            variant="ghost"
+            onClick={onProceed}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            {proceedLabel}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null }: Props) {
   const isPartner = !!partnerTier;
   const canFullTier = !partnerTier || partnerTier === "full";
@@ -524,6 +631,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [formQrDownloading, setFormQrDownloading] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  // Advisory RedFlag warning. `source` records which flow was interrupted so
+  // "Add Anyway" resumes exactly that one — the manual Add dialog or an
+  // application approval.
+  const [redflagPrompt, setRedflagPrompt] = useState<{ source: "save" | "approve"; matches: RedflagMatch[] } | null>(null);
+  const [redflagChecking, setRedflagChecking] = useState(false);
+  // Set when the registry could not answer (budget spent, timeout, outage). The
+  // add still proceeds -- the check is advisory -- but the operator is told it
+  // did not run, because a silent empty result reads as "clean".
+  const [redflagUnavailable, setRedflagUnavailable] = useState(false);
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null);
   const [pkgPrices, setPkgPrices] = useState<Partial<Record<PackageTier, PackagePrices>>>({});
   const [customPackages, setCustomPackages] = useState<CustomPackage[]>([]);
@@ -822,6 +938,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   }
 
   async function handleApproveApp() {
+    await performApprove(false);
+  }
+
+  // `ignoreRedflag` is set only by "Add Anyway" on the warning dialog. The
+  // approver cannot edit the applicant's CNIC/phone, so the check runs
+  // server-side against the application row inside convertToTenant.
+  async function performApprove(ignoreRedflag: boolean) {
     if (!approvingApp) return;
     setApproveSaving(true);
     const result = await convertToTenant(approvingApp.id, {
@@ -832,11 +955,26 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       organization: approveForm.type === "professional" ? (approveForm.organization || null) : null,
       organization_type: approveForm.type === "professional" ? (approveForm.organization_type || null) : null,
       department: approveForm.type === "professional" || (approveForm.type === "student" && studentCategoryHasDepartment(approveCategory)) ? (approveForm.department || null) : null,
-    });
+    }, { ignoreRedflag });
     if (result.success) {
-      toast({ title: approveForm.is_waiting ? "Added to waiting list" : "Tenant activated", description: `${approvingApp.full_name} has been added.` });
+      // The approval went through either way, but if the registry never
+      // answered, say so here — the approver has no other signal, and silence
+      // on this screen means "clean".
+      toast(
+        result.redflagUnavailable
+          ? {
+              title: "Added — RedFlag not checked",
+              description: `${approvingApp.full_name} has been added, but the defaulter registry could not be reached, so they were not verified.`,
+            }
+          : {
+              title: approveForm.is_waiting ? "Added to waiting list" : "Tenant activated",
+              description: `${approvingApp.full_name} has been added.`,
+            }
+      );
       setApprovingApp(null);
       await Promise.all([reload(), reloadApplications()]);
+    } else if (result.redflagWarning && result.redflagWarning.length > 0) {
+      setRedflagPrompt({ source: "approve", matches: result.redflagWarning });
     } else {
       toast({ title: "Error", description: result.error, variant: "destructive" });
     }
@@ -972,6 +1110,35 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     );
   }
 
+  // Advisory only. Returns the unresolved reports worth warning about, and an
+  // empty list for anything else. A RedFlag outage must never stop a tenant
+  // being added, so no failure here is propagated.
+  //
+  // It does, however, record WHY the list is empty. "No reports" and "the
+  // registry could not answer" are the same value but opposite meanings, and
+  // showing the second as the first quietly tells the operator that someone is
+  // clean when nobody actually looked.
+  async function liveRedflagMatches(cnic: string, phone: string): Promise<RedflagMatch[]> {
+    setRedflagUnavailable(false);
+    if (!cnic && !phone) return [];
+    try {
+      const result = await checkTenantRedflagAction({ cnic: cnic || undefined, phone: phone || undefined });
+      // Any error at all means nobody looked — not just the two the action
+      // labels `degraded`. An expired session, an unreachable DB or a thrown
+      // fetch all return a bare { error }, and treating those as "no reports"
+      // is the failure this whole function exists to prevent.
+      if (result.degraded || result.error) setRedflagUnavailable(true);
+      if (result.error || !result.matches) return [];
+      return result.matches.filter((m) => m.status === "reported");
+    } catch {
+      setRedflagUnavailable(true);
+      return [];
+    }
+  }
+
+  // Guard half. Everything that can reject the input lives here; the write
+  // itself is performSave(), which "Add Anyway" calls directly so an
+  // acknowledged RedFlag warning is not re-raised.
   async function handleSave() {
     if ((!hostelId && !isManager) || !form.full_name) return;
     if (!form.is_waiting && !form.check_in) return;
@@ -979,6 +1146,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       toast({ title: "Invalid CNIC", description: "Format must be XXXXX-XXXXXXX-X (13 digits)", variant: "destructive" });
       return;
     }
+    // Creates only — an owner editing an existing profile should not be
+    // re-warned about a tenant they already accepted.
+    if (!editing) {
+      setRedflagChecking(true);
+      const matches = await liveRedflagMatches(form.cnic, form.phone);
+      setRedflagChecking(false);
+      if (matches.length > 0) {
+        setRedflagPrompt({ source: "save", matches });
+        return;
+      }
+    }
+    await performSave();
+  }
+
+  async function performSave() {
     setSaving(true);
     const supabase = createClient();
 
@@ -2856,6 +3038,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         </DialogContent>
       </Dialog>
 
+      <RedflagWarningDialog
+        matches={redflagPrompt?.matches ?? null}
+        proceedLabel="Add Anyway"
+        onCancel={() => setRedflagPrompt(null)}
+        onProceed={() => {
+          const source = redflagPrompt?.source;
+          setRedflagPrompt(null);
+          if (source === "approve") void performApprove(true);
+          else if (source === "save") void performSave();
+        }}
+      />
+
       <ConfirmDialog
         open={!!deleteTenant}
         title={`Delete ${deleteTenant?.full_name ?? "tenant"}?`}
@@ -3486,9 +3680,19 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               <Button variant="outline" onClick={() => setDialogOpen(false)}>Close</Button>
             ) : (
               <>
+                {/* The RedFlag check is advisory and fails open, so the add always
+                    proceeds — but an operator must never read a silent pass as
+                    "this person is clean" when nothing was actually checked. */}
+                {redflagUnavailable && !editing && (
+                  <span className="text-xs text-amber mr-auto self-center">
+                    RedFlag check unavailable — not verified
+                  </span>
+                )}
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={saving || !form.full_name || (!form.is_waiting && !form.check_in)}>
-                  {saving
+                <Button onClick={handleSave} disabled={saving || redflagChecking || !form.full_name || (!form.is_waiting && !form.check_in)}>
+                  {redflagChecking
+                    ? "Checking…"
+                    : saving
                     ? "Saving…"
                     : editing
                       ? editing.is_waiting && !form.is_waiting
