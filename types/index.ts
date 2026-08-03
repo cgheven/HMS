@@ -557,6 +557,11 @@ export interface DashboardStats {
   monthly_revenue: number;
   security_deposit_total: number;
   security_deposit_count: number;
+  /** Deposit money taken THIS month. Subtracted from net_profit (a deposit is
+   *  refundable, not income), so it has to be visible or the profit figure
+   *  cannot be reconciled from the other tiles. Distinct from
+   *  security_deposit_total, which is everything currently held. */
+  deposits_collected_month: number;
   monthly_ac_units: number;
 }
 

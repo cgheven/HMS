@@ -300,6 +300,7 @@ export async function getDashboardData() {
     monthly_revenue: monthlyRevenue,
     security_deposit_total: securityDepositTotal,
     security_deposit_count: securityDepositCount,
+    deposits_collected_month: depositsCollected,
     monthly_ac_units: monthlyACUnits,
   };
 

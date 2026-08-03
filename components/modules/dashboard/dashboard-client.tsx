@@ -132,10 +132,14 @@ export function DashboardClient({ data }: Props) {
           { label: "Staff Salaries", value: formatCurrency(stats.monthly_salaries), sub: undefined,                                          icon: UserCog,      color: "text-purple-400", iconBg: "bg-purple-500/10 border-purple-500/20",  hover: "hover:border-purple-500/30",  delay: 300 },
           { label: "Total Expenses", value: formatCurrency(stats.monthly_expenses), sub: undefined,                                          icon: TrendingDown, color: "text-rose-400",   iconBg: "bg-rose-500/10 border-rose-500/20",      hover: "hover:border-rose-500/30",    delay: 375 },
           {
-            label: "Deposits Held",
-            value: formatCurrency(stats.security_deposit_total),
+            // This month's intake leads, because it is the figure net profit
+            // subtracts and the one an owner reconciles the profit tile
+            // against. The running total held is the slower-moving background
+            // number, so it drops to the sub-line with the tenant count.
+            label: "Deposits Collected",
+            value: formatCurrency(stats.deposits_collected_month),
             sub: stats.security_deposit_count > 0
-              ? `${stats.security_deposit_count} tenant${stats.security_deposit_count !== 1 ? "s" : ""}`
+              ? `${formatCurrency(stats.security_deposit_total)} held · ${stats.security_deposit_count} tenant${stats.security_deposit_count !== 1 ? "s" : ""}`
               : "No deposits yet",
             icon: ShieldCheck, color: "text-violet-400", iconBg: "bg-violet-500/10 border-violet-500/20", hover: "hover:border-violet-500/30", delay: 450,
           },
