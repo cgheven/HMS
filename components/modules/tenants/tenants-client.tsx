@@ -555,7 +555,7 @@ function RedflagWarningDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-2 max-h-[45vh] overflow-y-auto scrollbar-thin">
+        <div className="space-y-2 max-h-[45vh] overflow-y-auto">
           {list.map((m) => (
             <div
               key={m.id}
@@ -2714,7 +2714,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
       {/* Approve Application Dialog */}
       <Dialog open={!!approvingApp} onOpenChange={(open) => { if (!open) setApprovingApp(null); }}>
-        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto scrollbar-thin">
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -3242,7 +3242,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
       {/* Add / Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto scrollbar-thin">
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               {viewOnly

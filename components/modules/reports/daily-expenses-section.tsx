@@ -186,7 +186,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
           {d.paymentsList.length === 0 ? (
             <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No payments collected on {periodLabel}</p>
           ) : (
-            <div className="max-h-[220px] overflow-auto scrollbar-hide rounded-xl border border-white/5">
+            <div className="max-h-[220px] overflow-auto rounded-xl border border-white/5">
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-card">
                   <tr className="text-[10px] text-muted-foreground uppercase tracking-wide">
@@ -219,7 +219,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
           {d.expenseList.length === 0 ? (
             <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No expenses recorded on {periodLabel}</p>
           ) : (
-            <div className="max-h-[220px] overflow-auto scrollbar-hide rounded-xl border border-white/5">
+            <div className="max-h-[220px] overflow-auto rounded-xl border border-white/5">
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-card">
                   <tr className="text-[10px] text-muted-foreground uppercase tracking-wide">
@@ -252,7 +252,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
           {d.joinedList.length === 0 ? (
             <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No new members joined on {periodLabel}</p>
           ) : (
-            <div className="max-h-[220px] overflow-auto scrollbar-hide rounded-xl border border-white/5">
+            <div className="max-h-[220px] overflow-auto rounded-xl border border-white/5">
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-card">
                   <tr className="text-[10px] text-muted-foreground uppercase tracking-wide">
@@ -282,7 +282,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
           {d.leftList.length === 0 ? (
             <p className="text-xs text-muted-foreground rounded-xl border border-white/5 p-3">No one checked out on {periodLabel}</p>
           ) : (
-            <div className="max-h-[220px] overflow-auto scrollbar-hide rounded-xl border border-white/5">
+            <div className="max-h-[220px] overflow-auto rounded-xl border border-white/5">
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-card">
                   <tr className="text-[10px] text-muted-foreground uppercase tracking-wide">

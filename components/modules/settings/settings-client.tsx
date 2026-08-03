@@ -2108,7 +2108,7 @@ export function SettingsClient() {
               value={reminderTemplate}
               onChange={(e) => setReminderTemplate(e.target.value)}
               rows={9}
-              className="w-full rounded-xl border border-sidebar-border bg-card p-3 text-sm font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/50 resize-y scrollbar-thin"
+              className="w-full rounded-xl border border-sidebar-border bg-card p-3 text-sm font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/50 resize-y"
             />
             <p className="text-[11px] text-muted-foreground">
               Placeholders:&nbsp;
@@ -2264,7 +2264,7 @@ export function SettingsClient() {
               value={welcomeTemplate}
               onChange={(e) => setWelcomeTemplate(e.target.value)}
               rows={8}
-              className="w-full rounded-xl border border-sidebar-border bg-card p-3 text-sm font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/50 resize-y scrollbar-thin"
+              className="w-full rounded-xl border border-sidebar-border bg-card p-3 text-sm font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/50 resize-y"
             />
             <p className="text-[11px] text-muted-foreground">
               Placeholders:&nbsp;

@@ -346,7 +346,7 @@ export function ReportsClient(props: Props) {
                   </div>
                   <span className="text-sm font-semibold text-purple-400">{d.joinedTenantsList.length}</span>
                 </div>
-                <div className="max-h-[320px] overflow-auto scrollbar-hide">
+                <div className="max-h-[320px] overflow-auto">
                   <table className="w-full text-sm">
                     <thead className="sticky top-0 bg-card">
                       <tr className="text-xs text-muted-foreground font-medium border-b border-sidebar-border">

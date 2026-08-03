@@ -99,7 +99,7 @@ export function HostelSwitcher({ activeHostel, hostels }: Props) {
                 Switch Branch
               </p>
             </div>
-            <div className="p-1 max-h-64 overflow-y-auto scrollbar-thin">
+            <div className="p-1 max-h-64 overflow-y-auto">
               {hostels.map((h) => {
                 const isActive = h.id === activeHostel?.id;
                 return (

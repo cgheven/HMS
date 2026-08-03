@@ -157,7 +157,7 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto scrollbar-thin">
+      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Tenant History</DialogTitle>
         </DialogHeader>

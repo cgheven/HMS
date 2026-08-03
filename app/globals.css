@@ -75,6 +75,34 @@
   h1, h2 {
     font-family: var(--font-serif), Georgia, serif;
   }
+
+  /* Scrollable regions must advertise themselves. Left to the browser, macOS
+     renders an overlay bar that fades out — so a clipped table reads as the
+     whole table — and Windows renders a 17px light-grey bar that fights the
+     dark theme. Declaring ::-webkit-scrollbar opts WebKit out of overlay mode,
+     making the bar permanently visible on both. `.scrollbar-hide` (in the
+     utilities layer, so it wins) is the opt-out for nav/chip strips. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.25) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.25);
+    border-radius: 9999px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.45);
+  }
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
 }
 
 @layer utilities {
@@ -84,25 +112,6 @@
     scrollbar-width: none;
   }
   .scrollbar-hide::-webkit-scrollbar { display: none; }
-
-  /* Scrollbar — thin visible (cross-platform, dark-theme) */
-  .scrollbar-thin {
-    scrollbar-width: thin;
-    scrollbar-color: hsl(var(--muted-foreground) / 0.25) transparent;
-  }
-  .scrollbar-thin::-webkit-scrollbar {
-    width: 5px;
-  }
-  .scrollbar-thin::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  .scrollbar-thin::-webkit-scrollbar-thumb {
-    background-color: hsl(var(--muted-foreground) / 0.25);
-    border-radius: 9999px;
-  }
-  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    background-color: hsl(var(--muted-foreground) / 0.45);
-  }
 
   /* Amber glow used on KPI cards and primary buttons */
   .glow-amber {

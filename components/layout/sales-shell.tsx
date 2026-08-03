@@ -55,7 +55,7 @@ export function SalesShell({ salesRep, children }: SalesShellProps) {
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto scrollbar-thin">
+      <main className="flex-1 overflow-y-auto">
         <div className="container mx-auto px-4 sm:px-6 py-6 max-w-7xl">
           {children}
         </div>

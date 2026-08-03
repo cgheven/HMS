@@ -664,7 +664,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
             </div>
           </DialogHeader>
 
-          <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="flex-1 overflow-y-auto">
             {/* Selected items */}
             <div className="px-6 pt-4 pb-3">
               {selectedItems.length === 0 ? (
@@ -783,7 +783,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
             <DialogTitle>{groceryEditing ? "Edit Grocery Item" : "Add Grocery Item"}</DialogTitle>
           </DialogHeader>
 
-          <div className="flex-1 overflow-y-auto scrollbar-thin px-6 py-4 space-y-4">
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
             {/* Quick presets */}
             {!groceryEditing && (
               <div className="space-y-2">
@@ -792,7 +792,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
                   <Input placeholder="Search grocery items…" value={grocerySearch} onChange={(e) => setGrocerySearch(e.target.value)} className="pl-8 h-8 text-sm" />
                 </div>
-                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto scrollbar-hide">
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
                   {filteredGroceryPresets.map((p) => (
                     <button key={p} onClick={() => setGroceryForm((f) => ({ ...f, title: p }))}
                       className={`px-2.5 py-1 rounded-lg text-xs border transition-all ${groceryForm.title === p ? "border-blue-500/50 bg-blue-500/15 text-blue-400 font-medium" : "border-sidebar-border text-foreground/70 hover:border-blue-500/30 hover:text-foreground"}`}>

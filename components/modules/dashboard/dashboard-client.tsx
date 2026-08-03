@@ -190,7 +190,7 @@ export function DashboardClient({ data }: Props) {
               <p className="text-xs">Every tenant paid this month</p>
             </div>
           ) : (
-            <div className="space-y-2 max-h-[260px] overflow-y-auto scrollbar-hide">
+            <div className="space-y-2 max-h-[260px] overflow-y-auto">
               {defaulters.map((d, i) => (
                 <div
                   key={d.id}

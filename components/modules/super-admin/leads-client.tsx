@@ -900,7 +900,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
 
       {/* Add / Edit Lead Dialog */}
       <Dialog open={addLeadOpen} onOpenChange={(o) => { setAddLeadOpen(o); if (!o) { setAddLeadForm(emptyAddLeadForm); setEditLeadId(null); } }}>
-        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto scrollbar-thin">
+        <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               {editLeadId
@@ -1066,7 +1066,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
 
       {/* Lead Detail Dialog */}
       <Dialog open={detailOpen} onOpenChange={(o) => !o && setDetailOpen(false)}>
-        <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto scrollbar-thin">
+        <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto">
           {detailLead && (
             <>
               <DialogHeader>
@@ -1219,7 +1219,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
                   ) : activities.length === 0 ? (
                     <p className="text-sm text-muted-foreground py-3">No activity logged yet.</p>
                   ) : (
-                    <div className="space-y-2.5 max-h-64 overflow-y-auto scrollbar-thin pr-1">
+                    <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
                       {activities.map((activity) => {
                         const config = ACTIVITY_TYPE_CONFIG[activity.type];
                         const Icon = config.icon;
