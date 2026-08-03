@@ -5,6 +5,7 @@ import { AlertTriangle, CheckCircle2, Flag, Loader2, Plus, Search, ShieldAlert }
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { listRedflagsAction, resolveRedflagAction } from "@/app/actions/redflag";
 import { toast } from "@/hooks/use-toast";
@@ -18,6 +19,10 @@ import { useRedflagGate } from "./redflag-shell";
  *  spends part of the caller's 300-per-hour budget. */
 const SEARCH_DEBOUNCE_MS = 400;
 const MIN_SEARCH_CHARS = 2;
+
+/** Radix Select rejects an empty-string item value, so "no reason filter" needs
+ *  a sentinel. Mapped back to "" the moment it leaves the control. */
+const ANY_REASON = "__any__";
 
 type StatusChip = "all" | "reported" | "resolved";
 
@@ -289,24 +294,44 @@ export function RedflagClient({
               double its width and read as equally important. This stays one
               control on one line, and carries the reason's own tint once set so
               an active filter is still obvious at a glance. */}
-          <select
-            value={reasonFilter}
-            onChange={(e) => setReasonFilter(e.target.value as RedflagReason | "")}
-            aria-label="Filter by reason"
-            className={cn(
-              "h-7 pl-3 pr-2 rounded-full text-xs font-medium border bg-transparent cursor-pointer transition-all focus:outline-none focus:ring-1 focus:ring-ring",
-              reasonFilter
-                ? REASON_STYLES[reasonFilter]
-                : "border-transparent text-muted-foreground hover:text-foreground hover:border-sidebar-border"
-            )}
+          {/* Radix, not a native <select>. A native one renders the OS menu —
+              light grey with a blue highlight — which ignores the app's theme
+              entirely and looked like a different product. ANY_REASON is a
+              sentinel because Radix forbids an empty-string item value. */}
+          <Select
+            value={reasonFilter || ANY_REASON}
+            onValueChange={(v) => setReasonFilter(v === ANY_REASON ? "" : (v as RedflagReason))}
           >
-            <option value="" className="bg-card text-foreground">Any reason</option>
-            {REDFLAG_REASONS.map((key) => (
-              <option key={key} value={key} className="bg-card text-foreground">
-                {REDFLAG_REASON_LABELS[key]}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger
+              aria-label="Filter by reason"
+              className={cn(
+                "h-7 w-auto gap-1.5 pl-3 pr-2 rounded-full border text-xs font-medium bg-transparent transition-all focus:ring-1 focus:ring-ring [&>svg]:opacity-60",
+                reasonFilter
+                  ? REASON_STYLES[reasonFilter]
+                  : "border-transparent text-muted-foreground hover:text-foreground hover:border-sidebar-border"
+              )}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="min-w-[13rem]">
+              <SelectItem value={ANY_REASON} className="text-xs">
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
+                  Any reason
+                </span>
+              </SelectItem>
+              {REDFLAG_REASONS.map((key) => (
+                <SelectItem key={key} value={key} className="text-xs">
+                  {/* The same tint the pill uses in the table, so a reason is
+                      recognisable by colour before the label is read. */}
+                  <span className="flex items-center gap-2">
+                    <span className={cn("h-2 w-2 rounded-full border", REASON_STYLES[key])} />
+                    {REDFLAG_REASON_LABELS[key]}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
 
