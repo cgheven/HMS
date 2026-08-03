@@ -235,7 +235,12 @@ export interface ReportData {
       status: string | null;
       notes: string | null;
     }[];
+    /** Everything owed for the period, paid or not. Drives the "of Rs X" sub-lines. */
     totalsBySource: { bills: number; staff: number; expenses: number; kitchen: number };
+    /** What actually left the bank. Bills and salaries can sit unpaid; general
+     *  expenses and kitchen are only ever recorded after the money is spent. */
+    paidBySource: { bills: number; staff: number };
+    /** Actual spend — paid rows only, so this reconciles with the Today tab. */
     grandTotal: number;
     unpaidBillsTotal: number;
     pendingSalariesTotal: number;
@@ -676,9 +681,16 @@ export async function getReportData(
     expenses: expenseRows.reduce((s, r) => s + r.amount, 0),
     kitchen: kitchenRows.reduce((s, r) => s + r.amount, 0),
   };
-  const grandTotal = totalsBySource.bills + totalsBySource.staff + totalsBySource.expenses + totalsBySource.kitchen;
-  const unpaidBillsTotal = billRows.filter((r) => r.status !== "paid").reduce((s, r) => s + r.amount, 0);
-  const pendingSalariesTotal = salaryRows.filter((r) => r.status !== "paid").reduce((s, r) => s + r.amount, 0);
+  const paidBySource = {
+    bills: billRows.filter((r) => r.status === "paid").reduce((s, r) => s + r.amount, 0),
+    staff: salaryRows.filter((r) => r.status === "paid").reduce((s, r) => s + r.amount, 0),
+  };
+  // Paid rows only. A pending salary is a liability, not money spent — counting
+  // it here made this tab disagree with the Today tab and the dashboard by
+  // exactly the unpaid amount.
+  const grandTotal = paidBySource.bills + paidBySource.staff + totalsBySource.expenses + totalsBySource.kitchen;
+  const unpaidBillsTotal = totalsBySource.bills - paidBySource.bills;
+  const pendingSalariesTotal = totalsBySource.staff - paidBySource.staff;
 
   // ── Receivables aging ──────────────────────────────────────────────────────
   // "How late" is derived from for_month vs the current month: the DB has no
@@ -963,6 +975,7 @@ export async function getReportData(
       expenseReport: {
         rows: expenseReportRows,
         totalsBySource,
+        paidBySource,
         grandTotal,
         unpaidBillsTotal,
         pendingSalariesTotal,

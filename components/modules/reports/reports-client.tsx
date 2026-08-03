@@ -1059,9 +1059,12 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: sourceColor("bill") }} />
             <p className="text-xs text-muted-foreground font-medium">Bills</p>
           </div>
-          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.totalsBySource.bills)}</p>
+          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.paidBySource.bills)}</p>
           {d.expenseReport.unpaidBillsTotal > 0 && (
-            <p className="text-xs text-rose-400 mt-0.5">{formatCurrency(d.expenseReport.unpaidBillsTotal)} unpaid</p>
+            <p className="text-xs text-rose-400 mt-0.5">
+              {formatCurrency(d.expenseReport.unpaidBillsTotal)} unpaid
+              <span className="text-muted-foreground"> · {formatCurrency(d.expenseReport.totalsBySource.bills)} total</span>
+            </p>
           )}
         </div>
         <div className="rounded-2xl border border-sidebar-border bg-card p-4">
@@ -1069,9 +1072,12 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: sourceColor("salary") }} />
             <p className="text-xs text-muted-foreground font-medium">Staff Salaries</p>
           </div>
-          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.totalsBySource.staff)}</p>
+          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.paidBySource.staff)}</p>
           {d.expenseReport.pendingSalariesTotal > 0 && (
-            <p className="text-xs text-amber mt-0.5">{formatCurrency(d.expenseReport.pendingSalariesTotal)} pending</p>
+            <p className="text-xs text-amber mt-0.5">
+              {formatCurrency(d.expenseReport.pendingSalariesTotal)} remaining
+              <span className="text-muted-foreground"> · {formatCurrency(d.expenseReport.totalsBySource.staff)} total</span>
+            </p>
           )}
         </div>
         <div className="rounded-2xl border border-sidebar-border bg-card p-4">
@@ -1097,6 +1103,11 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
             <p className="text-xs text-amber font-medium">Grand Total</p>
           </div>
           <p className="text-lg font-bold text-amber">{formatCurrency(d.expenseReport.grandTotal)}</p>
+          {d.expenseReport.unpaidBillsTotal + d.expenseReport.pendingSalariesTotal > 0 && (
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {formatCurrency(d.expenseReport.unpaidBillsTotal + d.expenseReport.pendingSalariesTotal)} still due
+            </p>
+          )}
         </div>
       </div>
 
