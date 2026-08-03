@@ -23,6 +23,24 @@ export function formatDate(date: string | Date) {
   }).format(new Date(date));
 }
 
+// "2026-07" -> "July 2026". A hostel owner reads a bill month, not an ISO key;
+// "2026-07" in a sentence about their money reads as a serial number.
+// Built from parts because new Date("2026-07") is parsed as UTC midnight, which
+// in Pakistan (UTC+5) is still 30 June locally and renders as the wrong month.
+export function formatMonthLong(forMonth: string) {
+  const [y, m] = forMonth.split("-").map(Number);
+  if (!y || !m) return forMonth;
+  return new Date(y, m - 1, 1).toLocaleDateString("en-PK", { month: "long", year: "numeric" });
+}
+
+// "2026-08-05" -> "5 August 2026". Unabbreviated, for prose telling an owner
+// exactly which date to type; formatDate's "5 Aug 2026" is for dense UI.
+export function formatDayLong(date: string) {
+  const [y, m, d] = date.slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return date;
+  return new Date(y, m - 1, d).toLocaleDateString("en-PK", { day: "numeric", month: "long", year: "numeric" });
+}
+
 export function formatDateTime(date: string | Date) {
   return new Intl.DateTimeFormat("en-PK", {
     day: "numeric",

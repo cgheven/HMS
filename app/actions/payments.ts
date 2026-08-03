@@ -115,12 +115,19 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("hms_tenants")
-    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, registration_fee, room_id, food_breakfast, food_lunch, food_dinner")
+    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner")
     .eq("id", tenantId)
     .eq("hostel_id", hostelId) // ensures the tenant belongs to the owner's hostel
     .single();
 
-  if (error || !data) throw new Error("Tenant not found or access denied");
+  // "Not found" and "the query itself failed" are opposite meanings, and
+  // reporting the second as the first is how a missing column reads to an owner
+  // as a tenant who has vanished. PGRST116 is the only code that genuinely means
+  // no row matched; anything else is the database refusing to answer.
+  if (error && error.code !== "PGRST116") {
+    throw new Error(`Could not read the tenant record: ${error.message}`);
+  }
+  if (!data) throw new Error("Tenant not found or access denied");
   return data as {
     id: string;
     monthly_rent: number;
@@ -130,6 +137,7 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
     check_in: string;
     check_out: string | null;
     security_deposit: number | null;
+    deposit_collected_amount: number | null;
     registration_fee: number | null;
     room_id: string | null;
     food_breakfast: boolean;
@@ -688,7 +696,7 @@ export async function applyRoomACUnitsAction(
 
     // ── Verify room + fetch package config + prev month reading + tenants in parallel ──
     const prevMonthStr = getPrevMonth(forMonth);
-    const [{ data: room }, { data: pkgConfig }, { data: prevRecord }, { data: allTenants }] = await Promise.all([
+    const [{ data: room }, { data: pkgConfig }, { data: prevRecord }, { data: allTenants, error: allTenantsErr }] = await Promise.all([
       supabase.from("hms_rooms").select("id, hostel_id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).single(),
       supabase.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
@@ -697,12 +705,17 @@ export async function applyRoomACUnitsAction(
       // month would split it across tenants who had not moved in yet. Applying
       // July for Room 5 billed two August arrivals Rs 3,239 each.
       supabase.from("hms_tenants")
-        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
+        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
         .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
         .eq("is_active", true)
         .lt("check_in", firstOfNextMonth(forMonth)),
     ]);
+
+    // A failed tenant query returns null, which falls through to "No active
+    // tenants found in this room" below — an answer about the room, for a
+    // question the database never actually answered.
+    if (allTenantsErr) throw new Error(`Could not read this room's tenants: ${allTenantsErr.message}`);
 
     if (!room) throw new Error("Room not found or access denied");
     if (!room.has_ac) throw new Error("This room does not have AC");
@@ -798,7 +811,11 @@ export async function applyRoomACUnitsAction(
         const addonFoodCharge = pkgConfig ? calcFoodAddonCharge(t, pkgConfig) : 0;
         const foodCharge = tierFoodCharge + addonFoodCharge;
         const depositCharge = computeDepositCharge(
-          { check_in: t.check_in, security_deposit: (t as { security_deposit?: number | null }).security_deposit },
+          {
+            check_in: t.check_in,
+            security_deposit: (t as { security_deposit?: number | null }).security_deposit,
+            deposit_collected_amount: (t as { deposit_collected_amount?: number | null }).deposit_collected_amount ?? 0,
+          },
           forMonth
         );
         const registrationFeeCharge = computeRegistrationFeeCharge(

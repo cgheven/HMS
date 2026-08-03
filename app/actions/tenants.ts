@@ -10,7 +10,9 @@ import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
-import { pktYearMonth } from "@/lib/pkt-time";
+import { computeDepositCharge, computeRegistrationFeeCharge } from "@/lib/payment-calc";
+import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
+import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
 import { deriveOpeningReading } from "@/lib/ac-billing";
 import { sendWelcomeMessageNow, type WelcomeSendResult } from "@/lib/whatsapp-welcome-action";
@@ -408,7 +410,7 @@ export async function getTenantTimeline(
       supabase
         .from("hms_payments")
         .select(
-          "id, for_month, amount, amount_paid, late_fee, payment_method, payment_date, status, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, payment_package_tier, created_at"
+          "id, for_month, amount, amount_paid, late_fee, payment_method, payment_date, status, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, payment_package_tier, created_at, is_reservation"
         )
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
@@ -504,9 +506,14 @@ export async function getTenantTimeline(
             id: `installment-${inst.id}`,
             type: completesPayment ? "payment" : "partially_paid",
             date: inst.payment_date ?? inst.created_at,
-            label: completesPayment
-              ? `Rs. ${instAmount.toLocaleString()} paid`
-              : `Rs. ${instAmount.toLocaleString()} received (partial)`,
+            // Same reason as the no-installment branch below: "paid" against a
+            // month the tenant has not lived in reads as that month's rent
+            // being settled.
+            label: p.is_reservation
+              ? `Rs. ${instAmount.toLocaleString()} received to reserve a bed`
+              : completesPayment
+                ? `Rs. ${instAmount.toLocaleString()} paid`
+                : `Rs. ${instAmount.toLocaleString()} received (partial)`,
             sub: completesPayment
               ? `${p.for_month}${methodLabel ? " · " + methodLabel : ""}`
               : `${p.for_month}${methodLabel ? " · " + methodLabel : ""} · Rs. ${dueAfterThis.toLocaleString()} remaining of Rs. ${Number(inst.total_due).toLocaleString()}`,
@@ -547,7 +554,12 @@ export async function getTenantTimeline(
           id: `payment-${p.id}`,
           type: "payment",
           date: eventDate,
-          label: `Rs. ${totalPaid.toLocaleString()} paid`,
+          // A reservation is money taken to hold a bed, not a month's rent being
+          // settled. Unlabelled it reads as "July was paid" on the timeline, which
+          // is the same confusion the WhatsApp text was reworded to avoid.
+          label: p.is_reservation
+            ? `Rs. ${totalPaid.toLocaleString()} received to reserve a bed`
+            : `Rs. ${totalPaid.toLocaleString()} paid`,
           sub: `${p.for_month}${methodLabel ? " · " + methodLabel : ""}`,
           amount: totalPaid,
           method: methodLabel,
@@ -890,13 +902,19 @@ export async function backfillTenantPaymentsAction(
     const adminDb = createAdminClient();
 
     // Fetch tenant — verify it belongs to this hostel
-    const { data: tenant } = await adminDb
+    const { data: tenant, error: tenantErr } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, room_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, registration_fee, package_tier, billing_type, food_breakfast, food_lunch, food_dinner")
+      .select("id, full_name, hostel_id, room_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, deposit_collected_amount, registration_fee, package_tier, billing_type, food_breakfast, food_lunch, food_dinner")
       .eq("id", tenantId)
       .eq("hostel_id", hostelId)
       .single();
 
+    // PGRST116 is the only code that means "no row matched". Anything else is
+    // the query failing, and reporting that as "Tenant not found" is how a
+    // missing column reads to an owner as a tenant who has vanished.
+    if (tenantErr && tenantErr.code !== "PGRST116") {
+      throw new Error(`Could not read the tenant record: ${tenantErr.message}`);
+    }
     if (!tenant) throw new Error("Tenant not found");
     if (!tenant.check_in) return { success: true, monthsCreated: 0 };
 
@@ -921,7 +939,6 @@ export async function backfillTenantPaymentsAction(
     const addonFoodCharge = pkgConfig ? calcFoodAddonCharge(tenant, pkgConfig) : 0;
     const foodCharge = tierFoodCharge + addonFoodCharge;
     const acMaintenanceCharge = roomData?.has_ac ? Number(pkgConfig?.ac_maintenance_rate ?? 0) : 0;
-    const checkInMonth = tenant.check_in.slice(0, 7);
     const isDaily = tenant.billing_type === "daily";
     const checkIn = tenant.check_in.slice(0, 10);
     const checkOut = (tenant.check_out as string | null)?.slice(0, 10) ?? null;
@@ -942,13 +959,11 @@ export async function backfillTenantPaymentsAction(
         : Number(tenant.monthly_rent);
 
       // Deposit and registration fee are billed once, on the check-in month
-      // only — every later month is rent + food + AC maintenance as before.
-      // Reimplemented inline rather than via computeDepositCharge/
-      // computeRegistrationFeeCharge, matching how this file already
-      // reimplements the deposit logic independently (a pre-existing
-      // inconsistency, not introduced here).
-      const depositCharge = month === checkInMonth ? Number(tenant.security_deposit ?? 0) : 0;
-      const registrationFeeCharge = month === checkInMonth ? Number(tenant.registration_fee ?? 0) : 0;
+      // only. Shared helpers rather than an inline copy — the inline version
+      // could not see deposit_collected_on and would re-bill a deposit already
+      // collected as a seat reservation.
+      const depositCharge = computeDepositCharge(tenant, month);
+      const registrationFeeCharge = computeRegistrationFeeCharge(tenant, month);
       const monthAmount = baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge;
 
       // Monthly tenants are recorded as already settled: the backfill exists to
@@ -990,7 +1005,7 @@ export async function backfillTenantPaymentsAction(
         payment_package_tier: tenant.package_tier,
         billed_days: nights,
         daily_rate_billed: isDaily ? dailyRate : null,
-        ...(month === checkInMonth ? { notes: `Security deposit: Rs ${tenant.security_deposit ?? 0} (paid on joining)` } : {}),
+        ...(depositCharge > 0 ? { notes: `Security deposit: Rs ${depositCharge} (paid on joining)` } : {}),
       }];
     });
 
@@ -1006,6 +1021,246 @@ export async function backfillTenantPaymentsAction(
     revalidatePath("/payments");
     return { success: true, monthsCreated: rows.length };
   } catch (err) {
+    unstable_rethrow(err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// recordReservationDepositAction
+// An owner takes a deposit to HOLD a bed for a waiting-list tenant who joins
+// later. It lives in tenants.ts rather than payments.ts because it is a tenant
+// lifecycle event, not a monthly-bill mutation: it flips
+// hms_tenants.deposit_collected_on, writes the Member Ledger event, and is
+// driven entirely from the Tenants page's waiting list. Every other action that
+// writes hms_payments as a side effect of a tenant lifecycle step
+// (backfillTenantPaymentsAction, checkoutTenantAction) already lives here too.
+//
+// The row it writes is deliberately NOT a monthly bill: is_reservation = true,
+// for_month = the month the CASH was taken (so it lands in that month's
+// Payments page and Collected figure), and the tenant's own rent cycle still
+// starts from check_in untouched.
+// ---------------------------------------------------------------------------
+
+const VALID_RESERVATION_METHODS = new Set<string>(["cash", "bank_transfer", "jazzcash", "easypaisa", "sadapay", "other"]);
+// Same ceiling app/actions/payments.ts applies to every other money field.
+const MAX_RESERVATION_AMOUNT = 9_999_999.99;
+
+export interface RecordReservationDepositInput {
+  tenantId: string;
+  amount: number;
+  collectedOn: string;
+  paymentMethod: PaymentMethod;
+  notes?: string;
+}
+
+export async function recordReservationDepositAction(
+  input: RecordReservationDepositInput
+): Promise<{ success: boolean; paymentId?: string; receiptNumber?: string; collectedOn?: string; amount?: number; remainingDeposit?: number; error?: string }> {
+  try {
+    await requireOwnerOrAbove();
+    const hostelId = await resolveHostelId();
+    const adminDb = createAdminClient();
+
+    const amount = Number(input.amount);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > MAX_RESERVATION_AMOUNT) {
+      throw new Error(`Deposit amount must be a positive number no greater than ${MAX_RESERVATION_AMOUNT.toLocaleString()}.`);
+    }
+    if (!VALID_RESERVATION_METHODS.has(input.paymentMethod)) {
+      throw new Error(`Invalid payment method: "${input.paymentMethod}"`);
+    }
+    if (!DATE_RE.test(input.collectedOn)) throw new Error("Invalid collection date format");
+    // Built from parts rather than Date.parse: "2026-02-30" parses happily and
+    // rolls over to 2 March, and a UTC round-trip shifts the day in PKT.
+    const [cy, cm, cd] = input.collectedOn.split("-").map(Number);
+    const collected = new Date(cy, cm - 1, cd);
+    if (collected.getFullYear() !== cy || collected.getMonth() !== cm - 1 || collected.getDate() !== cd) {
+      throw new Error("Invalid collection date");
+    }
+    if (input.collectedOn > pktTodayDateString()) {
+      throw new Error("Collection date cannot be in the future.");
+    }
+    const notes = input.notes?.trim() ? input.notes.trim().slice(0, 500) : null;
+    const forMonth = input.collectedOn.slice(0, 7);
+
+    const [{ data: tenant, error: tenantErr }, { data: existingReservations, error: existingErr }] = await Promise.all([
+      adminDb
+        .from("hms_tenants")
+        .select("id, full_name, check_in, is_waiting, security_deposit, deposit_collected_on, deposit_collected_amount")
+        .eq("id", input.tenantId)
+        .eq("hostel_id", hostelId)
+        .maybeSingle(),
+      adminDb
+        .from("hms_payments")
+        .select("id")
+        .eq("tenant_id", input.tenantId)
+        .eq("hostel_id", hostelId)
+        .eq("is_reservation", true)
+        .limit(1),
+    ]);
+
+    if (tenantErr) throw new Error(tenantErr.message);
+    if (!tenant) throw new Error("Tenant not found or access denied");
+    if (existingErr) throw new Error(existingErr.message);
+    if ((existingReservations ?? []).length > 0) {
+      throw new Error(`A reservation deposit has already been recorded for ${tenant.full_name}.`);
+    }
+    if (tenant.deposit_collected_on) {
+      throw new Error(
+        `${tenant.full_name}'s deposit was already collected on ${formatDayLong(tenant.deposit_collected_on)}.`
+      );
+    }
+    if (!tenant.is_waiting) {
+      throw new Error("Reservation deposits are only for waiting-list tenants — an active tenant's deposit is billed on their first monthly bill.");
+    }
+    // Overpaying a deposit is a typo, not a business case. The deposit itself is
+    // what the tenant gets back at checkout, and taking more than that would
+    // either quietly under-refund them or turn the excess into an unexplained
+    // credit that nothing in the system knows how to spend.
+    const agreedDeposit = Number(tenant.security_deposit ?? 0);
+    if (agreedDeposit <= 0) {
+      throw new Error(
+        `${tenant.full_name} has no security deposit set, so there is nothing to collect. ` +
+        `Set the deposit on their profile first.`
+      );
+    }
+    if (amount > agreedDeposit) {
+      throw new Error(
+        `${tenant.full_name}'s deposit is ${formatCurrency(agreedDeposit)}, so ${formatCurrency(amount)} is more than the whole deposit. ` +
+        `Enter ${formatCurrency(agreedDeposit)} or less, or change the deposit on their profile first.`
+      );
+    }
+    // hms_payments is unique on (tenant_id, for_month), so a reservation taken
+    // in the same month the tenant joins would occupy the slot their first rent
+    // bill needs — and the monthly sync skips paid rows, so that bill would
+    // never be created at all. A deposit collected in the joining month is
+    // simply the normal first-bill deposit, which is already handled.
+    if (tenant.check_in && forMonth >= tenant.check_in.slice(0, 7)) {
+      const joinMonth = tenant.check_in.slice(0, 7);
+      throw new Error(
+        `${tenant.full_name} joins on ${formatDayLong(tenant.check_in)}, so ${formatMonthLong(joinMonth)} is their first rent month. ` +
+        `A deposit recorded in ${formatMonthLong(forMonth)} would take the place of that rent bill and the rent would never be charged. ` +
+        `Use a date before ${formatDayLong(`${joinMonth}-01`)}, or leave the deposit to be charged on their first bill.`
+      );
+    }
+
+    const receiptNumber = genReceiptNumber(tenant.full_name, forMonth);
+
+    const { data: inserted, error: insertErr } = await adminDb
+      .from("hms_payments")
+      .insert({
+        hostel_id: hostelId,
+        tenant_id: input.tenantId,
+        for_month: forMonth,
+        is_reservation: true,
+        amount,
+        amount_paid: amount,
+        security_deposit_charge: amount,
+        registration_fee_charge: 0,
+        food_charge: 0,
+        ac_charge: 0,
+        ac_units_consumed: 0,
+        ac_maintenance_charge: 0,
+        late_fee: 0,
+        status: "paid" as PaymentStatus,
+        payment_method: input.paymentMethod,
+        payment_date: input.collectedOn,
+        receipt_number: receiptNumber,
+        notes,
+        billed_days: null,
+        daily_rate_billed: null,
+      })
+      .select("id")
+      .single();
+
+    if (insertErr) {
+      if (insertErr.code === "23505") {
+        throw new Error(`${tenant.full_name} already has a payment record for ${formatMonthLong(forMonth)}.`);
+      }
+      throw new Error(insertErr.message);
+    }
+    const paymentId = (inserted as { id: string }).id;
+
+    // The daily register on Reports → Today, and the Member Ledger's payment
+    // entries, are both built from hms_payment_installments keyed on
+    // payment_date — NOT from hms_payments. Writing only the payment row above
+    // meant real cash taken today showed "No payments collected on 3 Aug 2026"
+    // with Income Rs 0, which is precisely the register an owner checks their
+    // physical cash box against. Mirrors markPaymentPaidAction's snapshot: a
+    // reservation is always a single, full, first payment against its row, so
+    // before = 0, after = total = the amount.
+    const { error: installmentErr } = await adminDb.from("hms_payment_installments").insert({
+      hostel_id: hostelId,
+      tenant_id: input.tenantId,
+      payment_id: paymentId,
+      for_month: forMonth,
+      amount,
+      amount_before: 0,
+      amount_after: amount,
+      total_due: amount,
+      late_fee: 0,
+      payment_method: input.paymentMethod,
+      payment_date: input.collectedOn,
+      notes,
+      receipt_number: receiptNumber,
+    });
+    if (installmentErr) {
+      // Non-fatal, same call as markPaymentPaidAction makes: the money is
+      // already recorded on the payment row, so failing here costs the daily
+      // register entry, not the cash.
+      console.error("[recordReservationDepositAction] Failed to record payment installment:", installmentErr.message);
+    }
+
+    // The AMOUNT, not a flag. A part payment leaves the balance to be billed on
+    // the first monthly bill (computeDepositCharge subtracts this from
+    // security_deposit); a flag would have written the shortfall off.
+    // security_deposit is deliberately NOT touched — it stays the agreed figure
+    // that checkout refunds in full.
+    const { data: updatedTenant, error: updateErr } = await adminDb
+      .from("hms_tenants")
+      .update({ deposit_collected_on: input.collectedOn, deposit_collected_amount: amount })
+      .eq("id", input.tenantId)
+      .eq("hostel_id", hostelId)
+      .select("id");
+
+    // Without the flag the deposit gets billed again on the first real bill,
+    // which is the entire bug this feature exists to prevent — so an orphaned
+    // paid row is worse than no row at all. Undo it and make the operator retry.
+    if (updateErr || !updatedTenant?.length) {
+      const { error: rollbackErr } = await adminDb
+        .from("hms_payments").delete().eq("id", paymentId).eq("hostel_id", hostelId);
+      if (rollbackErr) {
+        throw new Error(
+          `The deposit could not be marked as collected AND the payment row could not be rolled back ` +
+          `(receipt ${receiptNumber}). Delete it manually before retrying. Cause: ${rollbackErr.message}`
+        );
+      }
+      throw new Error(updateErr?.message ?? "Failed to mark the deposit as collected. Nothing was saved — please try again.");
+    }
+
+    // Best-effort Member Ledger entry, same as every other logTenantEvent call
+    // site — a failed audit line must not undo money that was actually taken.
+    const logResult = await logTenantEvent({
+      tenantId: input.tenantId,
+      eventType: "deposit_collected",
+      amount,
+      notes: `Seat reservation deposit received ${formatDayLong(input.collectedOn)}${notes ? ` — ${notes}` : ""}`,
+    });
+    if (!logResult.success) {
+      console.error("[recordReservationDepositAction] Failed to log deposit_collected:", logResult.error);
+    }
+
+    revalidatePath("/tenants");
+    revalidatePath("/payments");
+    return {
+      success: true,
+      paymentId,
+      receiptNumber,
+      collectedOn: input.collectedOn,
+      amount,
+      remainingDeposit: Math.max(0, agreedDeposit - amount),
+    };
+  } catch (err: unknown) {
     unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -1453,6 +1708,56 @@ export async function checkoutTenantAction(
     await requireOwnerOrAbove();
     const hostelId = await resolveHostelId();
     return await performTenantCheckout(hostelId, input);
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// getTenantRecordedMoneyAction
+// Deleting a tenant cascades their payment rows away, and every month those
+// rows were counted in silently drops. The owner's decision is to allow the
+// delete but to be told first, in money: "Ahsan has Rs 5,000 in recorded
+// payments. Deleting will remove Rs 5,000 from July 2026's collected total."
+//
+// Read on demand from the confirm dialog rather than shipped with the Tenants
+// page: this is one rare click, and pre-loading every tenant's whole payment
+// history on every page load to answer it would be the more expensive mistake.
+// ---------------------------------------------------------------------------
+
+export async function getTenantRecordedMoneyAction(
+  tenantId: string
+): Promise<{ success: boolean; total?: number; byMonth?: { month: string; amount: number }[]; error?: string }> {
+  try {
+    await requireOwnerOrPartnerTier("full");
+    const hostelId = await resolveHostelId();
+    const adminDb = createAdminClient();
+
+    const { data, error } = await adminDb
+      .from("hms_payments")
+      .select("for_month, status, amount, amount_paid")
+      .eq("tenant_id", tenantId)
+      .eq("hostel_id", hostelId)
+      .in("status", ["paid", "partially_paid"]);
+
+    if (error) throw new Error(error.message);
+
+    const byMonthMap = new Map<string, number>();
+    for (const row of data ?? []) {
+      // amount_paid is the money that actually came in. It is null on older
+      // fully-paid rows written before the column existed, where `amount` is
+      // the settled figure.
+      const paid = row.amount_paid != null ? Number(row.amount_paid) : Number(row.amount ?? 0);
+      if (!(paid > 0)) continue;
+      byMonthMap.set(row.for_month, (byMonthMap.get(row.for_month) ?? 0) + paid);
+    }
+
+    const byMonth = [...byMonthMap.entries()]
+      .map(([month, amount]) => ({ month, amount }))
+      .sort((a, b) => a.month.localeCompare(b.month));
+
+    return { success: true, total: byMonth.reduce((s, m) => s + m.amount, 0), byMonth };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };

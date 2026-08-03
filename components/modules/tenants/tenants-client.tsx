@@ -1,5 +1,5 @@
 "use client";
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
@@ -20,7 +20,7 @@ import { SearchableSelect } from "@/components/ui/searchable-select";
 import { organizationPresetsFor } from "@/lib/organization-presets";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
-import { formatCurrency, formatDate, formatDateInput, capitalize, cn } from "@/lib/utils";
+import { formatCurrency, formatDate, formatDateInput, formatMonthLong, capitalize, cn } from "@/lib/utils";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates, type FoodAddonFlags } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
 import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets , departmentPresetsFor } from "@/lib/student-category-labels";
@@ -31,7 +31,7 @@ import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplica
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, resendTenantWelcomeMessageAction } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction } from "@/app/actions/tenants";
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 import { addTenantAsManager, editTenantAsManager, checkoutTenantAsManager, giveTenantNoticeAsManager, cancelTenantNoticeAsManager } from "@/app/actions/managers";
 import { checkTenantRedflagAction } from "@/app/actions/redflag";
@@ -177,6 +177,31 @@ function computeDaysNotice(t: Tenant): number | null {
   return Math.round((intended.getTime() - given.getTime()) / 86400000);
 }
 
+// Deleting a tenant cascades their payment rows away with them, so any month
+// they contributed to quietly loses that money from its collected figure. The
+// owner's decision is that the delete is still allowed — but never as a
+// surprise, and never in the abstract: the warning names the amount and the
+// month, because "some payment records" is not something an owner can weigh.
+const DELETE_TENANT_BASE = "This tenant and all associated payment records will be permanently deleted.";
+
+function buildDeleteDescription(
+  t: Tenant | null,
+  money: { total: number; byMonth: { month: string; amount: number }[] } | null,
+  error: string | null
+): string {
+  if (error) {
+    return `${DELETE_TENANT_BASE} Their recorded payments could NOT be checked (${error}), so if any money was collected from them it will vanish from those months' totals without appearing here.`;
+  }
+  if (!money) return `${DELETE_TENANT_BASE} Checking what has already been collected from them…`;
+  if (money.total <= 0) return DELETE_TENANT_BASE;
+
+  const name = t?.full_name ?? "This tenant";
+  const removals = money.byMonth
+    .map((m) => `${formatCurrency(m.amount)} from ${formatMonthLong(m.month)}'s collected total`)
+    .join(", ");
+  return `${name} has ${formatCurrency(money.total)} in recorded payments. Deleting will remove ${removals}. ${DELETE_TENANT_BASE}`;
+}
+
 function approveFormFoodFlags(form: ConvertFormData): FoodAddonFlags {
   return {
     food_breakfast: form.food_breakfast ?? false,
@@ -239,6 +264,8 @@ interface TenantRowProps {
   showDelete?: boolean;
   showGiveNotice?: boolean;
   showSendWelcome?: boolean;
+  /** Waiting list only — record the deposit that holds this person's bed. */
+  showRecordDeposit?: boolean;
   roomMap: Record<string, Room>;
   foodAddonRates: FoodAddonRates;
   noticePeriodDays?: number;
@@ -254,12 +281,15 @@ interface TenantRowProps {
   onDelete: (t: Tenant) => void;
   onGiveNotice?: (t: Tenant) => void;
   onSendWelcome?: (t: Tenant) => void;
+  onRecordDeposit?: (t: Tenant) => void;
 }
 
-function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, showSendWelcome = false, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, sendingWelcome = false, onView, onCheckout, onActivate, onEdit, onDelete, onGiveNotice, onSendWelcome }: TenantRowProps) {
+function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, showSendWelcome = false, showRecordDeposit = false, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, sendingWelcome = false, onView, onCheckout, onActivate, onEdit, onDelete, onGiveNotice, onSendWelcome, onRecordDeposit }: TenantRowProps) {
   const room = t.room_id ? roomMap[t.room_id] : null;
   const foodCharge = calcFoodAddonCharge(t, foodAddonRates);
   const initials = t.full_name[0].toUpperCase();
+  const depositCollected = Number(t.deposit_collected_amount ?? 0);
+  const depositBalance = Math.max(0, Number(t.security_deposit ?? 0) - depositCollected);
   return (
     <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 px-3 py-3.5 sm:px-4 sm:py-3 rounded-xl hover:bg-white/[0.03] transition-colors">
       <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -319,6 +349,35 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
               <Car className="w-2.5 h-2.5 shrink-0" />{t.vehicle_number}
             </span>
           )}
+          {/* The whole point of the waiting list: who has actually put money
+              down and confirmed their seat, versus who is only a name on it.
+              Reads deposit_collected_amount — what was RECEIVED — never
+              security_deposit, which is what was agreed. Showing the agreed
+              figure made a Rs 5,000 part payment against a Rs 10,000 deposit
+              claim Rs 10,000 had been received the moment the page reloaded. */}
+          {t.is_waiting && (
+            depositCollected > 0 ? (
+              <span
+                className="inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+                title={
+                  depositBalance > 0
+                    ? `Seat held — ${formatCurrency(depositCollected)} received${t.deposit_collected_on ? ` on ${formatDate(t.deposit_collected_on)}` : ""}. ${formatCurrency(depositBalance)} of the deposit will be billed on the first monthly bill.`
+                    : `Seat confirmed — full deposit received${t.deposit_collected_on ? ` on ${formatDate(t.deposit_collected_on)}` : ""}`
+                }
+              >
+                <Banknote className="w-2.5 h-2.5 shrink-0" />
+                {depositBalance > 0
+                  ? `${formatCurrency(depositCollected)} of ${formatCurrency(t.security_deposit)} deposit received`
+                  : `${formatCurrency(depositCollected)} deposit received`}
+                {t.deposit_collected_on ? ` ${formatDate(t.deposit_collected_on)}` : ""}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border text-amber bg-amber/10 border-amber/20">
+                <Banknote className="w-2.5 h-2.5 shrink-0" />
+                Deposit pending
+              </span>
+            )
+          )}
         </div>
         {t.intended_checkout_date && (() => {
           const daysNotice = computeDaysNotice(t);
@@ -371,6 +430,18 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
       </div>
 
       <div className="flex items-center gap-0.5 shrink-0">
+        {showRecordDeposit && onRecordDeposit && !t.deposit_collected_on && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 px-2 text-violet-400 hover:text-violet-300 hover:bg-violet-500/10 border border-violet-500/20"
+            onClick={() => onRecordDeposit(t)}
+            title="Record Deposit"
+          >
+            <Banknote className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden sm:inline text-xs ml-1.5">Deposit</span>
+          </Button>
+        )}
         {showActivate && (
           <Button
             variant="ghost"
@@ -641,6 +712,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   // did not run, because a silent empty result reads as "clean".
   const [redflagUnavailable, setRedflagUnavailable] = useState(false);
   const [deleteTenant, setDeleteTenant] = useState<Tenant | null>(null);
+  // Which tenant the open delete dialog is asking about. A ref, not the state
+  // above, because the in-flight money lookup has to be matched against it from
+  // outside a render — reading it through a state updater would mean calling
+  // setState from inside one.
+  const deleteTenantIdRef = useRef<string | null>(null);
+  // Money already recorded against the tenant being deleted. Deleting cascades
+  // their payment rows away, and every month they were counted in silently
+  // drops — so the confirm dialog has to name the figure before it is agreed to.
+  // `null` = still being read; the confirm button waits for it rather than
+  // letting the warning arrive after the click it exists to inform.
+  const [deleteMoney, setDeleteMoney] = useState<{ total: number; byMonth: { month: string; amount: number }[] } | null>(null);
+  const [deleteMoneyError, setDeleteMoneyError] = useState<string | null>(null);
   const [pkgPrices, setPkgPrices] = useState<Partial<Record<PackageTier, PackagePrices>>>({});
   const [customPackages, setCustomPackages] = useState<CustomPackage[]>([]);
   const [configSecurityDeposit, setConfigSecurityDeposit] = useState<number>(0);
@@ -757,6 +840,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [noticeFilter, setNoticeFilter] = useState(false);
   const [roomFilter, setRoomFilter] = useState<string>("all"); // room_id or "all"
   const [exportLoading, setExportLoading] = useState<"excel" | "pdf" | null>(null);
+  const [depositDialogTenant, setDepositDialogTenant] = useState<Tenant | null>(null);
+  const [depositForm, setDepositForm] = useState({ amount: "", date: formatDateInput(new Date()), method: "cash" as PaymentMethod, notes: "" });
+  const [depositSubmitting, setDepositSubmitting] = useState(false);
   const [noticeDialogTenant, setNoticeDialogTenant] = useState<Tenant | null>(null);
   const [noticeDate, setNoticeDate] = useState("");
   const [noticeSubmitting, setNoticeSubmitting] = useState(false);
@@ -1175,7 +1261,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       custom_package_id: form.custom_package_id || null,
       room_id: form.is_waiting || !form.room_id ? null : form.room_id,
       bed_number: form.bed_number || null,
-      check_in: form.is_waiting ? formatDateInput(new Date()) : form.check_in,
+      // Was `is_waiting ? today : form.check_in`, which overwrote a pre-booked
+      // member's joining date with today's on EVERY save — so an expected
+      // joining date could never be stored, only guessed at. The column is NOT
+      // NULL, hence the fallback rather than passing through an empty string.
+      check_in: form.check_in || formatDateInput(new Date()),
       check_out: form.billing_type === "daily" && form.check_out ? form.check_out : null,
       billing_type: form.billing_type,
       monthly_rent: form.billing_type === "monthly" ? parseFloat(form.monthly_rent) || 0 : 0,
@@ -1290,6 +1380,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         .eq("tenant_id", editing.id)
         .eq("hostel_id", hostelId ?? "")
         .gte("for_month", currentMonth)
+        // A reservation deposit is always status 'paid', so the status filter
+        // already excludes it — stated explicitly because that row is real
+        // collected cash and must survive any future widening of this filter.
+        .eq("is_reservation", false)
         .in("status", ["pending", "overdue"]);
     }
 
@@ -1577,6 +1671,30 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     reload(); // refresh room occupancy counts in background
   }
 
+  // Opened on click, not preloaded with the page: this is one rare action, and
+  // shipping every tenant's whole payment history on every Tenants load to be
+  // ready for it would cost far more than it saves.
+  async function openDeleteDialog(t: Tenant) {
+    deleteTenantIdRef.current = t.id;
+    setDeleteTenant(t);
+    setDeleteMoney(null);
+    setDeleteMoneyError(null);
+    const result = await getTenantRecordedMoneyAction(t.id);
+    // The click may have been abandoned, or moved on to a different tenant,
+    // while this was in flight — applying a stale answer would name the wrong
+    // person's money.
+    if (deleteTenantIdRef.current !== t.id) return;
+    if (result.success) setDeleteMoney({ total: result.total ?? 0, byMonth: result.byMonth ?? [] });
+    else setDeleteMoneyError(result.error ?? "Could not check this member's recorded payments.");
+  }
+
+  function closeDeleteDialog() {
+    deleteTenantIdRef.current = null;
+    setDeleteTenant(null);
+    setDeleteMoney(null);
+    setDeleteMoneyError(null);
+  }
+
   async function handleDelete(t: Tenant) {
     const result = await deleteTenantAction(t.id);
     if (result.error) { toast({ title: "Error", description: result.error, variant: "destructive" }); return; }
@@ -1607,6 +1725,65 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       return;
     }
     toast({ title: "Welcome message sent", description: `Sent to ${t.full_name} via WhatsApp.` });
+  }
+
+  function openDepositDialog(t: Tenant) {
+    setDepositDialogTenant(t);
+    setDepositForm({
+      amount: t.security_deposit > 0 ? String(t.security_deposit) : "",
+      date: formatDateInput(new Date()),
+      method: "cash",
+      notes: "",
+    });
+    setDepositSubmitting(false);
+  }
+
+  function closeDepositDialog() {
+    setDepositDialogTenant(null);
+    setDepositSubmitting(false);
+  }
+
+  async function handleRecordDeposit() {
+    if (!depositDialogTenant) return;
+    const amount = parseFloat(depositForm.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast({ title: "Invalid amount", description: "Enter the deposit amount actually received.", variant: "destructive" });
+      return;
+    }
+    if (!depositForm.date) {
+      toast({ title: "Invalid date", description: "Enter the date the money was received.", variant: "destructive" });
+      return;
+    }
+    setDepositSubmitting(true);
+    const result = await recordReservationDepositAction({
+      tenantId: depositDialogTenant.id,
+      amount,
+      collectedOn: depositForm.date,
+      paymentMethod: depositForm.method,
+      notes: depositForm.notes || undefined,
+    });
+    if (!result.success) {
+      toast({ title: "Failed to record deposit", description: result.error, variant: "destructive" });
+      setDepositSubmitting(false);
+      return;
+    }
+    // security_deposit is the AGREED deposit and is deliberately left alone —
+    // overwriting it with what was collected is what made the badge show the
+    // right figure until the page reloaded and then quietly show the wrong one,
+    // and it would also have shrunk the refund due at checkout.
+    setWaiting((prev) => prev.map((t) =>
+      t.id === depositDialogTenant.id
+        ? { ...t, deposit_collected_on: result.collectedOn ?? depositForm.date, deposit_collected_amount: amount }
+        : t
+    ));
+    const balance = result.remainingDeposit ?? 0;
+    toast({
+      title: `${formatCurrency(amount)} deposit recorded`,
+      description: balance > 0
+        ? `${depositDialogTenant.full_name}'s bed is held. The remaining ${formatCurrency(balance)} of the deposit will be charged on their first monthly bill. Receipt ${result.receiptNumber ?? ""}`.trim()
+        : `${depositDialogTenant.full_name}'s seat is confirmed. Receipt ${result.receiptNumber ?? ""}`.trim(),
+    });
+    closeDepositDialog();
   }
 
   function openNoticeDialog(t: Tenant) {
@@ -2207,7 +2384,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}
-                  onDelete={setDeleteTenant}
+                  onDelete={openDeleteDialog}
                   onGiveNotice={openNoticeDialog}
                   onSendWelcome={handleSendWelcome}
                 />
@@ -2232,6 +2409,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     <TenantRow
                       key={t.id} t={t} showActivate={canEditRow}
                       showEdit={canEditRow} showDelete={canDeleteRow}
+                      // Owner-only: recordReservationDepositAction is gated on
+                      // requireOwnerOrAbove(), so a manager or partner clicking
+                      // this would only ever get an access-denied toast.
+                      showRecordDeposit={!isManager && !isPartner}
                       roomMap={roomMap}
                       foodAddonRates={foodAddonRates}
                       noticePeriodDays={noticePeriodDays}
@@ -2240,7 +2421,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       onCheckout={openCheckout}
                       onActivate={(tenant) => openEdit(tenant, true)}
                       onEdit={openEdit}
-                      onDelete={setDeleteTenant}
+                      onDelete={openDeleteDialog}
+                      onRecordDeposit={openDepositDialog}
                     />
                   ))}
                 </div>
@@ -2339,7 +2521,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}
-                  onDelete={setDeleteTenant}
+                  onDelete={openDeleteDialog}
                 />
               ))}
               </div>
@@ -3053,9 +3235,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       <ConfirmDialog
         open={!!deleteTenant}
         title={`Delete ${deleteTenant?.full_name ?? "tenant"}?`}
-        description="This tenant and all associated payment records will be permanently deleted."
-        onConfirm={() => { if (deleteTenant) { handleDelete(deleteTenant); setDeleteTenant(null); } }}
-        onCancel={() => setDeleteTenant(null)}
+        description={buildDeleteDescription(deleteTenant, deleteMoney, deleteMoneyError)}
+        confirmDisabled={!deleteMoney && !deleteMoneyError}
+        onConfirm={() => { if (deleteTenant) { handleDelete(deleteTenant); closeDeleteDialog(); } }}
+        onCancel={closeDeleteDialog}
       />
 
       {/* Add / Edit Dialog */}
@@ -3601,9 +3784,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </>
             )}
 
-            {/* Check-in date for monthly billing */}
-            {!form.is_waiting && form.billing_type === "monthly" && (
-              <div className="space-y-1.5"><Label>Check-in Date *</Label><Input type="date" value={form.check_in} onChange={(e) => setForm({ ...form, check_in: e.target.value })} /></div>
+            {/* Check-in date for monthly billing. Shown for waiting-list members
+                too: a pre-booked bed is booked FROM a date, and without this the
+                date was silently forced to today on every save, so "reserve from
+                5 August" could not be recorded at all. It also decides which
+                months a reservation deposit may be taken for. */}
+            {form.billing_type === "monthly" && (
+              <div className="space-y-1.5">
+                <Label>{form.is_waiting ? "Expected Joining Date" : "Check-in Date *"}</Label>
+                <Input type="date" value={form.check_in} onChange={(e) => setForm({ ...form, check_in: e.target.value })} />
+                {form.is_waiting && (
+                  <p className="text-xs text-muted-foreground">
+                    Rent starts from this date. A reservation deposit can only be taken for a month before it.
+                  </p>
+                )}
+              </div>
             )}
 
             {/* Vehicle — on-file record for safety verification and resolving
@@ -4137,6 +4332,125 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               {checkoutSubmitting
                 ? <><Loader2 className="w-4 h-4 animate-spin" /> Processing…</>
                 : <><LogOut className="w-4 h-4" /> Confirm Check Out</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Record Reservation Deposit — waiting list only */}
+      <Dialog open={!!depositDialogTenant} onOpenChange={(open) => { if (!open) closeDepositDialog(); }}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Banknote className="w-4 h-4 text-violet-400" />
+              Record Deposit
+            </DialogTitle>
+            <DialogDescription>
+              {depositDialogTenant?.full_name}
+              {depositDialogTenant?.check_in ? ` · joining ${formatDate(depositDialogTenant.check_in)}` : ""}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className={cn("space-y-4 py-1", depositSubmitting && "pointer-events-none opacity-50")}>
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="deposit-amount">Amount received (PKR)</Label>
+                {!!depositDialogTenant && depositDialogTenant.security_deposit > 0 && (
+                  <span className="text-xs text-muted-foreground">
+                    Deposit on file: {formatCurrency(depositDialogTenant.security_deposit)}
+                  </span>
+                )}
+              </div>
+              <Input
+                id="deposit-amount"
+                type="number"
+                min={0}
+                max={depositDialogTenant?.security_deposit || undefined}
+                placeholder="0"
+                value={depositForm.amount}
+                onChange={(e) => setDepositForm({ ...depositForm, amount: e.target.value })}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="deposit-date">Date received</Label>
+                <Input
+                  id="deposit-date"
+                  type="date"
+                  value={depositForm.date}
+                  max={formatDateInput(new Date())}
+                  onChange={(e) => setDepositForm({ ...depositForm, date: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Method</Label>
+                <Select value={depositForm.method} onValueChange={(v) => setDepositForm({ ...depositForm, method: v as PaymentMethod })}>
+                  <SelectTrigger><SelectValue placeholder="Select method" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cash">Cash</SelectItem>
+                    <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
+                    <SelectItem value="jazzcash">JazzCash</SelectItem>
+                    <SelectItem value="easypaisa">EasyPaisa</SelectItem>
+                    <SelectItem value="sadapay">SadaPay</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="deposit-notes">Note (optional)</Label>
+              <Input
+                id="deposit-notes"
+                placeholder="e.g. paid at the gate, brother handed it over"
+                value={depositForm.notes}
+                onChange={(e) => setDepositForm({ ...depositForm, notes: e.target.value })}
+              />
+            </div>
+
+            {(() => {
+              const entered = parseFloat(depositForm.amount);
+              const agreed = Number(depositDialogTenant?.security_deposit ?? 0);
+              const over = Number.isFinite(entered) && agreed > 0 && entered > agreed;
+              const balance = Number.isFinite(entered) && entered > 0 ? Math.max(0, agreed - entered) : 0;
+              return (
+                <p className={cn(
+                  "text-xs rounded-lg border px-3 py-2",
+                  over ? "border-rose-500/30 bg-rose-500/5 text-rose-300" : "border-violet-500/20 bg-violet-500/5 text-muted-foreground"
+                )}>
+                  {over ? (
+                    <>
+                      {formatCurrency(entered)} is more than the whole deposit of {formatCurrency(agreed)}. Enter{" "}
+                      {formatCurrency(agreed)} or less, or change the deposit on their profile first.
+                    </>
+                  ) : (
+                    <>
+                      Recorded against {depositForm.date ? formatDate(depositForm.date) : "the date above"} and counted in that month&apos;s
+                      collection. Rent still starts on {depositDialogTenant?.check_in ? formatDate(depositDialogTenant.check_in) : "the joining date"}.
+                      {balance > 0
+                        ? ` The remaining ${formatCurrency(balance)} of the deposit will be charged on the first monthly bill.`
+                        : " This deposit will not be charged again on the first bill."}
+                    </>
+                  )}
+                </p>
+              );
+            })()}
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={closeDepositDialog} disabled={depositSubmitting}>Cancel</Button>
+            <Button
+              onClick={handleRecordDeposit}
+              disabled={
+                depositSubmitting || !depositForm.amount || !depositForm.date ||
+                parseFloat(depositForm.amount) > Number(depositDialogTenant?.security_deposit ?? 0)
+              }
+              className="gap-2 bg-amber hover:bg-amber/90 text-background"
+            >
+              {depositSubmitting
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
+                : <><Banknote className="w-4 h-4" /> Record Deposit</>}
             </Button>
           </DialogFooter>
         </DialogContent>

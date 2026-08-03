@@ -75,7 +75,7 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, payment_method, payment_date, receipt_number, payment_package_tier, status, billed_days, daily_rate_billed, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, is_active, billing_type, daily_rate, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
+        "id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, payment_method, payment_date, receipt_number, payment_package_tier, status, is_reservation, billed_days, daily_rate_billed, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, is_active, billing_type, daily_rate, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
       )
       .eq("id", paymentId)
       .single(),
@@ -125,7 +125,13 @@ export async function GET(
   // double charge. Only a tenant who is no longer active has a deposit to
   // refund. Monthly tenants never exposed this because check_out is only ever
   // written when they genuinely check out.
+  const isReservation = !!payment.is_reservation;
+  // A waiting-list tenant is is_active = false with no check_out, so this is
+  // already false for a reservation — pinned explicitly anyway, because a
+  // deposit-refund line on a receipt for the deposit being COLLECTED would
+  // read as the money going straight back out again.
   const isCheckout =
+    !isReservation &&
     tenantTyped?.is_active === false && !!checkOutMonth && checkOutMonth === payment.for_month;
   // Deposit REFUND is shown only at checkout — informational, not part of `amount`.
   // Deposit COLLECTION is driven by payment.security_deposit_charge below (embedded
@@ -153,6 +159,11 @@ export async function GET(
       ac_maintenance_charge: Number(payment.ac_maintenance_charge ?? 0),
       security_deposit: securityDepositRefund,
       is_checkout: isCheckout,
+      is_reservation: isReservation,
+      // The date the held bed starts — the tenant's intended joining date,
+      // which for a reservation is deliberately in a later month than the
+      // receipt's own for_month.
+      reservation_from: isReservation ? (tenantTyped?.check_in ?? null) : null,
       // Snapshot from the row, with a fallback for rows billed before migration
       // 099 existed so an older daily receipt still reads "N days x Rs R"
       // rather than silently mislabelling itself "Monthly Rent".

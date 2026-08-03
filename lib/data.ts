@@ -155,7 +155,7 @@ export async function getDashboardData() {
   const [
     rooms, tenants, expenses, kitchen, bills,
     allExp, allKit, collectedPayments, paidSalaries,
-    pendingPaymentsRes, allPayments6moRes, acReadingsRes,
+    pendingPaymentsRes, allPayments6moRes, acReadingsRes, reservedDepositsRes,
   ] = await Promise.all([
     supabase.from("hms_rooms").select("status,monthly_rent").eq("hostel_id", hostelId),
     supabase.from("hms_tenants")
@@ -171,6 +171,14 @@ export async function getDashboardData() {
     supabase.from("hms_payments").select("id,amount,amount_paid,late_fee,status,tenant:hms_tenants(full_name)").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).in("status", ["pending", "overdue", "partially_paid"]),
     supabase.from("hms_payments").select("for_month,amount,amount_paid,status").eq("hostel_id", hostelId).gte("for_month", ranges[0].monthKey).lte("for_month", ranges[5].monthKey),
     supabase.from("hms_room_ac_readings").select("total_units").eq("hostel_id", hostelId).eq("for_month", currentMonthKey),
+    // Waiting-list members holding a reservation deposit. Deliberately a
+    // separate query rather than relaxing the is_waiting filter above: that
+    // result also drives expected revenue and the tenant headcount, and a
+    // reserved bed must not inflate either. Waiting rows carry is_active=false
+    // (see the add-tenant path), so filtering on is_waiting alone is correct.
+    supabase.from("hms_tenants")
+      .select("id, deposit_collected_amount")
+      .eq("hostel_id", hostelId).eq("is_waiting", true).gt("deposit_collected_amount", 0),
   ]);
 
   const roomData = rooms.data ?? [];
@@ -225,8 +233,17 @@ export async function getDashboardData() {
     return s + Number(row.monthly_rent);
   }, 0);
   const depositTenants = (tenants.data ?? []).filter((t) => Number(t.security_deposit) > 0);
-  const securityDepositTotal = depositTenants.reduce((s, t) => s + Number(t.security_deposit), 0);
-  const securityDepositCount = depositTenants.length;
+  // A reserved bed's deposit is money already in hand that gets refunded like
+  // any other, so it belongs in this liability figure from the day it is taken
+  // — not from the day the member moves in. The amount COLLECTED is used, not
+  // the agreed deposit: on a part payment only the collected share has actually
+  // been received, and the balance lands on the first bill (where the active
+  // branch above then picks it up).
+  const reservedDeposits = reservedDepositsRes.data ?? [];
+  const securityDepositTotal =
+    depositTenants.reduce((s, t) => s + Number(t.security_deposit), 0) +
+    reservedDeposits.reduce((s, t) => s + Number(t.deposit_collected_amount ?? 0), 0);
+  const securityDepositCount = depositTenants.length + reservedDeposits.length;
 
   const defaulters = pendingRows.map((p) => ({
     id: p.id,
@@ -802,14 +819,22 @@ export async function getPaymentsPageData(forMonth: string) {
   if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, acReadings: [], acJoinReadings: [], waitingTenantIds: [] };
   const { supabase, hostelId, hostel } = ctx;
 
-  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig, { data: acReadings }, { data: acJoinReadings }, { data: waitingTenants }] = await Promise.all([
+  const [
+    { data: payments, error: paymentsErr },
+    { data: tenants, error: tenantsErr },
+    { data: rooms, error: roomsErr },
+    packageConfig,
+    { data: acReadings, error: acReadingsErr },
+    { data: acJoinReadings, error: acJoinErr },
+    { data: waitingTenants, error: waitingErr },
+  ] = await Promise.all([
     supabase.from("hms_payments")
       .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .eq("hostel_id", hostelId)
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false }),
     supabase.from("hms_tenants")
-      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
+      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
       .eq("is_waiting", false),
@@ -839,10 +864,23 @@ export async function getPaymentsPageData(forMonth: string) {
       .eq("is_waiting", true),
   ]);
 
+  // supabase-js RETURNS errors, it does not throw them. Swallowing one here
+  // rendered a failed tenants query as an EMPTY TENANT LIST beside money tiles
+  // that still showed this month's cash — the page reassuring the owner that
+  // nobody lives here. An unrenderable page is the correct outcome: it is loud,
+  // it names the cause, and it cannot be mistaken for an answer. This has
+  // shipped as a silent blank four times in this repo; the first symptom of a
+  // missing column must never be a plausible-looking screen.
+  const readErr =
+    paymentsErr ?? tenantsErr ?? roomsErr ?? acReadingsErr ?? acJoinErr ?? waitingErr;
+  if (readErr) {
+    throw new Error(`Payments page could not load for ${forMonth}: ${readErr.message}`);
+  }
+
   return {
     hostelId,
     payments: (payments ?? []) as Payment[],
-    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "registration_fee" | "food_breakfast" | "food_lunch" | "food_dinner" | "joining_meter_reading"> & { package_tier: PackageTier })[],
+    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "deposit_collected_amount" | "registration_fee" | "food_breakfast" | "food_lunch" | "food_dinner" | "joining_meter_reading"> & { package_tier: PackageTier })[],
     rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor" | "has_ac">[],
     packageConfig,
     hostelName: hostel?.name ?? "",

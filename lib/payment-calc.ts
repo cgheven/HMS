@@ -48,12 +48,24 @@ export function dailySnapshot(t: BaseRentTenant, month: string): {
 
 // The security deposit is billed once, on the tenant's first billing month
 // only — every later month is rent + food + AC as before.
+//
+// What the first month bills is the REMAINDER. A tenant whose agreed deposit is
+// Rs 10,000 who put Rs 5,000 down to reserve the bed is billed the other
+// Rs 5,000 on that first bill, alongside rent. Treating the collection as a
+// boolean ("deposit done") wrote the shortfall off entirely while checkout still
+// refunded the full Rs 10,000 from hms_tenants.security_deposit.
+//
+// deposit_collected_amount is REQUIRED, not optional: a caller whose SELECT
+// omits it reads undefined, computes NaN, and poisons the whole bill. Making it
+// a required key turns that into a compile error. It is 0 for every tenant who
+// has never reserved, which reduces this to exactly the previous expression.
 export function computeDepositCharge(
-  t: { check_in: string; security_deposit?: number | null },
+  t: { check_in: string; security_deposit?: number | null; deposit_collected_amount: number | null },
   forMonth: string
 ): number {
   const isFirstBillingMonth = t.check_in && t.check_in.slice(0, 7) === forMonth;
-  return isFirstBillingMonth ? Number(t.security_deposit ?? 0) : 0;
+  if (!isFirstBillingMonth) return 0;
+  return Math.max(0, Number(t.security_deposit ?? 0) - Number(t.deposit_collected_amount ?? 0));
 }
 
 // One-time, non-refundable — billed only in the tenant's check-in month, same

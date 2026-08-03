@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
-import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
+import { cn, formatCurrency, formatDate, formatDateInput, formatDayLong, formatMonthLong } from "@/lib/utils";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier, StaffPermission } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { countBillableNights } from "@/lib/daily-billing";
@@ -158,6 +158,21 @@ function countByChip(rows: Payment[], key: StatusChip): number {
 // tile) and "AC + Unpaid" are both reachable. Matches ac_charge, the exact field
 // the AC tiles sum; flat AC maintenance is a different charge and is not metered.
 const hasAcCharge = (p: Payment) => Number(p.ac_charge ?? 0) > 0;
+
+// A deposit taken to hold a bed for someone who has not moved in yet. It is
+// already-collected money that belongs in the month it was taken, but its
+// tenant is on the waiting list — absent from `tenants`, present in
+// waitingTenantIds — so both of the filters that scope this page to real
+// residents would otherwise drop it from the list AND from Collected.
+const isReservationRow = (p: Payment) => p.is_reservation === true;
+
+// "5 Aug 2026" from a check-in date, for the "holds a seat from" sub-line.
+function fmtJoinDate(d: string | null | undefined): string | null {
+  if (!d) return null;
+  const parsed = new Date(d.slice(0, 10) + "T00:00:00");
+  if (isNaN(parsed.getTime())) return null;
+  return parsed.toLocaleDateString("en-PK", { day: "numeric", month: "short", year: "numeric" });
+}
 
 function chipClass(key: StatusChip, active: boolean): string {
   return cn(
@@ -567,14 +582,28 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         ? `AC meter reading at move-in: *${p.tenant.joining_meter_reading}* units — noted for your records.\n\n`
         : "";
 
-      const message = isPartial
+      // "for 2026-07" reads to a tenant as a database key, not a month.
+      const monthLabel = formatMonthLong(p.for_month);
+
+      // A reservation is not a month's rent, and the ordinary wording told the
+      // tenant their July bill was settled when July's rent had not even been
+      // raised yet. Say what the money actually bought: a held bed, with rent
+      // starting on the joining date.
+      const joinDate = isReservationRow(p) && p.tenant?.check_in ? formatDayLong(p.tenant.check_in) : null;
+      const message = isReservationRow(p)
         ? `Assalam o Alaikum ${firstName},\n\n` +
-          `We've received *${amountFormatted}* for ${p.for_month}. *${remainingFormatted}* remains due.\n\n` +
+          `We've received *${amountFormatted}* as your security deposit to reserve your bed. ` +
+          `This is not a rent payment${joinDate ? ` — your rent begins when you move in on *${joinDate}*` : " — your rent begins when you move in"}.\n\n` +
+          `Download your receipt: ${receiptUrl}\n\n` +
+          `Thank you - ${hostelName}`
+        : isPartial
+        ? `Assalam o Alaikum ${firstName},\n\n` +
+          `We've received *${amountFormatted}* for ${monthLabel}. *${remainingFormatted}* remains due.\n\n` +
           readingLine +
           `Download your receipt: ${receiptUrl}\n\n` +
           `Thank you - ${hostelName}`
         : `Assalam o Alaikum ${firstName},\n\n` +
-          `Your payment of *${amountFormatted}* for ${p.for_month} has been received.\n\n` +
+          `Your payment of *${amountFormatted}* for ${monthLabel} has been received.\n\n` +
           readingLine +
           `Download your receipt: ${receiptUrl}\n\n` +
           `Thank you - ${hostelName}`;
@@ -776,7 +805,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // is_active=false so they're absent from the `tenants` prop — their payment rows
   // (which may still be pending after checkout) should not appear in the monthly view.
   const activeTenantIds = useMemo(() => new Set(tenants.map(t => t.id)), [tenants]);
-  const activePayments = useMemo(() => payments.filter(p => activeTenantIds.has(p.tenant_id)), [payments, activeTenantIds]);
+  const activePayments = useMemo(
+    () => payments.filter(p => activeTenantIds.has(p.tenant_id) || isReservationRow(p)),
+    [payments, activeTenantIds]
+  );
 
   // Feeds both the "Send Reminders" button's disabled state and the confirm
   // dialog's tenant count — read fresh on every render, not cached from
@@ -877,8 +909,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // from before they were moved back to waiting (see tenants-client.tsx's
   // active → waiting edit path) must not inflate these totals.
   const waitingTenantIdSet = useMemo(() => new Set(waitingTenantIds), [waitingTenantIds]);
+  // A reservation deposit is the one exception: its tenant is on the waiting
+  // list by definition, but the money was genuinely collected, so it has to
+  // reach Total Due and Collected like any other paid row.
   const billablePayments = useMemo(
-    () => payments.filter((p) => !waitingTenantIdSet.has(p.tenant_id)),
+    () => payments.filter((p) => !waitingTenantIdSet.has(p.tenant_id) || isReservationRow(p)),
     [payments, waitingTenantIdSet]
   );
   const stats = useMemo(() => {
@@ -941,8 +976,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   function PaymentRow({ p }: { p: Payment }) {
     const room = p.tenant?.room_id ? roomMap[p.tenant.room_id] : null;
     const cfg = statusConfig[p.status];
+    const isReservation = isReservationRow(p);
     const isLate = (p.status === "pending" || p.status === "overdue") && p.for_month < selectedMonth;
-    const tierLabel = p.payment_package_tier ? TIER_LABEL[p.payment_package_tier] : "Space Only";
+    // A reservation has no package tier — falling through to "Space Only" would
+    // present a bed booking as a monthly plan the tenant is not on yet.
+    const tierLabel = isReservation
+      ? "Seat Reservation"
+      : p.payment_package_tier ? TIER_LABEL[p.payment_package_tier] : "Space Only";
+    const joinsOn = isReservation ? fmtJoinDate(p.tenant?.check_in) : null;
     const total = Number(p.amount) + Number(p.late_fee || 0);
     // Rent and metered AC get their own columns; everything else (food, deposit,
     // registration fee, AC maintenance) is itemised under Total so Rent + AC and
@@ -1006,10 +1047,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               <p className="text-sm font-semibold text-foreground leading-tight">{p.tenant?.full_name ?? "—"}</p>
               <div className="flex items-center gap-2 mt-1 flex-wrap">
                 {room && <span className="text-xs text-muted-foreground">Rm {room.room_number}</span>}
-                <span className="text-xs text-blue-400">{tierLabel}</span>
+                <span className={cn("text-xs", isReservation ? "text-violet-400" : "text-blue-400")}>{tierLabel}</span>
                 {isLate && <span className="text-xs text-rose-400 font-medium">Late</span>}
               </div>
-              {p.payment_date && <p className="text-xs text-muted-foreground mt-0.5">Paid {formatDate(p.payment_date)}</p>}
+              {p.payment_date && (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {isReservation ? "Collected" : "Paid"} {formatDate(p.payment_date)}
+                </p>
+              )}
+              {joinsOn && <p className="text-xs text-muted-foreground mt-0.5">Holds a bed from {joinsOn}</p>}
             </div>
             <div className="text-right shrink-0">
               <p className="text-base font-bold text-foreground">{formatCurrency(total)}</p>
@@ -1017,7 +1063,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               {/* One line each. Joined with a separator these were the widest
                   element in the card, so the nowrap forced the right column wide
                   enough to crowd the plan label beside it. */}
-              <p className="text-xs text-muted-foreground whitespace-nowrap">Rent {formatCurrency(charges.rent)}</p>
+              {isReservation
+                ? <p className="text-xs text-violet-400 whitespace-nowrap">Reservation deposit</p>
+                : <p className="text-xs text-muted-foreground whitespace-nowrap">Rent {formatCurrency(charges.rent)}</p>}
               {charges.ac > 0 && (
                 <p className="text-xs text-cyan-400 whitespace-nowrap">
                   AC {formatCurrency(charges.ac)}
@@ -1030,7 +1078,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 <p className="text-xs text-muted-foreground whitespace-nowrap">AC mnt {formatCurrency(charges.acMaintenance)}</p>
               )}
               {charges.food > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.food)} food</p>}
-              {charges.deposit > 0 && <p className="text-xs text-violet-400 whitespace-nowrap">incl. {formatCurrency(charges.deposit)} deposit</p>}
+              {!isReservation && charges.deposit > 0 && <p className="text-xs text-violet-400 whitespace-nowrap">incl. {formatCurrency(charges.deposit)} deposit</p>}
               {charges.registrationFee > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.registrationFee)} reg.</p>}
               {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
               {p.status === "partially_paid" && (
@@ -1056,18 +1104,31 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             <div className="flex items-center gap-2 flex-wrap mt-0.5">
               {room && <span className="text-xs text-muted-foreground">Rm {room.room_number}</span>}
               {isLate && <span className="text-xs text-rose-400 font-medium">Late</span>}
-              {p.payment_date && <span className="text-xs text-muted-foreground">Paid {formatDate(p.payment_date)}</span>}
+              {p.payment_date && (
+                <span className="text-xs text-muted-foreground">
+                  {isReservation ? "Collected" : "Paid"} {formatDate(p.payment_date)}
+                </span>
+              )}
+              {joinsOn && <span className="text-xs text-muted-foreground">Bed held from {joinsOn}</span>}
             </div>
           </div>
           <div className="min-w-0">
-            <span className="text-sm text-blue-400 font-medium">{tierLabel}</span>
+            <span className={cn("text-sm font-medium", isReservation ? "text-violet-400" : "text-blue-400")}>{tierLabel}</span>
           </div>
 
           {/* Rent — base rent only. Deposit is refundable and food is a separate
-              service, so folding either in here would overstate rental income. */}
+              service, so folding either in here would overstate rental income.
+              A reservation has no rent at all; a bare "Rs 0" here reads as an
+              unbilled month rather than a booking that was never a month. */}
           <div className="text-right">
-            <p className="text-sm text-foreground tabular-nums">{formatCurrency(charges.rent)}</p>
-            {basis && <p className="text-[10px] leading-tight text-muted-foreground">{dailyBasisLabel(basis)}</p>}
+            {isReservation ? (
+              <p className="text-sm text-muted-foreground/30">—</p>
+            ) : (
+              <>
+                <p className="text-sm text-foreground tabular-nums">{formatCurrency(charges.rent)}</p>
+                {basis && <p className="text-[10px] leading-tight text-muted-foreground">{dailyBasisLabel(basis)}</p>}
+              </>
+            )}
           </div>
 
           {/* AC — metered electricity only, the figure the AC Collected tile counts.
@@ -1087,7 +1148,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           <div className="text-right">
             <p className="text-sm font-semibold text-foreground tabular-nums">{formatCurrency(total)}</p>
             {charges.food > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {formatCurrency(charges.food)} food</p>}
-            {charges.deposit > 0 && <p className="text-[10px] leading-tight text-violet-400">incl. {formatCurrency(charges.deposit)} deposit</p>}
+            {charges.deposit > 0 && (
+              <p className="text-[10px] leading-tight text-violet-400">
+                {isReservation ? "reservation deposit" : `incl. ${formatCurrency(charges.deposit)} deposit`}
+              </p>
+            )}
             {charges.acMaintenance > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {formatCurrency(charges.acMaintenance)} AC mnt</p>}
             {charges.registrationFee > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {formatCurrency(charges.registrationFee)} reg.</p>}
             {Number(p.late_fee) > 0 && <p className="text-[10px] leading-tight text-rose-400">+{formatCurrency(p.late_fee)} late</p>}

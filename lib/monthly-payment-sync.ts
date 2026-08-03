@@ -34,6 +34,7 @@ export function expectedChargesFor(
     // otherwise read undefined, quietly compute a 0 charge, and mark every
     // affected row permanently stale — re-syncing on every page load forever.
     package_tier: string | null; security_deposit: number | null;
+    deposit_collected_amount: number | null;
     registration_fee: number | null; room_id: string | null;
     food_breakfast: boolean; food_lunch: boolean; food_dinner: boolean;
   },
@@ -72,7 +73,7 @@ export async function ensureMonthlyPaymentRows(
   const [{ data: tenants, error: tenantsErr }, { data: configData }, { data: rooms }] = await Promise.all([
     admin
       .from("hms_tenants")
-      .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, registration_fee, room_id, food_breakfast, food_lunch, food_dinner")
+      .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner")
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
       .eq("is_waiting", false),

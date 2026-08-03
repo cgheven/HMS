@@ -25,6 +25,10 @@ interface ReceiptPayment {
   /** Recurring monthly, applied automatically for tenants in an AC room. */
   ac_maintenance_charge?: number;
   is_checkout?: boolean;
+  /** Seat-reservation deposit taken before move-in — no rent/food/AC on this receipt. */
+  is_reservation?: boolean;
+  /** The date the reserved bed is held from (the tenant's intended check-in). */
+  reservation_from?: string | null;
   /** Nights billed for a daily-rate tenant — snapshot on the row (migration 099). */
   billed_days?: number | null;
   /** The daily rate in force when this row was billed. */
@@ -122,6 +126,10 @@ export function generateReceiptPDF(
   // represents fully settled the bill. Only actually short of `total` counts
   // as partial; otherwise this mislabels a fully-paid receipt as partial.
   const isPartial = payment.amount_paid != null && payment.amount_paid < total - 0.01;
+  // A reservation row carries only the deposit (a DB trigger zeroes rent/food/AC
+  // on it). Printing a "Monthly Rent: Rs. 0" line and a "Period: July 2026"
+  // header on it would read as a monthly bill the tenant does not owe.
+  const isReservation = !!payment.is_reservation;
 
   // Collect commands top-down (y=0 at top), convert to PDF coords (y=0 at bottom) after.
   type Cmd =
@@ -178,12 +186,19 @@ export function generateReceiptPDF(
   if (hostel.address) { addCenter(hostel.address, 7, false); nl(10); }
   if (hostel.phone) { addCenter(`Tel: ${hostel.phone}`, 7, false); nl(10); }
   nl(3); addDash(); nl(10);
-  addCenter(isPartial ? "PARTIAL PAYMENT RECEIPT" : "PAYMENT RECEIPT", 9, true); nl(10);
+  addCenter(
+    isReservation ? "SEAT RESERVATION RECEIPT" : isPartial ? "PARTIAL PAYMENT RECEIPT" : "PAYMENT RECEIPT",
+    9, true
+  ); nl(10);
   addDash(); nl(10);
 
   addKv("Receipt #", payment.receipt_number ?? "N/A"); nl(12);
-  addKv("Date", fmtDate(payment.payment_date)); nl(12);
-  addKv("Period", fmtMonth(payment.for_month)); nl(12);
+  addKv(isReservation ? "Collected On" : "Date", fmtDate(payment.payment_date)); nl(12);
+  if (isReservation) {
+    if (payment.reservation_from) { addKv("Seat Held From", fmtDate(payment.reservation_from)); nl(12); }
+  } else {
+    addKv("Period", fmtMonth(payment.for_month)); nl(12);
+  }
   addKv("Method", (payment.payment_method ?? "—").toUpperCase()); nl(12);
   addDash(); nl(10);
 
@@ -197,65 +212,77 @@ export function generateReceiptPDF(
   }
   nl(2); addDash(); nl(10);
 
-  add(ML, "Breakdown:", 8, true); nl(12);
+  add(ML, isReservation ? "Details:" : "Breakdown:", 8, true); nl(12);
   // Food-inclusive package tiers bundle food into monthly_rent with no separate
   // food_charge (0), so this only itemizes food when it was billed as an add-on.
   const { rent: baseRent } = splitPaymentCharges(payment);
-  // A daily tenant is not on a monthly rent, and printing that label on their
-  // receipt is simply wrong. Use the snapshot taken when the row was billed
-  // rather than recomputing from the tenant's dates — those keep moving after
-  // the receipt is issued, and a receipt must say what was actually charged.
-  const isDailyRow = (payment.billed_days ?? 0) > 0 && (payment.daily_rate_billed ?? 0) > 0;
-  const rentLabel = isDailyRow
-    ? `${payment.billed_days} ${payment.billed_days === 1 ? "day" : "days"} x ${pk(payment.daily_rate_billed!)}`
-    : "Monthly Rent";
-  addKv(rentLabel, pk(Math.max(0, baseRent))); nl(12);
-  if ((payment.food_charge ?? 0) > 0) {
-    addKv("Food Charges", pk(payment.food_charge!)); nl(11);
-    const mealsLabel = [tenant.food_breakfast && "Breakfast", tenant.food_lunch && "Lunch", tenant.food_dinner && "Dinner"]
-      .filter(Boolean).join(" + ");
-    if (mealsLabel) { add(ML + 4, mealsLabel, 6, false); nl(9); }
-    nl(2);
-  }
-  if ((payment.ac_charge ?? 0) > 0) {
-    addKv("AC Charges", pk(payment.ac_charge!)); nl(11);
-    const realRate = payment.ac_per_unit_rate && payment.ac_per_unit_rate > 0 ? payment.ac_per_unit_rate : 0;
-    const storedUnits = Number(payment.ac_units_consumed ?? 0);
-    if (realRate > 0) {
-      // Derive units from charge ÷ real rate so the sub-line is always consistent
-      // with the actual rate, regardless of what was stored in ac_units_consumed.
-      // Rounded to 2dp (ac_units_consumed's DB precision), not a whole unit —
-      // otherwise an even split like 72.5 would display as "73".
-      const displayUnits = Math.round((payment.ac_charge! / realRate) * 100) / 100;
-      add(ML + 4, `${displayUnits} units x Rs. ${realRate}/unit`, 6, false); nl(9);
-    } else if (storedUnits > 0) {
-      // Fallback: back-calculate rate from stored units (regular monthly pay path)
-      const rate = Math.round(payment.ac_charge! / storedUnits);
-      add(ML + 4, `${storedUnits} units x Rs. ${rate}/unit`, 6, false); nl(9);
-    } else {
-      nl(1);
+  if (isReservation) {
+    addKv("Seat Reservation Deposit", pk(payment.security_deposit_charge ?? payment.amount)); nl(12);
+    add(ML, "(refundable, held against your booking)", 6, false); nl(10);
+    if ((payment.registration_fee_charge ?? 0) > 0) {
+      addKv("Registration Fee", pk(payment.registration_fee_charge!)); nl(12);
+      add(ML, "(one-time, non-refundable)", 6, false); nl(10);
     }
-    nl(2);
+    add(ML, "This is not a monthly bill. Rent begins", 6, false); nl(8);
+    add(ML, "from the date of joining.", 6, false); nl(10);
   }
-  if ((payment.late_fee ?? 0) > 0)       { addKv("Late Fee", pk(payment.late_fee!)); nl(12); }
-  if ((payment.ac_maintenance_charge ?? 0) > 0) {
-    addKv("AC Maintenance", pk(payment.ac_maintenance_charge!)); nl(12);
-  }
-  if ((payment.security_deposit_charge ?? 0) > 0) {
-    // Actually charged as part of THIS bill (first month) — already included
-    // in `payment.amount`, so it's itemized here, not added again below.
-    addKv("Security Deposit", pk(payment.security_deposit_charge!)); nl(12);
-    add(ML, "(refundable on checkout)", 6, false); nl(10);
-  }
-  if ((payment.registration_fee_charge ?? 0) > 0) {
-    addKv("Registration Fee", pk(payment.registration_fee_charge!)); nl(12);
-    add(ML, "(one-time, non-refundable)", 6, false); nl(10);
-  }
-  if (payment.is_checkout && (payment.security_deposit ?? 0) > 0) {
-    // Informational only — the deposit was already collected at move-in, not
-    // part of this checkout payment's amount.
-    addKv("Security Deposit Refund", pk(payment.security_deposit!)); nl(12);
-    add(ML, "(to be returned to tenant)", 6, false); nl(10);
+  if (!isReservation) {
+    // A daily tenant is not on a monthly rent, and printing that label on their
+    // receipt is simply wrong. Use the snapshot taken when the row was billed
+    // rather than recomputing from the tenant's dates — those keep moving after
+    // the receipt is issued, and a receipt must say what was actually charged.
+    const isDailyRow = (payment.billed_days ?? 0) > 0 && (payment.daily_rate_billed ?? 0) > 0;
+    const rentLabel = isDailyRow
+      ? `${payment.billed_days} ${payment.billed_days === 1 ? "day" : "days"} x ${pk(payment.daily_rate_billed!)}`
+      : "Monthly Rent";
+    addKv(rentLabel, pk(Math.max(0, baseRent))); nl(12);
+    if ((payment.food_charge ?? 0) > 0) {
+      addKv("Food Charges", pk(payment.food_charge!)); nl(11);
+      const mealsLabel = [tenant.food_breakfast && "Breakfast", tenant.food_lunch && "Lunch", tenant.food_dinner && "Dinner"]
+        .filter(Boolean).join(" + ");
+      if (mealsLabel) { add(ML + 4, mealsLabel, 6, false); nl(9); }
+      nl(2);
+    }
+    if ((payment.ac_charge ?? 0) > 0) {
+      addKv("AC Charges", pk(payment.ac_charge!)); nl(11);
+      const realRate = payment.ac_per_unit_rate && payment.ac_per_unit_rate > 0 ? payment.ac_per_unit_rate : 0;
+      const storedUnits = Number(payment.ac_units_consumed ?? 0);
+      if (realRate > 0) {
+        // Derive units from charge ÷ real rate so the sub-line is always consistent
+        // with the actual rate, regardless of what was stored in ac_units_consumed.
+        // Rounded to 2dp (ac_units_consumed's DB precision), not a whole unit —
+        // otherwise an even split like 72.5 would display as "73".
+        const displayUnits = Math.round((payment.ac_charge! / realRate) * 100) / 100;
+        add(ML + 4, `${displayUnits} units x Rs. ${realRate}/unit`, 6, false); nl(9);
+      } else if (storedUnits > 0) {
+        // Fallback: back-calculate rate from stored units (regular monthly pay path)
+        const rate = Math.round(payment.ac_charge! / storedUnits);
+        add(ML + 4, `${storedUnits} units x Rs. ${rate}/unit`, 6, false); nl(9);
+      } else {
+        nl(1);
+      }
+      nl(2);
+    }
+    if ((payment.late_fee ?? 0) > 0)       { addKv("Late Fee", pk(payment.late_fee!)); nl(12); }
+    if ((payment.ac_maintenance_charge ?? 0) > 0) {
+      addKv("AC Maintenance", pk(payment.ac_maintenance_charge!)); nl(12);
+    }
+    if ((payment.security_deposit_charge ?? 0) > 0) {
+      // Actually charged as part of THIS bill (first month) — already included
+      // in `payment.amount`, so it's itemized here, not added again below.
+      addKv("Security Deposit", pk(payment.security_deposit_charge!)); nl(12);
+      add(ML, "(refundable on checkout)", 6, false); nl(10);
+    }
+    if ((payment.registration_fee_charge ?? 0) > 0) {
+      addKv("Registration Fee", pk(payment.registration_fee_charge!)); nl(12);
+      add(ML, "(one-time, non-refundable)", 6, false); nl(10);
+    }
+    if (payment.is_checkout && (payment.security_deposit ?? 0) > 0) {
+      // Informational only — the deposit was already collected at move-in, not
+      // part of this checkout payment's amount.
+      addKv("Security Deposit Refund", pk(payment.security_deposit!)); nl(12);
+      add(ML, "(to be returned to tenant)", 6, false); nl(10);
+    }
   }
   nl(2); addDash(); nl(10);
 

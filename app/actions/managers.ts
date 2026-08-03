@@ -345,7 +345,7 @@ export async function applyRoomACUnitsAsManager(
     const prevMonthStr = getPrevMonth(forMonth)
 
     // Verify room, get config, fetch previous month reading, active tenants, join readings, and checkout readings in parallel
-    const [{ data: room }, { data: config }, { data: prevRecord }, { data: allTenants }, { data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
+    const [{ data: room }, { data: config }, { data: prevRecord }, { data: allTenants, error: allTenantsErr }, { data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
       admin.from("hms_rooms").select("id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       admin.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).maybeSingle(),
       admin.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
@@ -354,7 +354,7 @@ export async function applyRoomACUnitsAsManager(
       // later arrivals for a month they were not there.
       admin
         .from("hms_tenants")
-        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
+        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
         .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
         .eq("is_active", true)
@@ -374,6 +374,11 @@ export async function applyRoomACUnitsAsManager(
         .eq("hostel_id", hostelId)
         .order("meter_reading", { ascending: true }),
     ])
+
+    // A failed tenant query returns null, which falls through to "No active
+    // tenants found in this room" below — an answer about the room, for a
+    // question the database never actually answered.
+    if (allTenantsErr) return { error: `Could not read this room's tenants: ${allTenantsErr.message}` }
 
     if (!room) return { error: "Room not found." }
     if (!room.has_ac) return { error: "This room does not have AC." }
@@ -436,7 +441,7 @@ export async function applyRoomACUnitsAsManager(
         const addonFoodCharge = config ? calcFoodAddonCharge(t, config) : 0
         const foodCharge = tierFoodCharge + addonFoodCharge
         const depositCharge = computeDepositCharge(
-          { check_in: t.check_in, security_deposit: t.security_deposit },
+          { check_in: t.check_in, security_deposit: t.security_deposit, deposit_collected_amount: t.deposit_collected_amount ?? 0 },
           currentMonth
         )
         const registrationFeeCharge = computeRegistrationFeeCharge(

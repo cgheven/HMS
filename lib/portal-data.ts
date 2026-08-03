@@ -127,14 +127,23 @@ export async function getManagerPaymentsPageData(forMonth: string) {
   const { hostelId } = scope;
   const admin = createAdminClient();
 
-  const [{ data: payments }, { data: tenants }, { data: rooms }, packageConfig, { data: hostel }, { data: acReadings }, { data: acJoinReadings }, { data: waitingTenants }] = await Promise.all([
+  const [
+    { data: payments, error: paymentsErr },
+    { data: tenants, error: tenantsErr },
+    { data: rooms, error: roomsErr },
+    packageConfig,
+    { data: hostel },
+    { data: acReadings, error: acReadingsErr },
+    { data: acJoinReadings, error: acJoinErr },
+    { data: waitingTenants, error: waitingErr },
+  ] = await Promise.all([
     admin.from("hms_payments")
       .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .eq("hostel_id", hostelId)
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false }),
     admin.from("hms_tenants")
-      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
+      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
       .eq("is_waiting", false),
@@ -162,12 +171,21 @@ export async function getManagerPaymentsPageData(forMonth: string) {
       .eq("is_waiting", true),
   ]);
 
+  // See getPaymentsPageData in lib/data.ts — a swallowed error here rendered a
+  // manager an empty tenant list beside non-zero money tiles. Failing loudly is
+  // the only outcome that cannot be mistaken for "nobody lives here".
+  const readErr =
+    paymentsErr ?? tenantsErr ?? roomsErr ?? acReadingsErr ?? acJoinErr ?? waitingErr;
+  if (readErr) {
+    throw new Error(`Payments page could not load for ${forMonth}: ${readErr.message}`);
+  }
+
   const h = hostel as Pick<Hostel, "id" | "name" | "phone" | "whatsapp" | "payment_methods" | "reminder_template"> | null;
 
   return {
     hostelId,
     payments: (payments ?? []) as Payment[],
-    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "registration_fee" | "food_breakfast" | "food_lunch" | "food_dinner" | "joining_meter_reading"> & { package_tier: PackageTier })[],
+    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "deposit_collected_amount" | "registration_fee" | "food_breakfast" | "food_lunch" | "food_dinner" | "joining_meter_reading"> & { package_tier: PackageTier })[],
     rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor" | "has_ac">[],
     packageConfig,
     hostelName: h?.name ?? "",

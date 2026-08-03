@@ -298,6 +298,19 @@ export interface Tenant {
   monthly_rent: number;
   daily_rate: number;
   security_deposit: number;
+  /**
+   * The date the reservation deposit money was actually received. Prints on the
+   * reservation receipt and answers "when did we take it". Never drives billing.
+   */
+  deposit_collected_on: string | null;
+  /**
+   * How much of `security_deposit` was already handed over ahead of check-in
+   * (as a reservation, with its own paid hms_payments row). The check-in month
+   * bills the REMAINDER — see computeDepositCharge. `security_deposit` itself is
+   * untouched by a collection, so checkout still refunds the full agreed
+   * deposit. 0 for every tenant who has never reserved.
+   */
+  deposit_collected_amount: number;
   /** One-time, non-refundable — billed only in check_in's month. Hidden on the Tenants page unless the hostel has a non-zero default configured in Settings. */
   registration_fee: number;
   /** On-file vehicle record for safety verification and parking-dispute resolution — all null when the tenant has no vehicle. */
@@ -362,6 +375,13 @@ export interface Payment {
   daily_rate_billed?: number | null;
   /** Owner-chosen base rent replacing monthly_rent in the amount recomputation (checkout pro-rating). */
   base_rent_override?: number | null;
+  /**
+   * A deposit taken to hold a bed before the tenant moves in. Carries no rent,
+   * food or AC — a DB trigger forces those to 0 and sets
+   * amount = security_deposit_charge + registration_fee_charge. Its for_month
+   * is the month the money was collected, not the month the tenant joins.
+   */
+  is_reservation?: boolean;
   created_at: string;
   updated_at: string;
   tenant?: { full_name: string; room_id: string | null; phone?: string | null; check_in?: string; joining_meter_reading?: number | null } | null;

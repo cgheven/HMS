@@ -7,6 +7,8 @@ interface Props {
   title?: string;
   description?: string;
   confirmLabel?: string;
+  /** Holds the confirm button while the dialog is still loading what it needs to warn about. */
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -16,6 +18,7 @@ export function ConfirmDialog({
   title = "Are you sure?",
   description = "This action cannot be undone.",
   confirmLabel = "Delete",
+  confirmDisabled = false,
   onConfirm,
   onCancel,
 }: Props) {
@@ -28,7 +31,7 @@ export function ConfirmDialog({
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" onClick={onCancel}>Cancel</Button>
-          <Button variant="destructive" onClick={onConfirm}>{confirmLabel}</Button>
+          <Button variant="destructive" onClick={onConfirm} disabled={confirmDisabled}>{confirmLabel}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
