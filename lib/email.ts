@@ -23,14 +23,23 @@ function baseHtml(title: string, body: string): string {
     <tr><td align="center">
       <table width="100%" style="max-width:560px;background:#18181b;border-radius:12px;border:1px solid #27272a;overflow:hidden;">
         <tr><td style="background:#1c1917;border-bottom:1px solid #27272a;padding:20px 28px;">
-          <!-- Remote image, not a data URI: Gmail and Outlook strip base64 img
-               src outright. alt carries the wordmark so the header still reads
-               correctly in clients that block remote images by default, and the
-               tagline below is real text for the same reason — the header must
-               never be blank just because images didn't load. -->
-          <img src="${SITE_URL}/pulse-logo.png" alt="Pulse HMS" width="125" height="40"
-               style="width:125px;height:40px;display:block;border:0;outline:none;text-decoration:none;font-size:18px;font-weight:700;color:#f59e0b;letter-spacing:-0.3px;" />
-          <div style="margin-top:7px;font-size:11px;color:#8b8b93;letter-spacing:0.4px;">Pulse of your business</div>
+          <!-- Mirrors the app sidebar lockup: square mark, then "Pulse" over the
+               tagline in gold caps. The mark is a remote image (Gmail and Outlook
+               strip base64 img src) and is decorative — alt is empty because the
+               wordmark beside it is real text, so a client that blocks images
+               still renders the full brand rather than a broken-image icon.
+               Deliberately NOT the combined wordmark asset, which bakes the
+               tagline into the artwork and printed it twice. -->
+          <table cellpadding="0" cellspacing="0" border="0"><tr>
+            <td style="padding-right:11px;vertical-align:middle;">
+              <img src="${SITE_URL}/logo-mark-email.png" alt="" width="38" height="38"
+                   style="width:38px;height:38px;display:block;border:0;border-radius:9px;" />
+            </td>
+            <td style="vertical-align:middle;">
+              <div style="font-size:16px;font-weight:700;color:#EEF2FF;line-height:1.1;letter-spacing:-0.2px;">Pulse</div>
+              <div style="font-size:10px;font-weight:600;color:#c9963a;letter-spacing:1.6px;margin-top:4px;text-transform:uppercase;">Pulse of Your Business</div>
+            </td>
+          </tr></table>
         </td></tr>
         <tr><td style="padding:28px;">
           ${body}
