@@ -19,8 +19,6 @@ import { LEAD_SOURCES, LEAD_SOURCE_OTHER } from "@/lib/lead-sources";
 const HOSTEL_TYPES = [
   { value: "boys",   label: "Boys Only" },
   { value: "girls",  label: "Girls Only" },
-  { value: "mixed",  label: "Mixed" },
-  { value: "family", label: "Family" },
 ];
 
 const FEATURES = [

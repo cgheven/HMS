@@ -24,8 +24,6 @@ import { OnboardingDone } from "./onboarding-done";
 const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
   { value: "boys",   label: "Boys Only" },
   { value: "girls",  label: "Girls Only" },
-  { value: "mixed",  label: "Mixed" },
-  { value: "family", label: "Family" },
 ];
 
 const ALL_AMENITIES = [

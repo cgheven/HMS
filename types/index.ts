@@ -13,7 +13,7 @@ export type ComplaintCategory = "kitchen" | "staff" | "cleanliness" | "maintenan
 export type ComplaintPriority = "low" | "medium" | "high";
 export type ComplaintStatus = "open" | "in_progress" | "resolved";
 export type EmployeeRole = "cook" | "guard" | "cleaner" | "manager" | "driver" | "other";
-export type HostelType = "boys" | "girls" | "mixed" | "family";
+export type HostelType = "boys" | "girls";
 export type EmployeeStatus = "active" | "inactive";
 export type SalaryStatus = "pending" | "paid";
 export type ProspectStatus = "pending" | "visited" | "onboarded";
@@ -1043,8 +1043,9 @@ export const EMPTY_ONBOARDING_BRANCH: OnboardingBranch = {
 
 export type RedflagStatus = "reported" | "resolved"
 
-/** RedFlag only operates on single-gender branches — a mixed/family branch has
- *  no sensible peer group to share a listing with. */
+/** Frozen on the report at insert time, so it stays put even if the branch's
+ *  hostel_type is edited later. Same values as HostelType, but a branch with no
+ *  type set has no peer group and is rejected by RedFlag rather than stored. */
 export type RedflagGender = "boys" | "girls"
 
 /** Why the money is owed. Mirrors the CHECK constraint on hms_redflags.reason —

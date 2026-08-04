@@ -25,8 +25,6 @@ import { SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
 const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
   { value: "boys",   label: "Boys Only" },
   { value: "girls",  label: "Girls Only" },
-  { value: "mixed",  label: "Mixed" },
-  { value: "family", label: "Family" },
 ];
 
 const ALL_AMENITIES = [

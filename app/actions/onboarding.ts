@@ -2,6 +2,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { calculateAnnualPrice } from "@/lib/pricing";
 import { headers } from "next/headers";
+import type { HostelType } from "@/types";
 
 export interface OnboardingFormData {
   business_name: string;
@@ -17,7 +18,10 @@ export interface OnboardingFormData {
   website_url?: string;
 }
 
-const VALID_HOSTEL_TYPES = ["boys", "girls", "mixed", "family"];
+// Typed against HostelType so narrowing the union can never leave this
+// server-side allowlist behind — it is the only guard between an anonymous
+// submission and the hms_platform_leads CHECK constraint.
+const VALID_HOSTEL_TYPES: HostelType[] = ["boys", "girls"];
 
 export async function submitOnboarding(
   formData: OnboardingFormData
@@ -46,7 +50,7 @@ export async function submitOnboarding(
   if (branchCount < 1) return { success: false, error: "Branch count must be at least 1." };
 
   const hostelType = formData.hostel_type?.trim();
-  if (hostelType && !VALID_HOSTEL_TYPES.includes(hostelType)) {
+  if (hostelType && !(VALID_HOSTEL_TYPES as string[]).includes(hostelType)) {
     return { success: false, error: "Invalid hostel type." };
   }
 

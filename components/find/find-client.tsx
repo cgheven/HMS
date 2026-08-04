@@ -23,8 +23,6 @@ const MARQUEE_CITIES = PK_CITIES;
 const TYPE_CONFIG: Record<HostelType, { label: string; badgeCls: string; gradientFrom: string; gradientTo: string }> = {
   boys:   { label: "Boys Only",  badgeCls: "bg-blue-500/20 text-blue-300 border-blue-400/20",    gradientFrom: "#0a1628", gradientTo: "#0f2347" },
   girls:  { label: "Girls Only", badgeCls: "bg-pink-500/20 text-pink-300 border-pink-400/20",    gradientFrom: "#1a0d18", gradientTo: "#2d1529" },
-  mixed:  { label: "Mixed",      badgeCls: "bg-violet-500/20 text-violet-300 border-violet-400/20", gradientFrom: "#110d1e", gradientTo: "#1e1436" },
-  family: { label: "Family",     badgeCls: "bg-emerald-500/20 text-emerald-300 border-emerald-400/20", gradientFrom: "#0a1a11", gradientTo: "#0f2d1a" },
 };
 
 const DEFAULT_GRADIENT = { gradientFrom: "#1a1208", gradientTo: "#2a1e05" };
@@ -353,8 +351,6 @@ const ALL_TYPES: { value: HostelType | "all"; label: string }[] = [
   { value: "all",    label: "All" },
   { value: "boys",   label: "Boys" },
   { value: "girls",  label: "Girls" },
-  { value: "mixed",  label: "Mixed" },
-  { value: "family", label: "Family" },
 ];
 
 export function FindClient({ hostels }: { hostels: PublicHostel[] }) {

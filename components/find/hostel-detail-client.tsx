@@ -29,7 +29,7 @@ function WhatsAppIcon({ cls = "w-4 h-4" }: { cls?: string }) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const TYPE_LABELS: Record<string, string> = {
-  boys: "Boys", girls: "Girls", mixed: "Mixed", family: "Family",
+  boys: "Boys", girls: "Girls",
 };
 
 const SPACE_LABELS: Record<SpaceType, string> = {
