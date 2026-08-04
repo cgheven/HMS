@@ -39,7 +39,7 @@ interface BuiltWelcome {
 async function getSiteOrigin(): Promise<string> {
   const h = await headers();
   const host = h.get("host");
-  if (!host) return process.env.NEXT_PUBLIC_SITE_URL ?? "https://hms.yourpulse.io";
+  if (!host) return process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
   const protocol = host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https";
   return `${protocol}://${host}`;
 }

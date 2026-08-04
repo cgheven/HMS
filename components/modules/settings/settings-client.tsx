@@ -221,7 +221,7 @@ export function SettingsClient() {
     hostelName: hostel?.name ?? "Your Hostel",
     room: "5",
     wifiNetworks,
-    menuUrl: hostel?.listing_enabled && hostel?.slug ? `https://hms.yourpulse.io/find/${hostel.slug}` : null,
+    menuUrl: hostel?.listing_enabled && hostel?.slug ? `https://hostel.yourpulse.io/find/${hostel.slug}` : null,
     mealTimes,
   });
 

@@ -6,7 +6,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Verified sender — configure RESEND_FROM_EMAIL in env (must match a verified Resend domain)
 const FROM = process.env.RESEND_FROM_EMAIL ?? "Pulse HMS <noreply@yourpulse.io>";
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hms.yourpulse.io";
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
 
 // Escape user-supplied content before embedding in HTML to prevent injection
 function esc(s: string | null | undefined): string {
@@ -23,7 +23,14 @@ function baseHtml(title: string, body: string): string {
     <tr><td align="center">
       <table width="100%" style="max-width:560px;background:#18181b;border-radius:12px;border:1px solid #27272a;overflow:hidden;">
         <tr><td style="background:#1c1917;border-bottom:1px solid #27272a;padding:20px 28px;">
-          <span style="font-size:18px;font-weight:700;color:#f59e0b;letter-spacing:-0.3px;">Pulse HMS</span>
+          <!-- Remote image, not a data URI: Gmail and Outlook strip base64 img
+               src outright. alt carries the wordmark so the header still reads
+               correctly in clients that block remote images by default, and the
+               tagline below is real text for the same reason — the header must
+               never be blank just because images didn't load. -->
+          <img src="${SITE_URL}/pulse-logo.png" alt="Pulse HMS" width="125" height="40"
+               style="width:125px;height:40px;display:block;border:0;outline:none;text-decoration:none;font-size:18px;font-weight:700;color:#f59e0b;letter-spacing:-0.3px;" />
+          <div style="margin-top:7px;font-size:11px;color:#8b8b93;letter-spacing:0.4px;">Pulse of your business</div>
         </td></tr>
         <tr><td style="padding:28px;">
           ${body}
@@ -120,6 +127,104 @@ export async function sendWaitlistEmail(data: WaitlistEmailData): Promise<void> 
     subject: `New waitlist signup — ${data.hostelName}`,
     html: baseHtml("Waitlist Signup", body),
   });
+}
+
+// ─── Platform invoice: issue + payment reminders (client-facing) ─────────────
+// These are the only emails in this file that go to a PAYING CUSTOMER rather
+// than to a hostel owner about their own tenants, so they carry a deliberate
+// safety valve: set CLIENT_INVOICE_TEST_EMAIL and every one of them is
+// redirected to that address instead of the real client. Leave it unset in
+// production. Nothing else in this file is gated this way because nothing else
+// can dun a customer for money.
+
+interface ClientInvoiceEmailData {
+  clientEmail: string;
+  clientName: string;
+  periodLabel: string;
+  amount: number;
+  dueDate: string;
+  invoiceUrl: string;
+  /** Days overdue; 0 or less means not yet due. Drives the tone of the copy. */
+  daysOverdue: number;
+  isReminder: boolean;
+  /** The same breakdown the PDF shows, rendered inline. Deliberately NOT sent as
+   *  an attachment: attachments are a spam-filter signal on a dunning email and
+   *  a download-then-open detour on a phone, and invoiceUrl already serves the
+   *  PDF for anyone who wants to print or file it. */
+  lines: { label: string; value: string; muted?: boolean; credit?: boolean }[];
+}
+
+function formatPkr(n: number): string {
+  return `Rs. ${n.toLocaleString("en-PK", { maximumFractionDigits: 0 })}`;
+}
+
+function lineRow(l: { label: string; value: string; muted?: boolean; credit?: boolean }): string {
+  const color = l.credit ? "#34d399" : l.muted ? "#a1a1aa" : "#e5e5e5";
+  return `<tr>
+    <td style="padding:7px 0;border-bottom:1px solid #232326;font-size:13px;color:${l.muted ? "#a1a1aa" : "#d4d4d8"};">${esc(l.label)}</td>
+    <td style="padding:7px 0;border-bottom:1px solid #232326;font-size:13px;color:${color};font-weight:${l.muted ? "400" : "600"};text-align:right;white-space:nowrap;">${esc(l.value)}</td>
+  </tr>`;
+}
+
+export async function sendClientInvoiceEmail(
+  data: ClientInvoiceEmailData
+): Promise<{ redirectedTo?: string }> {
+  const testOverride = process.env.CLIENT_INVOICE_TEST_EMAIL?.trim();
+  const recipient = testOverride || data.clientEmail;
+
+  const overdue = data.daysOverdue > 0;
+  const heading = data.isReminder
+    ? overdue
+      ? `Payment overdue — ${data.periodLabel}`
+      : `Payment reminder — ${data.periodLabel}`
+    : `Your invoice for ${data.periodLabel}`;
+
+  const lead = data.isReminder
+    ? overdue
+      ? `This invoice is <strong style="color:#fb7185;">${data.daysOverdue} day${data.daysOverdue === 1 ? "" : "s"} overdue</strong>. If you've already paid, please ignore this message.`
+      : `A quick reminder that this invoice is due on <strong style="color:#f59e0b;">${esc(data.dueDate)}</strong>.`
+    : `Thank you for using Pulse. Here is your invoice for <strong style="color:#f59e0b;">${esc(data.periodLabel)}</strong>.`;
+
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">${esc(heading)}</h2>
+    <p style="margin:0 0 22px;font-size:14px;color:#a1a1aa;">Assalam o Alaikum ${esc(data.clientName)}, ${lead}</p>
+
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;">
+      ${data.lines.map(lineRow).join("")}
+      <tr>
+        <td style="padding:14px 0 0;font-size:14px;font-weight:700;color:#fff;">Total due</td>
+        <td style="padding:14px 0 0;font-size:19px;font-weight:700;color:#f59e0b;text-align:right;white-space:nowrap;">${formatPkr(data.amount)}</td>
+      </tr>
+      <tr>
+        <td colspan="2" style="padding:4px 0 0;font-size:12px;color:${overdue ? "#fb7185" : "#71717a"};">
+          ${overdue ? `Was due ${esc(data.dueDate)}` : `Due ${esc(data.dueDate)}`}
+        </td>
+      </tr>
+    </table>
+
+    <p style="margin:24px 0 0;">
+      <a href="${data.invoiceUrl}" style="display:inline-block;background:#f59e0b;color:#0f0f11;font-size:13px;font-weight:600;padding:10px 18px;border-radius:8px;text-decoration:none;">Download PDF Invoice</a>
+    </p>
+    <p style="margin:16px 0 0;font-size:12px;color:#71717a;">
+      Questions about this invoice? Just reply to the person who set up your account.
+    </p>
+  `;
+
+  const subject = data.isReminder
+    ? overdue
+      ? `Overdue: ${formatPkr(data.amount)} — Pulse invoice ${data.periodLabel}`
+      : `Reminder: ${formatPkr(data.amount)} due ${data.dueDate} — Pulse invoice ${data.periodLabel}`
+    : `Pulse invoice ${data.periodLabel} — ${formatPkr(data.amount)}`;
+
+  const { error } = await resend.emails.send({
+    from: FROM,
+    to: recipient,
+    subject: testOverride ? `[TEST → ${data.clientEmail}] ${subject}` : subject,
+    html: baseHtml(heading, body),
+  });
+  if (error) throw new Error(`Resend: ${error.message}`);
+
+  return testOverride ? { redirectedTo: recipient } : {};
 }
 
 // ─── Complaint submitted (owner notification) ────────────────────────────────

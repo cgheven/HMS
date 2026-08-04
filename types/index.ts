@@ -783,6 +783,11 @@ export interface PlatformInvoice {
   discount_pct: number;
   onboarding_fee_charged: number;
   is_first_invoice: boolean;
+  /** Set by the SuperAdmin "Send invoice" button. NULL means the client has
+   *  never been emailed, and the reminder cron skips it entirely. */
+  first_sent_at: string | null;
+  last_reminder_at: string | null;
+  reminder_count: number;
 }
 
 export const FEATURE_KEYS = [

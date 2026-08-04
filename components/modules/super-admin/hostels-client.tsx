@@ -4,14 +4,14 @@ import { useState, useTransition, useMemo } from "react";
 import {
   Building2, Plus, Search, RefreshCw, Users, Home,
   GitBranch, Trash2, Copy, Check, MessageCircle, AlertTriangle,
-  Wallet, CheckCircle2, Clock, Zap, Download, Pencil, RotateCcw,
+  Wallet, CheckCircle2, Clock, Zap, Download, Pencil, RotateCcw, Mail,
 } from "lucide-react";
 import {
   listAllHostels, createHostelForClient, addBranchToOwner,
   deleteHostel, deleteClient, setWhatsappEnabled, type SuperHostelRow,
 } from "@/app/actions/super-admin";
 import {
-  getClientBilling, setClientBilling, generateInvoiceNow, markInvoiceStatus, updateInvoiceAmount,
+  getClientBilling, setClientBilling, generateInvoiceNow, markInvoiceStatus, updateInvoiceAmount, sendInvoiceEmail,
   resetClientInvoices, updateOwnerPhone,
 } from "@/app/actions/client-billing";
 import { Card, CardContent } from "@/components/ui/card";
@@ -337,6 +337,24 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
       `${url}`;
     const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
     window.open(waUrl, "_blank");
+  }
+
+  function handleSendInvoiceEmail(inv: PlatformInvoice) {
+    if (!billingTarget) return;
+    startTransition(async () => {
+      const res = await sendInvoiceEmail(inv.id);
+      if (res.error) {
+        toast({ title: "Failed to send", description: res.error, variant: "destructive" });
+        return;
+      }
+      toast({
+        title: res.redirectedTo ? "Sent in TEST mode" : "Invoice emailed",
+        description: res.redirectedTo
+          ? `Redirected to ${res.redirectedTo} instead of ${res.sentTo}. Reminders every 3 days until marked paid.`
+          : `Sent to ${res.sentTo} with full breakdown. Reminders every 3 days until marked paid.`,
+      });
+      openBilling(billingTarget.ownerId, billingTarget.ownerName, billingBranchCount);
+    });
   }
 
   function handleToggleInvoiceStatus(invoiceId: string, current: PlatformInvoice["status"]) {
@@ -1043,6 +1061,25 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                           >
                             <MessageCircle className="w-3.5 h-3.5" />
                           </button>
+                          {inv.status === "unpaid" && (
+                            <button
+                              onClick={() => handleSendInvoiceEmail(inv)}
+                              disabled={isPending}
+                              className={cn(
+                                "p-1.5 rounded-lg border transition-colors disabled:opacity-50",
+                                inv.first_sent_at
+                                  ? "border-amber/40 text-amber hover:bg-amber/10"
+                                  : "border-sidebar-border text-muted-foreground hover:text-foreground hover:bg-white/5"
+                              )}
+                              title={
+                                inv.first_sent_at
+                                  ? `Emailed ${formatDate(inv.first_sent_at.slice(0, 10))} · ${inv.reminder_count} reminder${inv.reminder_count === 1 ? "" : "s"} sent · click to resend`
+                                  : "Email invoice with PDF (starts 3-day reminders)"
+                              }
+                            >
+                              <Mail className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                           <button
                             onClick={() => handleToggleInvoiceStatus(inv.id, inv.status)}
                             disabled={isPending}

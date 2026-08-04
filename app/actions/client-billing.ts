@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { writeAuditLog } from "@/lib/audit";
 import { generateInvoiceForOwner } from "@/lib/invoice-generation";
+import { sendInvoiceMail } from "@/lib/client-invoice-mailer";
 import type { ClientBilling, PlatformInvoice } from "@/types";
 
 async function requireSuperAdmin() {
@@ -189,6 +190,46 @@ export async function markInvoiceStatus(
     return {};
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to update invoice" };
+  }
+}
+
+// ── sendInvoiceEmail ──────────────────────────────────────────────────────────
+// Emails the client their invoice with the PDF attached, and arms the reminder
+// job — /api/cron/client-invoice-reminders only chases invoices that have a
+// first_sent_at, so generating an invoice never mails anyone on its own. Safe
+// to press again: it re-sends the same invoice and resets the 3-day clock.
+
+export async function sendInvoiceEmail(
+  invoiceId: string
+): Promise<{ error?: string; sentTo?: string; redirectedTo?: string }> {
+  try {
+    const caller = await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const result = await sendInvoiceMail(admin, invoiceId, "invoice");
+    if (!result.sent) return { error: result.reason ?? "Could not send invoice" };
+
+    const { data: inv } = await admin
+      .from("hms_platform_invoices")
+      .select("owner_id, period_label")
+      .eq("id", invoiceId)
+      .maybeSingle();
+    const { data: authUser } = inv
+      ? await admin.auth.admin.getUserById(inv.owner_id)
+      : { data: null };
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: "super_admin.send_invoice_email",
+      entity: "invoice",
+      entity_id: invoiceId,
+      meta: { redirected_to: result.redirectedTo ?? null },
+    });
+
+    return { sentTo: authUser?.user?.email ?? undefined, redirectedTo: result.redirectedTo };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to send invoice" };
   }
 }
 
