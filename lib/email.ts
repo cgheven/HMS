@@ -122,6 +122,70 @@ export async function sendWaitlistEmail(data: WaitlistEmailData): Promise<void> 
   });
 }
 
+// ─── Complaint submitted (owner notification) ────────────────────────────────
+// Fired from the public QR complaint form. Every field originates from an
+// unauthenticated submission, so it all goes through esc() — and the
+// description additionally needs its newlines converted, since tenants type
+// multi-line complaints that would otherwise collapse into one run-on line.
+
+interface ComplaintEmailData {
+  ownerEmail: string;
+  hostelName: string;
+  tenantName: string;
+  phone: string;
+  roomNumber?: string | null;
+  category: string;
+  description: string;
+}
+
+const COMPLAINT_CATEGORY_LABELS: Record<string, string> = {
+  kitchen: "Kitchen / Food",
+  staff: "Staff",
+  cleanliness: "Cleanliness",
+  maintenance: "Maintenance",
+  security: "Security",
+  other: "Other",
+};
+
+export async function sendComplaintEmail(data: ComplaintEmailData): Promise<void> {
+  const categoryLabel = COMPLAINT_CATEGORY_LABELS[data.category] ?? data.category;
+  const descriptionHtml = esc(data.description).replace(/\r?\n/g, "<br>");
+
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">New Complaint Submitted</h2>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">A member raised a complaint at <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>.</p>
+
+    <div style="margin:0 0 20px;padding:10px 14px;background:#1c1917;border:1px solid #3f2d17;border-radius:8px;">
+      <div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:0.5px;">${esc(categoryLabel)}</div>
+    </div>
+
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      ${row("Member", esc(data.tenantName))}
+      ${row("Phone", esc(data.phone))}
+      ${data.roomNumber ? row("Room", esc(data.roomNumber)) : ""}
+    </table>
+
+    <p style="margin:20px 0 6px;font-size:13px;font-weight:600;color:#e5e5e5;">Complaint</p>
+    <div style="padding:12px 14px;background:#0f0f11;border:1px solid #27272a;border-radius:8px;font-size:13px;color:#e5e5e5;line-height:1.6;">
+      ${descriptionHtml}
+    </div>
+
+    <p style="margin:24px 0 0;">
+      <a href="${SITE_URL}/complaints" style="display:inline-block;background:#f59e0b;color:#0f0f11;font-size:13px;font-weight:600;padding:10px 18px;border-radius:8px;text-decoration:none;">Open Complaints</a>
+    </p>
+  `;
+
+  // resend.emails.send resolves with { error } instead of throwing, so an
+  // unverified domain or bad key would otherwise look like a successful send.
+  const { error } = await resend.emails.send({
+    from: FROM,
+    to: data.ownerEmail,
+    subject: `New ${categoryLabel.toLowerCase()} complaint from ${data.tenantName} — ${data.hostelName}`,
+    html: baseHtml("New Complaint", body),
+  });
+  if (error) throw new Error(`Resend: ${error.message}`);
+}
+
 // ─── Onboarding form submitted (SuperAdmin notification) ─────────────────────
 // Fired when a prospect completes the setup wizard at /onboarding/<token>.
 // Every value here is unauthenticated user input, so it all goes through esc()

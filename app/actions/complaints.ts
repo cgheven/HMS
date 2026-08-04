@@ -3,6 +3,7 @@
 import { unstable_rethrow } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { sendComplaintEmail } from "@/lib/email";
 import type { ComplaintCategory } from "@/types";
 
 // Kept in sync with the hms_complaints CHECK constraint (migration
@@ -64,7 +65,7 @@ export async function submitComplaintAction(
     // getPublicHostelByComplaintCode).
     const { data: hostel } = await admin
       .from("hms_hostels")
-      .select("id")
+      .select("id, name, owner_id")
       .eq("complaint_code", cleanCode)
       .maybeSingle();
     if (!hostel) return { error: "Hostel not found." };
@@ -77,7 +78,7 @@ export async function submitComplaintAction(
     const normalizedInputPhone = normalizePhone(cleanPhone);
     const { data: tenants } = await admin
       .from("hms_tenants")
-      .select("id, phone, room_id")
+      .select("id, full_name, phone, room_id, room:hms_rooms(room_number)")
       .eq("hostel_id", hostel.id)
       .eq("is_active", true);
     const tenant = (tenants ?? []).find(
@@ -115,6 +116,30 @@ export async function submitComplaintAction(
       priority: "medium",
     });
     if (error) return { error: "Something went wrong. Please try again." };
+
+    // Fire-and-forget: notify the owner so they can act immediately. A failed
+    // send (or an owner with no login email) must never turn a successfully
+    // recorded complaint into an error for the tenant.
+    void (async () => {
+      try {
+        const {
+          data: { user: owner },
+        } = await admin.auth.admin.getUserById(hostel.owner_id);
+        if (!owner?.email) return;
+        const room = Array.isArray(tenant.room) ? tenant.room[0] : tenant.room;
+        await sendComplaintEmail({
+          ownerEmail: owner.email,
+          hostelName: hostel.name,
+          tenantName: tenant.full_name ?? cleanName,
+          phone: tenant.phone ?? cleanPhone,
+          roomNumber: room?.room_number ?? null,
+          category,
+          description: cleanDescription,
+        });
+      } catch {
+        // Never surface email failures to the tenant
+      }
+    })();
 
     revalidatePath("/complaints");
     return { error: null };
