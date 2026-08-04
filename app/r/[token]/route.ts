@@ -3,8 +3,44 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { generateReceiptPDF } from "@/lib/receipt-pdf";
 import { countBillableNights } from "@/lib/daily-billing";
 
+const RECEIPT_BUCKET = "receipts";
+
+/** Deterministic, so every link pointing at the same payment shares one stored
+ *  object instead of each caching its own copy. Regeneration overwrites in
+ *  place (upsert), so the bucket never accumulates stale versions. */
+function receiptStoragePath(
+  hostelId: string,
+  scope: { paymentId: string } | { installmentId: string }
+): string {
+  return "installmentId" in scope
+    ? `${hostelId}/inst_${scope.installmentId}.pdf`
+    : `${hostelId}/${scope.paymentId}.pdf`;
+}
+
+function pdfResponse(
+  bytes: Uint8Array<ArrayBuffer>,
+  filename: string,
+  stamp: string,
+  immutable: boolean
+): NextResponse {
+  return new NextResponse(bytes, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${filename}"`,
+      // An installment receipt is a frozen snapshot and can be cached hard. A
+      // payment-scoped one tracks the live row, so it revalidates every time —
+      // but the ETag turns that into a 304 rather than a re-download.
+      "Cache-Control": immutable
+        ? "private, max-age=31536000, immutable"
+        : "private, no-cache",
+      ETag: `"${stamp}"`,
+    },
+  });
+}
+
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ token: string }> }
 ) {
   const { token } = await params;
@@ -23,7 +59,9 @@ export async function GET(
   const now = new Date().toISOString();
   const { data: link, error: linkErr } = await supabase
     .from("hms_invoice_links")
-    .select("id, payment_id, installment_id, hostel_id, expires_at")
+    .select(
+      "id, payment_id, installment_id, hostel_id, expires_at, pdf_path, pdf_stamp, pdf_filename, payment:hms_payments(updated_at)"
+    )
     .eq("token", token)
     .or(`expires_at.is.null,expires_at.gt.${now}`)
     .maybeSingle();
@@ -38,6 +76,37 @@ export async function GET(
   // removed. NULL expires_at means permanent, never treat it as expired.
   if (link.expires_at && new Date(link.expires_at) < new Date()) {
     return new NextResponse("This receipt link has expired.", { status: 410 });
+  }
+
+  // ── Cache fast path ────────────────────────────────────────────────────────
+  // An installment link renders an immutable snapshot row, so once built it is
+  // valid forever. A payment link tracks the live row, so it is only valid
+  // while the payment's updated_at still matches what it was stamped with.
+  const linkedPayment = Array.isArray(link.payment) ? link.payment[0] : link.payment;
+  const isImmutableScope = !!link.installment_id;
+  const currentStamp = isImmutableScope
+    ? "immutable"
+    : ((linkedPayment as { updated_at?: string } | null)?.updated_at ?? "");
+
+  const cacheIsFresh = !!link.pdf_path && !!currentStamp && link.pdf_stamp === currentStamp;
+
+  if (cacheIsFresh) {
+    if (req.headers.get("if-none-match") === `"${currentStamp}"`) {
+      return new NextResponse(null, { status: 304 });
+    }
+    const { data: cached } = await supabase.storage
+      .from(RECEIPT_BUCKET)
+      .download(link.pdf_path as string);
+    if (cached) {
+      return pdfResponse(
+        Buffer.from(await cached.arrayBuffer()),
+        link.pdf_filename ?? "receipt.pdf",
+        currentStamp,
+        isImmutableScope
+      );
+    }
+    // Object missing (manually purged, or a failed upload persisted a path) —
+    // fall through and rebuild rather than 404 a receipt that is still valid.
   }
 
   // An installment-scoped link resolves the payment_id from the snapshot row —
@@ -75,7 +144,7 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, payment_method, payment_date, receipt_number, payment_package_tier, status, is_reservation, billed_days, daily_rate_billed, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, is_active, billing_type, daily_rate, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
+        "id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, payment_method, payment_date, receipt_number, payment_package_tier, status, is_reservation, billed_days, daily_rate_billed, updated_at, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, is_active, billing_type, daily_rate, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
       )
       .eq("id", paymentId)
       .single(),
@@ -103,6 +172,12 @@ export async function GET(
     return new NextResponse("This payment hasn't been collected yet — no receipt is available.", { status: 409 });
   }
 
+  // Tracks the updated_at the cached bytes will correspond to. The self-heal
+  // below writes to the payment and therefore moves updated_at, so the stamp
+  // must be taken from AFTER that write — stamping the pre-write value would
+  // make the very first cache entry stale on arrival.
+  let stampSource: string | null = (payment as { updated_at?: string }).updated_at ?? null;
+
   // Self-heal: generate + persist receipt_number on first view if it was never set.
   if (!installmentSnapshot && !payment.receipt_number) {
     const tenantRaw = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
@@ -110,8 +185,14 @@ export async function GET(
     const initials = tenantName.split(" ").map((w: string) => w[0] ?? "").join("").toUpperCase().slice(0, 2);
     const rand = Math.floor(Math.random() * 900 + 100);
     const generated = `HMS-${payment.for_month.replace("-", "")}-${initials}-${rand}`;
-    await supabase.from("hms_payments").update({ receipt_number: generated }).eq("id", payment.id);
+    const { data: healed } = await supabase
+      .from("hms_payments")
+      .update({ receipt_number: generated })
+      .eq("id", payment.id)
+      .select("updated_at")
+      .single();
     payment.receipt_number = generated;
+    stampSource = (healed as { updated_at?: string } | null)?.updated_at ?? stampSource;
   }
 
   const tenant = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
@@ -201,13 +282,34 @@ export async function GET(
 
   const tenantName = (tenant as { full_name?: string })?.full_name?.replace(/\s+/g, "_") ?? "receipt";
   const filename = `receipt_${payment.for_month}_${tenantName}.pdf`;
+  const body = Buffer.from(pdfBytes);
 
-  return new NextResponse(Buffer.from(pdfBytes), {
-    status: 200,
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="${filename}"`,
-      "Cache-Control": "private, no-store",
-    },
-  });
+  // Persist for next time. Best-effort: a storage or bookkeeping failure must
+  // never cost the tenant the receipt they are currently waiting on — it just
+  // means the next view rebuilds it, exactly as before this cache existed.
+  const stamp = isImmutableScope ? "immutable" : stampSource;
+  if (stamp) {
+    const storagePath = receiptStoragePath(
+      link.hostel_id as string,
+      link.installment_id
+        ? { installmentId: link.installment_id as string }
+        : { paymentId: payment.id as string }
+    );
+    const { error: uploadErr } = await supabase.storage
+      .from(RECEIPT_BUCKET)
+      .upload(storagePath, body, { contentType: "application/pdf", upsert: true });
+
+    if (!uploadErr) {
+      // Stamp every link sharing this scope, not just the one that was opened.
+      // Several tokens can point at one payment (each pre-fix Receipt click
+      // minted another), and they all resolve to the same stored object.
+      const bookkeeping = { pdf_path: storagePath, pdf_stamp: stamp, pdf_filename: filename };
+      const q = supabase.from("hms_invoice_links").update(bookkeeping);
+      await (link.installment_id
+        ? q.eq("installment_id", link.installment_id)
+        : q.eq("payment_id", payment.id).is("installment_id", null));
+    }
+  }
+
+  return pdfResponse(body, filename, stamp ?? "", isImmutableScope);
 }

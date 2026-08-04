@@ -802,6 +802,24 @@ export async function createInvoiceLink(
       throw new Error("Cannot generate a receipt for a payment that hasn't been collected yet.");
     }
 
+    // Reuse the existing link rather than minting another permanent public
+    // token on every click. Previously this inserted unconditionally, so the
+    // table had grown to 210 rows covering only 99 payments — every extra row
+    // being a never-expiring receipt URL that could not be accounted for or
+    // revoked. Oldest first, so the token already shared over WhatsApp stays
+    // the canonical one and keeps working.
+    const { data: existing } = await supabase
+      .from("hms_invoice_links")
+      .select("token")
+      .eq("payment_id", paymentId)
+      .eq("hostel_id", hostelId)
+      .is("installment_id", null)
+      .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (existing?.token) return { token: existing.token as string };
+
     // Insert the invoice link (DB defaults token via gen_random_bytes). No
     // expires_at — receipt links are permanent, not time-boxed.
     const { data, error } = await supabase
@@ -842,6 +860,18 @@ export async function createInstallmentReceiptLink(
       .single();
 
     if (iErr || !installment) throw new Error("Payment record not found or access denied");
+
+    // Same reuse rule as createInvoiceLink — see the rationale there.
+    const { data: existing } = await supabase
+      .from("hms_invoice_links")
+      .select("token")
+      .eq("installment_id", installmentId)
+      .eq("hostel_id", hostelId)
+      .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (existing?.token) return { token: existing.token as string };
 
     const { data, error } = await supabase
       .from("hms_invoice_links")
