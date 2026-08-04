@@ -23,17 +23,22 @@ function baseHtml(title: string, body: string): string {
     <tr><td align="center">
       <table width="100%" style="max-width:560px;background:#18181b;border-radius:12px;border:1px solid #27272a;overflow:hidden;">
         <tr><td style="background:#1c1917;border-bottom:1px solid #27272a;padding:20px 28px;">
-          <!-- Mirrors the app sidebar lockup: square mark, then "Pulse" over the
-               tagline in gold caps. The mark is a remote image (Gmail and Outlook
-               strip base64 img src) and is decorative — alt is empty because the
-               wordmark beside it is real text, so a client that blocks images
-               still renders the full brand rather than a broken-image icon.
-               Deliberately NOT the combined wordmark asset, which bakes the
-               tagline into the artwork and printed it twice. -->
+          <!-- Mirrors the app sidebar lockup: badge, then "Pulse" over the tagline
+               in gold caps. Deliberately NOT the combined wordmark asset, which
+               bakes the tagline into the artwork and so printed it twice.
+               logo-mark-email.png is generated from logo-mark.jpg with its rounded
+               shape cut into the alpha channel and the sidebar's gold ring baked
+               in — the source JPEG has WHITE corners, which the sidebar hides with
+               rounded-lg + overflow-hidden but which leak through in email, where
+               border-radius on an img is unreliable and Outlook ignores it. Hence
+               no border-radius here: the shape lives in the asset.
+               The mark is decorative (empty alt) because the wordmark beside it is
+               real text, so a client blocking images still renders the full brand
+               rather than a broken-image icon. -->
           <table cellpadding="0" cellspacing="0" border="0"><tr>
             <td style="padding-right:11px;vertical-align:middle;">
               <img src="${SITE_URL}/logo-mark-email.png" alt="" width="38" height="38"
-                   style="width:38px;height:38px;display:block;border:0;border-radius:9px;" />
+                   style="width:38px;height:38px;display:block;border:0;" />
             </td>
             <td style="vertical-align:middle;">
               <div style="font-size:16px;font-weight:700;color:#EEF2FF;line-height:1.1;letter-spacing:-0.2px;">Pulse</div>
