@@ -100,6 +100,53 @@ export async function getPublicHostels(): Promise<{ hostels?: PublicHostel[]; er
   }
 }
 
+// Every publicly-listed branch under one owner, plus that owner's display name.
+// The single implementation behind BOTH public entry points — /find/{slug}
+// (anchored on a branch slug) and {subdomain}.hostels.yourpulse.io (anchored on
+// hms_profiles.subdomain). Not exported: this file is "use server", so anything
+// exported becomes a callable server action, and an owner_id-keyed lookup must
+// never be reachable from the browser.
+async function branchesForOwner(
+  ownerId: string
+): Promise<{ ownerName?: string | null; branches?: PublicHostel[]; error?: string }> {
+  const admin = createAdminClient();
+
+  const { data, error } = await admin
+    .from("hms_hostels")
+    .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays,cover_image_url")
+    .eq("owner_id", ownerId)
+    .eq("listing_enabled", true)
+    .order("name");
+  if (error) throw error;
+
+  const hostels = (data ?? []) as (Omit<PublicHostel, "available_beds" | "owner_name">)[];
+  if (hostels.length === 0) return { error: "Hostel not found" };
+
+  const ids = hostels.map((h) => h.id);
+  const [{ data: rooms }, { data: profile }] = await Promise.all([
+    admin
+      .from("hms_rooms")
+      .select("hostel_id, capacity, occupied")
+      .in("hostel_id", ids)
+      .eq("status", "available"),
+    admin.from("hms_profiles").select("full_name").eq("id", ownerId).maybeSingle(),
+  ]);
+
+  const availMap: Record<string, number> = {};
+  for (const r of rooms ?? []) {
+    availMap[r.hostel_id] = (availMap[r.hostel_id] ?? 0) + Math.max(0, r.capacity - r.occupied);
+  }
+
+  return {
+    ownerName: profile?.full_name ?? null,
+    branches: hostels.map((h) => ({
+      ...h,
+      owner_name: profile?.full_name ?? null,
+      available_beds: availMap[h.id] ?? 0,
+    })),
+  };
+}
+
 // Given any one branch's slug, resolve the business (owner) it belongs to and
 // return every publicly-listed branch under that same owner — so a business
 // gets one shareable page for all its branches, instead of tenants browsing
@@ -118,40 +165,37 @@ export const getPublicHostelsByOwner = cache(async function getPublicHostelsByOw
       .maybeSingle();
     if (anchorErr || !anchor) return { error: "Hostel not found" };
 
-    const { data, error } = await admin
-      .from("hms_hostels")
-      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays,cover_image_url")
-      .eq("owner_id", anchor.owner_id)
-      .eq("listing_enabled", true)
-      .order("name");
-    if (error) throw error;
+    return await branchesForOwner(anchor.owner_id);
+  } catch {
+    return { error: "Something went wrong. Please try again." };
+  }
+});
 
-    const hostels = (data ?? []) as (Omit<PublicHostel, "available_beds" | "owner_name">)[];
-    if (hostels.length === 0) return { error: "Hostel not found" };
+// Subdomain entry point — {subdomain}.hostels.yourpulse.io. Resolves the owner
+// from hms_profiles.subdomain, then hands off to the exact same branch
+// resolution /find/{slug} uses, so the two can never drift.
+//
+// An owner whose branches are all listing_enabled = false resolves to zero
+// branches and returns the same "Hostel not found" the path-based route does,
+// which the caller turns into a 404 — an unlisted business stays unlisted on
+// its subdomain too.
+export const getPublicHostelsBySubdomain = cache(async function getPublicHostelsBySubdomain(
+  subdomain: string
+): Promise<{ ownerName?: string | null; branches?: PublicHostel[]; error?: string }> {
+  try {
+    const normalized = subdomain.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(normalized)) return { error: "Hostel not found" };
 
-    const ids = hostels.map((h) => h.id);
-    const [{ data: rooms }, { data: profile }] = await Promise.all([
-      admin
-        .from("hms_rooms")
-        .select("hostel_id, capacity, occupied")
-        .in("hostel_id", ids)
-        .eq("status", "available"),
-      admin.from("hms_profiles").select("full_name").eq("id", anchor.owner_id).maybeSingle(),
-    ]);
+    const admin = createAdminClient();
 
-    const availMap: Record<string, number> = {};
-    for (const r of rooms ?? []) {
-      availMap[r.hostel_id] = (availMap[r.hostel_id] ?? 0) + Math.max(0, r.capacity - r.occupied);
-    }
+    const { data: owner, error: ownerErr } = await admin
+      .from("hms_profiles")
+      .select("id")
+      .eq("subdomain", normalized)
+      .maybeSingle();
+    if (ownerErr || !owner) return { error: "Hostel not found" };
 
-    return {
-      ownerName: profile?.full_name ?? null,
-      branches: hostels.map((h) => ({
-        ...h,
-        owner_name: profile?.full_name ?? null,
-        available_beds: availMap[h.id] ?? 0,
-      })),
-    };
+    return await branchesForOwner(owner.id);
   } catch {
     return { error: "Something went wrong. Please try again." };
   }
