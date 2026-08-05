@@ -71,14 +71,6 @@ function SuperAdminSidebar({
           </button>
         </div>
 
-        {/* Badge */}
-        <div className="px-4 py-3 border-b border-sidebar-border">
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber/10 border border-amber/20 text-amber text-[11px] font-semibold">
-            <Crown className="w-3 h-3" />
-            Super Admin Panel
-          </span>
-        </div>
-
         {/* Nav */}
         <nav className="flex-1 py-3 px-2.5 overflow-y-auto space-y-0.5">
           <p className="text-[10px] font-bold text-muted-foreground/70 uppercase tracking-widest px-3 mb-2 mt-1">
