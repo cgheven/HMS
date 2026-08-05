@@ -4,8 +4,8 @@ import { randomBytes } from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { writeAuditLog } from "@/lib/audit";
-import { pktYearMonth } from "@/lib/pkt-time";
-import type { PlatformLead } from "@/types";
+import { pktTodayDateString } from "@/lib/pkt-time";
+import { isTestOwner } from "@/lib/test-accounts";
 
 // ── Guard ─────────────────────────────────────────────────────────────────────
 
@@ -29,11 +29,45 @@ async function requireSuperAdmin() {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+// Pulse's OWN money, not the rent flowing through the platform. Every figure
+// here comes from hms_platform_invoices / hms_client_billing — what clients owe
+// us for using the product. Test accounts are excluded throughout (see
+// lib/test-accounts.ts) so the headline numbers describe the real business.
 export interface SuperAdminStats {
-  totalHostels: number;
+  /** Sum of invoices marked paid, all time. */
+  collected: number;
+  /** Sum of unpaid invoices. */
+  outstanding: number;
+  /** Portion of `outstanding` already past its due date. */
+  overdue: number;
+  /** Contracted monthly recurring revenue: per-branch rate × branches, annual cycles normalised to a month. */
+  mrr: number;
+  /** Real clients (owners), test accounts excluded. */
+  totalClients: number;
+  /** Clients with no row in hms_client_billing — using the product for free. */
+  unbilledClients: number;
+  totalBranches: number;
   totalActiveTenants: number;
-  totalRevenueThisMonth: number;
-  newLeadsThisMonth: number;
+}
+
+export interface ClientBranchRow {
+  id: string;
+  name: string;
+  city: string | null;
+  hostel_type: string | null;
+  tenant_count: number;
+}
+
+export interface ClientSummaryRow {
+  owner_id: string;
+  owner_name: string | null;
+  owner_email: string;
+  branch_count: number;
+  tenant_count: number;
+  /** null when this client has no billing configured yet. */
+  monthly_rate: number | null;
+  outstanding: number;
+  branches: ClientBranchRow[];
 }
 
 export interface SuperHostelRow {
@@ -60,42 +94,155 @@ export async function getSuperAdminStats(): Promise<{
     await requireSuperAdmin();
     const admin = createAdminClient();
 
-    // Pakistan-anchored, not the server process's own OS timezone — Vercel's
-    // serverless functions default to UTC, which can silently disagree with
-    // Pakistan on what "this month" is.
-    const { year: curYear, month: curMonth } = pktYearMonth();
-    const monthStart = `${curYear}-${String(curMonth).padStart(2, "0")}-01`;
-    const currentMonthKey = `${curYear}-${String(curMonth).padStart(2, "0")}`;
-
-    const [hostelsRes, tenantsRes, revenueRes, leadsRes] = await Promise.all([
-      admin.from("hms_hostels").select("id", { count: "exact", head: true }),
-      admin.from("hms_tenants").select("id", { count: "exact", head: true }).eq("is_active", true),
-      admin
-        .from("hms_payments")
-        .select("amount")
-        .eq("status", "paid")
-        .eq("for_month", currentMonthKey),
-      admin
-        .from("hms_platform_leads")
-        .select("id", { count: "exact", head: true })
-        .gte("created_at", monthStart),
+    const [ownersRes, hostelsRes, tenantsRes, invoicesRes, billingRes] = await Promise.all([
+      admin.from("hms_profiles").select("id").eq("role", "owner"),
+      admin.from("hms_hostels").select("id, owner_id"),
+      admin.from("hms_tenants").select("hostel_id").eq("is_active", true),
+      admin.from("hms_platform_invoices").select("owner_id, amount, status, due_date"),
+      admin.from("hms_client_billing").select("owner_id, monthly_rate, billing_cycle"),
     ]);
 
-    const totalRevenueThisMonth = (revenueRes.data ?? []).reduce(
-      (sum, p) => sum + Number(p.amount),
-      0
-    );
+    const realOwners = (ownersRes.data ?? []).filter((o) => !isTestOwner(o.id));
+    const realOwnerIds = new Set(realOwners.map((o) => o.id));
+
+    const realHostels = (hostelsRes.data ?? []).filter((h) => realOwnerIds.has(h.owner_id));
+    const realHostelIds = new Set(realHostels.map((h) => h.id));
+
+    const totalActiveTenants = (tenantsRes.data ?? []).filter((t) =>
+      realHostelIds.has(t.hostel_id)
+    ).length;
+
+    // Pakistan-anchored — a Vercel function runs in UTC and would otherwise
+    // call an invoice overdue up to five hours early.
+    const today = pktTodayDateString();
+
+    let collected = 0;
+    let outstanding = 0;
+    let overdue = 0;
+    for (const inv of invoicesRes.data ?? []) {
+      if (!realOwnerIds.has(inv.owner_id)) continue;
+      const amount = Number(inv.amount);
+      if (inv.status === "paid") {
+        collected += amount;
+      } else {
+        outstanding += amount;
+        if (inv.due_date && inv.due_date < today) overdue += amount;
+      }
+    }
+
+    // monthly_rate is PER BRANCH (see lib/invoice-generation.ts), so MRR has to
+    // multiply by how many branches that client actually runs. An annual client
+    // is normalised to a month so one number compares across both cycles.
+    const branchesPerOwner = new Map<string, number>();
+    for (const h of realHostels) {
+      branchesPerOwner.set(h.owner_id, (branchesPerOwner.get(h.owner_id) ?? 0) + 1);
+    }
+
+    let mrr = 0;
+    let billedOwners = 0;
+    for (const b of billingRes.data ?? []) {
+      if (!realOwnerIds.has(b.owner_id)) continue;
+      billedOwners++;
+      mrr += Number(b.monthly_rate) * (branchesPerOwner.get(b.owner_id) ?? 1);
+    }
 
     return {
       stats: {
-        totalHostels: hostelsRes.count ?? 0,
-        totalActiveTenants: tenantsRes.count ?? 0,
-        totalRevenueThisMonth,
-        newLeadsThisMonth: leadsRes.count ?? 0,
+        collected,
+        outstanding,
+        overdue,
+        mrr,
+        totalClients: realOwners.length,
+        unbilledClients: Math.max(0, realOwners.length - billedOwners),
+        totalBranches: realHostels.length,
+        totalActiveTenants,
       },
     };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to load stats" };
+  }
+}
+
+// ── getClientSummaries ────────────────────────────────────────────────────────
+// One row per CLIENT, not per branch — the old "Hostels Summary" listed branches
+// in creation order, so a two-branch business appeared twice with its name
+// truncated and no way to tell the rows belonged together.
+
+export async function getClientSummaries(): Promise<{
+  clients?: ClientSummaryRow[];
+  error?: string;
+}> {
+  try {
+    await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const [profilesRes, authRes, hostelsRes, tenantsRes, billingRes, invoicesRes] =
+      await Promise.all([
+        admin.from("hms_profiles").select("id, full_name").eq("role", "owner"),
+        admin.auth.admin.listUsers({ perPage: 1000 }),
+        admin.from("hms_hostels").select("id, owner_id, name, city, hostel_type").order("name"),
+        admin.from("hms_tenants").select("hostel_id").eq("is_active", true),
+        admin.from("hms_client_billing").select("owner_id, monthly_rate"),
+        admin.from("hms_platform_invoices").select("owner_id, amount, status"),
+      ]);
+
+    if (profilesRes.error) throw profilesRes.error;
+
+    const owners = (profilesRes.data ?? []).filter((p) => !isTestOwner(p.id));
+    const authMap = new Map((authRes.data?.users ?? []).map((u) => [u.id, u]));
+
+    const tenantsPerHostel = new Map<string, number>();
+    for (const t of tenantsRes.data ?? []) {
+      tenantsPerHostel.set(t.hostel_id, (tenantsPerHostel.get(t.hostel_id) ?? 0) + 1);
+    }
+
+    const rateByOwner = new Map(
+      (billingRes.data ?? []).map((b) => [b.owner_id, Number(b.monthly_rate)])
+    );
+
+    const outstandingByOwner = new Map<string, number>();
+    for (const inv of invoicesRes.data ?? []) {
+      if (inv.status === "paid") continue;
+      outstandingByOwner.set(
+        inv.owner_id,
+        (outstandingByOwner.get(inv.owner_id) ?? 0) + Number(inv.amount)
+      );
+    }
+
+    const branchesByOwner = new Map<string, ClientBranchRow[]>();
+    for (const h of hostelsRes.data ?? []) {
+      const list = branchesByOwner.get(h.owner_id) ?? [];
+      list.push({
+        id: h.id,
+        name: h.name,
+        city: h.city ?? null,
+        hostel_type: h.hostel_type ?? null,
+        tenant_count: tenantsPerHostel.get(h.id) ?? 0,
+      });
+      branchesByOwner.set(h.owner_id, list);
+    }
+
+    const clients: ClientSummaryRow[] = owners.map((o) => {
+      const branches = branchesByOwner.get(o.id) ?? [];
+      return {
+        owner_id: o.id,
+        owner_name: o.full_name ?? null,
+        owner_email: authMap.get(o.id)?.email ?? "",
+        branch_count: branches.length,
+        tenant_count: branches.reduce((sum, b) => sum + b.tenant_count, 0),
+        monthly_rate: rateByOwner.get(o.id) ?? null,
+        outstanding: outstandingByOwner.get(o.id) ?? 0,
+        branches,
+      };
+    });
+
+    // Biggest clients first — tenant count is the best proxy for how much of the
+    // platform a client actually uses.
+    clients.sort((a, b) => b.tenant_count - a.tenant_count);
+
+    return { clients };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to load clients" };
   }
 }
 
@@ -407,28 +554,5 @@ export async function addBranchToOwner(data: {
     return { hostelId: hostel.id };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to add branch" };
-  }
-}
-
-// ── getRecentLeads ────────────────────────────────────────────────────────────
-
-export async function getRecentLeads(limit = 10): Promise<{
-  leads?: PlatformLead[];
-  error?: string;
-}> {
-  try {
-    await requireSuperAdmin();
-    const admin = createAdminClient();
-
-    const { data, error } = await admin
-      .from("hms_platform_leads")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(limit);
-
-    if (error) throw error;
-    return { leads: (data ?? []) as PlatformLead[] };
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : "Failed to list recent leads" };
   }
 }

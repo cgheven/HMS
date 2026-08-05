@@ -573,8 +573,11 @@ export function LeadsClient({ initialLeads, mode, salesReps = [], adminUserId = 
     // double-pad the page and nest two scroll containers.
     <div className={cn(isAdmin && "min-h-screen bg-background")}>
       {/* Page Header */}
-      <div className={cn(isAdmin ? "border-b border-sidebar-border px-4 sm:px-6 py-4" : "border-b border-sidebar-border pb-4")}>
-        <div className="flex items-center justify-between gap-4 max-w-7xl mx-auto">
+      {/* Admin: h-14 so this bar lines up with the sidebar's brand bar. Rep: no
+          fixed height — SalesShell's own h-14 header sits above this, inside its
+          padded container, so there is nothing here to align to. */}
+      <div className={cn(isAdmin ? "border-b border-sidebar-border px-4 sm:px-6 h-14 flex items-center" : "border-b border-sidebar-border pb-4")}>
+        <div className="flex items-center justify-between gap-4 max-w-7xl mx-auto w-full">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-amber/10 border border-amber/20">
               <Inbox className="w-4 h-4 text-amber" />
