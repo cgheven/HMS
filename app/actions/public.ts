@@ -5,6 +5,17 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWaitlistEmail } from "@/lib/email";
 import { getMonthRange } from "@/lib/utils";
 import type { PublicHostel, PublicHostelDetail, PublicHostelComplaintInfo, PublicRoom, FoodItem } from "@/types";
+import type { SeaterPrices } from "@/lib/seater-pricing";
+
+/** Public commercial facts per branch, kept beside PublicHostel rather than on
+ *  it so the shared type doesn't grow fields most of its consumers ignore. */
+export interface BranchPublicInfo {
+  hostel_id: string;
+  /** Cheapest advertised monthly rate, or null when this branch has no pricing set. */
+  from_price: number | null;
+  security_deposit: number | null;
+  notice_period_days: number | null;
+}
 
 // ---------------------------------------------------------------------------
 // Image validation helpers (F-004: magic-byte check)
@@ -108,7 +119,12 @@ export async function getPublicHostels(): Promise<{ hostels?: PublicHostel[]; er
 // never be reachable from the browser.
 async function branchesForOwner(
   ownerId: string
-): Promise<{ ownerName?: string | null; branches?: PublicHostel[]; error?: string }> {
+): Promise<{
+  ownerName?: string | null;
+  branches?: PublicHostel[];
+  branchInfo?: BranchPublicInfo[];
+  error?: string;
+}> {
   const admin = createAdminClient();
 
   const { data, error } = await admin
@@ -123,13 +139,17 @@ async function branchesForOwner(
   if (hostels.length === 0) return { error: "Hostel not found" };
 
   const ids = hostels.map((h) => h.id);
-  const [{ data: rooms }, { data: profile }] = await Promise.all([
+  const [{ data: rooms }, { data: profile }, { data: configs }] = await Promise.all([
     admin
       .from("hms_rooms")
       .select("hostel_id, capacity, occupied")
       .in("hostel_id", ids)
       .eq("status", "available"),
     admin.from("hms_profiles").select("full_name").eq("id", ownerId).maybeSingle(),
+    admin
+      .from("hms_package_configs")
+      .select("hostel_id, seater_prices, security_deposit, notice_period_days")
+      .in("hostel_id", ids),
   ]);
 
   const availMap: Record<string, number> = {};
@@ -137,8 +157,36 @@ async function branchesForOwner(
     availMap[r.hostel_id] = (availMap[r.hostel_id] ?? 0) + Math.max(0, r.capacity - r.occupied);
   }
 
+  const configMap = new Map(
+    (configs ?? []).map((c) => [c.hostel_id as string, c])
+  );
+
+  const branchInfo: BranchPublicInfo[] = hostels.map((h) => {
+    const cfg = configMap.get(h.id);
+    const seater = (cfg?.seater_prices ?? {}) as SeaterPrices;
+
+    // Cheapest real rate across every seater option, AC and non-AC alike. Zero
+    // means "not offered at this branch" throughout this table, not free — so
+    // it must be filtered out or the headline price becomes Rs 0.
+    const rates: number[] = [];
+    for (const rate of Object.values(seater)) {
+      if (!rate) continue;
+      for (const v of [Number(rate.ac), Number(rate.no_ac)]) {
+        if (Number.isFinite(v) && v > 0) rates.push(v);
+      }
+    }
+
+    return {
+      hostel_id: h.id,
+      from_price: rates.length > 0 ? Math.min(...rates) : null,
+      security_deposit: cfg?.security_deposit ? Number(cfg.security_deposit) : null,
+      notice_period_days: cfg?.notice_period_days ? Number(cfg.notice_period_days) : null,
+    };
+  });
+
   return {
     ownerName: profile?.full_name ?? null,
+    branchInfo,
     branches: hostels.map((h) => ({
       ...h,
       owner_name: profile?.full_name ?? null,
@@ -153,7 +201,7 @@ async function branchesForOwner(
 // a global directory that also surfaces competitors.
 export const getPublicHostelsByOwner = cache(async function getPublicHostelsByOwner(
   slug: string
-): Promise<{ ownerName?: string | null; branches?: PublicHostel[]; error?: string }> {
+): Promise<{ ownerName?: string | null; branches?: PublicHostel[]; branchInfo?: BranchPublicInfo[]; error?: string }> {
   try {
     const admin = createAdminClient();
 
@@ -181,7 +229,7 @@ export const getPublicHostelsByOwner = cache(async function getPublicHostelsByOw
 // its subdomain too.
 export const getPublicHostelsBySubdomain = cache(async function getPublicHostelsBySubdomain(
   subdomain: string
-): Promise<{ ownerName?: string | null; branches?: PublicHostel[]; error?: string }> {
+): Promise<{ ownerName?: string | null; branches?: PublicHostel[]; branchInfo?: BranchPublicInfo[]; error?: string }> {
   try {
     const normalized = subdomain.trim().toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(normalized)) return { error: "Hostel not found" };
