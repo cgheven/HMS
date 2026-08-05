@@ -822,7 +822,9 @@ export function SettingsClient() {
               </div>
               <CardDescription>
                 A branded address for your business — easier to share and remember than a link with a code in it.
-                {" "}Covers all your branches, not just this one.
+                {branches.length > 1
+                  ? ` One address for all ${branches.length} of your branches, not per branch — set it here or on any other branch, it's the same address.`
+                  : " Covers your whole business, including any branches you add later."}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -860,7 +862,13 @@ export function SettingsClient() {
                       <Input
                         value={subdomainInput}
                         onChange={(e) => { setSubdomainInput(e.target.value); setSubdomainConfirm(false); }}
-                        placeholder={suggestSubdomain([hostelForm.name]) || "yourhostel"}
+                        // Suggest from EVERY branch, not the one being viewed —
+                        // this address covers the business, so "Syed Residencies
+                        // Branch UMT" must not steer them to a campus name.
+                        placeholder={
+                          suggestSubdomain(branches.length > 0 ? branches.map((b) => b.name) : [hostelForm.name])
+                          || "yourhostel"
+                        }
                         autoComplete="off"
                         spellCheck={false}
                         className={`rounded-r-none font-mono ${subdomainInvalid ? "border-rose-500/50" : ""}`}
