@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { isToday, startOfDay, subDays } from "date-fns";
 import { GraduationCap, Search, X } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -8,6 +9,7 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
 import { STUDENT_CATEGORY_LABELS } from "@/lib/student-category-labels";
+import { parseDateOnly } from "@/lib/lead-status";
 import { formatDate, cn } from "@/lib/utils";
 import type { StudentRow } from "@/app/actions/students";
 import type { StudentCategory } from "@/types";
@@ -19,6 +21,18 @@ const TYPE_CONFIG: Record<string, { label: string; cls: string }> = {
 };
 
 const ALL = "all";
+
+// Filters on check_in — when someone moved in. Same chip row and same options
+// as the Client Leads page so the two pages behave identically.
+type DateFilter = "all" | "today" | "week" | "month" | "custom";
+
+const DATE_FILTERS: { value: DateFilter; label: string }[] = [
+  { value: "all", label: "All time" },
+  { value: "today", label: "Today" },
+  { value: "week", label: "Last 7 days" },
+  { value: "month", label: "Last 30 days" },
+  { value: "custom", label: "Custom range" },
+];
 
 function categoryLabel(c: string | null): string | null {
   if (!c) return null;
@@ -54,6 +68,9 @@ export function SuperAdminStudentsClient({ students }: Props) {
   const [institute, setInstitute] = useState(ALL);
   const [field, setField] = useState(ALL);
   const [category, setCategory] = useState(ALL);
+  const [dateFilter, setDateFilter] = useState<DateFilter>("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
 
   const hostels = useMemo(
     () => uniqueSorted(students.map((s) => s.hostel_name)),
@@ -73,6 +90,26 @@ export function SuperAdminStudentsClient({ students }: Props) {
     if (institute !== ALL) list = list.filter((s) => affiliationOf(s) === institute);
     if (field !== ALL) list = list.filter((s) => fieldOf(s) === field);
     if (category !== ALL) list = list.filter((s) => s.student_category === category);
+    if (dateFilter !== "all") {
+      // check_in is a plain date column, so parse it as a local calendar day —
+      // new Date("YYYY-MM-DD") is UTC midnight, which lands on the previous day
+      // in Pakistan and would drop same-day move-ins.
+      if (dateFilter === "today") {
+        list = list.filter((s) => s.check_in && isToday(parseDateOnly(s.check_in)));
+      } else if (dateFilter === "week" || dateFilter === "month") {
+        const cutoff = subDays(startOfDay(new Date()), dateFilter === "week" ? 6 : 29);
+        list = list.filter((s) => s.check_in && parseDateOnly(s.check_in) >= cutoff);
+      } else {
+        if (customFrom) {
+          const from = parseDateOnly(customFrom);
+          list = list.filter((s) => s.check_in && parseDateOnly(s.check_in) >= from);
+        }
+        if (customTo) {
+          const to = new Date(`${customTo}T23:59:59.999`);
+          list = list.filter((s) => s.check_in && parseDateOnly(s.check_in) <= to);
+        }
+      }
+    }
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -86,10 +123,12 @@ export function SuperAdminStudentsClient({ students }: Props) {
       );
     }
     return list;
-  }, [students, search, hostel, type, institute, field, category]);
+  }, [students, search, hostel, type, institute, field, category, dateFilter, customFrom, customTo]);
 
   const filtersActive =
-    search.trim() !== "" || [hostel, type, institute, field, category].some((v) => v !== ALL);
+    search.trim() !== "" ||
+    dateFilter !== "all" ||
+    [hostel, type, institute, field, category].some((v) => v !== ALL);
 
   function clearFilters() {
     setSearch("");
@@ -98,6 +137,9 @@ export function SuperAdminStudentsClient({ students }: Props) {
     setInstitute(ALL);
     setField(ALL);
     setCategory(ALL);
+    setDateFilter("all");
+    setCustomFrom("");
+    setCustomTo("");
   }
 
   return (
@@ -173,15 +215,57 @@ export function SuperAdminStudentsClient({ students }: Props) {
               </SelectContent>
             </Select>
 
-            {filtersActive && (
-              <button
-                onClick={clearFilters}
-                className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md border border-sidebar-border text-xs text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
-              >
-                <X className="w-3.5 h-3.5" /> Clear
-              </button>
-            )}
           </div>
+        </div>
+
+        {/* Moved in */}
+        <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs text-muted-foreground shrink-0">Moved in:</span>
+            <div className="flex gap-1 p-1 bg-white/[0.03] border border-sidebar-border rounded-xl w-fit overflow-x-auto">
+              {DATE_FILTERS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setDateFilter(value)}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap",
+                    dateFilter === value
+                      ? "bg-amber/10 text-amber"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {dateFilter === "custom" && (
+            <div className="flex items-center gap-2">
+              <Input
+                type="date"
+                value={customFrom}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                className="h-9 w-36 text-xs"
+              />
+              <span className="text-xs text-muted-foreground">to</span>
+              <Input
+                type="date"
+                value={customTo}
+                onChange={(e) => setCustomTo(e.target.value)}
+                className="h-9 w-36 text-xs"
+              />
+            </div>
+          )}
+
+          {filtersActive && (
+            <button
+              onClick={clearFilters}
+              className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md border border-sidebar-border text-xs text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors sm:ml-auto shrink-0"
+            >
+              <X className="w-3.5 h-3.5" /> Clear filters
+            </button>
+          )}
         </div>
 
         <Card>
