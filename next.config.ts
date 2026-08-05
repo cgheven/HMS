@@ -42,7 +42,12 @@ const nextConfig: NextConfig = {
     // Default Server Action body limit is 1MB. addRoomAsManager/updateRoomAsManager
     // (app/actions/managers.ts) submit up to 5 room photos per save, each up to
     // 5MB per the client-side check in spaces-client.tsx — worst case ~25MB.
-    serverActions: { bodySizeLimit: "30mb" },
+    // allowedOrigins is additive to the default same-origin rule. Branded
+    // subdomains are rewritten internally (middleware.ts), so a Server Action
+    // fired from one — joinWaitlist on the public listing page — arrives with
+    // an Origin that Next must be told to trust, or the waitlist form fails
+    // silently on every client domain.
+    serverActions: { bodySizeLimit: "30mb", allowedOrigins: ["*.hostels.yourpulse.io"] },
   },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];

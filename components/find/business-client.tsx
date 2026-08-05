@@ -7,9 +7,12 @@ interface Props {
   slug: string;
   ownerName: string | null;
   branches: PublicHostel[];
+  /** Where branch links point. Defaults to /find/{slug}; the branded-subdomain
+   *  route passes "" so links stay on the client's own domain as /{branchSlug}. */
+  hrefBase?: string;
 }
 
-export function BusinessClient({ slug, ownerName, branches }: Props) {
+export function BusinessClient({ slug, ownerName, branches, hrefBase }: Props) {
   const heading = ownerName ?? branches[0]?.name ?? "Our Branches";
 
   return (
@@ -31,7 +34,7 @@ export function BusinessClient({ slug, ownerName, branches }: Props) {
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {branches.map((h) => (
-            <HostelCard key={h.id} h={h} hrefBase={`/find/${slug}`} />
+            <HostelCard key={h.id} h={h} hrefBase={hrefBase ?? `/find/${slug}`} />
           ))}
         </div>
       </div>
