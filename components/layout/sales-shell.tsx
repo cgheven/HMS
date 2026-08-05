@@ -1,7 +1,8 @@
 "use client"
 
+import Image from "next/image"
 import Link from "next/link"
-import { Home, ShieldCheck, LogOut } from "lucide-react"
+import { LogOut } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import type { SalesRep } from "@/types"
 
@@ -20,20 +21,16 @@ export function SalesShell({ salesRep, children }: SalesShellProps) {
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <header className="sticky top-0 z-30 flex items-center gap-3 px-4 sm:px-6 h-14 bg-sidebar/90 backdrop-blur-md border-b border-sidebar-border shrink-0">
+        {/* Same lockup as the owner sidebar (components/layout/sidebar.tsx) —
+            real logo mark, not an icon stand-in. overflow-hidden clips the
+            asset's square corners to the rounded container. */}
         <Link href="/sales" className="flex items-center gap-2.5 group">
-          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-amber/10 border border-amber/20 transition-all group-hover:bg-amber/15">
-            <Home className="w-4 h-4 text-amber" />
+          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-amber/10 border border-amber/20 transition-all group-hover:bg-amber/15 overflow-hidden">
+            <Image src="/logo-mark.jpg" alt="Pulse" width={32} height={32} className="w-full h-full object-cover" />
           </div>
           <div className="min-w-0">
-            <p className="text-foreground font-bold text-sm tracking-tight leading-none truncate">
-              Pulse
-            </p>
-            <div className="flex items-center gap-1 mt-0.5">
-              <ShieldCheck className="w-2.5 h-2.5 text-amber/70 shrink-0" />
-              <p className="text-amber/70 text-[10px] font-semibold tracking-[0.1em] uppercase">
-                Sales Portal
-              </p>
-            </div>
+            <p className="text-foreground font-bold text-sm tracking-tight leading-none">Pulse</p>
+            <p className="text-amber/70 text-[10px] mt-0.5 font-semibold tracking-[0.15em] uppercase">Pulse of Your Business</p>
           </div>
         </Link>
 
