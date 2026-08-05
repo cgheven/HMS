@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { writeAuditLog } from "@/lib/audit";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import { isTestOwner } from "@/lib/test-accounts";
+import { normalizeSubdomain, subdomainError } from "@/lib/subdomain";
 
 // ── Guard ─────────────────────────────────────────────────────────────────────
 
@@ -554,5 +555,95 @@ export async function addBranchToOwner(data: {
     return { hostelId: hostel.id };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to add branch" };
+  }
+}
+
+// ── Branded subdomains ────────────────────────────────────────────────────────
+// {label}.hostels.yourpulse.io serves the client's public listing. Owner-level,
+// stored on hms_profiles.subdomain (migration 155).
+//
+// These go through the service-role client deliberately: a BEFORE UPDATE trigger
+// refuses any change to that column when auth.uid() is set, so an owner cannot
+// claim a label from their own browser session. Service-role connections have a
+// null auth.uid(), which is the only path the trigger permits.
+
+export async function getClientSubdomain(
+  ownerId: string
+): Promise<{ subdomain?: string | null; error?: string }> {
+  try {
+    await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const { data, error } = await admin
+      .from("hms_profiles")
+      .select("subdomain")
+      .eq("id", ownerId)
+      .maybeSingle();
+    if (error) throw error;
+
+    return { subdomain: data?.subdomain ?? null };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to load subdomain" };
+  }
+}
+
+/** Pass null or "" to remove a client's subdomain. */
+export async function setClientSubdomain(
+  ownerId: string,
+  subdomain: string | null
+): Promise<{ error?: string; subdomain?: string | null }> {
+  try {
+    const caller = await requireSuperAdmin();
+    if (!ownerId) throw new Error("Owner is required");
+
+    const value = subdomain ? normalizeSubdomain(subdomain) : null;
+
+    if (value) {
+      const reason = subdomainError(value);
+      // Revalidated here, not just in the browser — the form's checks are a
+      // convenience and a server action is callable without them.
+      if (reason) return { error: reason };
+    }
+
+    const admin = createAdminClient();
+
+    // Claimed-by-someone-else is the one failure a Super Admin can actually act
+    // on, so name the client instead of surfacing a unique-violation code.
+    if (value) {
+      const { data: clash } = await admin
+        .from("hms_profiles")
+        .select("id, full_name")
+        .eq("subdomain", value)
+        .neq("id", ownerId)
+        .maybeSingle();
+      if (clash) {
+        return { error: `Already used by ${clash.full_name ?? "another client"}` };
+      }
+    }
+
+    const { error } = await admin
+      .from("hms_profiles")
+      .update({ subdomain: value })
+      .eq("id", ownerId);
+    if (error) {
+      // Loses the race against a concurrent claim, or trips the CHECK if this
+      // file and the migration ever drift.
+      if (error.code === "23505") return { error: "That subdomain was just taken" };
+      if (error.code === "23514") return { error: "Not a valid subdomain" };
+      throw error;
+    }
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: value ? "super_admin.set_client_subdomain" : "super_admin.clear_client_subdomain",
+      entity: "profile",
+      entity_id: ownerId,
+      meta: { subdomain: value },
+    });
+
+    return { subdomain: value };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to save subdomain" };
   }
 }

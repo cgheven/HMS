@@ -5,10 +5,12 @@ import {
   Building2, Plus, Search, RefreshCw, Users, Home,
   GitBranch, Trash2, Copy, Check, MessageCircle, AlertTriangle,
   Wallet, CheckCircle2, Clock, Zap, Download, Pencil, RotateCcw, Mail,
+  Globe, ExternalLink, Loader2,
 } from "lucide-react";
 import {
   listAllHostels, createHostelForClient, addBranchToOwner,
-  deleteHostel, deleteClient, setWhatsappEnabled, type SuperHostelRow,
+  deleteHostel, deleteClient, setWhatsappEnabled,
+  getClientSubdomain, setClientSubdomain, type SuperHostelRow,
 } from "@/app/actions/super-admin";
 import {
   getClientBilling, setClientBilling, generateInvoiceNow, markInvoiceStatus, updateInvoiceAmount, sendInvoiceEmail,
@@ -26,6 +28,7 @@ import {
 import { toast } from "@/hooks/use-toast";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
 import { STANDARD_CLIENT_MONTHLY_RATE, ONBOARDING_FEE, clientDiscountPct, listSubtotalFromDiscount } from "@/lib/pricing";
+import { SUBDOMAIN_ROOT, normalizeSubdomain, subdomainError, suggestSubdomain, subdomainUrl } from "@/lib/subdomain";
 import type { ClientBilling, PlatformInvoice } from "@/types";
 
 const emptyOwner = { ownerEmail: "", ownerName: "", ownerPhone: "" };
@@ -151,6 +154,53 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
         refresh();
       }
     });
+  }
+
+  // ── Branded subdomain ──────────────────────────────────────────────────────
+  const [subTarget, setSubTarget] = useState<{ ownerId: string; ownerName: string; branchNames: string[] } | null>(null);
+  const [subLoading, setSubLoading] = useState(false);
+  const [subSaving, setSubSaving] = useState(false);
+  const [subValue, setSubValue] = useState("");
+  /** What the DB currently holds — lets us tell "no change" from "cleared". */
+  const [subCurrent, setSubCurrent] = useState<string | null>(null);
+
+  const subNormalized = normalizeSubdomain(subValue);
+  const subValidation = subValue.trim() === "" ? null : subdomainError(subValue);
+  const subUnchanged = subNormalized === (subCurrent ?? "");
+
+  async function openSubdomain(ownerId: string, ownerName: string, branchNames: string[]) {
+    setSubTarget({ ownerId, ownerName, branchNames });
+    setSubLoading(true);
+    setSubValue("");
+    setSubCurrent(null);
+    const res = await getClientSubdomain(ownerId);
+    if (res.error) {
+      toast({ title: "Could not load subdomain", description: res.error, variant: "destructive" });
+    } else {
+      setSubCurrent(res.subdomain ?? null);
+      // Prefill from the BUSINESS name, not the owner's personal name — the
+      // subdomain is what residents see. Never overwrite a live one with a guess.
+      setSubValue(res.subdomain ?? suggestSubdomain(branchNames));
+    }
+    setSubLoading(false);
+  }
+
+  async function handleSaveSubdomain() {
+    if (!subTarget || subValidation) return;
+    setSubSaving(true);
+    const next = subNormalized === "" ? null : subNormalized;
+    const res = await setClientSubdomain(subTarget.ownerId, next);
+    setSubSaving(false);
+    if (res.error) {
+      toast({ title: "Could not save", description: res.error, variant: "destructive" });
+      return;
+    }
+    setSubCurrent(res.subdomain ?? null);
+    toast({
+      title: res.subdomain ? "Subdomain saved" : "Subdomain removed",
+      description: res.subdomain ? subdomainUrl(res.subdomain) : undefined,
+    });
+    if (!res.subdomain) setSubTarget(null);
   }
 
   // ── Billing ────────────────────────────────────────────────────────────────
@@ -533,6 +583,13 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <button
+                          onClick={() => openSubdomain(owner.owner_id, owner.owner_name ?? owner.owner_email, rows.map(r => r.name))}
+                          className="p-1.5 rounded-lg text-muted-foreground hover:text-amber hover:bg-amber/10 transition-colors"
+                          title="Branded subdomain"
+                        >
+                          <Globe className="w-3.5 h-3.5" />
+                        </button>
+                        <button
                           onClick={() => openBilling(owner.owner_id, owner.owner_name ?? owner.owner_email, rows.length)}
                           className="p-1.5 rounded-lg text-muted-foreground hover:text-amber hover:bg-amber/10 transition-colors"
                           title="Billing"
@@ -795,6 +852,96 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
             <Button variant="destructive" onClick={handleResetInvoices} disabled={isPending} className="gap-2">
               <RotateCcw className="w-4 h-4" />{isPending ? "Resetting…" : "Reset Invoices"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Branded Subdomain Dialog ── */}
+      <Dialog open={!!subTarget} onOpenChange={o => { if (!o) setSubTarget(null); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Globe className="w-4 h-4 text-amber" /> Branded Subdomain</DialogTitle>
+            <DialogDescription>{subTarget?.ownerName}</DialogDescription>
+          </DialogHeader>
+
+          {subLoading ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading...
+            </div>
+          ) : (
+            <div className="space-y-4 py-1">
+              <div className="space-y-1.5">
+                <Label>Subdomain</Label>
+                <div className="flex items-stretch">
+                  <Input
+                    value={subValue}
+                    onChange={e => setSubValue(e.target.value)}
+                    placeholder="chohanexecutive"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className={cn("rounded-r-none font-mono", subValidation && "border-rose-500/50")}
+                  />
+                  <span className="inline-flex items-center px-3 rounded-r-md border border-l-0 border-sidebar-border bg-white/[0.03] text-xs text-muted-foreground whitespace-nowrap">
+                    .{SUBDOMAIN_ROOT}
+                  </span>
+                </div>
+                {subValidation ? (
+                  <p className="text-xs text-rose-400">{subValidation}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Lowercase letters, numbers and hyphens · 3–63 characters
+                  </p>
+                )}
+              </div>
+
+              {/* Only offer to open a subdomain that is actually saved — a link
+                  built from unsaved input would 404 and read as a bug. */}
+              {subCurrent && (
+                <div className="rounded-lg border border-sidebar-border bg-white/[0.02] p-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] text-muted-foreground">Live now</p>
+                    <p className="text-xs font-mono truncate">{subdomainUrl(subCurrent)}</p>
+                  </div>
+                  <a
+                    href={subdomainUrl(subCurrent)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-sidebar-border text-xs text-muted-foreground hover:text-amber hover:bg-amber/10 transition-colors shrink-0"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" /> Open
+                  </a>
+                </div>
+              )}
+
+              <p className="text-xs text-muted-foreground">
+                Serves the same public page as their <span className="font-mono">/find</span> link.
+                Only branches with public listing enabled appear.
+              </p>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:justify-between">
+            {subCurrent ? (
+              <Button
+                variant="ghost"
+                className="text-rose-400 hover:text-rose-400 hover:bg-rose-500/10"
+                disabled={subSaving}
+                onClick={() => { setSubValue(""); handleSaveSubdomain(); }}
+              >
+                Remove
+              </Button>
+            ) : <span />}
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setSubTarget(null)}>Cancel</Button>
+              <Button
+                onClick={handleSaveSubdomain}
+                disabled={subSaving || subLoading || !!subValidation || subUnchanged || subValue.trim() === ""}
+                className="gap-2"
+              >
+                {subSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                {subSaving ? "Saving..." : "Save"}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
