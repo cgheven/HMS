@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -54,14 +55,12 @@ function SuperAdminSidebar({
         {/* Brand */}
         <div className="flex items-center justify-between px-4 h-14 border-b border-sidebar-border">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-amber/10 border border-amber/20 flex items-center justify-center">
-              <Crown className="w-4 h-4 text-amber" />
+            <div className="w-8 h-8 rounded-lg bg-amber/10 border border-amber/20 flex items-center justify-center overflow-hidden">
+              <Image src="/logo-mark.jpg" alt="Pulse" width={32} height={32} className="w-full h-full object-cover" />
             </div>
             <div>
               <p className="text-sm font-bold text-foreground leading-none">Pulse</p>
-              <p className="text-amber/70 text-[10px] mt-0.5 font-semibold tracking-[0.15em] uppercase">
-                Super Admin
-              </p>
+              <p className="text-amber/70 text-[10px] mt-0.5 font-semibold tracking-[0.15em] uppercase">Pulse of Your Business</p>
             </div>
           </div>
           <button
