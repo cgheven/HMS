@@ -185,10 +185,17 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     setSubLoading(false);
   }
 
-  async function handleSaveSubdomain() {
-    if (!subTarget || subValidation) return;
+  /**
+   * `override` lets Remove pass null directly. It must not clear the input and
+   * then read state back — a setState is not applied until the next render, so
+   * this closure would still see the old value and re-save the very subdomain
+   * it was asked to delete.
+   */
+  async function handleSaveSubdomain(override?: string | null) {
+    if (!subTarget) return;
+    const next = override !== undefined ? override : (subNormalized === "" ? null : subNormalized);
+    if (next !== null && subdomainError(next)) return;
     setSubSaving(true);
-    const next = subNormalized === "" ? null : subNormalized;
     const res = await setClientSubdomain(subTarget.ownerId, next);
     setSubSaving(false);
     if (res.error) {
@@ -196,11 +203,15 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
       return;
     }
     setSubCurrent(res.subdomain ?? null);
+    // Clearing frees the name AND re-opens the owner's one-time claim, so leave
+    // the dialog open on the empty state rather than implying it's finished.
+    if (!res.subdomain) setSubValue("");
     toast({
       title: res.subdomain ? "Subdomain saved" : "Subdomain removed",
-      description: res.subdomain ? subdomainUrl(res.subdomain) : undefined,
+      description: res.subdomain
+        ? subdomainUrl(res.subdomain)
+        : "The name is free again and the client can claim a new one.",
     });
-    if (!res.subdomain) setSubTarget(null);
   }
 
   // ── Billing ────────────────────────────────────────────────────────────────
@@ -926,7 +937,7 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                 variant="ghost"
                 className="text-rose-400 hover:text-rose-400 hover:bg-rose-500/10"
                 disabled={subSaving}
-                onClick={() => { setSubValue(""); handleSaveSubdomain(); }}
+                onClick={() => handleSaveSubdomain(null)}
               >
                 Remove
               </Button>
@@ -934,7 +945,7 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => setSubTarget(null)}>Cancel</Button>
               <Button
-                onClick={handleSaveSubdomain}
+                onClick={() => handleSaveSubdomain()}
                 disabled={subSaving || subLoading || !!subValidation || subUnchanged || subValue.trim() === ""}
                 className="gap-2"
               >

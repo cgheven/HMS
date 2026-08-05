@@ -17,7 +17,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { PARTNER_TIER_LABELS } from "@/lib/partner-tier-labels";
 import type { HostelType, Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier, PartnerTier, WifiNetwork, MealTimes } from "@/types";
 import { DEFAULT_FORM_CONFIG } from "@/types";
-import { savePaymentRecoverySettings, saveWelcomeSettings } from "@/app/actions/settings";
+import { savePaymentRecoverySettings, saveWelcomeSettings, getMySubdomain, claimMySubdomain } from "@/app/actions/settings";
+import { SUBDOMAIN_ROOT, normalizeSubdomain, subdomainError, suggestSubdomain, subdomainUrl } from "@/lib/subdomain";
 import { DEFAULT_REMINDER_TEMPLATE, formatAccounts, buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { DEFAULT_WELCOME_TEMPLATE, buildWelcomeMessage } from "@/lib/whatsapp-welcome";
 import { SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
@@ -115,6 +116,15 @@ export function SettingsClient() {
   });
   const [profileForm, setProfileForm] = useState({ full_name: "" });
   const [savingHostel, setSavingHostel] = useState(false);
+
+  // ── Branded subdomain (owner-level, one time only) ───────────────────────
+  const [subdomain, setSubdomain] = useState<string | null>(null);
+  const [subdomainLoaded, setSubdomainLoaded] = useState(false);
+  const [subdomainInput, setSubdomainInput] = useState("");
+  const [claimingSubdomain, setClaimingSubdomain] = useState(false);
+  const [subdomainConfirm, setSubdomainConfirm] = useState(false);
+  const subdomainCandidate = normalizeSubdomain(subdomainInput);
+  const subdomainInvalid = subdomainInput.trim() === "" ? null : subdomainError(subdomainInput);
   const [savingListing, setSavingListing] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
 
@@ -443,6 +453,30 @@ export function SettingsClient() {
     await fetchBranches();
   }
 
+
+  async function handleClaimSubdomain() {
+    if (subdomainInvalid || !subdomainCandidate) return;
+    setClaimingSubdomain(true);
+    const res = await claimMySubdomain(subdomainCandidate);
+    setClaimingSubdomain(false);
+    setSubdomainConfirm(false);
+    if (res.error) {
+      toast({ title: "Could not set subdomain", description: res.error, variant: "destructive" });
+      return;
+    }
+    setSubdomain(res.subdomain ?? null);
+    setSubdomainInput("");
+    toast({ title: "Subdomain is live", description: subdomainUrl(res.subdomain!) });
+  }
+
+  useEffect(() => {
+    // Owner-level and owner-guarded server-side, same reasoning as branches below.
+    if (isPartner) return;
+    getMySubdomain().then((res) => {
+      if (!res.error) setSubdomain(res.subdomain ?? null);
+      setSubdomainLoaded(true);
+    });
+  }, [isPartner]);
 
   useEffect(() => {
     // Branches/Partners cards are owner-only, and both actions are guarded
@@ -775,6 +809,120 @@ export function SettingsClient() {
       </Card>
 
       <Separator />
+
+      {/* Branded Subdomain — owner-level, covers every branch, one time only.
+          Hidden from partners: claimMySubdomain is requireOwnerOrAbove. */}
+      {!isPartner && subdomainLoaded && (
+        <>
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Globe className="w-4 h-4 text-muted-foreground" />
+                <CardTitle className="text-base">Your Own Web Address</CardTitle>
+              </div>
+              <CardDescription>
+                A branded address for your business — easier to share and remember than a link with a code in it.
+                {" "}Covers all your branches, not just this one.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {subdomain ? (
+                <div className="flex items-center justify-between gap-3 p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5">
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground">Your address</p>
+                    <p className="text-sm font-mono font-medium text-foreground truncate mt-0.5">
+                      {subdomain}.{SUBDOMAIN_ROOT}
+                    </p>
+                  </div>
+                  <a
+                    href={subdomainUrl(subdomain)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-sidebar-border text-xs font-medium text-muted-foreground hover:text-amber hover:bg-amber/10 transition-colors shrink-0"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" /> Visit
+                  </a>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-amber/5 border border-amber/20 text-xs">
+                    <ShieldCheck className="w-3.5 h-3.5 text-amber shrink-0 mt-0.5" />
+                    <span className="text-muted-foreground">
+                      <strong className="text-amber">You can only set this once.</strong> It cannot be changed
+                      or undone afterwards, because you will be printing it on signs and sending it to residents.
+                      Choose the name of your business, and check the spelling carefully.
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label>Choose your address</Label>
+                    <div className="flex items-stretch">
+                      <Input
+                        value={subdomainInput}
+                        onChange={(e) => { setSubdomainInput(e.target.value); setSubdomainConfirm(false); }}
+                        placeholder={suggestSubdomain([hostelForm.name]) || "yourhostel"}
+                        autoComplete="off"
+                        spellCheck={false}
+                        className={`rounded-r-none font-mono ${subdomainInvalid ? "border-rose-500/50" : ""}`}
+                      />
+                      <span className="inline-flex items-center px-3 rounded-r-md border border-l-0 border-sidebar-border bg-white/[0.03] text-xs text-muted-foreground whitespace-nowrap">
+                        .{SUBDOMAIN_ROOT}
+                      </span>
+                    </div>
+                    {subdomainInvalid ? (
+                      <p className="text-xs text-rose-400">{subdomainInvalid}</p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Lowercase letters, numbers and hyphens · 3–63 characters
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Show the finished address before they commit — reading it
+                      whole is what catches a typo, not re-reading the input. */}
+                  {subdomainCandidate && !subdomainInvalid && (
+                    <div className="p-4 rounded-xl border border-sidebar-border bg-white/[0.02]">
+                      <p className="text-xs text-muted-foreground">Your address will be</p>
+                      <p className="text-base font-mono font-semibold text-amber break-all mt-1">
+                        {subdomainCandidate}.{SUBDOMAIN_ROOT}
+                      </p>
+                    </div>
+                  )}
+
+                  {subdomainConfirm ? (
+                    <div className="p-4 rounded-xl border border-amber/30 bg-amber/5 space-y-3">
+                      <p className="text-sm text-foreground">
+                        Set your address to{" "}
+                        <strong className="font-mono">{subdomainCandidate}.{SUBDOMAIN_ROOT}</strong> permanently?
+                      </p>
+                      <p className="text-xs text-muted-foreground">This cannot be undone.</p>
+                      <div className="flex gap-2">
+                        <Button onClick={handleClaimSubdomain} disabled={claimingSubdomain} className="gap-2">
+                          {claimingSubdomain ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                          Yes, set it permanently
+                        </Button>
+                        <Button variant="outline" onClick={() => setSubdomainConfirm(false)} disabled={claimingSubdomain}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <Button
+                      onClick={() => setSubdomainConfirm(true)}
+                      disabled={!subdomainCandidate || !!subdomainInvalid}
+                      className="gap-2"
+                    >
+                      <Globe className="w-4 h-4" /> Set my address
+                    </Button>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Separator />
+        </>
+      )}
 
       {/* Public Listing */}
       <Card>
