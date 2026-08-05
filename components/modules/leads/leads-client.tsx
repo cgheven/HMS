@@ -7,7 +7,7 @@ import {
   Presentation, StickyNote, ArrowRightLeft, MessageCircle, Mail, Send, User,
   Calendar, AlertCircle, Trash2, Flag, MailCheck, Pencil,
 } from "lucide-react";
-import { listLeadsForAdmin, createLead, updateLead, assignLead, updateLeadStage, setLeadFollowUpDate, setLeadPriority, deleteLead, sendFollowUpDigestEmail, logLeadActivity, listLeadActivities } from "@/app/actions/leads";
+import { listLeadsForAdmin, listMyLeads, createLead, updateLead, assignLead, updateLeadStage, setLeadFollowUpDate, setLeadPriority, deleteLead, sendFollowUpDigestEmail, logLeadActivity, listLeadActivities } from "@/app/actions/leads";
 import { createHostelForClient } from "@/app/actions/super-admin";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -117,13 +117,30 @@ function toPresetField(
     : { value: otherKey, custom: stored };
 }
 
+/**
+ * "admin" — Super Admin sees every lead and owns assignment, deletion, conversion
+ * and the follow-up digest.
+ * "rep"   — a sales rep sees only the leads assigned to them. Same table, same
+ *           filters, same detail dialog; the four admin-only capabilities above
+ *           are hidden, mirroring the guards already enforced server-side in
+ *           app/actions/leads.ts (assignLead/deleteLead/sendFollowUpDigestEmail
+ *           are requireSuperAdmin; the rest resolve through resolveCaller and
+ *           check isLeadAssignedToRep). Hiding them is a UX decision, not the
+ *           security boundary — that stays on the server.
+ */
+export type LeadsMode = "admin" | "rep";
+
 interface Props {
   initialLeads: PlatformLead[];
-  salesReps: SalesRep[];
-  adminUserId: string;
+  mode: LeadsMode;
+  /** Admin only — the assignment picker and the per-rep table filter. */
+  salesReps?: SalesRep[];
+  /** Admin only — distinguishes "My Leads" from "Unclaimed" in the owner filter. */
+  adminUserId?: string;
 }
 
-export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: Props) {
+export function LeadsClient({ initialLeads, mode, salesReps = [], adminUserId = "" }: Props) {
+  const isAdmin = mode === "admin";
   const [leads, setLeads] = useState<PlatformLead[]>(initialLeads);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | LeadStatus>("all");
@@ -194,7 +211,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
 
   async function refresh() {
     setLoading(true);
-    const res = await listLeadsForAdmin();
+    const res = isAdmin ? await listLeadsForAdmin() : await listMyLeads();
     if ("error" in res) {
       toast({ title: "Error refreshing leads", description: res.error, variant: "destructive" });
     } else {
@@ -551,17 +568,22 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
   }, [leads]);
 
   return (
-    <div className="min-h-screen bg-background">
+    // In rep mode this renders inside SalesShell, which already supplies the
+    // page frame and the max-w-7xl container — repeating them here would
+    // double-pad the page and nest two scroll containers.
+    <div className={cn(isAdmin && "min-h-screen bg-background")}>
       {/* Page Header */}
-      <div className="border-b border-sidebar-border px-4 sm:px-6 py-4">
+      <div className={cn(isAdmin ? "border-b border-sidebar-border px-4 sm:px-6 py-4" : "border-b border-sidebar-border pb-4")}>
         <div className="flex items-center justify-between gap-4 max-w-7xl mx-auto">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-amber/10 border border-amber/20">
               <Inbox className="w-4 h-4 text-amber" />
             </div>
             <div>
-              <h1 className="text-base font-bold">Client Leads</h1>
-              <p className="text-xs text-muted-foreground">Onboarding pipeline for new hostel owners</p>
+              <h1 className="text-base font-bold">{isAdmin ? "Client Leads" : "My Leads"}</h1>
+              <p className="text-xs text-muted-foreground">
+                {isAdmin ? "Onboarding pipeline for new hostel owners" : "Leads assigned to you"}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -577,7 +599,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
         </div>
       </div>
 
-      <div className="container mx-auto px-4 sm:px-6 py-6 max-w-7xl space-y-5">
+      <div className={cn("space-y-5", isAdmin ? "container mx-auto px-4 sm:px-6 py-6 max-w-7xl" : "pt-5")}>
         {/* Status filter tabs */}
         <div className="flex gap-1 p-1 bg-white/[0.03] border border-sidebar-border rounded-xl w-fit overflow-x-auto">
           {STATUS_FILTERS.map(({ value, label }) => (
@@ -602,25 +624,27 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
           ))}
         </div>
 
-        {/* Owner segregation */}
-        <div className="flex items-center gap-2">
-          <User className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-          <Select value={ownerFilter} onValueChange={setOwnerFilter}>
-            <SelectTrigger className="h-9 w-56 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={OWNER_ALL}>All Leads</SelectItem>
-              <SelectItem value={OWNER_MINE}>My Leads</SelectItem>
-              <SelectItem value={OWNER_UNCLAIMED}>Unclaimed</SelectItem>
-              {salesReps.map((rep) => (
-                <SelectItem key={rep.id} value={rep.id}>
-                  {rep.name}{!rep.is_active ? " (inactive)" : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        {/* Owner segregation — admin only; a rep's list is already just their own. */}
+        {isAdmin && (
+          <div className="flex items-center gap-2">
+            <User className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+            <Select value={ownerFilter} onValueChange={setOwnerFilter}>
+              <SelectTrigger className="h-9 w-56 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={OWNER_ALL}>All Leads</SelectItem>
+                <SelectItem value={OWNER_MINE}>My Leads</SelectItem>
+                <SelectItem value={OWNER_UNCLAIMED}>Unclaimed</SelectItem>
+                {salesReps.map((rep) => (
+                  <SelectItem key={rep.id} value={rep.id}>
+                    {rep.name}{!rep.is_active ? " (inactive)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
 
         {/* Search + date range */}
         <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
@@ -694,18 +718,20 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
               ))}
             </div>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-2 shrink-0"
-            onClick={handleSendDigest}
-            disabled={sendingDigest || followUpCandidates.length === 0}
-          >
-            <MailCheck className="w-4 h-4" />
-            {sendingDigest
-              ? "Sending..."
-              : `Send Follow-up Email${followUpCandidates.length > 0 ? ` (${followUpCandidates.length})` : ""}`}
-          </Button>
+          {isAdmin && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2 shrink-0"
+              onClick={handleSendDigest}
+              disabled={sendingDigest || followUpCandidates.length === 0}
+            >
+              <MailCheck className="w-4 h-4" />
+              {sendingDigest
+                ? "Sending..."
+                : `Send Follow-up Email${followUpCandidates.length > 0 ? ` (${followUpCandidates.length})` : ""}`}
+            </Button>
+          )}
         </div>
 
         {/* Table */}
@@ -713,7 +739,9 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Leads ({filtered.length})</CardTitle>
             <CardDescription>
-              Assign leads to sales reps, track pipeline stage, and convert to create the owner account and hostel.
+              {isAdmin
+                ? "Assign leads to sales reps, track pipeline stage, and convert to create the owner account and hostel."
+                : "Track pipeline stage, set priority and follow-up dates, and log every call or visit."}
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
@@ -743,7 +771,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">City / Branches</th>
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Status</th>
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden sm:table-cell">Priority</th>
-                      <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">Assigned</th>
+                      {isAdmin && <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden md:table-cell">Assigned</th>}
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden lg:table-cell">Follow-up</th>
                       <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden lg:table-cell">Date</th>
                       <th className="text-right text-xs font-medium text-muted-foreground px-4 py-3">Actions</th>
@@ -806,22 +834,24 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
                               ))}
                             </select>
                           </td>
-                          <td className="px-4 py-3 hidden md:table-cell">
-                            <select
-                              value={lead.assigned_to ?? ""}
-                              onChange={(e) => handleAssign(lead, e.target.value || null)}
-                              disabled={isPending}
-                              className={cn(
-                                "text-xs rounded-md border border-sidebar-border bg-white/[0.03] px-1.5 py-1 max-w-[130px] outline-none focus:ring-1 focus:ring-amber/40",
-                                lead.assigned_to ? "text-foreground" : "text-muted-foreground"
-                              )}
-                            >
-                              <option value="">Unassigned</option>
-                              {assignOptionsFor(lead).map((rep) => (
-                                <option key={rep.id} value={rep.id}>{rep.name}{!rep.is_active ? " (inactive)" : ""}</option>
-                              ))}
-                            </select>
-                          </td>
+                          {isAdmin && (
+                            <td className="px-4 py-3 hidden md:table-cell">
+                              <select
+                                value={lead.assigned_to ?? ""}
+                                onChange={(e) => handleAssign(lead, e.target.value || null)}
+                                disabled={isPending}
+                                className={cn(
+                                  "text-xs rounded-md border border-sidebar-border bg-white/[0.03] px-1.5 py-1 max-w-[130px] outline-none focus:ring-1 focus:ring-amber/40",
+                                  lead.assigned_to ? "text-foreground" : "text-muted-foreground"
+                                )}
+                              >
+                                <option value="">Unassigned</option>
+                                {assignOptionsFor(lead).map((rep) => (
+                                  <option key={rep.id} value={rep.id}>{rep.name}{!rep.is_active ? " (inactive)" : ""}</option>
+                                ))}
+                              </select>
+                            </td>
+                          )}
                           <td className="px-4 py-3 hidden lg:table-cell whitespace-nowrap">
                             {(() => {
                               const urgency = followUpUrgency(lead.next_follow_up_date);
@@ -857,7 +887,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
                                 <Eye className="w-3 h-3" />
                                 <span className="hidden sm:inline">View</span>
                               </Button>
-                              {canConvert && (
+                              {isAdmin && canConvert && (
                                 <Button
                                   size="sm"
                                   className="h-7 text-xs gap-1"
@@ -876,15 +906,17 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
                               >
                                 <Pencil className="w-3.5 h-3.5" />
                               </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-400"
-                                onClick={() => setDeleteConfirm({ open: true, lead })}
-                                title="Delete Lead"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </Button>
+                              {isAdmin && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-400"
+                                  onClick={() => setDeleteConfirm({ open: true, lead })}
+                                  title="Delete Lead"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </Button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -997,8 +1029,10 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
                 </Select>
               </div>
               {/* Assignment is owned by the per-row select, which logs an activity —
-                  offering it here too would let a reassignment slip through unlogged. */}
-              {!editLeadId && (
+                  offering it here too would let a reassignment slip through unlogged.
+                  Hidden for reps: createLead ignores assigned_to for them and
+                  self-assigns, so an input here would silently do nothing. */}
+              {isAdmin && !editLeadId && (
                 <div className="space-y-1.5">
                   <Label>Assign To</Label>
                   <Select
@@ -1185,7 +1219,7 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-1.5 col-span-2">
+                  <div className={cn("space-y-1.5 col-span-2", !isAdmin && "hidden")}>
                     <Label>Assigned Rep</Label>
                     <Select
                       value={detailLead.assigned_to ?? "__unassigned"}
@@ -1293,17 +1327,21 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
               </div>
 
               <DialogFooter className="gap-2 sm:justify-between">
-                <Button
-                  variant="ghost"
-                  className="text-rose-400 hover:text-rose-400 hover:bg-rose-500/10 gap-2"
-                  onClick={() => setDeleteConfirm({ open: true, lead: detailLead })}
-                >
-                  <Trash2 className="w-4 h-4" />
-                  Delete Lead
-                </Button>
+                {isAdmin ? (
+                  <Button
+                    variant="ghost"
+                    className="text-rose-400 hover:text-rose-400 hover:bg-rose-500/10 gap-2"
+                    onClick={() => setDeleteConfirm({ open: true, lead: detailLead })}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Delete Lead
+                  </Button>
+                ) : (
+                  <span />
+                )}
                 <div className="flex gap-2">
                   <Button variant="outline" onClick={() => setDetailOpen(false)}>Close</Button>
-                  {detailLead.status !== "converted" && detailLead.status !== "rejected" && !!detailLead.email && (
+                  {isAdmin && detailLead.status !== "converted" && detailLead.status !== "rejected" && !!detailLead.email && (
                     <Button onClick={() => openConvertDialog(detailLead)} className="gap-2">
                       <CheckCircle2 className="w-4 h-4" />
                       Convert Lead
@@ -1316,7 +1354,9 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
         </DialogContent>
       </Dialog>
 
-      {/* Convert Lead Dialog */}
+      {/* Convert Lead Dialog — admin only. createHostelForClient is
+          requireSuperAdmin, so a rep could never complete it anyway. */}
+      {isAdmin && (
       <Dialog open={convertOpen} onOpenChange={(o) => !o && setConvertOpen(false)}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -1372,15 +1412,18 @@ export function SuperAdminLeadsClient({ initialLeads, salesReps, adminUserId }: 
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
 
-      <ConfirmDialog
-        open={deleteConfirm.open}
-        title="Delete Lead"
-        description={`Delete ${deleteConfirm.lead?.business_name ?? "this lead"}? This also removes its activity history and cannot be undone.`}
-        confirmLabel={deleting ? "Deleting…" : "Delete"}
-        onConfirm={handleDeleteLead}
-        onCancel={() => setDeleteConfirm({ open: false, lead: null })}
-      />
+      {isAdmin && (
+        <ConfirmDialog
+          open={deleteConfirm.open}
+          title="Delete Lead"
+          description={`Delete ${deleteConfirm.lead?.business_name ?? "this lead"}? This also removes its activity history and cannot be undone.`}
+          confirmLabel={deleting ? "Deleting…" : "Delete"}
+          onConfirm={handleDeleteLead}
+          onCancel={() => setDeleteConfirm({ open: false, lead: null })}
+        />
+      )}
     </div>
   );
 }
