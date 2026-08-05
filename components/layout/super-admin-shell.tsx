@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Crown, LayoutDashboard, Building2, Inbox, Search,
+  Crown, LayoutDashboard, Building2, Inbox, Search, GraduationCap,
   Menu, X, LogOut, Users2, ShieldCheck, ClipboardCheck,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 const superAdminNav = [
   { href: "/super-admin",           label: "Dashboard",        icon: LayoutDashboard },
   { href: "/super-admin/hostels",   label: "All Hostels",      icon: Building2 },
+  { href: "/super-admin/students",  label: "Students",         icon: GraduationCap },
   { href: "/super-admin/onboarding", label: "Onboarding",      icon: ClipboardCheck },
   { href: "/super-admin/leads",     label: "Client Leads",     icon: Inbox },
   { href: "/super-admin/sales-team", label: "Sales Team",      icon: Users2 },
