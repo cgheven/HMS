@@ -14,6 +14,7 @@
 export const TEST_OWNER_IDS: readonly string[] = [
   "351a6611-f337-4cbc-bac8-0420ac6abebf", // Najam — najam@yourpulse.io
   "47be4018-8e39-47a5-973a-90a4f7a4d8e5", // Al Noor — musabkhan.queries@gmail.com
+  "bbd1840a-a229-4002-884b-19178d4a17d4", // Tariq Boys Hostel — aamirsansi29@gmail.com (friend's account)
 ];
 
 export function isTestOwner(ownerId: string | null | undefined): boolean {
