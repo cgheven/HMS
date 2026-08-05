@@ -1,9 +1,10 @@
 "use client";
 import { useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Crown, LayoutDashboard, Building2, Inbox, Search,
+  Crown, LayoutDashboard, Building2, Inbox, Search, GraduationCap,
   Menu, X, LogOut, Users2, ShieldCheck, ClipboardCheck,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -12,6 +13,7 @@ import { cn } from "@/lib/utils";
 const superAdminNav = [
   { href: "/super-admin",           label: "Dashboard",        icon: LayoutDashboard },
   { href: "/super-admin/hostels",   label: "All Hostels",      icon: Building2 },
+  { href: "/super-admin/students",  label: "Students",         icon: GraduationCap },
   { href: "/super-admin/onboarding", label: "Onboarding",      icon: ClipboardCheck },
   { href: "/super-admin/leads",     label: "Client Leads",     icon: Inbox },
   { href: "/super-admin/sales-team", label: "Sales Team",      icon: Users2 },
@@ -54,14 +56,12 @@ function SuperAdminSidebar({
         {/* Brand */}
         <div className="flex items-center justify-between px-4 h-14 border-b border-sidebar-border">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-amber/10 border border-amber/20 flex items-center justify-center">
-              <Crown className="w-4 h-4 text-amber" />
+            <div className="w-8 h-8 rounded-lg bg-amber/10 border border-amber/20 flex items-center justify-center overflow-hidden">
+              <Image src="/logo-mark.jpg" alt="Pulse" width={32} height={32} className="w-full h-full object-cover" />
             </div>
             <div>
               <p className="text-sm font-bold text-foreground leading-none">Pulse</p>
-              <p className="text-amber/70 text-[10px] mt-0.5 font-semibold tracking-[0.15em] uppercase">
-                Super Admin
-              </p>
+              <p className="text-amber/70 text-[10px] mt-0.5 font-semibold tracking-[0.15em] uppercase">Pulse of Your Business</p>
             </div>
           </div>
           <button
@@ -70,14 +70,6 @@ function SuperAdminSidebar({
           >
             <X className="w-4 h-4" />
           </button>
-        </div>
-
-        {/* Badge */}
-        <div className="px-4 py-3 border-b border-sidebar-border">
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber/10 border border-amber/20 text-amber text-[11px] font-semibold">
-            <Crown className="w-3 h-3" />
-            Super Admin Panel
-          </span>
         </div>
 
         {/* Nav */}

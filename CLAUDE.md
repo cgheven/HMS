@@ -7,7 +7,7 @@
 
 ---
 
-## Performance rules — apply to every new feature
+## Performance rules — apply to every new feature  
 
 ### 1. Parallel DB queries with Promise.all
 Never chain awaits for independent queries. Always fan out.

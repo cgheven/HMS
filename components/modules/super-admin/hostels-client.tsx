@@ -457,8 +457,8 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <div className="border-b border-sidebar-border px-4 sm:px-6 py-4">
-        <div className="flex items-center justify-between gap-4 max-w-7xl mx-auto">
+      <div className="border-b border-sidebar-border px-4 sm:px-6 h-14 flex items-center">
+        <div className="flex items-center justify-between gap-4 max-w-7xl mx-auto w-full">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-amber/10 border border-amber/20">
               <Building2 className="w-4 h-4 text-amber" />
