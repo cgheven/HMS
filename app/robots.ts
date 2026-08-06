@@ -1,0 +1,57 @@
+import type { MetadataRoute } from "next";
+import { headers } from "next/headers";
+import { brandedLabelFromHost } from "@/lib/subdomain";
+
+/** Pinned for the same reason as in app/sitemap.ts. */
+const MAIN_SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+
+export const dynamic = "force-dynamic";
+
+/**
+ * One handler, two audiences — the Host header decides which.
+ *
+ * A branded client subdomain is a public shopfront and should be crawled
+ * freely. The app itself is almost entirely behind auth, so pointing crawlers
+ * at /dashboard or /super-admin only wastes their budget on login redirects.
+ */
+export default async function robots(): Promise<MetadataRoute.Robots> {
+  const host = (await headers()).get("host") ?? "";
+  const isBrandedSubdomain = !!brandedLabelFromHost(host);
+  const origin = `https://${host}`;
+
+  if (isBrandedSubdomain) {
+    return {
+      rules: [{ userAgent: "*", allow: "/" }],
+      sitemap: `${origin}/sitemap.xml`,
+      host: origin,
+    };
+  }
+
+  return {
+    rules: [
+      {
+        userAgent: "*",
+        // No "/find": the bare index 404s for anonymous visitors by design.
+        allow: ["/", "/pricing", "/guide"],
+        disallow: [
+          "/api/",
+          "/dashboard",
+          "/settings",
+          "/tenants",
+          "/payments",
+          "/reports",
+          "/super-admin",
+          "/admin",
+          "/sales",
+          "/portal",
+          "/redflag",
+          "/s/",          // internal rewrite target; the branded host is canonical
+          "/r/",          // one-time receipt links
+          "/invoice/",    // client invoices
+          "/complaint/",
+        ],
+      },
+    ],
+    sitemap: `${MAIN_SITE_URL}/sitemap.xml`,
+  };
+}

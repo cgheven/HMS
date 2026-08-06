@@ -11,6 +11,7 @@ import type { BranchPublicInfo } from "@/app/actions/public";
 import { cn } from "@/lib/utils";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { PULSE_SITE_URL, PULSE_SOCIALS, PULSE_TAGLINE } from "@/lib/pulse-brand";
+import { sharedAmenities, type Faq } from "@/lib/business-content";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -93,16 +94,6 @@ const AMENITY_ICONS: Record<string, typeof Wifi> = {
   "Cupboard": Home,
 };
 
-/** Only amenities EVERY branch has — claiming a facility the visitor's chosen
- *  branch lacks is the fastest way to lose the trust this page is selling. */
-function sharedAmenities(branches: PublicHostel[]): string[] {
-  if (branches.length === 0) return [];
-  const [first, ...rest] = branches;
-  return (first.amenities ?? []).filter((a) =>
-    rest.every((b) => (b.amenities ?? []).includes(a))
-  );
-}
-
 // ── sections ──────────────────────────────────────────────────────────────────
 
 function BranchPhoto({ branch }: { branch: PublicHostel }) {
@@ -128,6 +119,10 @@ function BranchCard({
 }: { branch: PublicHostel; info?: BranchPublicInfo; hrefBase: string }) {
   const href = branch.slug ? `${hrefBase}/${branch.slug}` : null;
   const place = [branch.area, branch.city].filter(Boolean).join(", ") || branch.city || null;
+  // Same guard find-client.tsx and hostel-detail-client.tsx already apply:
+  // maps_url is owner-editable with no server-side validation, so anything
+  // that isn't plainly http(s) must not become an href.
+  const safeMapsUrl = branch.maps_url && /^https?:\/\//i.test(branch.maps_url) ? branch.maps_url : null;
 
   // Directions is a sibling of the card link, never a child: an <a> inside an
   // <a> is invalid HTML and breaks hydration. So the Link wraps everything
@@ -186,9 +181,9 @@ function BranchCard({
   return (
     <div className="group h-full flex flex-col rounded-2xl border border-white/[0.07] bg-white/[0.02] overflow-hidden transition-colors hover:border-amber/25">
       {href ? <Link href={href} className="block">{body}</Link> : body}
-      {branch.maps_url && (
+      {safeMapsUrl && (
         <a
-          href={branch.maps_url}
+          href={safeMapsUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="mt-auto inline-flex items-center gap-1.5 px-4 py-3 border-t border-white/[0.06] text-xs text-muted-foreground hover:text-amber hover:bg-white/[0.02] transition-colors"
@@ -206,11 +201,13 @@ interface Props {
   ownerName: string | null;
   branches: PublicHostel[];
   branchInfo: BranchPublicInfo[];
+  /** Built server-side so the visible answers and the FAQPage JSON-LD are one source. */
+  faqs: Faq[];
   /** "" on a branded subdomain (links stay domain-relative), "/find/{slug}" on the path route. */
   hrefBase: string;
 }
 
-export function BusinessPage({ ownerName, branches, branchInfo, hrefBase }: Props) {
+export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }: Props) {
   const heading = ownerName ?? branches[0]?.name ?? "Our Branches";
   const infoById = new Map(branchInfo.map((i) => [i.hostel_id, i]));
   const totalBeds = branches.reduce((s, b) => s + b.available_beds, 0);
@@ -239,32 +236,6 @@ export function BusinessPage({ ownerName, branches, branchInfo, hrefBase }: Prop
   const waBranch = branches.find((b) => b.whatsapp) ?? null;
   const phoneBranch = branches.find((b) => b.phone) ?? null;
   const hasContact = !!waBranch || !!phoneBranch;
-
-  const deposits = branchInfo.map((i) => i.security_deposit).filter((d): d is number => !!d);
-  const notices = branchInfo.map((i) => i.notice_period_days).filter((n): n is number => !!n);
-
-  const faqs: { q: string; a: string }[] = [];
-  if (deposits.length > 0) {
-    const lo = Math.min(...deposits), hi = Math.max(...deposits);
-    faqs.push({
-      q: "Is there a security deposit?",
-      a: `Yes — ${lo === hi ? pkr(lo) : `${pkr(lo)} to ${pkr(hi)} depending on the branch and room`}. It's refundable when you move out, less any damages.`,
-    });
-  }
-  if (notices.length > 0) {
-    const lo = Math.min(...notices), hi = Math.max(...notices);
-    faqs.push({
-      q: "How much notice do I give before leaving?",
-      a: lo === hi ? `${lo} days' notice.` : `Between ${lo} and ${hi} days depending on the branch.`,
-    });
-  }
-  if (amenities.includes("Meals Included")) {
-    faqs.push({ q: "Are meals included?", a: "Yes, meals are included at every branch. Ask about the current menu and timings when you get in touch." });
-  }
-  faqs.push({
-    q: "How do I book a room?",
-    a: "Open any branch above, pick a room and apply — or message the owner directly on WhatsApp. There are no agent fees.",
-  });
 
   return (
     <div className="min-h-screen flex flex-col bg-[#0A0A0B]">

@@ -105,3 +105,27 @@ export function suggestSubdomain(branchNames: string[]): string {
 export function subdomainUrl(label: string): string {
   return `https://${label}.${SUBDOMAIN_ROOT}`;
 }
+
+/**
+ * The branded label a Host header resolves to, or null for the ordinary app.
+ *
+ * Shared by middleware, robots.ts and sitemap.ts so all three agree on what
+ * counts as a branded host. They disagreed before: robots compared the raw
+ * Host — port and all — against the production root, so on a dev host it fell
+ * through to the main-site rules and served one client's domain a sitemap
+ * listing every other client's pages.
+ */
+export function brandedLabelFromHost(rawHost: string | null | undefined): string | null {
+  if (!rawHost) return null;
+  const hostname = rawHost.split(":")[0].trim().toLowerCase().replace(/\.$/, "");
+
+  const root = hostname.endsWith(`.${SUBDOMAIN_ROOT}`)
+    ? `.${SUBDOMAIN_ROOT}`
+    : hostname.endsWith(".localhost")
+      ? ".localhost"
+      : null;
+  if (!root) return null;
+
+  const label = hostname.slice(0, -root.length);
+  return SUBDOMAIN_PATTERN.test(label) ? label : null;
+}

@@ -4,8 +4,8 @@ import { cache } from "react";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWaitlistEmail } from "@/lib/email";
 import { getMonthRange } from "@/lib/utils";
-import type { PublicHostel, PublicHostelDetail, PublicHostelComplaintInfo, PublicRoom, FoodItem } from "@/types";
-import type { SeaterPrices } from "@/lib/seater-pricing";
+import type { PublicHostel, PublicHostelDetail, PublicHostelComplaintInfo, PublicRoom, FoodItem, PackageConfig } from "@/types";
+import { buildPackageOptions } from "@/lib/room-pricing";
 
 /** Public commercial facts per branch, kept beside PublicHostel rather than on
  *  it so the shared type doesn't grow fields most of its consumers ignore. */
@@ -140,21 +140,31 @@ async function branchesForOwner(
 
   const ids = hostels.map((h) => h.id);
   const [{ data: rooms }, { data: profile }, { data: configs }] = await Promise.all([
+    // Room shape matches what buildPackageOptions needs, so the headline price
+    // is derived exactly the way the branch page derives it.
     admin
       .from("hms_rooms")
-      .select("hostel_id, capacity, occupied")
+      .select("id, hostel_id, room_number, floor, type, capacity, occupied, monthly_rent, status, has_ac, has_cooler, has_attached_washroom")
       .in("hostel_id", ids)
-      .eq("status", "available"),
+      .neq("status", "maintenance"),
     admin.from("hms_profiles").select("full_name").eq("id", ownerId).maybeSingle(),
     admin
       .from("hms_package_configs")
-      .select("hostel_id, seater_prices, security_deposit, notice_period_days")
+      .select("*")
       .in("hostel_id", ids),
   ]);
 
+  // Availability counts only rooms actually on offer, matching the badge shown
+  // on each card.
   const availMap: Record<string, number> = {};
+  const roomsByHostel = new Map<string, typeof rooms>();
   for (const r of rooms ?? []) {
-    availMap[r.hostel_id] = (availMap[r.hostel_id] ?? 0) + Math.max(0, r.capacity - r.occupied);
+    if (r.status === "available") {
+      availMap[r.hostel_id] = (availMap[r.hostel_id] ?? 0) + Math.max(0, r.capacity - r.occupied);
+    }
+    const list = roomsByHostel.get(r.hostel_id) ?? [];
+    list.push(r);
+    roomsByHostel.set(r.hostel_id, list);
   }
 
   const configMap = new Map(
@@ -162,25 +172,32 @@ async function branchesForOwner(
   );
 
   const branchInfo: BranchPublicInfo[] = hostels.map((h) => {
-    const cfg = configMap.get(h.id);
-    const seater = (cfg?.seater_prices ?? {}) as SeaterPrices;
+    const cfg = configMap.get(h.id) ?? null;
 
-    // Cheapest real rate across every seater option, AC and non-AC alike. Zero
-    // means "not offered at this branch" throughout this table, not free — so
-    // it must be filtered out or the headline price becomes Rs 0.
-    const rates: number[] = [];
-    for (const rate of Object.values(seater)) {
-      if (!rate) continue;
-      for (const v of [Number(rate.ac), Number(rate.no_ac)]) {
-        if (Number.isFinite(v) && v > 0) rates.push(v);
-      }
+    // Cheapest price a visitor can ACTUALLY book, computed room by room through
+    // the same helper the branch detail page uses. Scanning seater_prices
+    // directly — the obvious shortcut — quotes rates for room shapes the branch
+    // may not own: at Rajput the cheapest seater entry is the 4-bed non-AC rate,
+    // but every 4-bed room there has AC, so that price applies to no room at
+    // all and the branch page one click away shows something different.
+    let fromPrice: number | null = null;
+    for (const room of roomsByHostel.get(h.id) ?? []) {
+      if (room.status !== "available") continue;
+      if (room.capacity - room.occupied <= 0) continue;
+      const cheapest = buildPackageOptions(room as unknown as PublicRoom, cfg as PackageConfig | null)
+        .filter((o) => !o.disabled && o.price > 0)
+        .reduce<number | null>((min, o) => (min == null || o.price < min ? o.price : min), null);
+      if (cheapest != null && (fromPrice == null || cheapest < fromPrice)) fromPrice = cheapest;
     }
 
+    // `!= null`, not truthiness: a deposit or notice period of 0 is a real,
+    // deliberate setting. Treating it as "unknown" made one branch's Rs 8,000
+    // read as the whole business's answer on a branch that charges nothing.
     return {
       hostel_id: h.id,
-      from_price: rates.length > 0 ? Math.min(...rates) : null,
-      security_deposit: cfg?.security_deposit ? Number(cfg.security_deposit) : null,
-      notice_period_days: cfg?.notice_period_days ? Number(cfg.notice_period_days) : null,
+      from_price: fromPrice,
+      security_deposit: cfg?.security_deposit != null ? Number(cfg.security_deposit) : null,
+      notice_period_days: cfg?.notice_period_days != null ? Number(cfg.notice_period_days) : null,
     };
   });
 
