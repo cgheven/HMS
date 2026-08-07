@@ -26,18 +26,24 @@ function baseHtml(title: string, body: string): string {
           <!-- Mirrors the app sidebar lockup: badge, then "Pulse" over the tagline
                in gold caps. Deliberately NOT the combined wordmark asset, which
                bakes the tagline into the artwork and so printed it twice.
-               logo-mark-email.png is generated from logo-mark.jpg with its rounded
-               shape cut into the alpha channel and the sidebar's gold ring baked
-               in — the source JPEG has WHITE corners, which the sidebar hides with
-               rounded-lg + overflow-hidden but which leak through in email, where
-               border-radius on an img is unreliable and Outlook ignores it. Hence
-               no border-radius here: the shape lives in the asset.
+               logo-mark-email-v2.png is generated from logo-mark.jpg with the
+               sidebar's rounded shape and amber border baked in, on an OPAQUE
+               #1c1917 background matching the header row it sits on.
+               Opaque, not transparent, on purpose: a transparent PNG takes
+               whatever colour the client paints behind it, so the same asset
+               rendered dark on desktop and WHITE on Gmail mobile. Baking the
+               background in removes the client from the decision entirely.
+               No border-radius here either — Outlook ignores it on an img, so
+               the shape lives in the asset.
+               The -v2 suffix is deliberate: Gmail proxies and caches images by
+               URL, so re-uploading the same filename would keep serving the old
+               transparent copy to every inbox that had already seen it.
                The mark is decorative (empty alt) because the wordmark beside it is
                real text, so a client blocking images still renders the full brand
                rather than a broken-image icon. -->
           <table cellpadding="0" cellspacing="0" border="0"><tr>
             <td style="padding-right:11px;vertical-align:middle;">
-              <img src="${SITE_URL}/logo-mark-email.png" alt="" width="38" height="38"
+              <img src="${SITE_URL}/logo-mark-email-v2.png" alt="" width="38" height="38"
                    style="width:38px;height:38px;display:block;border:0;" />
             </td>
             <td style="vertical-align:middle;">
