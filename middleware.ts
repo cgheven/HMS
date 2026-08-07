@@ -13,8 +13,19 @@ import { brandedLabelFromHost } from "@/lib/subdomain";
  */
 const CRAWLER_PATHS = new Set(["/robots.txt", "/sitemap.xml"]);
 
+/**
+ * Server-to-server callers that carry no session of ours.
+ *
+ * Meta posts delivery statuses here with its own signature, not a Supabase
+ * cookie — the auth gate would redirect it to /login and every status update
+ * would be lost silently. Listed as one exact path, NOT the /api/whatsapp
+ * prefix: /api/whatsapp/test fires real billable sends to any number given to
+ * it and must stay session-gated.
+ */
+const PUBLIC_WEBHOOKS = new Set(["/api/whatsapp/webhook"]);
+
 export async function middleware(request: NextRequest) {
-  if (CRAWLER_PATHS.has(request.nextUrl.pathname)) {
+  if (CRAWLER_PATHS.has(request.nextUrl.pathname) || PUBLIC_WEBHOOKS.has(request.nextUrl.pathname)) {
     return NextResponse.next();
   }
 

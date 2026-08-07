@@ -19,6 +19,44 @@ export interface WhatsAppSendContext {
   messageType: "reminder" | "announcement" | "welcome" | "leaving_reminder" | "test" | "receipt";
 }
 
+/**
+ * One row per attempt in hms_whatsapp_messages, whatever the outcome.
+ *
+ * hms_whatsapp_failures is left untouched and still written on failure — it is
+ * referenced elsewhere and removing it would be a behaviour change bundled into
+ * a monitoring feature. This is the log that can answer "was it sent?", which
+ * a failures-only table structurally cannot.
+ *
+ * `status` starts at 'queued' on success, not 'sent': a 200 from Meta means it
+ * was accepted for delivery, nothing more. The webhook advances it from there.
+ */
+async function logAttempt(args: {
+  phone: string;
+  context: WhatsAppSendContext;
+  template: string | null;
+  wamid: string | null;
+  status: "queued" | "failed";
+  error?: string;
+  errorCode?: number | null;
+}) {
+  try {
+    const admin = createAdminClient();
+    await admin.from("hms_whatsapp_messages").insert({
+      hostel_id: args.context.hostelId,
+      tenant_id: args.context.tenantId,
+      phone: args.phone,
+      message_type: args.context.messageType,
+      template: args.template,
+      wamid: args.wamid,
+      status: args.status,
+      error: args.error ?? null,
+      error_code: args.errorCode ?? null,
+    });
+  } catch {
+    // Logging must never mask or fail the send it is describing.
+  }
+}
+
 async function logFailure(phone: string, error: string, context: WhatsAppSendContext) {
   try {
     const admin = createAdminClient();
@@ -46,9 +84,13 @@ async function postToMeta(
   const phoneNumberId = process.env.PHONE_NUMBER_ID;
   // WABA_ID intentionally unused here — it scopes template/business-profile
   // management APIs, not this messages endpoint.
+  const templateName =
+    (payload.template as { name?: string } | undefined)?.name ?? null;
+
   if (!token || !phoneNumberId) {
     const error = "WHATSAPP_TOKEN or PHONE_NUMBER_ID not configured";
     await logFailure(phoneDigits, error, context);
+    await logAttempt({ phone: phoneDigits, context, template: templateName, wamid: null, status: "failed", error });
     return { ok: false, error };
   }
 
@@ -73,9 +115,22 @@ async function postToMeta(
       } catch {
         // Not JSON — keep the raw text fallback.
       }
+      let code: number | null = null;
+      try { code = JSON.parse(raw)?.error?.code ?? null; } catch { /* keep null */ }
       await logFailure(phoneDigits, error, context);
+      await logAttempt({ phone: phoneDigits, context, template: templateName, wamid: null, status: "failed", error, errorCode: code });
       return { ok: false, error };
     }
+
+    // The wamid is the ONLY key the delivery webhook arrives with, so a row
+    // without it can never be advanced past 'queued'.
+    let wamid: string | null = null;
+    try {
+      wamid = (await res.clone().json())?.messages?.[0]?.id ?? null;
+    } catch {
+      // Accepted but unparseable — still worth logging the attempt.
+    }
+    await logAttempt({ phone: phoneDigits, context, template: templateName, wamid, status: "queued" });
     return { ok: true };
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown error";
