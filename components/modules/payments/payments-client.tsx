@@ -17,6 +17,8 @@ import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig,
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { countBillableNights } from "@/lib/daily-billing";
 import { splitPaymentCharges } from "@/lib/payment-calc";
+import { MeterPhoto } from "@/components/modules/ac/meter-photo";
+import { uploadMonthlyMeterPhoto, deleteMonthlyMeterPhoto } from "@/app/actions/ac-meter-photos";
 import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import {
@@ -85,7 +87,7 @@ interface Props {
   /** Every month's room readings, not just the one on screen — the AC tab derives
    *  the selected month and the preceding one from this, so stepping months needs
    *  no round trip. */
-  acReadings?: { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[];
+  acReadings?: { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null }[];
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
   // Tenants currently on the waiting list — a payment row can outlive an
   // active tenant being edited back to waiting, so the headline stats below
@@ -1583,6 +1585,30 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         ) : (
                           <p className="text-xs text-muted-foreground/50 mt-0.5">No reading for this month yet</p>
                         )}
+
+                        {/* Evidence for the number above. Anchored to the room's
+                            reading row, not to each tenant, because one meter is
+                            split across everyone in the room — a per-tenant copy
+                            would be the same dial uploaded three times, free to
+                            drift apart. */}
+                        <MeterPhoto
+                          className="mt-2"
+                          label="meter photo"
+                          path={saved?.meter_photo ?? null}
+                          disabledReason={!saved ? "Apply this month's reading first, then attach the photo." : undefined}
+                          onUpload={canRecordPayment ? async (file) => {
+                            const fd = new FormData();
+                            fd.append("file", file);
+                            const res = await uploadMonthlyMeterPhoto(room.id, selectedMonth, fd);
+                            if (!res.error) router.refresh();
+                            return res;
+                          } : undefined}
+                          onDelete={canRecordPayment ? async () => {
+                            const res = await deleteMonthlyMeterPhoto(room.id, selectedMonth);
+                            if (!res.error) router.refresh();
+                            return res;
+                          } : undefined}
+                        />
                         {hasPrevReading ? (
                           <p className="text-[10px] text-muted-foreground/50 mt-0.5">Previous month ended at {prevMonthReading}</p>
                         ) : derivedOpening != null ? (

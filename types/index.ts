@@ -318,6 +318,8 @@ export interface Tenant {
   vehicle_number: string | null;
   vehicle_model: string | null;
   joining_meter_reading: number | null;
+  /** Storage path in the private ac-meter-photos bucket — photographic evidence of the move-in reading above. Never a URL; view via getMeterPhotoUrl. */
+  joining_meter_photo: string | null;
   food_breakfast: boolean;
   food_lunch: boolean;
   food_dinner: boolean;

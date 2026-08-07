@@ -850,7 +850,7 @@ export async function getPaymentsPageData(forMonth: string) {
     // so the whole history of a large hostel is still a few hundred small rows;
     // revisit with a date bound only if that stops being true.
     supabase.from("hms_room_ac_readings")
-      .select("room_id, for_month, total_units, meter_reading, per_unit_rate, tenant_count")
+      .select("room_id, for_month, total_units, meter_reading, per_unit_rate, tenant_count, meter_photo")
       .eq("hostel_id", hostelId),
     supabase.from("hms_room_ac_join_readings")
       .select("room_id, tenant_id, units_at_join, for_month")
@@ -889,7 +889,7 @@ export async function getPaymentsPageData(forMonth: string) {
     paymentMethods: hostel?.payment_methods ?? [],
     reminderTemplate: hostel?.reminder_template ?? null,
     autoReminderEnabled: hostel?.whatsapp_enabled ?? false,
-    acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[],
+    acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     waitingTenantIds: (waitingTenants ?? []).map((t) => t.id as string),
   };

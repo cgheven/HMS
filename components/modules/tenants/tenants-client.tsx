@@ -35,6 +35,8 @@ import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, 
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 import { addTenantAsManager, editTenantAsManager, checkoutTenantAsManager, giveTenantNoticeAsManager, cancelTenantNoticeAsManager } from "@/app/actions/managers";
 import { checkTenantRedflagAction } from "@/app/actions/redflag";
+import { MeterPhoto } from "@/components/modules/ac/meter-photo";
+import { uploadJoiningMeterPhoto, deleteJoiningMeterPhoto } from "@/app/actions/ac-meter-photos";
 import type { RedflagMatch } from "@/types";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
@@ -702,6 +704,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [formQrDownloading, setFormQrDownloading] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  // Held until the tenant row exists: on Add there is no id to attach a photo
+  // to until the insert returns, so the file waits here and uploads after.
+  const [joiningPhotoFile, setJoiningPhotoFile] = useState<File | null>(null);
   // Advisory RedFlag warning. `source` records which flow was interrupted so
   // "Add Anyway" resumes exactly that one — the manual Add dialog or an
   // application approval.
@@ -1070,6 +1075,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   function openAdd() {
     setEditing(null);
     setViewOnly(false);
+    setJoiningPhotoFile(null);
     setForm({
       ...emptyForm,
       security_deposit: configSecurityDeposit > 0 ? String(configSecurityDeposit) : "",
@@ -1091,6 +1097,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   function openEdit(t: Tenant, forceActive = false) {
     setEditing(t);
     setViewOnly(false);
+    setJoiningPhotoFile(null);
     setEditingDocs(t.documents ?? []);
     setForm({
       full_name: t.full_name,
@@ -1295,6 +1302,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       department: form.type === "professional" || (form.type === "student" && studentCategoryHasDepartment(form.student_category)) ? (form.department || null) : null,
     };
 
+    // Staged move-in photo, for the paths that write the tenant through a server
+    // action and return before the owner path's upload below. Both add actions
+    // hand back tenantId, so a brand-new tenant gets its evidence too — without
+    // this, a manager could record a reading and silently lose the photo.
+    const uploadStagedJoiningPhoto = async (tenantId: string | null | undefined) => {
+      if (!tenantId || !joiningPhotoFile) return;
+      const fd = new FormData();
+      fd.append("file", joiningPhotoFile);
+      const res = await uploadJoiningMeterPhoto(tenantId, fd);
+      if (res.error) {
+        toast({ title: "Tenant saved, meter photo failed", description: res.error, variant: "destructive" });
+      }
+      setJoiningPhotoFile(null);
+    };
+
     if (isManager) {
       // The action re-resolves the branch server-side, so hostel_id/is_active are dropped.
       const { hostel_id: _mHostelId, is_active: _mIsActive, ...managerPayload } = payload;
@@ -1311,6 +1333,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           ? editing.is_waiting && !form.is_waiting ? `${form.full_name} activated` : "Tenant updated"
           : form.is_waiting ? "Added to waiting list" : "Tenant added",
       });
+      await uploadStagedJoiningPhoto(editing ? editing.id : (result as { tenantId?: string }).tenantId);
       setDialogOpen(false);
       // Managers have no RLS grants, so the client-SDK reload() below would come back
       // empty and blank the list. A full reload re-runs the server page, which reads
@@ -1337,6 +1360,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           ? editing.is_waiting && !form.is_waiting ? `${form.full_name} activated` : "Tenant updated"
           : form.is_waiting ? "Added to waiting list" : "Tenant added",
       });
+      await uploadStagedJoiningPhoto(editing ? editing.id : (result as { tenantId?: string }).tenantId);
       setDialogOpen(false);
       await reload();
       setSaving(false);
@@ -1391,6 +1415,20 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // never blocks the save itself. `hms_tenants.room_id`/`package_tier` are overwritten
     // in place above with no history kept, so this is the only place these are captured.
     const ledgerTenantId = editing ? editing.id : newTenantId;
+
+    // Move-in meter photo staged in the dialog — upload now that a tenant id
+    // exists. Awaited, unlike the ledger events below, because losing it means
+    // losing the evidence for a reading the tenant is about to be billed from.
+    if (ledgerTenantId && joiningPhotoFile) {
+      const photoData = new FormData();
+      photoData.append("file", joiningPhotoFile);
+      const photoRes = await uploadJoiningMeterPhoto(ledgerTenantId, photoData);
+      if (photoRes.error) {
+        toast({ title: "Tenant saved, meter photo failed", description: photoRes.error, variant: "destructive" });
+      }
+      setJoiningPhotoFile(null);
+    }
+
     if (ledgerTenantId) {
       if (editing && prevRoomId !== newRoomId) {
         const oldRoomLabel = prevRoomId ? rooms.find((r) => r.id === prevRoomId)?.room_number ?? "Unknown" : "None";
@@ -3524,6 +3562,51 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   onChange={(e) => setForm({ ...form, joining_meter_reading: e.target.value })}
                 />
                 <p className="text-xs text-muted-foreground">Optional — recorded on the tenant's receipt to avoid future disputes over AC billing.</p>
+
+                {/* The number above is the operator's word; this is the proof.
+                    On a phone the picker opens the rear camera directly, so the
+                    photo gets taken standing at the meter rather than hunted for
+                    later. */}
+                <MeterPhoto
+                  label="move-in photo"
+                  path={editing?.joining_meter_photo ?? null}
+                  stagedLabel={joiningPhotoFile?.name}
+                  onUpload={async (file) => {
+                    // Editing an existing tenant: the id exists, so store it now.
+                    // Adding: no row yet — stage it and let handleSave upload.
+                    if (editing) {
+                      const fd = new FormData();
+                      fd.append("file", file);
+                      const res = await uploadJoiningMeterPhoto(editing.id, fd);
+                      if (!res.error) {
+                        // `editing` is a snapshot taken when the dialog opened.
+                        // reload() refreshes the LIST behind it, but this dialog
+                        // renders from the snapshot, so without patching it the
+                        // control keeps showing the replaced photo until a full
+                        // page load re-seeds the state.
+                        setEditing((prev) => (prev ? { ...prev, joining_meter_photo: res.path ?? null } : prev));
+                        await reload();
+                      }
+                      return res;
+                    }
+                    setJoiningPhotoFile(file);
+                    return {};
+                  }}
+                  onDelete={
+                    editing?.joining_meter_photo
+                      ? async () => {
+                          const res = await deleteJoiningMeterPhoto(editing.id);
+                          if (!res.error) {
+                            setEditing((prev) => (prev ? { ...prev, joining_meter_photo: null } : prev));
+                            await reload();
+                          }
+                          return res;
+                        }
+                      : joiningPhotoFile
+                      ? async () => { setJoiningPhotoFile(null); return {}; }
+                      : undefined
+                  }
+                />
               </div>
             )}
 
