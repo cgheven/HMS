@@ -16,6 +16,7 @@ import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
 import { deriveOpeningReading } from "@/lib/ac-billing";
 import { sendWelcomeMessageNow, type WelcomeSendResult } from "@/lib/whatsapp-welcome-action";
+import { sendSeatReservedConfirmation } from "@/lib/whatsapp-seat-reserved";
 import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, CheckoutSettlement, TenantEventType } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -1279,6 +1280,11 @@ export async function recordReservationDepositAction(
     if (!logResult.success) {
       console.error("[recordReservationDepositAction] Failed to log deposit_collected:", logResult.error);
     }
+
+    // One-time by construction: this action throws above if the deposit was
+    // already collected, so its success path runs at most once per tenant.
+    // Fire-and-forget — the money is banked, and Meta must never undo that.
+    void sendSeatReservedConfirmation(input.tenantId);
 
     revalidatePath("/tenants");
     revalidatePath("/payments");

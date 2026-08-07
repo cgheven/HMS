@@ -1,4 +1,4 @@
-import { formatMonthLong } from "@/lib/utils";
+import { formatMonthLong, formatDayLong } from "@/lib/utils";
 import type { PaymentMethodAccount } from "@/types";
 
 /**
@@ -18,6 +18,7 @@ export const TEMPLATES = {
   reminderFull: { name: "hms_payment_reminder_full", language: "en" },
   reminderPartial: { name: "hms_payment_reminder_partial", language: "en" },
   paymentConfirmed: { name: "hms_payment_confirmed", language: "en" },
+  seatReserved: { name: "hms_seat_reserved", language: "en" },
 } as const;
 
 const pkr = (n: number) => new Intl.NumberFormat("en-PK").format(Math.round(n));
@@ -123,5 +124,33 @@ export function paymentConfirmedParams(a: ConfirmedParamArgs): string[] {
     clean(formatMonthLong(a.forMonth), a.forMonth),
     clean(a.receiptUrl, "Please contact hostel management for your receipt"),
     clean(a.hostelName ?? "", "Your hostel"),
+  ];
+}
+
+export interface SeatReservedParamArgs {
+  tenantName: string | null | undefined;
+  /** What was actually collected, never the agreed figure — the message says
+   *  "we have received", and claiming money that was not taken is worse than
+   *  sending nothing. */
+  depositCollected: number;
+  hostelName: string | null | undefined;
+  /** ISO date the tenant is expected to move in. */
+  expectedJoining: string | null | undefined;
+}
+
+/**
+ * hms_seat_reserved — {{1}}..{{4}} in order:
+ *   1 name · 2 deposit received · 3 hostel · 4 expected joining date
+ *
+ * One-time by construction: recordReservationDepositAction refuses to run
+ * twice against the same tenant (it throws once deposit_collected_on is set),
+ * so sending from its success path can only ever happen once.
+ */
+export function seatReservedParams(a: SeatReservedParamArgs): string[] {
+  return [
+    clean(firstName(a.tenantName), "there"),
+    clean(pkr(a.depositCollected), "0"),
+    clean(a.hostelName ?? "", "your hostel"),
+    clean(a.expectedJoining ? formatDayLong(a.expectedJoining) : "", "to be confirmed"),
   ];
 }
