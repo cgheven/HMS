@@ -41,8 +41,7 @@ export function WhatsAppMonitorClient({ rows, stats }: Props) {
   const [search, setSearch] = useState("");
   const [hostel, setHostel] = useState(ALL);
   const [type, setType] = useState(ALL);
-  // Problems first: this page exists to find what broke, not to admire what worked.
-  const [status, setStatus] = useState("problems");
+  const [status, setStatus] = useState(ALL);
 
   const hostels = useMemo(
     () => [...new Set(rows.map((r) => r.hostel_name).filter(Boolean) as string[])].sort(),
@@ -73,7 +72,7 @@ export function WhatsAppMonitorClient({ rows, stats }: Props) {
     return list;
   }, [rows, search, hostel, type, status]);
 
-  const active = search.trim() !== "" || hostel !== ALL || type !== ALL || status !== "problems";
+  const active = search.trim() !== "" || hostel !== ALL || type !== ALL || status !== ALL;
 
   const tiles = [
     { label: "Delivered", value: stats.delivered, Icon: CheckCheck, cls: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
@@ -127,8 +126,8 @@ export function WhatsAppMonitorClient({ rows, stats }: Props) {
             <Select value={status} onValueChange={setStatus}>
               <SelectTrigger className="h-9 text-xs lg:w-44"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="problems">Problems only</SelectItem>
                 <SelectItem value={ALL}>All statuses</SelectItem>
+                <SelectItem value="problems">Problems only</SelectItem>
                 <SelectItem value="delivered">Delivered</SelectItem>
                 <SelectItem value="read">Read</SelectItem>
                 <SelectItem value="queued">Queued</SelectItem>
@@ -152,7 +151,7 @@ export function WhatsAppMonitorClient({ rows, stats }: Props) {
             </Select>
             {active && (
               <button
-                onClick={() => { setSearch(""); setHostel(ALL); setType(ALL); setStatus("problems"); }}
+                onClick={() => { setSearch(""); setHostel(ALL); setType(ALL); setStatus(ALL); }}
                 className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md border border-sidebar-border text-xs text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
               >
                 <X className="w-3.5 h-3.5" /> Reset
