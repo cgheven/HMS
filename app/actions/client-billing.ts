@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { writeAuditLog } from "@/lib/audit";
 import { generateInvoiceForOwner } from "@/lib/invoice-generation";
 import { sendInvoiceMail } from "@/lib/client-invoice-mailer";
+import { sendInvoiceWhatsApp } from "@/lib/client-invoice-whatsapp";
 import type { ClientBilling, PlatformInvoice } from "@/types";
 
 async function requireSuperAdmin() {
@@ -201,13 +202,22 @@ export async function markInvoiceStatus(
 
 export async function sendInvoiceEmail(
   invoiceId: string
-): Promise<{ error?: string; sentTo?: string; redirectedTo?: string }> {
+): Promise<{ error?: string; sentTo?: string; redirectedTo?: string; whatsappSent?: boolean; whatsappReason?: string }> {
   try {
     const caller = await requireSuperAdmin();
     const admin = createAdminClient();
 
     const result = await sendInvoiceMail(admin, invoiceId, "invoice");
     if (!result.sent) return { error: result.reason ?? "Could not send invoice" };
+
+    // Same invoice on WhatsApp. Deliberately after the email and deliberately
+    // non-fatal: the email is the record of record (it arms the reminder clock
+    // via first_sent_at), so a client with no phone must not turn a successful
+    // send into an error the admin has to interpret.
+    const wa = await sendInvoiceWhatsApp(admin, invoiceId).catch((err) => ({
+      sent: false,
+      reason: err instanceof Error ? err.message : "whatsapp failed",
+    }));
 
     const { data: inv } = await admin
       .from("hms_platform_invoices")
@@ -227,7 +237,12 @@ export async function sendInvoiceEmail(
       meta: { redirected_to: result.redirectedTo ?? null },
     });
 
-    return { sentTo: authUser?.user?.email ?? undefined, redirectedTo: result.redirectedTo };
+    return {
+      sentTo: authUser?.user?.email ?? undefined,
+      redirectedTo: result.redirectedTo,
+      whatsappSent: wa.sent,
+      whatsappReason: wa.sent ? undefined : wa.reason,
+    };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to send invoice" };
   }

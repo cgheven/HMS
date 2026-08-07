@@ -6,8 +6,9 @@ import { ONBOARDING_FEE, listSubtotalFromDiscount } from "@/lib/pricing";
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
 
-/** Days between reminder emails once an invoice has been sent. */
-export const REMINDER_INTERVAL_DAYS = 3;
+/** Days between reminders once an invoice has been sent — email and
+ *  WhatsApp go out together on the same cadence. */
+export const REMINDER_INTERVAL_DAYS = 4;
 
 export interface InvoiceMailResult {
   sent: boolean;

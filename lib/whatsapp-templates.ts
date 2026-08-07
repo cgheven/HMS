@@ -20,6 +20,7 @@ export const TEMPLATES = {
   paymentConfirmed: { name: "hms_payment_confirmed", language: "en" },
   seatReserved: { name: "hms_seat_reserved", language: "en" },
   ownerDailySummary: { name: "hms_owner_daily_summary", language: "en" },
+  clientBillingDue: { name: "hms_client_billing_due", language: "en" },
 } as const;
 
 const pkr = (n: number) => new Intl.NumberFormat("en-PK").format(Math.round(n));
@@ -195,5 +196,36 @@ export function ownerDailySummaryParams(a: OwnerDailySummaryArgs): string[] {
     clean(pkr(a.bills), "0"),
     clean(pkr(a.other), "0"),
     clean(netPhrase, "Rs. 0"),
+  ];
+}
+
+export interface ClientBillingDueArgs {
+  clientName: string | null | undefined;
+  /** The client's business/branch name, not ours. */
+  businessName: string | null | undefined;
+  /** period_label as stored, e.g. "Jul 2026" — sent verbatim so the message
+   *  and the invoice it links to cannot disagree. */
+  periodLabel: string;
+  amount: number;
+  /** ISO due date. */
+  dueDate: string;
+  invoiceUrl: string;
+}
+
+/**
+ * hms_client_billing_due — {{1}}..{{6}} in order:
+ *   1 client · 2 business · 3 period · 4 amount · 5 due date · 6 invoice URL
+ *
+ * This one chases OUR money, not a tenant's rent. Pulse's own bank details are
+ * static text inside the approved template, so they are not parameters here.
+ */
+export function clientBillingDueParams(a: ClientBillingDueArgs): string[] {
+  return [
+    clean(firstName(a.clientName), "there"),
+    clean(a.businessName ?? "", "your hostel"),
+    clean(a.periodLabel, "this period"),
+    clean(pkr(a.amount), "0"),
+    clean(a.dueDate ? formatDayLong(a.dueDate) : "", "as per invoice"),
+    clean(a.invoiceUrl, "https://hostel.yourpulse.io"),
   ];
 }

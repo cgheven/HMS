@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendInvoiceMail, REMINDER_INTERVAL_DAYS } from "@/lib/client-invoice-mailer";
+import { sendInvoiceWhatsApp } from "@/lib/client-invoice-whatsapp";
 
 // Invoked daily by Vercel Cron (see vercel.json). Same CRON_SECRET auth as the
 // other jobs. Chases unpaid platform invoices every REMINDER_INTERVAL_DAYS.
@@ -30,8 +31,13 @@ export async function GET(request: NextRequest) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   let sent = 0;
+  let whatsappSent = 0;
   const skipped: string[] = [];
+  const whatsappSkipped: string[] = [];
+
   for (const inv of due ?? []) {
+    // Email first — it carries the full breakdown and is what updates
+    // last_reminder_at, so the 4-day clock is driven by one channel only.
     try {
       const result = await sendInvoiceMail(admin, inv.id, "reminder");
       if (result.sent) sent++;
@@ -40,7 +46,25 @@ export async function GET(request: NextRequest) {
       // One client's bad email address must not stop the rest of the run.
       skipped.push(err instanceof Error ? err.message : "send failed");
     }
+
+    // WhatsApp second, and independently: an unread invoice email is the norm,
+    // and these clients live on WhatsApp. A failure here must not mask a
+    // successful email, so it is tracked separately rather than merged.
+    try {
+      const wa = await sendInvoiceWhatsApp(admin, inv.id);
+      if (wa.sent) whatsappSent++;
+      else whatsappSkipped.push(wa.reason ?? "unknown");
+    } catch (err) {
+      whatsappSkipped.push(err instanceof Error ? err.message : "whatsapp failed");
+    }
   }
 
-  return NextResponse.json({ checked: due?.length ?? 0, sent, skipped });
+  return NextResponse.json({
+    checked: due?.length ?? 0,
+    intervalDays: REMINDER_INTERVAL_DAYS,
+    sent,
+    skipped,
+    whatsappSent,
+    whatsappSkipped,
+  });
 }
