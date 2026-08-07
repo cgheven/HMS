@@ -19,6 +19,7 @@ export const TEMPLATES = {
   reminderPartial: { name: "hms_payment_reminder_partial", language: "en" },
   paymentConfirmed: { name: "hms_payment_confirmed", language: "en" },
   seatReserved: { name: "hms_seat_reserved", language: "en" },
+  ownerDailySummary: { name: "hms_owner_daily_summary", language: "en" },
 } as const;
 
 const pkr = (n: number) => new Intl.NumberFormat("en-PK").format(Math.round(n));
@@ -152,5 +153,47 @@ export function seatReservedParams(a: SeatReservedParamArgs): string[] {
     clean(pkr(a.depositCollected), "0"),
     clean(a.hostelName ?? "", "your hostel"),
     clean(a.expectedJoining ? formatDayLong(a.expectedJoining) : "", "to be confirmed"),
+  ];
+}
+
+export interface OwnerDailySummaryArgs {
+  ownerName: string | null | undefined;
+  branchName: string | null | undefined;
+  /** ISO date the figures cover. */
+  date: string;
+  collection: number;
+  kitchen: number;
+  staff: number;
+  bills: number;
+  other: number;
+}
+
+/**
+ * hms_owner_daily_summary — {{1}}..{{9}} in order:
+ *   1 owner · 2 branch · 3 date · 4 collection
+ *   5 kitchen · 6 staff · 7 bills · 8 other · 9 net
+ *
+ * {{9}} carries the whole phrase, not a bare number: a loss rendered as
+ * "Rs. -4,100" reads like a typo, and the template's static text has no room
+ * to say "loss" conditionally.
+ */
+export function ownerDailySummaryParams(a: OwnerDailySummaryArgs): string[] {
+  const expenses = a.kitchen + a.staff + a.bills + a.other;
+  const net = a.collection - expenses;
+  const netPhrase =
+    net === 0 ? "Rs. 0 — break even"
+    : net > 0 ? `Rs. ${pkr(net)} profit`
+    : `Rs. ${pkr(Math.abs(net))} loss`;
+
+  return [
+    clean(firstName(a.ownerName), "there"),
+    clean(a.branchName ?? "", "your hostel"),
+    clean(formatDayLong(a.date), a.date),
+    clean(pkr(a.collection), "0"),
+    clean(pkr(a.kitchen), "0"),
+    clean(pkr(a.staff), "0"),
+    clean(pkr(a.bills), "0"),
+    clean(pkr(a.other), "0"),
+    clean(netPhrase, "Rs. 0"),
   ];
 }
