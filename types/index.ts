@@ -550,6 +550,10 @@ export interface DashboardStats {
   monthly_expenses: number;
   monthly_kitchen: number;
   monthly_salaries: number;
+  /** Advances handed over this month — already included in monthly_salaries. */
+  monthly_salary_advances: number;
+  /** Total advance balance still owed back, across all months. */
+  outstanding_salary_advances: number;
   monthly_collected: number;
   monthly_uncollected: number;
   net_profit: number;
@@ -634,6 +638,31 @@ export interface SalaryPayment {
   payment_date: string | null;
   notes: string | null;
   receipt_number: string | null;
+  /** Advance balance held back from this payment. `amount` stays GROSS — net handed over = amount - advance_deducted. */
+  advance_deducted: number;
+  created_at: string;
+  employee?: { full_name: string; role: string };
+}
+
+export type SalaryAdvanceStatus = "outstanding" | "partially_recovered" | "recovered" | "written_off";
+
+/** Money lent against future salary. A receivable, not a staff cost — see migration 160. */
+export interface SalaryAdvance {
+  id: string;
+  hostel_id: string;
+  employee_id: string;
+  amount: number;
+  advance_date: string;
+  payment_method: string | null;
+  receipt_number: string | null;
+  notes: string | null;
+  recovered_amount: number;
+  written_off_amount: number;
+  written_off_date: string | null;
+  /** Generated in Postgres: amount - recovered - written off. Never set by hand. */
+  balance: number;
+  /** Generated in Postgres from the amounts, so it cannot drift from them. */
+  status: SalaryAdvanceStatus;
   created_at: string;
   employee?: { full_name: string; role: string };
 }

@@ -1,11 +1,12 @@
 "use client";
 import { useState, useMemo } from "react";
 import {
-  Plus, Search, Edit2, Trash2, UserCog, Wallet,
+  Plus, Search, Edit2, Trash2, UserCog, Wallet, HandCoins, MessageCircle,
   CheckCircle2, Clock, Users, TrendingDown,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
+import { giveSalaryAdvance, paySalaryWithAdvance, writeOffSalaryAdvance, deleteSalaryAdvance } from "@/app/actions/salary-advances";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,8 +17,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
-import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
-import type { Employee, EmployeeRole, EmployeeStatus, SalaryPayment, PaymentMethod, PartnerTier } from "@/types";
+import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
+import type { Employee, EmployeeRole, EmployeeStatus, SalaryPayment, SalaryAdvance, PaymentMethod, PartnerTier } from "@/types";
 
 const ROLES: { value: EmployeeRole; label: string; icon: string }[] = [
   { value: "cook",    label: "Cook",    icon: "👨‍🍳" },
@@ -85,14 +86,44 @@ function genReceipt(name: string, month: string) {
   return `SAL-${month.replace("-", "")}-${initials}-${Math.floor(Math.random() * 900 + 100)}`;
 }
 
+/**
+ * Click-to-send advance receipt.
+ *
+ * wa.me can only pre-fill a text message — it cannot attach a file — so the
+ * receipt is the message itself, with every figure the employee would want to
+ * check. Deliberately not the Business API: the owner presses send from their
+ * own WhatsApp, so this works for every hostel including those that never
+ * enabled automated messaging.
+ */
+function waReceiptLink(phone: string, employeeName: string, a: SalaryAdvance): string {
+  // wa.me rejects spaces, dashes and a leading zero; Pakistan numbers become 92…
+  const digits = phone.replace(/\D/g, "").replace(/^0/, "92");
+  const lines = [
+    `*Salary Advance Receipt*`,
+    ``,
+    `Name: ${employeeName}`,
+    `Amount: Rs ${Number(a.amount).toLocaleString()}`,
+    `Date: ${formatDate(a.advance_date)}`,
+    a.receipt_number ? `Receipt No: ${a.receipt_number}` : null,
+    a.payment_method ? `Paid by: ${a.payment_method}` : null,
+    ``,
+    `Recovered so far: Rs ${Number(a.recovered_amount).toLocaleString()}`,
+    `*Balance owed: Rs ${Number(a.balance).toLocaleString()}*`,
+    ``,
+    `This amount will be deducted from your upcoming salary.`,
+  ].filter(Boolean);
+  return `https://wa.me/${digits}?text=${encodeURIComponent(lines.join("\n"))}`;
+}
+
 interface Props {
   hostelId: string | null;
   employees: Employee[];
   salaryPayments: SalaryPayment[];
+  advances: SalaryAdvance[];
   partnerTier?: PartnerTier | null;
 }
 
-export function StaffClient({ hostelId, employees: initialEmployees, salaryPayments: initialPayments, partnerTier = null }: Props) {
+export function StaffClient({ hostelId, employees: initialEmployees, salaryPayments: initialPayments, advances: initialAdvances, partnerTier = null }: Props) {
   const canFullTier = !partnerTier || partnerTier === "full";
   // ── Employee state ────────────────────────────────────────
   const [employees, setEmployees] = useState(initialEmployees);
@@ -111,12 +142,84 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
   const [payForm, setPayForm] = useState({ method: "cash" as PaymentMethod, date: formatDateInput(new Date()), notes: "", receipt: "" });
   const [paying, setPaying] = useState(false);
 
+  // ── Advance state ─────────────────────────────────────────
+  const [advances, setAdvances] = useState(initialAdvances);
+  const [advanceDialog, setAdvanceDialog] = useState<Employee | null>(null);
+  const [advanceForm, setAdvanceForm] = useState({ amount: "", date: formatDateInput(new Date()), method: "cash" as PaymentMethod, receipt: "", notes: "" });
+  const [savingAdvance, setSavingAdvance] = useState(false);
+  // What the owner has chosen to hold back on this payment. Pre-filled with the
+  // full outstanding balance when the dialog opens, then theirs to change —
+  // lowering it just carries the rest into next month.
+  const [deductInput, setDeductInput] = useState("");
+  const [writeOffId, setWriteOffId] = useState<string | null>(null);
+
+  const totalOutstanding = useMemo(
+    () => advances.reduce((sum, a) => sum + Math.max(0, Number(a.balance ?? 0)), 0),
+    [advances]
+  );
+
+  /** Unsettled balance per employee — drives the badge and the pay dialog. */
+  const outstandingByEmployee = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const a of advances) {
+      const bal = Number(a.balance ?? 0);
+      if (bal > 0) map[a.employee_id] = (map[a.employee_id] ?? 0) + bal;
+    }
+    return map;
+  }, [advances]);
+
   // ── Data helpers ──────────────────────────────────────────
   async function reloadEmployees() {
     if (!hostelId) return;
     const supabase = createClient();
     const { data } = await supabase.from("hms_employees").select("*").eq("hostel_id", hostelId).order("full_name");
     setEmployees((data as Employee[]) ?? []);
+  }
+
+  async function reloadAdvances() {
+    if (!hostelId) return;
+    const supabase = createClient();
+    const { data } = await supabase.from("hms_salary_advances")
+      .select("*, employee:hms_employees(full_name, role)")
+      .eq("hostel_id", hostelId)
+      .order("advance_date", { ascending: false });
+    setAdvances((data as SalaryAdvance[]) ?? []);
+  }
+
+  async function handleGiveAdvance() {
+    if (!advanceDialog) return;
+    setSavingAdvance(true);
+    const res = await giveSalaryAdvance({
+      employeeId: advanceDialog.id,
+      amount: Number(advanceForm.amount) || 0,
+      advanceDate: advanceForm.date,
+      paymentMethod: advanceForm.method,
+      receiptNumber: advanceForm.receipt || null,
+      notes: advanceForm.notes || null,
+    });
+    setSavingAdvance(false);
+    if (res.error) { toast({ title: "Error", description: res.error, variant: "destructive" }); return; }
+    toast({ title: `Advance of ${formatCurrency(Number(advanceForm.amount) || 0)} recorded` });
+    setAdvanceDialog(null);
+    await reloadAdvances();
+  }
+
+  async function handleWriteOff(id: string) {
+    const res = await writeOffSalaryAdvance({ advanceId: id, date: formatDateInput(new Date()) });
+    if (res.error) { toast({ title: "Error", description: res.error, variant: "destructive" }); return; }
+    toast({
+      title: "Advance written off",
+      description: `${formatCurrency(res.writtenOff ?? 0)} booked as an expense today — earlier months are unchanged.`,
+    });
+    setWriteOffId(null);
+    await reloadAdvances();
+  }
+
+  async function handleDeleteAdvance(id: string) {
+    const res = await deleteSalaryAdvance(id);
+    if (res.error) { toast({ title: "Cannot delete", description: res.error, variant: "destructive" }); return; }
+    toast({ title: "Advance removed" });
+    await reloadAdvances();
   }
 
   async function reloadSalaries(month: string) {
@@ -175,7 +278,20 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
   async function handleDelete(id: string) {
     const supabase = createClient();
     const { data, error } = await supabase.from("hms_employees").delete().eq("id", id).select("id");
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (error) {
+      // Migration 160 makes hms_salary_advances RESTRICT this delete on purpose:
+      // an unrecovered advance is money owed, and cascading it away would erase
+      // the debt silently. Translate the FK error into what the owner has to do.
+      const blockedByAdvance = error.code === "23503" && error.message.includes("salary_advances");
+      toast({
+        title: blockedByAdvance ? "Settle their advance first" : "Error",
+        description: blockedByAdvance
+          ? "This employee has a salary advance on record. Recover or write it off from the Advances tab before deleting them."
+          : error.message,
+        variant: "destructive",
+      });
+      return;
+    }
     if (!data || data.length === 0) {
       toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
       return;
@@ -208,24 +324,42 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
   function openPay(p: SalaryPayment) {
     setPayDialog(p);
     setPayForm({ method: "cash", date: formatDateInput(new Date()), notes: "", receipt: genReceipt(p.employee?.full_name ?? "", p.for_month) });
+    // Pre-fill with everything they owe, capped at the salary so the net can
+    // never go negative. The owner is free to lower it — whatever is left just
+    // carries into next month.
+    const owed = outstandingByEmployee[p.employee_id] ?? 0;
+    setDeductInput(owed > 0 ? String(Math.min(owed, Number(p.amount ?? 0))) : "");
   }
 
   async function handlePay() {
     if (!payDialog) return;
     setPaying(true);
-    const supabase = createClient();
-    const { data, error } = await supabase.from("hms_salary_payments").update({
-      status: "paid", payment_method: payForm.method,
-      payment_date: payForm.date, notes: payForm.notes || null,
-      receipt_number: payForm.receipt,
-    }).eq("id", payDialog.id).select("id");
+
+    // Routed through a server action rather than the browser SDK used elsewhere
+    // on this page: paying a salary and settling an advance are one operation,
+    // and a deduction that landed without its salary row (or the reverse) would
+    // misstate what an employee is still owed.
+    const deduct = Number(deductInput || 0) || 0;
+    const res = await paySalaryWithAdvance({
+      salaryPaymentId: payDialog.id,
+      deduct,
+      paymentMethod: payForm.method,
+      paymentDate: payForm.date,
+      receiptNumber: payForm.receipt || null,
+      notes: payForm.notes || null,
+    });
     setPaying(false);
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    if (!data || data.length === 0) {
-      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
-      return;
-    }
-    toast({ title: "Salary paid" }); setPayDialog(null); await reloadSalaries(selectedMonth);
+    if (res.error) { toast({ title: "Error", description: res.error, variant: "destructive" }); return; }
+    toast({
+      title: "Salary paid",
+      description: deduct > 0
+        ? `${formatCurrency(res.netPaid ?? 0)} handed over · ${formatCurrency(deduct)} advance recovered`
+        : undefined,
+    });
+    setPayDialog(null);
+    setDeductInput("");
+    await reloadSalaries(selectedMonth);
+    await reloadAdvances();
   }
 
   // ── Derived ───────────────────────────────────────────────
@@ -280,6 +414,12 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
         <TabsList>
           <TabsTrigger value="employees"><Users className="w-3.5 h-3.5 mr-1.5" />Employees</TabsTrigger>
           <TabsTrigger value="salaries"><Wallet className="w-3.5 h-3.5 mr-1.5" />Salaries</TabsTrigger>
+          <TabsTrigger value="advances">
+            <HandCoins className="w-3.5 h-3.5 mr-1.5" />Advances
+            {totalOutstanding > 0 && (
+              <span className="ml-1.5 text-[10px] font-semibold text-amber">{formatCurrency(totalOutstanding)}</span>
+            )}
+          </TabsTrigger>
         </TabsList>
 
         {/* ── Employees tab ──────────────────────────────── */}
@@ -335,6 +475,11 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                           <p className="text-sm font-medium">{emp.full_name}</p>
                           <Badge variant="secondary" className={`text-xs capitalize ${rc.color}`}>{rc.label}</Badge>
                           {emp.status === "inactive" && <Badge variant="destructive" className="text-xs">Inactive</Badge>}
+                          {(outstandingByEmployee[emp.id] ?? 0) > 0 && (
+                            <Badge variant="secondary" className="text-xs bg-amber/10 text-amber border-amber/25">
+                              Advance due {formatCurrency(outstandingByEmployee[emp.id])}
+                            </Badge>
+                          )}
                         </div>
                         <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
                           {emp.phone && <span className="text-xs text-muted-foreground">{emp.phone}</span>}
@@ -401,6 +546,11 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                         <div className="flex items-center gap-2 flex-wrap">
                           <p className="text-sm font-medium">{p.employee?.full_name ?? "—"}</p>
                           <Badge variant="secondary" className={`text-xs ${rc.color}`}>{rc.label}</Badge>
+                          {(outstandingByEmployee[p.employee_id] ?? 0) > 0 && (
+                            <Badge variant="secondary" className="text-xs bg-amber/10 text-amber border-amber/25">
+                              Advance due {formatCurrency(outstandingByEmployee[p.employee_id])}
+                            </Badge>
+                          )}
                         </div>
                         {isPaid && p.payment_date && (
                           <p className="text-xs text-muted-foreground mt-0.5">Paid {formatDate(p.payment_date)} · {p.receipt_number}</p>
@@ -412,15 +562,40 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                           {isPaid ? "Paid" : "Pending"}
                         </p>
                       </div>
-                      {!isPaid && canFullTier && (
-                        <Button
-                          size="sm"
-                          className="h-8 text-xs gap-1 shrink-0 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20"
-                          variant="ghost"
-                          onClick={() => openPay(p)}
-                        >
-                          <CheckCircle2 className="w-3 h-3" /> Pay
-                        </Button>
+                      {canFullTier && (
+                        <div className="flex gap-1.5 shrink-0">
+                          {/* Sits beside Pay because that is where an owner already
+                              is on payday — an advance is asked for in the same
+                              breath as "when do I get paid". Stays available on a
+                              paid row too: someone can ask for money the day after
+                              payday, and it just becomes next month's deduction. */}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 px-2.5 text-xs gap-1 text-amber hover:bg-amber/10 border border-amber/25"
+                            onClick={() => {
+                              const emp = employees.find((e) => e.id === p.employee_id);
+                              if (!emp) {
+                                toast({ title: "Employee not found", variant: "destructive" });
+                                return;
+                              }
+                              setAdvanceDialog(emp);
+                              setAdvanceForm({ amount: "", date: formatDateInput(new Date()), method: "cash", receipt: genReceipt(emp.full_name, "ADV"), notes: "" });
+                            }}
+                          >
+                            <HandCoins className="w-3 h-3" /> Advance
+                          </Button>
+                          {!isPaid && (
+                            <Button
+                              size="sm"
+                              className="h-8 text-xs gap-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20"
+                              variant="ghost"
+                              onClick={() => openPay(p)}
+                            >
+                              <CheckCircle2 className="w-3 h-3" /> Pay
+                            </Button>
+                          )}
+                        </div>
                       )}
                     </div>
                   );
@@ -429,14 +604,95 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
             </Card>
           )}
         </TabsContent>
+
+        {/* ── Advances tab ───────────────────────────────── */}
+        <TabsContent value="advances" className="space-y-4">
+          {advances.length === 0 ? (
+            <Card><CardContent className="py-16 text-center text-muted-foreground">
+              <HandCoins className="w-10 h-10 mx-auto mb-3 opacity-30" />
+              <p className="font-medium">No advances given</p>
+              <p className="text-sm mt-1">Use the Advance button on an employee to record one.</p>
+            </CardContent></Card>
+          ) : (
+            <Card><CardContent className="p-0 divide-y divide-white/5">
+              {advances.map((a) => {
+                const bal = Number(a.balance ?? 0);
+                const name = a.employee?.full_name ?? "Employee";
+                const emp = employees.find((e) => e.id === a.employee_id);
+                return (
+                  <div key={a.id} className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-medium">{name}</p>
+                        {a.status === "outstanding" && <Badge variant="secondary" className="text-xs bg-amber/10 text-amber border-amber/25">Outstanding</Badge>}
+                        {a.status === "partially_recovered" && <Badge variant="secondary" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/25">Part recovered</Badge>}
+                        {a.status === "recovered" && <Badge variant="secondary" className="text-xs bg-emerald-500/10 text-emerald-400 border-emerald-500/25">Settled</Badge>}
+                        {a.status === "written_off" && <Badge variant="destructive" className="text-xs">Written off</Badge>}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {formatCurrency(a.amount)} on {formatDate(a.advance_date)}
+                        {Number(a.recovered_amount) > 0 && ` · ${formatCurrency(a.recovered_amount)} recovered`}
+                        {a.receipt_number && ` · ${a.receipt_number}`}
+                      </p>
+                      {a.notes && <p className="text-xs text-muted-foreground/70 mt-0.5">{a.notes}</p>}
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      <p className={cn("text-sm font-bold", bal > 0 ? "text-amber" : "text-muted-foreground")}>
+                        {formatCurrency(bal)}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">still owed</p>
+                    </div>
+
+                    {canFullTier && (
+                      <div className="flex gap-1 shrink-0">
+                        {/* wa.me carries text only — it cannot attach a file — so the
+                            receipt IS the message, with every detail spelled out. */}
+                        {emp?.phone && (
+                          <a
+                            href={waReceiptLink(emp.phone, name, a)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center justify-center h-8 w-8 rounded-md text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+                            aria-label="Send receipt on WhatsApp"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" />
+                          </a>
+                        )}
+                        {bal > 0 && (
+                          <Button variant="ghost" size="sm" className="h-8 px-2.5 text-xs text-rose-400 hover:bg-rose-500/10" onClick={() => setWriteOffId(a.id)}>
+                            Write off
+                          </Button>
+                        )}
+                        {Number(a.recovered_amount) === 0 && Number(a.written_off_amount) === 0 && (
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => handleDeleteAdvance(a.id)}>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </CardContent></Card>
+          )}
+        </TabsContent>
       </Tabs>
 
       <ConfirmDialog
         open={!!deleteId}
         title="Delete employee?"
-        description="This employee and all their salary records will be permanently deleted."
+        description="This employee and all their salary records will be permanently deleted. Not allowed while they still owe a salary advance."
         onConfirm={() => { handleDelete(deleteId!); setDeleteId(null); }}
         onCancel={() => setDeleteId(null)}
+      />
+
+      <ConfirmDialog
+        open={!!writeOffId}
+        title="Write off this advance?"
+        description="The unrecovered balance is recorded as an expense dated today, so earlier months stay exactly as they are. This cannot be undone."
+        onConfirm={() => handleWriteOff(writeOffId!)}
+        onCancel={() => setWriteOffId(null)}
       />
 
       {/* ── Add / Edit Employee Dialog ────────────────────── */}
@@ -485,6 +741,69 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
         </DialogContent>
       </Dialog>
 
+      {/* ── Give Advance Dialog ──────────────────────────── */}
+      <Dialog open={!!advanceDialog} onOpenChange={(o) => !o && setAdvanceDialog(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Give Advance — {advanceDialog?.full_name}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 py-2">
+            {/* Stated plainly because it is the thing most likely to be
+                misunderstood: this is a loan, and it does not reduce what the
+                employee earns. */}
+            <p className="text-xs text-muted-foreground">
+              Recorded as money owed back, not as salary. It will be offered as a deduction on their next salary.
+            </p>
+            <div className="space-y-1.5">
+              <Label>Amount *</Label>
+              <Input
+                type="number" min={0} step="0.01" placeholder="5000"
+                value={advanceForm.amount}
+                onChange={(e) => setAdvanceForm({ ...advanceForm, amount: e.target.value })}
+              />
+              {advanceDialog && Number(advanceForm.amount) > Number(advanceDialog.monthly_salary) && (
+                <p className="text-[11px] text-amber/80">
+                  More than one month&apos;s salary of {formatCurrency(advanceDialog.monthly_salary)} — it will be recovered over several months.
+                </p>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Date</Label>
+                <Input type="date" value={advanceForm.date} onChange={(e) => setAdvanceForm({ ...advanceForm, date: e.target.value })} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Receipt No.</Label>
+                <Input value={advanceForm.receipt} onChange={(e) => setAdvanceForm({ ...advanceForm, receipt: e.target.value })} />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Paid By</Label>
+              <Select value={advanceForm.method} onValueChange={(v) => setAdvanceForm({ ...advanceForm, method: v as PaymentMethod })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {Object.entries(methodLabels).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Reason / Notes</Label>
+              <Input placeholder="Optional…" value={advanceForm.notes} onChange={(e) => setAdvanceForm({ ...advanceForm, notes: e.target.value })} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAdvanceDialog(null)}>Cancel</Button>
+            <Button
+              onClick={handleGiveAdvance}
+              disabled={savingAdvance || !(Number(advanceForm.amount) > 0)}
+              className="bg-amber/10 border border-amber/25 text-amber hover:bg-amber/20"
+            >
+              {savingAdvance ? "Saving…" : "Record Advance"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* ── Mark Paid Dialog ─────────────────────────────── */}
       <Dialog open={!!payDialog} onOpenChange={(o) => !o && setPayDialog(null)}>
         <DialogContent className="sm:max-w-sm">
@@ -492,10 +811,52 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
             <DialogTitle>Pay Salary — {payDialog?.employee?.full_name}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-4 py-2">
-            <div className="flex items-center justify-between rounded-lg bg-emerald-500/[0.06] border border-emerald-500/20 px-4 py-3">
-              <span className="text-sm text-muted-foreground">Amount</span>
-              <span className="text-lg font-bold text-emerald-400">{formatCurrency(payDialog?.amount ?? 0)}</span>
-            </div>
+            {(() => {
+              const gross = Number(payDialog?.amount ?? 0);
+              const owed = payDialog ? outstandingByEmployee[payDialog.employee_id] ?? 0 : 0;
+              const deduct = Math.max(0, Math.min(Number(deductInput || 0) || 0, gross, owed));
+              const net = gross - deduct;
+              const carried = owed - deduct;
+              return (
+                <div className="rounded-lg bg-emerald-500/[0.06] border border-emerald-500/20 px-4 py-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Salary</span>
+                    <span className="text-sm font-semibold">{formatCurrency(gross)}</span>
+                  </div>
+
+                  {owed > 0 && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-muted-foreground">Advance taken</span>
+                        <span className="text-sm font-semibold text-amber">{formatCurrency(owed)}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 pt-1">
+                        <Label className="text-sm text-muted-foreground shrink-0">Deduct now</Label>
+                        <Input
+                          type="number" min={0} max={Math.min(gross, owed)} step="0.01"
+                          value={deductInput}
+                          onChange={(e) => setDeductInput(e.target.value)}
+                          className="h-8 w-32 text-right text-sm"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  <div className="flex items-center justify-between border-t border-emerald-500/20 pt-2">
+                    <span className="text-sm text-muted-foreground">Pay now</span>
+                    <span className="text-lg font-bold text-emerald-400">{formatCurrency(net)}</span>
+                  </div>
+
+                  {/* Says out loud that lowering the deduction is not forgiveness —
+                      the rest simply follows them into next month. */}
+                  {carried > 0 && (
+                    <p className="text-[11px] text-amber/80">
+                      {formatCurrency(carried)} advance still owed after this — carries to next month.
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
             <div className="space-y-1.5">
               <Label>Payment Method</Label>
               <Select value={payForm.method} onValueChange={(v) => setPayForm({ ...payForm, method: v as PaymentMethod })}>

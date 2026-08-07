@@ -1073,10 +1073,18 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
             <p className="text-xs text-muted-foreground font-medium">Staff Salaries</p>
           </div>
           <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.paidBySource.staff)}</p>
+          {/* Names the advance portion. Without it the headline (cash paid out,
+              advances included) sits above "X total" (salary earned, advances
+              excluded) and reads as paying more than the total. */}
+          {d.expenseReport.advancesTotal > 0 && (
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Includes {formatCurrency(d.expenseReport.advancesTotal)} advance
+            </p>
+          )}
           {d.expenseReport.pendingSalariesTotal > 0 && (
             <p className="text-xs text-amber mt-0.5">
               {formatCurrency(d.expenseReport.pendingSalariesTotal)} remaining
-              <span className="text-muted-foreground"> · {formatCurrency(d.expenseReport.totalsBySource.staff)} total</span>
+              <span className="text-muted-foreground"> · {formatCurrency(d.expenseReport.totalsBySource.staff)} salary total</span>
             </p>
           )}
         </div>

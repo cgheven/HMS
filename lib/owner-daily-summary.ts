@@ -48,7 +48,7 @@ export async function sendOwnerDailySummaries(
   const ownerIds = [...new Set(granted.map((h) => h.owner_id))];
   const ids = granted.map((h) => h.id);
 
-  const [{ data: owners }, { data: payments }, { data: expenses }, { data: kitchen }, { data: salaries }, { data: bills }] =
+  const [{ data: owners }, { data: payments }, { data: expenses }, { data: kitchen }, { data: salaries }, { data: advancesToday }, { data: bills }] =
     await Promise.all([
       admin.from("hms_profiles").select("id, full_name, phone").in("id", ownerIds),
       admin
@@ -61,10 +61,17 @@ export async function sendOwnerDailySummaries(
       admin.from("hms_kitchen_expenses").select("hostel_id, amount").in("hostel_id", ids).eq("date", date),
       admin
         .from("hms_salary_payments")
-        .select("hostel_id, amount")
+        .select("hostel_id, amount, advance_deducted")
         .in("hostel_id", ids)
         .eq("payment_date", date)
         .eq("status", "paid"),
+      // This summary is the day's cash, so an advance handed over today counts
+      // here even though it is a loan rather than a staff cost.
+      admin
+        .from("hms_salary_advances")
+        .select("hostel_id, amount")
+        .in("hostel_id", ids)
+        .eq("advance_date", date),
       admin.from("hms_bills").select("hostel_id, amount").in("hostel_id", ids).eq("paid_date", date),
     ]);
 
@@ -82,7 +89,14 @@ export async function sendOwnerDailySummaries(
   const collected = sumBy(payments, (p) => Number(p.amount_paid ?? p.amount ?? 0));
   const expTotal = sumBy(expenses, (e) => Number(e.amount ?? 0));
   const kitTotal = sumBy(kitchen, (e) => Number(e.amount ?? 0));
-  const salTotal = sumBy(salaries, (e) => Number(e.amount ?? 0));
+  // NET of any advance held back, plus advances given today. Gross would count
+  // the deducted rupees twice — once when the advance left, once inside a salary
+  // that never fully went out.
+  const salTotal = sumBy(salaries, (e) => Number(e.amount ?? 0) - Number(e.advance_deducted ?? 0));
+  const advTotal = sumBy(advancesToday, (a) => Number(a.amount ?? 0));
+  for (const [hostelId, amt] of advTotal) {
+    salTotal.set(hostelId, (salTotal.get(hostelId) ?? 0) + amt);
+  }
   const billTotal = sumBy(bills, (e) => Number(e.amount ?? 0));
 
   for (const h of granted) {

@@ -129,7 +129,19 @@ export function DashboardClient({ data }: Props) {
         {[
           { label: "Active Tenants", value: String(stats.total_tenants),           sub: `Space Available ${stats.available_rooms}`, icon: Users,        color: "text-blue-400",   iconBg: "bg-blue-500/10 border-blue-500/20",     hover: "hover:border-blue-500/30",   delay: 150 },
           { label: "Kitchen Costs",  value: formatCurrency(stats.monthly_kitchen),  sub: undefined,                                          icon: ChefHat,      color: "text-amber",       iconBg: "bg-amber/10 border-amber/20",            hover: "hover:border-amber/30",       delay: 225 },
-          { label: "Staff Salaries", value: formatCurrency(stats.monthly_salaries), sub: undefined,                                          icon: UserCog,      color: "text-purple-400", iconBg: "bg-purple-500/10 border-purple-500/20",  hover: "hover:border-purple-500/30",  delay: 300 },
+          {
+            // The headline is cash actually paid to staff this month — net
+            // salaries plus any advance handed over. The sub-line breaks out the
+            // advance portion, because otherwise an owner reconciling this tile
+            // against their salary register finds an unexplained gap: money that
+            // left the drawer without a salary being marked paid.
+            label: "Staff Salaries",
+            value: formatCurrency(stats.monthly_salaries),
+            sub: stats.monthly_salary_advances > 0
+              ? `Includes ${formatCurrency(stats.monthly_salary_advances)} advance`
+              : undefined,
+            icon: UserCog, color: "text-purple-400", iconBg: "bg-purple-500/10 border-purple-500/20", hover: "hover:border-purple-500/30", delay: 300,
+          },
           { label: "Total Expenses", value: formatCurrency(stats.monthly_expenses), sub: undefined,                                          icon: TrendingDown, color: "text-rose-400",   iconBg: "bg-rose-500/10 border-rose-500/20",      hover: "hover:border-rose-500/30",    delay: 375 },
           {
             // This month's intake leads, because it is the figure net profit

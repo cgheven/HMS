@@ -7,7 +7,7 @@ import { calcDailyRent } from "@/lib/daily-billing";
 import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
-  Employee, SalaryPayment, PackageConfig, PackageTier, UpcomingVacancy,
+  Employee, SalaryPayment, SalaryAdvance, PackageConfig, PackageTier, UpcomingVacancy,
   ClientBilling, PlatformInvoice, PartnerTier, PartnerFeatureFlags,
 } from "@/types";
 
@@ -154,7 +154,7 @@ export async function getDashboardData() {
 
   const [
     rooms, tenants, expenses, kitchen, bills,
-    allExp, allKit, collectedPayments, paidSalaries,
+    allExp, allKit, collectedPayments, paidSalaries, advancesThisMonth, outstandingAdvancesRes,
     pendingPaymentsRes, allPayments6moRes, acReadingsRes, reservedDepositsRes,
   ] = await Promise.all([
     supabase.from("hms_rooms").select("status,monthly_rent").eq("hostel_id", hostelId),
@@ -167,7 +167,15 @@ export async function getDashboardData() {
     supabase.from("hms_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", fullStart).lte("date", fullEnd),
     supabase.from("hms_kitchen_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", fullStart).lte("date", fullEnd),
     supabase.from("hms_payments").select("amount,amount_paid,security_deposit_charge").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).in("status", ["paid", "partially_paid"]),
-    supabase.from("hms_salary_payments").select("amount").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).eq("status", "paid"),
+    supabase.from("hms_salary_payments").select("amount, advance_deducted").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).eq("status", "paid"),
+    // Advances handed over this month. This dashboard is cash-basis throughout —
+    // income is cash COLLECTED, expenses are by date — so money lent to staff
+    // belongs in it exactly like any other cash that left. It comes back as a
+    // smaller salary payout in the month it is recovered.
+    supabase.from("hms_salary_advances").select("amount").eq("hostel_id", hostelId).gte("advance_date", start).lte("advance_date", end),
+    // Unsettled balances across all time, for the sub-line that answers "how
+    // much of this is still coming back to me?".
+    supabase.from("hms_salary_advances").select("balance").eq("hostel_id", hostelId).gt("balance", 0),
     supabase.from("hms_payments").select("id,amount,amount_paid,late_fee,status,tenant:hms_tenants(full_name)").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).in("status", ["pending", "overdue", "partially_paid"]),
     supabase.from("hms_payments").select("for_month,amount,amount_paid,status").eq("hostel_id", hostelId).gte("for_month", ranges[0].monthKey).lte("for_month", ranges[5].monthKey),
     supabase.from("hms_room_ac_readings").select("total_units").eq("hostel_id", hostelId).eq("for_month", currentMonthKey),
@@ -186,7 +194,16 @@ export async function getDashboardData() {
   const occupiedRooms = roomData.filter((r) => r.status === "occupied").length;
   const monthlyExpenses = (expenses.data ?? []).reduce((s, e) => s + Number(e.amount), 0);
   const monthlyKitchen = (kitchen.data ?? []).reduce((s, e) => s + Number(e.amount), 0);
-  const monthlySalaries = (paidSalaries.data ?? []).reduce((s, e) => s + Number(e.amount), 0);
+  // NET of any advance held back, plus advances given this month. Gross would
+  // count the deducted rupees twice: once when the advance left the drawer, and
+  // again inside a salary payment that never fully went out.
+  const monthlyAdvances = (advancesThisMonth.data ?? []).reduce((s, a) => s + Number(a.amount), 0);
+  const monthlySalaries =
+    (paidSalaries.data ?? []).reduce((s, e) => s + Number(e.amount) - Number(e.advance_deducted ?? 0), 0) +
+    monthlyAdvances;
+  // Everything still owed back, regardless of when it was lent — the running
+  // receivable, not this month's movement.
+  const outstandingAdvances = (outstandingAdvancesRes.data ?? []).reduce((s, a) => s + Number(a.balance ?? 0), 0);
   // amount_paid equals amount for legacy fully-paid rows (backfilled), so summing
   // it uniformly captures both full and partial payments without branching on status.
   const monthlyCollected = (collectedPayments.data ?? []).reduce((s, e) => s + Number(e.amount_paid ?? e.amount), 0);
@@ -291,6 +308,8 @@ export async function getDashboardData() {
     monthly_expenses: monthlyExpenses,
     monthly_kitchen: monthlyKitchen,
     monthly_salaries: monthlySalaries,
+    monthly_salary_advances: monthlyAdvances,
+    outstanding_salary_advances: outstandingAdvances,
     monthly_collected: monthlyCollected,
     monthly_uncollected: monthlyUncollected,
     net_profit: monthlyCollected - depositsCollected - monthlyExpenses - monthlyKitchen - monthlySalaries,
@@ -499,13 +518,16 @@ export async function getReportsData() {
   const fullStart = ranges[0].start;
   const fullEnd = ranges[5].end;
 
-  const [paymentsRes, expensesRes, kitchenRes, tenantsRes, roomsRes, salariesRes] = await Promise.all([
+  const [paymentsRes, expensesRes, kitchenRes, tenantsRes, roomsRes, salariesRes, trendAdvancesRes] = await Promise.all([
     supabase.from("hms_payments").select("for_month,amount,status,security_deposit_charge").eq("hostel_id", hostelId),
     supabase.from("hms_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", fullStart).lte("date", fullEnd),
     supabase.from("hms_kitchen_expenses").select("amount,date").eq("hostel_id", hostelId).gte("date", fullStart).lte("date", fullEnd),
     supabase.from("hms_tenants").select("check_in,check_out,is_active").eq("hostel_id", hostelId),
     supabase.from("hms_rooms").select("capacity").eq("hostel_id", hostelId),
-    supabase.from("hms_salary_payments").select("for_month,amount,status").eq("hostel_id", hostelId),
+    supabase.from("hms_salary_payments").select("for_month,amount,status,advance_deducted").eq("hostel_id", hostelId),
+    // Same cash-basis reasoning as the dashboard — `collected` below is money
+    // actually received, so the spend side must be money actually paid out.
+    supabase.from("hms_salary_advances").select("amount, advance_date").eq("hostel_id", hostelId),
   ]);
 
   const payments = paymentsRes.data ?? [];
@@ -513,6 +535,7 @@ export async function getReportsData() {
   const kitchen = kitchenRes.data ?? [];
   const tenants = tenantsRes.data ?? [];
   const salaries = salariesRes.data ?? [];
+  const trendAdvances = trendAdvancesRes.data ?? [];
   const totalCapacity = (roomsRes.data ?? []).reduce((s, r) => s + r.capacity, 0);
 
   const revenueByMonth: RevenueMonth[] = ranges.map(({ month, monthKey, start, end }) => {
@@ -526,7 +549,13 @@ export async function getReportsData() {
     const due = monthPayments.reduce((s, p) => s + Number(p.amount), 0);
     const exp = expenses.filter((e) => e.date >= start && e.date <= end).reduce((s, e) => s + Number(e.amount), 0);
     const kit = kitchen.filter((k) => k.date >= start && k.date <= end).reduce((s, k) => s + Number(k.amount), 0);
-    const sal = salaries.filter((s) => s.for_month === monthKey && s.status === "paid").reduce((sum, s) => sum + Number(s.amount), 0);
+    const sal =
+      salaries
+        .filter((s) => s.for_month === monthKey && s.status === "paid")
+        .reduce((sum, s) => sum + Number(s.amount) - Number(s.advance_deducted ?? 0), 0) +
+      trendAdvances
+        .filter((a) => a.advance_date >= start && a.advance_date <= end)
+        .reduce((sum, a) => sum + Number(a.amount), 0);
     const activeCount = tenants.filter((t) => t.check_in <= end && (!t.check_out || t.check_out >= start)).length;
     const totalExp = exp + kit + sal;
     return {
@@ -622,22 +651,30 @@ export async function getBills() {
 
 export async function getEmployeesData() {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, employees: [], salaryPayments: [] };
+  if (!ctx?.hostelId) return { hostelId: null, employees: [], salaryPayments: [], advances: [] };
   const { supabase, hostelId } = ctx;
 
-  const [{ data: employees }, { data: salaryPayments }] = await Promise.all([
+  const [{ data: employees }, { data: salaryPayments }, { data: advances }] = await Promise.all([
     supabase.from("hms_employees").select("*").eq("hostel_id", hostelId).order("full_name"),
     supabase.from("hms_salary_payments")
       .select("*, employee:hms_employees(full_name, role)")
       .eq("hostel_id", hostelId)
       .order("for_month", { ascending: false })
       .limit(200),
+    // Every advance, not just outstanding ones: the staff page shows the
+    // recovery history of settled advances too, and the volume is one row per
+    // advance ever given — far smaller than the salary history above.
+    supabase.from("hms_salary_advances")
+      .select("*, employee:hms_employees(full_name, role)")
+      .eq("hostel_id", hostelId)
+      .order("advance_date", { ascending: false }),
   ]);
 
   return {
     hostelId,
     employees: (employees ?? []) as Employee[],
     salaryPayments: (salaryPayments ?? []) as SalaryPayment[],
+    advances: (advances ?? []) as SalaryAdvance[],
   };
 }
 

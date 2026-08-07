@@ -242,6 +242,10 @@ export interface ReportData {
     paidBySource: { bills: number; staff: number };
     /** Actual spend — paid rows only, so this reconciles with the Today tab. */
     grandTotal: number;
+    /** Advances inside paidBySource.staff. Broken out because that figure is cash
+     *  paid out while totalsBySource.staff is salary EARNED — without naming the
+     *  difference the tile reads as "paid more than the total". */
+    advancesTotal: number;
     unpaidBillsTotal: number;
     pendingSalariesTotal: number;
   };
@@ -339,6 +343,7 @@ export async function getReportData(
     expensesRes,
     kitchenRes,
     salariesRes,
+    advancesRes,
     tenantsRes,
     roomsRes,
     billsRes,
@@ -364,10 +369,19 @@ export async function getReportData(
       .lte("date", fullEnd),
     admin
       .from("hms_salary_payments")
-      .select("id, amount, for_month, status, payment_date, notes, employee:hms_employees(full_name, role)")
+      .select("id, amount, advance_deducted, for_month, status, payment_date, notes, employee:hms_employees(full_name, role)")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
+    // Advances handed over in the range. Listed so the expense report shows all
+    // staff cash movement, but kept OUT of totalsBySource.staff — that figure is
+    // what staff EARNED, and a loan is not earnings.
+    admin
+      .from("hms_salary_advances")
+      .select("id, amount, advance_date, notes, employee:hms_employees(full_name, role)")
+      .eq("hostel_id", hostelId)
+      .gte("advance_date", fullStart)
+      .lte("advance_date", fullEnd),
     admin
       .from("hms_tenants")
       .select("id, full_name, phone, type, check_in, check_out, is_active, package_tier, hms_rooms(room_number)")
@@ -416,6 +430,7 @@ export async function getReportData(
   const expenses = expensesRes.data ?? [];
   const kitchen = kitchenRes.data ?? [];
   const salaries = salariesRes.data ?? [];
+  const advancesGiven = advancesRes.data ?? [];
   type TenantWithRoomRow = {
     id: string;
     full_name: string;
@@ -487,7 +502,13 @@ export async function getReportData(
   const monthlyExpenses = monthKeys.map(({ monthKey, label, start, end }) => {
     const exp = expenses.filter((e) => e.date >= start && e.date <= end).reduce((s, e) => s + Number(e.amount), 0);
     const kit = kitchen.filter((k) => k.date >= start && k.date <= end).reduce((s, k) => s + Number(k.amount), 0);
-    const sal = salaries.filter((s) => s.for_month === monthKey && s.status === "paid").reduce((sum, s) => sum + Number(s.amount), 0);
+    const sal =
+      salaries
+        .filter((s) => s.for_month === monthKey && s.status === "paid")
+        .reduce((sum, s) => sum + Number(s.amount) - Number(s.advance_deducted ?? 0), 0) +
+      advancesGiven
+        .filter((a) => a.advance_date >= start && a.advance_date <= end)
+        .reduce((sum, a) => sum + Number(a.amount), 0);
     const colRows = payments.filter((p) => p.for_month === monthKey && (p.status === "paid" || p.status === "partially_paid"));
     const col = colRows.reduce((s, p) => s + Number(p.amount_paid ?? p.amount), 0);
     // Security deposits are refundable liabilities, not income. They ride inside
@@ -672,25 +693,60 @@ export async function getReportData(
     notes: k.notes,
   }));
 
-  const expenseReportRows = [...billRows, ...salaryRows, ...expenseRows, ...kitchenRows]
+  // Advances are cash out but not earnings, so they get their own rows and are
+  // added only to what was PAID — never to totalsBySource.staff.
+  const advanceRows: ExpenseReportRow[] = advancesGiven.map((a) => {
+    const empRaw = (a as unknown as { employee: { full_name: string; role: string } | { full_name: string; role: string }[] | null }).employee;
+    const emp = Array.isArray(empRaw) ? empRaw[0] : empRaw;
+    return {
+      id: a.id,
+      source: "salary",
+      sourceLabel: "Salary Advance",
+      date: a.advance_date,
+      title: `${emp?.full_name ?? "Staff"} — advance`,
+      category: emp?.role ? capitalize(emp.role) : "Staff",
+      amount: Number(a.amount),
+      status: "paid",
+      notes: a.notes ?? "Advance against future salary",
+    };
+  });
+
+  const expenseReportRows = [...billRows, ...salaryRows, ...advanceRows, ...expenseRows, ...kitchenRows]
     .sort((a, b) => b.date.localeCompare(a.date));
 
   const totalsBySource = {
     bills: billRows.reduce((s, r) => s + r.amount, 0),
+    // What staff EARNED in the period — gross, advances excluded. An advance is
+    // a loan against this, not an addition to it.
     staff: salaryRows.reduce((s, r) => s + r.amount, 0),
     expenses: expenseRows.reduce((s, r) => s + r.amount, 0),
     kitchen: kitchenRows.reduce((s, r) => s + r.amount, 0),
   };
+
+  // What actually left the bank: salaries NET of any advance held back, plus the
+  // advances themselves on the day they were handed over. Summing gross salary
+  // here would count the deducted rupees twice — once as the advance, once
+  // inside the salary that never fully went out.
+  const salaryCashOut = salaries
+    .filter((x) => x.status === "paid")
+    .reduce((sum, x) => sum + (Number(x.amount) - Number(x.advance_deducted ?? 0)), 0);
+  const advanceCashOut = advanceRows.reduce((s, r) => s + r.amount, 0);
+
   const paidBySource = {
     bills: billRows.filter((r) => r.status === "paid").reduce((s, r) => s + r.amount, 0),
-    staff: salaryRows.filter((r) => r.status === "paid").reduce((s, r) => s + r.amount, 0),
+    staff: salaryCashOut + advanceCashOut,
   };
   // Paid rows only. A pending salary is a liability, not money spent — counting
   // it here made this tab disagree with the Today tab and the dashboard by
   // exactly the unpaid amount.
   const grandTotal = paidBySource.bills + paidBySource.staff + totalsBySource.expenses + totalsBySource.kitchen;
   const unpaidBillsTotal = totalsBySource.bills - paidBySource.bills;
-  const pendingSalariesTotal = totalsBySource.staff - paidBySource.staff;
+  // Derived from the unpaid rows themselves, NOT totals minus paid: now that
+  // "paid" is net of advances and includes advance cash, that subtraction would
+  // report a deduction as an unpaid salary.
+  const pendingSalariesTotal = salaryRows
+    .filter((r) => r.status !== "paid")
+    .reduce((s, r) => s + r.amount, 0);
 
   // ── Receivables aging ──────────────────────────────────────────────────────
   // "How late" is derived from for_month vs the current month: the DB has no
@@ -767,7 +823,7 @@ export async function getReportData(
   // Pakistan time for the same reason getMonthRange itself had to be fixed.
   const { end: curEnd } = getMonthRange(new Date(Date.UTC(curYear, curMonth, 1)));
   const [
-    curExpensesRes, curKitchenRes, curSalariesRes, monthInstallmentsRes, joinedRes, leftRes, dueRes,
+    curExpensesRes, curKitchenRes, curSalariesRes, curAdvancesRes, monthInstallmentsRes, joinedRes, leftRes, dueRes,
   ] = await Promise.all([
     // Full rows, not just amount/date — the owner needs to verify exactly
     // what each expense was, not just a total.
@@ -779,12 +835,23 @@ export async function getReportData(
     // scoped to the selected report range, which need not cover this month.
     admin
       .from("hms_salary_payments")
-      .select("id, amount, payment_date, notes, employee:hms_employees(full_name, role)")
+      .select("id, amount, advance_deducted, payment_date, notes, employee:hms_employees(full_name, role)")
       .eq("hostel_id", hostelId)
       .eq("status", "paid")
       .not("payment_date", "is", null)
       .gte("payment_date", curStart)
       .lte("payment_date", curEnd),
+    // Advances handed over in this period. This tab is the day's cash register,
+    // and an advance is cash out of the drawer — it belongs here even though it
+    // is NOT a staff cost (it is a loan; see migration 160). The monthly P&L
+    // below deliberately still counts gross salary only, so nothing is
+    // double-counted between the two views.
+    admin
+      .from("hms_salary_advances")
+      .select("id, amount, advance_date, notes, employee:hms_employees(full_name, role)")
+      .eq("hostel_id", hostelId)
+      .gte("advance_date", curStart)
+      .lte("advance_date", curEnd),
     // Granular, not just a total — the owner cross-checks this against their
     // own physical register, so each installment needs a name/room/amount.
     admin
@@ -843,7 +910,11 @@ export async function getReportData(
   for (const x of curSalariesRes.data ?? []) {
     if (!x.payment_date) continue;
     const row = getDetailRow(x.payment_date);
-    const amount = Number(x.amount);
+    // NET, not gross. If an advance was held back, that money left the drawer
+    // on the day the advance was given, not today — counting the gross here
+    // would bill the same rupees to the register twice.
+    const deducted = Number(x.advance_deducted ?? 0);
+    const amount = Number(x.amount) - deducted;
     const empRaw = (x as unknown as { employee: { full_name: string; role: string } | { full_name: string; role: string }[] | null }).employee;
     const emp = Array.isArray(empRaw) ? empRaw[0] : empRaw;
     row.salaryTotal += amount;
@@ -854,7 +925,27 @@ export async function getReportData(
       title: emp?.full_name ?? "Staff salary",
       category: emp?.role ? capitalize(emp.role) : "Staff",
       amount,
-      notes: x.notes,
+      notes: deducted > 0
+        ? `Salary ${Number(x.amount).toLocaleString()} less advance ${deducted.toLocaleString()}${x.notes ? ` · ${x.notes}` : ""}`
+        : x.notes,
+    });
+  }
+
+  for (const x of curAdvancesRes.data ?? []) {
+    if (!x.advance_date) continue;
+    const row = getDetailRow(x.advance_date);
+    const amount = Number(x.amount);
+    const empRaw = (x as unknown as { employee: { full_name: string; role: string } | { full_name: string; role: string }[] | null }).employee;
+    const emp = Array.isArray(empRaw) ? empRaw[0] : empRaw;
+    row.salaryTotal += amount;
+    row.total += amount;
+    row.expenseList.push({
+      id: x.id,
+      source: "salary",
+      title: `${emp?.full_name ?? "Staff"} — salary advance`,
+      category: emp?.role ? capitalize(emp.role) : "Staff",
+      amount,
+      notes: x.notes ?? "Advance against future salary — recovered from a later salary",
     });
   }
 
@@ -979,6 +1070,7 @@ export async function getReportData(
         grandTotal,
         unpaidBillsTotal,
         pendingSalariesTotal,
+        advancesTotal: advanceCashOut,
       },
       receivablesAging: {
         ...aging,
