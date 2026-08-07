@@ -16,6 +16,7 @@
 
 import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
+import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
@@ -529,6 +530,11 @@ export async function markPaymentPaidAction(
         },
       });
     }
+
+    // Fire-and-forget: the collection is already committed, and a Meta outage
+    // must never fail a payment that was actually received. Sends nothing
+    // unless the branch has WhatsApp granted (off for every branch today).
+    void sendPaymentConfirmation(input.paymentId);
 
     // The installment id lets the caller mint a receipt for THIS transaction
     // rather than the whole cumulative bill.

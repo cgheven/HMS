@@ -1,8 +1,8 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { pktTodayDateString } from "@/lib/pkt-time";
-import { buildReminderMessage } from "@/lib/whatsapp-reminder";
-import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { TEMPLATES, reminderFullParams, reminderPartialParams } from "@/lib/whatsapp-templates";
+import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
 import { processInBatches } from "@/lib/batch";
 import type { PaymentMethodAccount } from "@/types";
@@ -12,6 +12,8 @@ export interface ReminderPaymentRow {
   tenant_id: string;
   amount: number;
   amount_paid: number | null;
+  /** Selected, not just filtered on — it decides which template is sent. */
+  status: string;
   late_fee: number | null;
   for_month: string;
   ac_charge: number | null;
@@ -63,7 +65,7 @@ export async function runReminderPass(
   const { data: payments, error } = await admin
     .from("hms_payments")
     .select(
-      "id, tenant_id, amount, amount_paid, late_fee, for_month, ac_charge, ac_units_consumed, ac_maintenance_charge, registration_fee_charge, last_reminder_sent_at, " +
+      "id, tenant_id, amount, amount_paid, status, late_fee, for_month, ac_charge, ac_units_consumed, ac_maintenance_charge, registration_fee_charge, last_reminder_sent_at, " +
       "tenant:hms_tenants(full_name, phone, security_deposit, check_in, is_active, is_waiting), " +
       "hostel:hms_hostels(name, payment_methods, reminder_template, whatsapp_enabled)"
     )
@@ -133,21 +135,46 @@ export async function runReminderPass(
     // real money against it, and reminding for the original total would ask
     // the tenant to pay something they've already handed over.
     const total = Math.max(0, Number(p.amount) + Number(p.late_fee ?? 0) - Number(p.amount_paid ?? 0));
-    const message = buildReminderMessage({
-      template: p.hostel?.reminder_template,
-      tenantName: p.tenant?.full_name ?? "Tenant",
-      amount: total,
-      month: p.for_month,
-      hostelName: p.hostel?.name ?? "",
-      accounts: p.hostel?.payment_methods ?? [],
-      ac_charge: (p.ac_charge ?? 0) > 0 ? Number(p.ac_charge) : undefined,
-      ac_units: (p.ac_units_consumed ?? 0) > 0 ? Number(p.ac_units_consumed) : undefined,
-      security_deposit: p.tenant?.security_deposit && p.tenant.security_deposit > 0 ? p.tenant.security_deposit : undefined,
-      ac_maintenance_charge: (p.ac_maintenance_charge ?? 0) > 0 ? Number(p.ac_maintenance_charge) : undefined,
-      registration_fee_charge: (p.registration_fee_charge ?? 0) > 0 ? Number(p.registration_fee_charge) : undefined,
-    });
+    // Which template depends on what the tenant has actually done. A partial
+    // payer who is told "your rent of Rs 13,000 is still pending", with no
+    // mention of the Rs 20,000 they already sent, replies "I already paid" —
+    // exactly the exchange automating this was meant to remove. Their status
+    // is already recorded, so there is nothing to infer.
+    //
+    // Both are approved Meta templates rather than free-form text: a tenant
+    // being chased for rent has almost never messaged the business in the last
+    // 24 hours, and free-form outside that window is rejected with 131047. The
+    // hostel's own reminder_template wording cannot apply — Meta approves one
+    // fixed body and only the parameters vary. It still drives the manual
+    // wa.me button.
+    const alreadyPaid = Number(p.amount_paid ?? 0);
+    const isPartial = p.status === "partially_paid" && alreadyPaid > 0;
 
-    const result = await sendWhatsAppMessage(digits, message, { hostelId, tenantId: p.tenant_id, messageType: "reminder" });
+    const tpl = isPartial ? TEMPLATES.reminderPartial : TEMPLATES.reminderFull;
+    const params = isPartial
+      ? reminderPartialParams({
+          tenantName: p.tenant?.full_name,
+          amountDue: total,
+          amountPaid: alreadyPaid,
+          forMonth: p.for_month,
+          hostelName: p.hostel?.name,
+          accounts: p.hostel?.payment_methods,
+        })
+      : reminderFullParams({
+          tenantName: p.tenant?.full_name,
+          amountDue: total,
+          forMonth: p.for_month,
+          hostelName: p.hostel?.name,
+          accounts: p.hostel?.payment_methods,
+        });
+
+    const result = await sendWhatsAppTemplateMessage(
+      digits,
+      tpl.name,
+      tpl.language,
+      params,
+      { hostelId, tenantId: p.tenant_id, messageType: "reminder" }
+    );
     if (!result.ok) {
       failed++;
       console.error(`[reminder-engine] Meta WhatsApp API rejected reminder for "${p.tenant?.full_name ?? "unknown"}" (payment ${p.id}, phone ${digits}):`, result.error);

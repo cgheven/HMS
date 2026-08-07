@@ -16,7 +16,7 @@ export interface SendWhatsAppResult {
 export interface WhatsAppSendContext {
   hostelId: string | null;
   tenantId: string | null;
-  messageType: "reminder" | "announcement" | "welcome" | "leaving_reminder" | "test";
+  messageType: "reminder" | "announcement" | "welcome" | "leaving_reminder" | "test" | "receipt";
 }
 
 async function logFailure(phone: string, error: string, context: WhatsAppSendContext) {

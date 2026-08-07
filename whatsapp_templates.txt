@@ -1,0 +1,34 @@
+Assalam o Alaikum {{1}},
+
+This is a reminder that your rent of Rs. {{2}} for {{3}} at {{4}} is still pending.
+
+Bank Account
+{{5}}
+
+Please pay at your earliest convenience.
+
+For any questions, contact hostel management.
+
+------------------------------------------------------------
+
+Assalam o Alaikum {{1}},
+
+Your payment of *Rs. {{2}}* for *{{3}}* has been received successfully.
+
+*View your receipt here:*
+{{4}}
+
+{{5}} Management
+
+---------------------------------------------------------------
+
+Assalam o Alaikum {{1}},
+
+Your rent of *Rs. {{2}}* for *{{3}}* at *{{4}}* is now *{{5}}* days overdue.
+
+*Bank Account*
+{{6}}
+
+Kindly clear the payment as soon as possible to avoid any inconvenience.
+
+For any questions, contact hostel management.
