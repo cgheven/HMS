@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { calcDailyRent, countBillableNights, daysInMonth, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling, deriveOpeningReading, round2 } from "@/lib/ac-billing";
+import { mintFeedbackToken } from "@/lib/tenant-feedback";
+import { sendCheckoutMessage } from "@/lib/whatsapp-checkout";
 import type { PaymentMethod, PaymentStatus, CheckoutInput, CheckoutSettlement } from "@/types";
 
 // Deliberately no "use server" directive — every export from a "use server" file
@@ -721,6 +723,34 @@ export async function performTenantCheckout(
       });
       // Non-fatal — Supabase returns error in result object, not thrown; ignored intentionally
     }
+
+    // Step 6: Mint the single-use checkout feedback link — best-effort, and
+    // deliberately the LAST thing that happens. mintFeedbackToken never throws
+    // and returns null on any failure, so a feedback subsystem having a bad day
+    // can never strand a tenant who has physically walked out of the building.
+    //
+    // The URL is the {{5}} variable of the hms_tenant_checkout WhatsApp
+    // template, sent from the server immediately below.
+    //
+    // It is NOT returned. A Server Action's return value is serialised into the
+    // response the caller's browser receives, and checkoutTenantAsManager /
+    // checkoutTenantAsPartner forward this object verbatim — so returning it
+    // handed a live, single-use write credential to whoever ran the checkout.
+    // Question 3 of the form rates the hostel staff, and the token is the only
+    // authorisation that exists to answer it: one open of that URL and the
+    // staff being rated have authored a five-star review under a real
+    // ex-tenant's name, permanently, with the tenant's own answers no longer
+    // possible (UNIQUE (tenant_id), single-use token, no re-mint after
+    // checkout). The link only ever travels to the tenant's phone.
+    const feedbackUrl = await mintFeedbackToken(hostelId, input.tenantId);
+
+    // Held in a local and handed straight to the sender, never returned. The
+    // send is server-side (Business API, not wa.me) for the same reason: a
+    // click-to-send link would put the credential in the operator's browser,
+    // which is exactly what the paragraph above forbids. Awaited but
+    // non-throwing — sendCheckoutMessage swallows every failure, so a Meta
+    // outage cannot undo a completed checkout.
+    await sendCheckoutMessage(input.tenantId, feedbackUrl);
 
     revalidatePath("/tenants");
     revalidatePath("/payments");

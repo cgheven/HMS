@@ -50,7 +50,29 @@ const nextConfig: NextConfig = {
     serverActions: { bodySizeLimit: "30mb", allowedOrigins: ["*.hostels.yourpulse.io"] },
   },
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      // Tenant checkout feedback carries a single-use write credential in the
+      // URL path, so this block is listed AFTER the global one in order to
+      // override Referrer-Policy for these routes only.
+      //
+      //   no-referrer  — the default strict-origin-when-cross-origin would leak
+      //                  the whole path (and therefore the token) in the Referer
+      //                  of any third-party request the page makes. The page
+      //                  deliberately loads zero third-party assets as well.
+      //   noindex      — an indexed copy of this URL is a live credential
+      //                  sitting in a search result.
+      //   no-store     — a shared or proxy cache must never be able to serve one
+      //                  tenant's rendered state to the next visitor.
+      {
+        source: "/fb/:path*",
+        headers: [
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+          { key: "Cache-Control", value: "no-store, max-age=0" },
+        ],
+      },
+    ];
   },
   async rewrites() {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;

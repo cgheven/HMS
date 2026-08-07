@@ -30,3 +30,8 @@ supabase/.temp/
 
 # claude code local worktrees / session state — never commit
 .claude/
+
+# ad-hoc production data dumps left in the repo root. control.txt is 1295
+# rows of `<uuid>|<md5>` and one `git add -A` from being in history forever.
+control.txt
+*.dump.txt

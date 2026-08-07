@@ -4,12 +4,23 @@ import { createClient } from "@/lib/supabase/server";
 import { getMonthRange, formatDateInput } from "@/lib/utils";
 import { pktYearMonth, pktTodayDateString } from "@/lib/pkt-time";
 import { calcDailyRent } from "@/lib/daily-billing";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { feedbackBucket, VERDICT_LABEL } from "@/lib/feedback-options";
 import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
   Employee, SalaryPayment, SalaryAdvance, PackageConfig, PackageTier, UpcomingVacancy,
   ClientBilling, PlatformInvoice, PartnerTier, PartnerFeatureFlags,
+  TenantFeedback, NewFeedbackItem,
 } from "@/types";
+
+// The five answer columns plus the join every feedback surface needs. Written
+// out rather than select("*") on purpose: this row is rendered on three
+// dashboard surfaces, and an explicit list is what keeps a token hash or a CNIC
+// from ever riding along on any of them.
+const FEEDBACK_COLUMNS =
+  "id, hostel_id, tenant_id, food, cleanliness, staff, roommate, recommend, comment, needs_attention, acknowledged_at, created_at, " +
+  "tenant:hms_tenants!hms_tenant_feedback_tenant_fk(full_name, check_out, room:hms_rooms(room_number))";
 
 // React cache() deduplicates within the same server request.
 // Layout + every page data function share ONE auth.getUser() + ONE hostel lookup.
@@ -156,6 +167,7 @@ export async function getDashboardData() {
     rooms, tenants, expenses, kitchen, bills,
     allExp, allKit, collectedPayments, paidSalaries, advancesThisMonth, outstandingAdvancesRes,
     pendingPaymentsRes, allPayments6moRes, acReadingsRes, reservedDepositsRes,
+    newFeedbackRes,
   ] = await Promise.all([
     supabase.from("hms_rooms").select("status,monthly_rent").eq("hostel_id", hostelId),
     supabase.from("hms_tenants")
@@ -187,6 +199,17 @@ export async function getDashboardData() {
     supabase.from("hms_tenants")
       .select("id, deposit_collected_amount")
       .eq("hostel_id", hostelId).eq("is_waiting", true).gt("deposit_collected_amount", 0),
+    // Checkout feedback the owner has not opened yet. acknowledged_at is set by
+    // getTenantFeedback when the Feedback page is opened, so this tile empties
+    // itself once it has been read rather than sitting there forever.
+    // Deliberately no comment column — the tile shows a verdict word, and the
+    // free text belongs on the page where it is rendered as a React text child.
+    supabase.from("hms_tenant_feedback")
+      .select("id, needs_attention, food, cleanliness, staff, roommate, recommend, tenant:hms_tenants!hms_tenant_feedback_tenant_fk(full_name)")
+      .eq("hostel_id", hostelId)
+      .is("acknowledged_at", null)
+      .order("created_at", { ascending: false })
+      .limit(20),
   ]);
 
   const roomData = rooms.data ?? [];
@@ -323,8 +346,29 @@ export async function getDashboardData() {
     monthly_ac_units: monthlyACUnits,
   };
 
+  type FeedbackTileRow = {
+    id: string;
+    needs_attention: boolean;
+    food: TenantFeedback["food"];
+    cleanliness: TenantFeedback["cleanliness"];
+    staff: TenantFeedback["staff"];
+    roommate: TenantFeedback["roommate"];
+    recommend: TenantFeedback["recommend"];
+    tenant: { full_name: string } | null;
+  };
+  const newFeedback: NewFeedbackItem[] = (((newFeedbackRes.data ?? []) as unknown) as FeedbackTileRow[])
+    .map((f) => ({
+      id: f.id,
+      name: f.tenant?.full_name ?? "A tenant",
+      // The tile's badge follows the DATABASE's generated column, not the
+      // display bucketer — the two agree, but only one of them is the rule.
+      needsAttention: f.needs_attention,
+      verdict: VERDICT_LABEL[feedbackBucket(f)],
+    }));
+
   return {
     hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters, upcomingVacancies,
+    newFeedback,
   };
 }
 
@@ -472,6 +516,53 @@ export async function getComplaints() {
     complaintCode: hostel?.complaint_code ?? null,
     hostelName: hostel?.name ?? null,
   };
+}
+
+/**
+ * Private checkout feedback for the active branch, newest first.
+ *
+ * Opening this page is what marks the responses as seen, which is why the
+ * function writes: the dashboard tile counts rows with acknowledged_at IS NULL,
+ * so a "3 new" that never clears once you have read them would be exactly the
+ * kind of permanent unread badge this feature is not supposed to become.
+ *
+ * This is a server-side write in the page's own data path, NOT a client
+ * useEffect calling a server action, so CLAUDE.md rule 3 holds.
+ */
+export async function getTenantFeedback() {
+  const ctx = await getAuthContext();
+  if (!ctx?.hostelId) return { hostelId: null, feedback: [] as TenantFeedback[] };
+  const { supabase, hostelId } = ctx;
+
+  const { data } = await supabase
+    .from("hms_tenant_feedback")
+    .select(FEEDBACK_COLUMNS)
+    .eq("hostel_id", hostelId)
+    .order("created_at", { ascending: false });
+
+  const feedback = ((data ?? []) as unknown) as TenantFeedback[];
+
+  // Acknowledging clears the owner's "N new feedback" tile, so only the owner's
+  // own reading may do it. A partner is read-only on this table by design, and
+  // the admin client was quietly overriding that: one page load by a read-only
+  // partner emptied the tile for the whole branch, and nothing would ever have
+  // told the owner it had been there.
+  //
+  // Scoped to the ids actually returned above, not `.eq(hostel_id)` — an
+  // unbounded update marks anything inserted between the select and the update
+  // as read without it ever having been on screen, and that row's "needs
+  // attention" is then gone from the tile for good.
+  if (ctx.profile?.role !== "partner") {
+    const unseen = feedback.filter((f) => !f.acknowledged_at).map((f) => f.id);
+    if (unseen.length > 0) {
+      await createAdminClient()
+        .from("hms_tenant_feedback")
+        .update({ acknowledged_at: new Date().toISOString() })
+        .in("id", unseen);
+    }
+  }
+
+  return { hostelId, feedback };
 }
 
 export async function getAnnouncements() {

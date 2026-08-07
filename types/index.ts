@@ -476,6 +476,41 @@ export interface Complaint {
   room?: { room_number: string } | null;
 }
 
+// ─── Tenant checkout feedback ────────────────────────────────────────────────
+// Mirrors the CHECK constraints in migration 161. These unions are the ONLY
+// permitted values; app/actions/feedback.ts re-validates every submitted answer
+// against them at runtime, because a TypeScript union is erased before the
+// request ever arrives.
+export type FeedbackRating = "poor" | "fair" | "good" | "excellent";
+export type FeedbackFood = FeedbackRating | "no_meals";
+export type FeedbackRoommate = FeedbackRating | "no_roommate";
+export type FeedbackRecommend = "yes" | "maybe" | "no";
+
+export interface TenantFeedback {
+  id: string;
+  hostel_id: string;
+  tenant_id: string;
+  food: FeedbackFood;
+  cleanliness: FeedbackRating;
+  staff: FeedbackRating;
+  roommate: FeedbackRoommate;
+  recommend: FeedbackRecommend;
+  comment: string | null;
+  needs_attention: boolean;
+  acknowledged_at: string | null;
+  created_at: string;
+  tenant?: { full_name: string; check_out: string | null; room?: { room_number: string } | null } | null;
+}
+
+// The dashboard tile's row shape. Deliberately narrow: no comment, no ratings
+// beyond the single verdict word, because the tile is a nudge to open the page.
+export interface NewFeedbackItem {
+  id: string;
+  name: string;
+  needsAttention: boolean;
+  verdict: string;
+}
+
 export interface Announcement {
   id: string;
   hostel_id: string;

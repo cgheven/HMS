@@ -8,7 +8,7 @@ import {
   LayoutDashboard, BedDouble, Users, CreditCard, Receipt,
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
   MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2, Globe,
-  ClipboardList, ShieldCheck, Search, Wallet, Flag,
+  ClipboardList, ShieldCheck, Search, Wallet, Flag, MessageSquareHeart,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
@@ -58,6 +58,14 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       { href: "/staff",         label: "Staff",         icon: UserCog },
       { href: "/managers",      label: "Managers",      icon: ShieldCheck, ownerOnly: true },
       { href: "/complaints",    label: "Complaints",    icon: MessageSquareWarning },
+      // Sits with Complaints because both are "what residents told us".
+      // MessageSquareHeart pairs with MessageSquareWarning; deliberately not a
+      // star, which would imply a public rating — this feature is private.
+      // Not ownerOnly: that flag is for account-level pages, and a partner owns
+      // their branch. Managers never reach this sidebar at all (the dashboard
+      // layout redirects them), which is what keeps staff from reading their own
+      // performance ratings in question 3.
+      { href: "/feedback",      label: "Feedback",      icon: MessageSquareHeart },
       { href: "/announcements", label: "Announcements", icon: Megaphone },
     ],
   },

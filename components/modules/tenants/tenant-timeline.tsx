@@ -1,15 +1,16 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, FileText, Loader2, ArrowLeftRight, Wallet, CalendarClock } from "lucide-react";
+import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, FileText, Loader2, ArrowLeftRight, Wallet, CalendarClock, MessageSquareHeart } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { getTenantTimeline, createInvoiceLink, createInstallmentReceiptLink, type TimelineEvent } from "@/app/actions/tenants";
 import { toast } from "@/hooks/use-toast";
-import type { Tenant, Room, PackageTier, TenantDocument } from "@/types";
+import type { Tenant, Room, PackageTier, TenantDocument, TenantFeedback } from "@/types";
 import { DocumentManager } from "./document-manager";
+import { FeedbackSummary } from "@/components/modules/feedback/feedback-summary";
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
   space_only: "Space Only",
@@ -62,6 +63,8 @@ export function EventIcon({ type }: { type: TimelineEvent["type"] }) {
       return <CalendarClock className="w-4 h-4 text-amber" />;
     case "notice_cancelled":
       return <CalendarClock className="w-4 h-4 text-muted-foreground" />;
+    case "feedback_received":
+      return <MessageSquareHeart className="w-4 h-4 text-blue-400" />;
     case "pending":
       return <Clock className="w-4 h-4 text-amber/70" />;
     case "status_change":
@@ -84,6 +87,7 @@ export function eventDotColor(type: TimelineEvent["type"]): string {
     case "partially_paid": return "bg-blue-500 border-blue-400";
     case "notice_given":   return "bg-amber border-amber/60";
     case "notice_cancelled": return "bg-muted-foreground/40 border-muted-foreground/60";
+    case "feedback_received": return "bg-blue-500 border-blue-400";
     case "pending":       return "bg-amber/30 border-amber/50";
     case "status_change":
     default:              return "bg-amber border-amber/60";
@@ -97,6 +101,8 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [generatingReceipt, setGeneratingReceipt] = useState<string | null>(null);
   const [localDocs, setLocalDocs] = useState<TenantDocument[]>(tenant.documents ?? []);
+  const [feedback, setFeedback] = useState<TenantFeedback | null>(null);
+  const [feedbackLinkSent, setFeedbackLinkSent] = useState(false);
 
   // Sync documents when a different tenant is selected without unmounting
   useEffect(() => {
@@ -104,6 +110,8 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
     setLoaded(false);
     setEvents(null);
     setShowAll(false);
+    setFeedback(null);
+    setFeedbackLinkSent(false);
   }, [tenant.id]);
 
   const load = useCallback(async () => {
@@ -114,6 +122,8 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
       toast({ title: "Failed to load history", description: result.error, variant: "destructive" });
     } else {
       setEvents(result.events ?? []);
+      setFeedback(result.feedback ?? null);
+      setFeedbackLinkSent(result.feedbackLinkSent ?? false);
     }
     setLoaded(true);
     setLoading(false);
@@ -208,6 +218,18 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
             </div>
           ))}
         </div>
+
+        {/* Checkout feedback — a summary fact about the whole stay, so it sits
+            below the stats row and above the timeline. Inside the timeline it
+            would just scroll away. Three states, and the third is "absent": a
+            tenant who is still here gets no placeholder at all. */}
+        {feedback ? (
+          <div className="mt-3">
+            <FeedbackSummary feedback={feedback} />
+          </div>
+        ) : feedbackLinkSent ? (
+          <p className="mt-3 text-xs text-muted-foreground">Feedback link sent — no answer yet.</p>
+        ) : null}
 
         {/* Verification Documents (with upload) */}
         <div className="mt-4">

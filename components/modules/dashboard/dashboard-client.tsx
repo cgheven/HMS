@@ -2,12 +2,12 @@ import Link from "next/link";
 import {
   BedDouble, Wallet, TrendingDown, Banknote,
   Clock, CheckCircle2, FileWarning, ChefHat, Users, UserCog, ShieldCheck, Snowflake,
-  CalendarClock,
+  CalendarClock, MessageSquareHeart,
 } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { ExpenseChartClient as ExpenseChart } from "./expense-chart-client";
-import type { DashboardStats, Bill, Defaulter, UpcomingVacancy } from "@/types";
+import type { DashboardStats, Bill, Defaulter, UpcomingVacancy, NewFeedbackItem } from "@/types";
 
 interface Props {
   data: {
@@ -17,6 +17,7 @@ interface Props {
     monthlyData: { month: string; expenses: number; kitchen: number; collected: number }[];
     defaulters: Defaulter[];
     upcomingVacancies: UpcomingVacancy[];
+    newFeedback: NewFeedbackItem[];
   } | null;
 }
 
@@ -30,7 +31,8 @@ export function DashboardClient({ data }: Props) {
     );
   }
 
-  const { stats, upcomingBills, monthlyData, defaulters, upcomingVacancies } = data;
+  const { stats, upcomingBills, monthlyData, defaulters, upcomingVacancies, newFeedback } = data;
+  const attentionCount = newFeedback.filter((f) => f.needsAttention).length;
   const isProfit = stats.net_profit >= 0;
   const monthlyExpected = stats.monthly_collected + stats.monthly_uncollected;
   const collectionRate = monthlyExpected > 0
@@ -312,6 +314,62 @@ export function DashboardClient({ data }: Props) {
               className="mt-3 inline-block text-xs text-blue-400 hover:text-blue-300 transition-colors"
             >
               +{upcomingVacancies.length - 5} more — view all in Tenants
+            </Link>
+          )}
+        </div>
+      )}
+
+      {/* ── New Feedback (absent entirely when nothing is unread) ────────────
+          Deliberately down here beside Pending Bills and Upcoming Vacancies
+          rather than in the KPI rows: those rows are money, and a non-financial
+          card would dilute the first thing the owner reads. A hostel that has
+          never received feedback sees nothing at all — not a zero, not a
+          placeholder. */}
+      {newFeedback.length > 0 && (
+        <div className="rounded-2xl border border-sidebar-border bg-card p-6 animate-fade-up animate-delay-400">
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <MessageSquareHeart className="w-4 h-4 text-amber" />
+                New Feedback
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {newFeedback.length} new since you last looked
+                {attentionCount > 0 && ` · ${attentionCount} needs attention`}
+              </p>
+            </div>
+            <Badge variant={attentionCount > 0 ? "destructive" : "secondary"} className="text-xs tabular-nums">
+              {newFeedback.length}
+            </Badge>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {newFeedback.slice(0, 3).map((f, i) => (
+              <div
+                key={f.id}
+                className="flex items-center gap-3 rounded-xl bg-white/[0.03] border border-white/5 px-3 py-2.5 animate-fade-up"
+                style={{ animationDelay: `${400 + i * 60}ms` }}
+              >
+                <div className={`flex items-center justify-center w-8 h-8 rounded-full shrink-0 ${f.needsAttention ? "bg-rose-500/10 border border-rose-500/20" : "bg-amber/10 border border-amber/20"}`}>
+                  <span className={`text-xs font-bold ${f.needsAttention ? "text-rose-400" : "text-amber"}`}>
+                    {f.name.charAt(0).toUpperCase()}
+                  </span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-foreground truncate">{f.name}</p>
+                  <p className="text-xs text-muted-foreground">Checkout feedback</p>
+                </div>
+                <p className={`text-xs font-semibold shrink-0 text-right ${f.needsAttention ? "text-rose-400" : "text-muted-foreground"}`}>
+                  {f.verdict}
+                </p>
+              </div>
+            ))}
+          </div>
+          {newFeedback.length > 3 && (
+            <Link
+              href="/feedback"
+              className="mt-3 inline-block text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              +{newFeedback.length - 3} more — view all in Feedback
             </Link>
           )}
         </div>

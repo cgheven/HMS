@@ -8,10 +8,18 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 const FROM = process.env.RESEND_FROM_EMAIL ?? "Pulse HMS <noreply@yourpulse.io>";
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
 
-// Escape user-supplied content before embedding in HTML to prevent injection
+// Escape user-supplied content before embedding in HTML to prevent injection.
+// The apostrophe is escaped too: without it this is safe in a double-quoted
+// attribute and silently unsafe in a single-quoted one, and which of those a
+// future template uses is not something the escaper should have an opinion on.
 function esc(s: string | null | undefined): string {
   if (!s) return "—";
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function baseHtml(title: string, body: string): string {
@@ -307,6 +315,144 @@ export async function sendComplaintEmail(data: ComplaintEmailData): Promise<void
     to: data.ownerEmail,
     subject: `New ${categoryLabel.toLowerCase()} complaint from ${data.tenantName} — ${data.hostelName}`,
     html: baseHtml("New Complaint", body),
+  });
+  if (error) throw new Error(`Resend: ${error.message}`);
+}
+
+// ─── Negative checkout feedback (owner notification) ─────────────────────────
+// Fired the moment a departing tenant marks anything "Poor" or answers "No" to
+// the recommend question. See migration 161: whether it fires is decided by the
+// GENERATED needs_attention column, never recomputed here, so the dashboard
+// tile's count and this email can never disagree about what counts as negative.
+//
+// This is the highest-risk email in the product: `comment` is free text from an
+// unauthenticated submitter. React is not involved anywhere in this file, so
+// esc() is the ONLY thing between that text and the owner's mail client.
+
+interface FeedbackAlertEmailData {
+  ownerEmail: string;
+  hostelName: string;
+  tenantName: string;
+  phone?: string | null;
+  roomNumber?: string | null;
+  checkedOut?: string | null;
+  triggers: string[];
+  answers: { label: string; value: string; text: string }[];
+  comment?: string | null;
+}
+
+// A bare CR or LF inside a header value starts a new header — an injected Bcc
+// is one "\r\nBcc:" away. Every value interpolated into `subject:` goes through
+// this first. The tenant's comment never reaches the subject at all.
+function hdr(s: string): string {
+  return s.replace(/[\r\n]+/g, " ").trim();
+}
+
+// A switch, not an object lookup. `COLORS[a.value]` on a plain object inherits
+// Object.prototype, so a value of "constructor" or "toString" returns something
+// truthy and non-colour-shaped that would then be interpolated straight into a
+// style attribute — the one place in this file where data reaches an attribute
+// rather than a text node. The allowlist in the feedback action makes that
+// unreachable today; this makes it unreachable by construction.
+function answerColor(value: string): string {
+  switch (value) {
+    case "poor":
+    case "no":
+      return "#f43f5e";
+    case "fair":
+    case "maybe":
+      return "#f59e0b";
+    case "excellent":
+    case "yes":
+      return "#10b981";
+    case "no_meals":
+    case "no_roommate":
+      return "#71717a";
+    default:
+      return "#e5e5e5";
+  }
+}
+
+// The comment is the only unauthenticated free text this product ever puts in
+// somebody's inbox, and it arrives wearing our logo, our colours and our
+// sending domain. It cannot execute anything — esc() handles that — but a mail
+// client will happily autolink a bare URL inside it, which turns a feature into
+// a delivery channel for a lookalike login page addressed to a hostel owner who
+// is already primed to act. Breaking the scheme stops the autolink; the reader
+// can still see exactly what was written.
+function defangUrls(s: string): string {
+  return s.replace(/:\/\//g, "[://]").replace(/\bwww\./gi, "www[.]");
+}
+
+export async function sendFeedbackAlertEmail(data: FeedbackAlertEmailData): Promise<void> {
+  // esc() FIRST, then insert the <br> markup. The other order either escapes
+  // the <br> into a literal "&lt;br&gt;" or reintroduces the injection this
+  // whole function exists to prevent. Same ordering as sendComplaintEmail.
+  const commentHtml = data.comment
+    ? defangUrls(esc(data.comment)).replace(/\r?\n/g, "<br>")
+    : null;
+
+  const triggerPills = data.triggers
+    .map(
+      (t) =>
+        `<div style="font-size:11px;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:0.5px;">${esc(t)}</div>`
+    )
+    .join("");
+
+  const answerRows = data.answers
+    .map(
+      (a) => `<tr>
+        <td style="padding:6px 0;font-size:13px;color:#71717a;width:140px;">${esc(a.label)}</td>
+        <td style="padding:6px 0;font-size:13px;font-weight:600;color:${answerColor(a.value)};">${esc(a.text)}</td>
+      </tr>`
+    )
+    .join("");
+
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Feedback that needs your attention</h2>
+    <p style="margin:0 0 20px;font-size:14px;color:#a1a1aa;">${esc(data.tenantName)} checked out of <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong> and left this feedback.</p>
+
+    <div style="margin:0 0 20px;padding:10px 14px;background:#1c1917;border:1px solid #3f2d17;border-radius:8px;">
+      ${triggerPills}
+    </div>
+
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      ${row("Tenant", esc(data.tenantName))}
+      ${data.phone ? row("Phone", esc(data.phone)) : ""}
+      ${data.roomNumber ? row("Room", esc(data.roomNumber)) : ""}
+      ${data.checkedOut ? row("Checked out", esc(data.checkedOut)) : ""}
+    </table>
+
+    <p style="margin:22px 0 6px;font-size:13px;font-weight:600;color:#e5e5e5;">All answers</p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:8px;">
+      ${answerRows}
+    </table>
+
+    ${
+      commentHtml
+        ? `<p style="margin:22px 0 6px;font-size:13px;font-weight:600;color:#e5e5e5;">What they said</p>
+    <div style="padding:12px 14px;background:#0f0f11;border:1px solid #27272a;border-radius:8px;font-size:13px;color:#e5e5e5;line-height:1.6;">
+      ${commentHtml}
+    </div>
+    <p style="margin:8px 0 0;font-size:11px;color:#71717a;">Typed by the tenant, not checked by us. Don&#39;t trust any link or phone number inside it.</p>`
+        : ""
+    }
+
+    <p style="margin:24px 0 0;">
+      <a href="${SITE_URL}/feedback" style="display:inline-block;background:#f59e0b;color:#0f0f11;font-size:13px;font-weight:600;padding:10px 18px;border-radius:8px;text-decoration:none;">Open Feedback</a>
+    </p>
+  `;
+
+  const poorTrigger = data.triggers.find((t) => t.startsWith("Marked poor"));
+  const subject = poorTrigger
+    ? `Poor rating from ${hdr(data.tenantName)} — ${hdr(data.hostelName)}`
+    : `${hdr(data.tenantName)} would not recommend you — ${hdr(data.hostelName)}`;
+
+  const { error } = await resend.emails.send({
+    from: FROM,
+    to: data.ownerEmail,
+    subject,
+    html: baseHtml("Checkout Feedback", body),
   });
   if (error) throw new Error(`Resend: ${error.message}`);
 }

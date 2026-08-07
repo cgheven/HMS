@@ -22,6 +22,7 @@ export const TEMPLATES = {
   ownerDailySummary: { name: "hms_owner_daily_summary", language: "en" },
   clientBillingDue: { name: "hms_client_billing_due", language: "en" },
   clientProvisioned: { name: "hms_client_provisioning_notification", language: "en" },
+  tenantCheckout: { name: "hms_tenant_checkout", language: "en" },
 } as const;
 
 const pkr = (n: number) => new Intl.NumberFormat("en-PK").format(Math.round(n));
@@ -155,6 +156,37 @@ export function seatReservedParams(a: SeatReservedParamArgs): string[] {
     clean(pkr(a.depositCollected), "0"),
     clean(a.hostelName ?? "", "your hostel"),
     clean(a.expectedJoining ? formatDayLong(a.expectedJoining) : "", "to be confirmed"),
+  ];
+}
+
+export interface TenantCheckoutArgs {
+  tenantName: string | null | undefined;
+  hostelName: string | null | undefined;
+  /** ISO checkout date. */
+  checkoutDate: string | null | undefined;
+  /** Absolute URL to the checkout receipt. */
+  receiptUrl: string;
+  /** Absolute URL to the single-use feedback form. */
+  feedbackUrl: string;
+}
+
+/**
+ * hms_tenant_checkout — {{1}} name, {{2}} hostel, {{3}} date, {{4}} receipt,
+ * {{5}} feedback link.
+ *
+ * Both URLs carry credentials, so neither gets a clean() fallback the way the
+ * text fields do: a placeholder here would send the tenant a link that goes
+ * nowhere. The caller must not invoke this without real URLs — Meta also
+ * rejects an empty parameter outright, so a missing one fails the send rather
+ * than delivering a broken message.
+ */
+export function tenantCheckoutParams(a: TenantCheckoutArgs): string[] {
+  return [
+    clean(firstName(a.tenantName), "there"),
+    clean(a.hostelName ?? "", "your hostel"),
+    clean(a.checkoutDate ? formatDayLong(a.checkoutDate) : "", "today"),
+    a.receiptUrl,
+    a.feedbackUrl,
   ];
 }
 

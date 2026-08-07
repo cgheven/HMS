@@ -46,6 +46,11 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/guide") ||
     pathname.startsWith("/join/") ||
     pathname.startsWith("/complaint/") ||
+    // Tenant checkout feedback. Trailing slash on purpose, per the segment
+    // -boundary note above — a bare "/fb" would hand public access to any
+    // future sibling route, and the owner-facing /feedback page must stay
+    // behind the auth gate.
+    pathname.startsWith("/fb/") ||
     pathname.startsWith("/r/") ||
     pathname.startsWith("/invoice/") ||
     pathname.startsWith("/partner/login") ||

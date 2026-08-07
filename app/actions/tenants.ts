@@ -17,7 +17,7 @@ import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
 import { deriveOpeningReading } from "@/lib/ac-billing";
 import { sendWelcomeMessageNow, type WelcomeSendResult } from "@/lib/whatsapp-welcome-action";
 import { sendSeatReservedConfirmation } from "@/lib/whatsapp-seat-reserved";
-import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, CheckoutSettlement, TenantEventType } from "@/types";
+import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, CheckoutSettlement, TenantEventType, TenantFeedback } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -365,7 +365,8 @@ export type TimelineEventType =
   | "check_out"
   | "status_change"
   | "pending"
-  | "partially_paid";
+  | "partially_paid"
+  | "feedback_received";
 
 const TIMELINE_TIER_LABELS: Record<string, string> = {
   space_only: "Space Only",
@@ -396,12 +397,19 @@ export interface TimelineEvent {
 
 export async function getTenantTimeline(
   tenantId: string
-): Promise<{ events?: TimelineEvent[]; error?: string }> {
+): Promise<{
+  events?: TimelineEvent[];
+  feedback?: TenantFeedback | null;
+  // Distinct from "no feedback": it is the difference between "they ignored us"
+  // and "the link never went out", and only one of those is worth chasing.
+  feedbackLinkSent?: boolean;
+  error?: string;
+}> {
   try {
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
-    const [tenantRes, paymentsRes, tenantEventsRes, checkoutReadingRes, installmentsRes] = await Promise.all([
+    const [tenantRes, paymentsRes, tenantEventsRes, checkoutReadingRes, installmentsRes, feedbackRes, feedbackTokenRes] = await Promise.all([
       supabase
         .from("hms_tenants")
         .select("id, full_name, check_in, check_out, is_active, created_at, joining_meter_reading")
@@ -436,6 +444,22 @@ export async function getTenantTimeline(
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
         .order("created_at", { ascending: true }),
+      supabase
+        .from("hms_tenant_feedback")
+        .select("id, hostel_id, tenant_id, food, cleanliness, staff, roommate, recommend, comment, needs_attention, acknowledged_at, created_at")
+        .eq("tenant_id", tenantId)
+        .eq("hostel_id", hostelId)
+        .maybeSingle(),
+      // Whether a link was ever issued. HEAD + count only: not one column of
+      // this table is ever selected into the dashboard, so no query here can
+      // carry a credential into a page payload. The admin client is required
+      // because the token table runs RLS with zero policies by design — it is
+      // scoped to the already-resolved hostelId and returns a number.
+      createAdminClient()
+        .from("hms_feedback_tokens")
+        .select("id", { count: "exact", head: true })
+        .eq("tenant_id", tenantId)
+        .eq("hostel_id", hostelId),
     ]);
 
     if (tenantRes.error || !tenantRes.data) throw new Error("Tenant not found or access denied");
@@ -735,6 +759,17 @@ export async function getTenantTimeline(
       events.push(...kept);
     }
 
+    // The dated fact belongs in history too. The answers themselves are shown
+    // in the summary block above the timeline, not here — this is a "when".
+    if (feedbackRes.data) {
+      events.push({
+        id: `feedback-${feedbackRes.data.id}`,
+        type: "feedback_received",
+        date: feedbackRes.data.created_at,
+        label: "Shared checkout feedback",
+      });
+    }
+
     // Sort newest first; same-day ties broken by a logical same-day order
     // (e.g. deposit collected reads before that day's rent payment, not after)
     const SAME_DAY_PRIORITY: Record<TimelineEventType, number> = {
@@ -753,6 +788,7 @@ export async function getTenantTimeline(
       deposit_returned: 7,
       deposit_forfeited: 7,
       check_out: 8,
+      feedback_received: 9,
     };
     events.sort((a, b) => {
       // Compare by calendar day, not exact millisecond timestamp — events logged
@@ -765,7 +801,13 @@ export async function getTenantTimeline(
       return SAME_DAY_PRIORITY[a.type] - SAME_DAY_PRIORITY[b.type];
     });
 
-    return { events };
+    const feedback = (feedbackRes.data as TenantFeedback | null) ?? null;
+
+    return {
+      events,
+      feedback,
+      feedbackLinkSent: (feedbackTokenRes.count ?? 0) > 0,
+    };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };
