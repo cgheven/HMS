@@ -20,7 +20,7 @@ interface Props {
 }
 
 const EMPTY_DETAIL = {
-  income: 0, kitchenTotal: 0, otherTotal: 0, salaryTotal: 0, total: 0,
+  income: 0, kitchenTotal: 0, otherTotal: 0, salaryTotal: 0, billTotal: 0, total: 0,
   expenseList: [] as ReportData["dailyExpenseDetails"][number]["expenseList"],
   paymentsList: [] as ReportData["dailyExpenseDetails"][number]["paymentsList"],
   joinedList: [] as ReportData["dailyExpenseDetails"][number]["joinedList"],
@@ -47,7 +47,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
     if (days.length === 1) return days[0];
     const merged = {
       ...EMPTY_DETAIL,
-      income: 0, kitchenTotal: 0, otherTotal: 0, salaryTotal: 0, total: 0,
+      income: 0, kitchenTotal: 0, otherTotal: 0, salaryTotal: 0, billTotal: 0, total: 0,
       expenseList: [] as typeof EMPTY_DETAIL.expenseList,
       paymentsList: [] as typeof EMPTY_DETAIL.paymentsList,
       joinedList: [] as typeof EMPTY_DETAIL.joinedList,
@@ -63,6 +63,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
       merged.kitchenTotal += day.kitchenTotal;
       merged.otherTotal += day.otherTotal;
       merged.salaryTotal += day.salaryTotal;
+      merged.billTotal += day.billTotal;
       merged.total += day.total;
       merged.expenseList.push(...day.expenseList);
       merged.paymentsList.push(...day.paymentsList);
@@ -138,6 +139,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
               `Kitchen ${formatCurrency(d.kitchenTotal)}`,
               `Other ${formatCurrency(d.otherTotal)}`,
               ...(d.salaryTotal > 0 ? [`Salary ${formatCurrency(d.salaryTotal)}`] : []),
+              ...(d.billTotal > 0 ? [`Bills ${formatCurrency(d.billTotal)}`] : []),
             ].join(" · "),
             icon: ArrowUpCircle, color: "text-rose-400", bg: "bg-rose-500/10 border-rose-500/20",
           },
@@ -234,7 +236,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
                       <td className="px-2.5 py-2 text-foreground font-medium">{e.title}</td>
                       <td className="px-2.5 py-2 text-muted-foreground whitespace-nowrap">
                         {e.category}
-                        <span className="text-muted-foreground/60"> · {e.source === "kitchen" ? "Kitchen" : e.source === "salary" ? "Salary" : "Other"}</span>
+                        <span className="text-muted-foreground/60"> · {e.source === "kitchen" ? "Kitchen" : e.source === "salary" ? "Salary" : e.source === "bill" ? "Bill" : "Other"}</span>
                       </td>
                       <td className="px-2.5 py-2 text-right text-rose-400 tabular-nums whitespace-nowrap">{formatCurrency(e.amount)}</td>
                     </tr>

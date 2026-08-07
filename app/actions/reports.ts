@@ -21,10 +21,13 @@ export interface DailyExpenseDetail {
    *  other cash leaving the hostel — this tab is the daily register, and a
    *  salary handed over is as real an expense as a bag of flour. */
   salaryTotal: number;
+  /** Utility/rent bills settled on this date. Keyed on paid_date, so an unpaid
+   *  bill never appears — this register is cash that moved, not what is owed. */
+  billTotal: number;
   total: number;
   expenseList: {
     id: string;
-    source: "expense" | "kitchen" | "salary";
+    source: "expense" | "kitchen" | "salary" | "bill";
     title: string;
     category: string;
     amount: number;
@@ -823,7 +826,7 @@ export async function getReportData(
   // Pakistan time for the same reason getMonthRange itself had to be fixed.
   const { end: curEnd } = getMonthRange(new Date(Date.UTC(curYear, curMonth, 1)));
   const [
-    curExpensesRes, curKitchenRes, curSalariesRes, curAdvancesRes, monthInstallmentsRes, joinedRes, leftRes, dueRes,
+    curExpensesRes, curKitchenRes, curSalariesRes, curBillsRes, curAdvancesRes, monthInstallmentsRes, joinedRes, leftRes, dueRes,
   ] = await Promise.all([
     // Full rows, not just amount/date — the owner needs to verify exactly
     // what each expense was, not just a total.
@@ -841,6 +844,19 @@ export async function getReportData(
       .not("payment_date", "is", null)
       .gte("payment_date", curStart)
       .lte("payment_date", curEnd),
+    // Bills settled in this window. Keyed on paid_date, not due_date: this tab
+    // answers "what left the till on this day", and an unpaid bill is a
+    // liability, not a day's spend. They were missing entirely, so a hostel that
+    // paid its electricity bill saw the day's total ignore it — while the
+    // expense report and the owner's daily WhatsApp summary both counted it.
+    admin
+      .from("hms_bills")
+      .select("id, title, category, amount, paid_date, notes")
+      .eq("hostel_id", hostelId)
+      .eq("status", "paid")
+      .not("paid_date", "is", null)
+      .gte("paid_date", curStart)
+      .lte("paid_date", curEnd),
     // Advances handed over in this period. This tab is the day's cash register,
     // and an advance is cash out of the drawer — it belongs here even though it
     // is NOT a staff cost (it is a loan; see migration 160). The monthly P&L
@@ -887,7 +903,7 @@ export async function getReportData(
   function getDetailRow(date: string): DailyExpenseDetail {
     let row = detailByDate.get(date);
     if (!row) {
-      row = { date, income: 0, kitchenTotal: 0, otherTotal: 0, salaryTotal: 0, total: 0, expenseList: [], paymentsList: [], joinedList: [], leftList: [], dueList: [] };
+      row = { date, income: 0, kitchenTotal: 0, otherTotal: 0, salaryTotal: 0, billTotal: 0, total: 0, expenseList: [], paymentsList: [], joinedList: [], leftList: [], dueList: [] };
       detailByDate.set(date, row);
     }
     return row;
@@ -928,6 +944,22 @@ export async function getReportData(
       notes: deducted > 0
         ? `Salary ${Number(x.amount).toLocaleString()} less advance ${deducted.toLocaleString()}${x.notes ? ` · ${x.notes}` : ""}`
         : x.notes,
+    });
+  }
+
+  for (const x of curBillsRes.data ?? []) {
+    if (!x.paid_date) continue;
+    const row = getDetailRow(x.paid_date);
+    const amount = Number(x.amount);
+    row.billTotal += amount;
+    row.total += amount;
+    row.expenseList.push({
+      id: x.id,
+      source: "bill",
+      title: x.title,
+      category: capitalize(x.category),
+      amount,
+      notes: x.notes,
     });
   }
 
