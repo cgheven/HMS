@@ -21,7 +21,12 @@ const MAX_BYTES = 10 * 1024 * 1024;
 const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 /**
- * Direct public URL for a stored path (migration 159 made the bucket public).
+ * Public URL for a stored path (migration 159 made the bucket public).
+ *
+ * Our own origin, proxied to Supabase storage by the /meter-photos rewrite in
+ * next.config.ts — an owner opening evidence sees their own site rather than a
+ * project-ref storage URL, and the response picks up our security headers on
+ * the way through.
  *
  * Built here rather than fetched: a meter photo carries no personal data, and
  * asking the server to mint a signed URL first put a round trip in front of a
@@ -29,7 +34,7 @@ const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp"]);
  * middle-click and "open in new tab", and needs no client state at all.
  */
 function publicUrl(path: string): string {
-  return `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/ac-meter-photos/${path}`;
+  return `/meter-photos/${path}`;
 }
 
 interface Props {

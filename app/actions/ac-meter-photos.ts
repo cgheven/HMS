@@ -199,8 +199,11 @@ export async function uploadJoiningMeterPhoto(
     const { buffer, ext, contentType } = await readImage(formData);
 
     // hostelId first so one storage policy scopes the whole bucket; random
-    // filename so nothing user-controlled reaches the path.
-    const path = `${hostelId}/join/${tenantId}/${randomUUID()}.${ext}`;
+    // filename so nothing user-controlled reaches the path. Lowercased because
+    // UUID_RE is case-insensitive and Postgres treats the two forms as the same
+    // row — without this the same tenant could produce differently-cased folder
+    // names for what is one tenant.
+    const path = `${hostelId}/join/${tenantId.toLowerCase()}/${randomUUID()}.${ext}`;
 
     const { error: upErr } = await admin.storage
       .from(BUCKET)
@@ -297,7 +300,8 @@ export async function uploadMonthlyMeterPhoto(
 
     const { buffer, ext, contentType } = await readImage(formData);
 
-    const path = `${hostelId}/monthly/${roomId}/${forMonth}/${randomUUID()}.${ext}`;
+    // Lowercased for the same reason as the move-in path above.
+    const path = `${hostelId}/monthly/${roomId.toLowerCase()}/${forMonth}/${randomUUID()}.${ext}`;
 
     const { error: upErr } = await admin.storage
       .from(BUCKET)

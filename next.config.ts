@@ -52,6 +52,31 @@ const nextConfig: NextConfig = {
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
+  async rewrites() {
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    if (!supabaseUrl) return [];
+    return [
+      // AC meter photos are served from our own domain rather than the raw
+      // Supabase storage host. Cosmetic in intent — an owner opening evidence
+      // should see their own site, not a project-ref URL that also advertises
+      // which backend this runs on — but it earns two real things:
+      //
+      //   * the securityHeaders above now apply to the image response,
+      //     including the X-Content-Type-Options: nosniff that Supabase's
+      //     public storage endpoint does not send;
+      //   * the storage host stops appearing in anything an owner might share.
+      //
+      // A rewrite, not a redirect: the browser never learns the upstream URL.
+      // Every stored path ends in .png/.jpg/.webp, which middleware.ts's matcher
+      // excludes, so these requests bypass the auth gate exactly like other
+      // static image traffic — the bucket is public, so there is nothing here
+      // for a session to protect.
+      {
+        source: "/meter-photos/:path*",
+        destination: `${supabaseUrl}/storage/v1/object/public/ac-meter-photos/:path*`,
+      },
+    ];
+  },
 };
 
 export default nextConfig;
