@@ -7,6 +7,9 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { requireSuperAdmin } from "@/lib/auth";
 import { writeAuditLog } from "@/lib/audit";
+import { sendClientCredentialsEmail } from "@/lib/email";
+import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
+import { TEMPLATES, clientProvisionedParams } from "@/lib/whatsapp-templates";
 import { EMPTY_ONBOARDING_CONFIG } from "@/types";
 import type {
   OnboardingBranchConfig, OnboardingData, PartnerTier,
@@ -46,6 +49,10 @@ export interface ProvisionResult {
   ownerPassword?: string;
   hostelIds?: string[];
   partnerCredentials?: { name: string; email: string; password: string | null }[];
+  /** False when the credentials email failed — the Super Admin must then share
+   *  the password by hand, and no WhatsApp went out claiming otherwise. */
+  credentialsEmailed?: boolean;
+  emailError?: string;
   error?: string;
 }
 
@@ -249,8 +256,50 @@ export async function provisionOnboarding(submissionId: string): Promise<Provisi
       },
     });
 
+    // Credentials by EMAIL only. The password never goes over WhatsApp: Meta
+    // rejects credential delivery as a utility template, and a WhatsApp message
+    // persists in chat history, cloud backups and lock-screen previews. Email is
+    // the account the password is for, so it introduces no new reader.
+    //
+    // Non-fatal: the account and branches already exist by this point, and the
+    // Super Admin still sees the password on screen to share by hand. Failing
+    // the whole provisioning over an email would be worse than reporting it.
+    let credentialsEmailed = false;
+    let emailError: string | undefined;
+    try {
+      const { data: firstHostel } = await admin
+        .from("hms_hostels").select("name").eq("id", hostelIds[0]).maybeSingle();
+      await sendClientCredentialsEmail({
+        clientName: ownerName,
+        businessName: firstHostel?.name ?? "your hostel",
+        email: ownerEmail,
+        password: ownerPassword,
+      });
+      credentialsEmailed = true;
+
+      // Only NOW may the WhatsApp go out — its approved body states "we have
+      // emailed the details", which would be a lie if the email had failed.
+      const digits = (data.owner?.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
+      if (digits.length >= 11) {
+        await sendWhatsAppTemplateMessage(
+          digits,
+          TEMPLATES.clientProvisioned.name,
+          TEMPLATES.clientProvisioned.language,
+          clientProvisionedParams({
+            clientName: ownerName,
+            businessName: firstHostel?.name,
+            email: ownerEmail,
+          }),
+          { hostelId: hostelIds[0], tenantId: null, messageType: "welcome" }
+        );
+      }
+    } catch (err) {
+      emailError = err instanceof Error ? err.message : "Could not email credentials";
+      console.error("[onboarding-provision] credential delivery failed:", emailError);
+    }
+
     revalidatePath("/super-admin/onboarding");
-    return { ownerEmail, ownerPassword, hostelIds, partnerCredentials };
+    return { ownerEmail, ownerPassword, hostelIds, partnerCredentials, credentialsEmailed, emailError };
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Could not provision this account." };

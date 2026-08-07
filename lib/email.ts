@@ -509,3 +509,62 @@ export async function sendGroupedFollowUpDigests(
   await Promise.all(sends);
   return { sentCount: leads.length, recipientCount };
 }
+
+// ── Client provisioning credentials ──────────────────────────────────────────
+
+export interface ClientCredentialsEmailData {
+  clientName: string;
+  businessName: string;
+  email: string;
+  password: string;
+}
+
+/**
+ * The ONLY channel that ever carries a new client's password.
+ *
+ * Deliberately not WhatsApp: Meta classifies credential delivery as
+ * AUTHENTICATION and rejects it as a utility template, and a WhatsApp message
+ * lives forever in chat history, in cloud backups, and on a lock-screen
+ * preview. Email is not perfect, but it is the account the password is FOR —
+ * anyone who can read it can already reset the account anyway, so it adds no
+ * new attacker.
+ *
+ * The companion WhatsApp template says only "we have emailed the details",
+ * never the password itself. If this send fails, that message must not go out.
+ *
+ * Throws on failure. Resend returns { error } instead of rejecting, so an
+ * unchecked call here would silently create an account nobody can log into.
+ */
+export async function sendClientCredentialsEmail(data: ClientCredentialsEmailData): Promise<void> {
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Your Pulse account is ready</h2>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">Assalam o Alaikum ${esc(data.clientName)}, your account for <strong style="color:#f59e0b;">${esc(data.businessName)}</strong> has been set up.</p>
+
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      ${row("Email", esc(data.email))}
+    </table>
+
+    <p style="margin:20px 0 6px;font-size:13px;font-weight:600;color:#e5e5e5;">Password</p>
+    <div style="padding:12px 14px;background:#0f0f11;border:1px solid #3f2d17;border-radius:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;color:#f59e0b;letter-spacing:0.5px;word-break:break-all;">
+      ${esc(data.password)}
+    </div>
+
+    <p style="margin:16px 0 0;font-size:12px;color:#a1a1aa;line-height:1.6;">
+      Keep this email private — anyone with these details can sign in to your hostel's records.
+      Do not forward it.
+    </p>
+
+    <p style="margin:24px 0 0;">
+      <a href="${SITE_URL}/login" style="display:inline-block;background:#f59e0b;color:#0f0f11;font-size:13px;font-weight:600;padding:10px 18px;border-radius:8px;text-decoration:none;">Sign in to Pulse</a>
+    </p>
+  `;
+
+  const { error } = await resend.emails.send({
+    from: FROM,
+    to: data.email,
+    subject: `Your Pulse account for ${data.businessName}`,
+    html: baseHtml("Your Pulse account is ready", body),
+  });
+
+  if (error) throw new Error(`Resend: ${error.message}`);
+}

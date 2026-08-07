@@ -21,6 +21,7 @@ export const TEMPLATES = {
   seatReserved: { name: "hms_seat_reserved", language: "en" },
   ownerDailySummary: { name: "hms_owner_daily_summary", language: "en" },
   clientBillingDue: { name: "hms_client_billing_due", language: "en" },
+  clientProvisioned: { name: "hms_client_provisioning_notification", language: "en" },
 } as const;
 
 const pkr = (n: number) => new Intl.NumberFormat("en-PK").format(Math.round(n));
@@ -227,5 +228,28 @@ export function clientBillingDueParams(a: ClientBillingDueArgs): string[] {
     clean(pkr(a.amount), "0"),
     clean(a.dueDate ? formatDayLong(a.dueDate) : "", "as per invoice"),
     clean(a.invoiceUrl, "https://hostel.yourpulse.io"),
+  ];
+}
+
+export interface ClientProvisionedArgs {
+  clientName: string | null | undefined;
+  businessName: string | null | undefined;
+  /** Where the credentials were actually sent. */
+  email: string;
+}
+
+/**
+ * hms_client_provisioning_notification — {{1}}..{{3}}:
+ *   1 client · 2 business · 3 email the details went to
+ *
+ * Carries NO credentials. Meta rejects those as a utility template, and the
+ * approved body only says the details were emailed — so this must never be
+ * sent unless that email actually succeeded.
+ */
+export function clientProvisionedParams(a: ClientProvisionedArgs): string[] {
+  return [
+    clean(firstName(a.clientName), "there"),
+    clean(a.businessName ?? "", "your hostel"),
+    clean(a.email, "your email"),
   ];
 }
