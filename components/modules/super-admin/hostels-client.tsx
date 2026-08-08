@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition, useMemo } from "react";
-import {
+import { Receipt,
   Building2, Plus, Search, RefreshCw, Users, Home,
   GitBranch, Trash2, Copy, Check, MessageCircle, AlertTriangle,
   Wallet, CheckCircle2, Clock, Zap, Download, Pencil, RotateCcw, Mail,
@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import {
   listAllHostels, createHostelForClient, addBranchToOwner,
-  deleteHostel, deleteClient, setWhatsappEnabled,
+  deleteHostel, deleteClient, setWhatsappEnabled, setBranchBillingActive,
   getClientSubdomain, setClientSubdomain, type SuperHostelRow,
 } from "@/app/actions/super-admin";
 import {
@@ -452,6 +452,24 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     setTogglingWhatsapp(null);
   }
 
+  const [togglingBilling, setTogglingBilling] = useState<string | null>(null);
+  async function toggleBilling(hostelId: string, current: boolean) {
+    setTogglingBilling(hostelId);
+    const res = await setBranchBillingActive(hostelId, !current);
+    if (res.error) {
+      toast({ title: "Error", description: res.error, variant: "destructive" });
+    } else {
+      setHostels(prev => prev.map(h => h.id === hostelId ? { ...h, billing_active: !current } : h));
+      toast({
+        title: !current ? "Branch billing resumed" : "Branch paused from billing",
+        description: !current
+          ? "Counted again on the next invoice."
+          : "Stays fully usable for the client — it just won't be charged for.",
+      });
+    }
+    setTogglingBilling(null);
+  }
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     if (!q) return hostels;
@@ -634,6 +652,31 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                           {h.city && <p className="text-[11px] text-muted-foreground truncate">{h.city}</p>}
                         </div>
                         <span className="text-[11px] text-muted-foreground shrink-0">{h.tenant_count} ten.</span>
+                        {/* Always visible when paused, hover-only when normal —
+                            a paused branch is a money decision and must be
+                            obvious without hunting for it. */}
+                        {!h.billing_active && (
+                          <span className="text-[10px] font-semibold text-amber bg-amber/10 border border-amber/25 rounded px-1.5 py-0.5 shrink-0">
+                            Not billed
+                          </span>
+                        )}
+                        <button
+                          onClick={() => toggleBilling(h.id, h.billing_active)}
+                          disabled={togglingBilling === h.id}
+                          className={cn(
+                            "p-1 rounded transition-all shrink-0",
+                            !h.billing_active
+                              ? "text-amber hover:bg-amber/10"
+                              : "opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-amber hover:bg-amber/10"
+                          )}
+                          title={
+                            h.billing_active
+                              ? "Counted on invoices — click to pause billing for this branch (client keeps full access)"
+                              : "Paused: not counted on invoices — click to resume billing"
+                          }
+                        >
+                          <Receipt className="w-3 h-3" />
+                        </button>
                         <button
                           onClick={() => toggleWhatsapp(h.id, h.whatsapp_enabled)}
                           disabled={togglingWhatsapp === h.id}

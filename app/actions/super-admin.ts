@@ -82,6 +82,8 @@ export interface SuperHostelRow {
   total_capacity: number;
   tenant_count: number;
   whatsapp_enabled: boolean;
+  /** false = excluded from the branch count on new platform invoices. Super Admin only; invisible to the client. */
+  billing_active: boolean;
   created_at: string;
 }
 
@@ -289,6 +291,7 @@ export async function listAllHostels(): Promise<{
       total_capacity: h.total_capacity,
       tenant_count: tenantCountMap.get(h.id) ?? 0,
       whatsapp_enabled: h.whatsapp_enabled ?? false,
+      billing_active: h.billing_active ?? true,
       created_at: h.created_at,
     }));
 
@@ -306,6 +309,46 @@ export async function listAllHostels(): Promise<{
 // hostel doesn't buy reminders and announcements separately. Pinned against
 // owner self-grant by a DB trigger (migration 110) since RLS alone can't
 // express a column-level restriction.
+
+/**
+ * Pause or resume a branch for PLATFORM BILLING only (migration 162).
+ *
+ * Changes nothing the client can see or use — the branch keeps working exactly
+ * as before. It only stops being counted when the next platform invoice is
+ * generated. Invoices already issued snapshot branch_count, so past bills are
+ * untouched either way.
+ *
+ * Audit-logged like every other Super Admin money action: this changes what a
+ * client is charged, so it needs to be answerable later.
+ */
+export async function setBranchBillingActive(
+  hostelId: string,
+  active: boolean
+): Promise<{ success?: boolean; error?: string }> {
+  try {
+    const caller = await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const { error } = await admin
+      .from("hms_hostels")
+      .update({ billing_active: active, updated_at: new Date().toISOString() })
+      .eq("id", hostelId);
+    if (error) throw error;
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: "super_admin.set_branch_billing_active",
+      entity: "hostel",
+      entity_id: hostelId,
+      meta: { active },
+    });
+
+    return { success: true };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to update branch billing" };
+  }
+}
 
 export async function setWhatsappEnabled(
   hostelId: string,

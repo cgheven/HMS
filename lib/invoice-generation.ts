@@ -50,10 +50,13 @@ export async function generateInvoiceForOwner(
   // Snapshot branch count + the rate/discount/onboarding that produced this
   // amount NOW — an invoice is a historical record and must not change if the
   // client's branch count or billing config changes later.
+  // billing_active only (migration 162): a branch the client asked us to pause
+  // stays fully usable to them but stops being charged for.
   const { count: branchCount } = await admin
     .from("hms_hostels")
     .select("id", { count: "exact", head: true })
-    .eq("owner_id", ownerId);
+    .eq("owner_id", ownerId)
+    .eq("billing_active", true);
 
   // Onboarding is a one-time cost — only the very first invoice this client
   // has ever been sent can carry it, no matter how billing is reconfigured later.
@@ -69,7 +72,21 @@ export async function generateInvoiceForOwner(
   // as real a discount as a discounted annual one). Onboarding stays a flat
   // one-time account-level fee, not multiplied by branch count.
   const months = billing.billing_cycle === "annual" ? 12 : 1;
-  const actualSubtotal = Number(billing.monthly_rate) * months * (branchCount ?? 1);
+  // `?? 1` covers a null count (a failed query), NOT a zero one. Zero is now a
+  // real, intended state — every branch paused — and coercing it to 1 would
+  // invoice a client we deliberately decided not to charge, which is exactly
+  // the complaint this feature exists to stop.
+  const billableBranches = branchCount ?? 1;
+
+  // Every branch paused: generate nothing rather than a zero-rupee invoice.
+  // A Rs 0 bill still emails the client, still starts the 4-day reminder clock,
+  // and still shows up as unpaid on the billing page — chasing a client for
+  // nothing is worse than the over-billing this feature was built to prevent.
+  if (billableBranches === 0) {
+    return { generated: false, reason: "All of this client's branches are paused from billing" };
+  }
+
+  const actualSubtotal = Number(billing.monthly_rate) * months * billableBranches;
   const discountPct = clientDiscountPct(Number(billing.monthly_rate));
   const onboardingFeeCharged = isFirstInvoice && !billing.waive_onboarding ? ONBOARDING_FEE : 0;
   const amount = Math.round((actualSubtotal + onboardingFeeCharged) * 100) / 100;
@@ -85,7 +102,7 @@ export async function generateInvoiceForOwner(
       period_end: periodEnd,
       due_date: dueDate,
       status: "unpaid",
-      branch_count: branchCount ?? 1,
+      branch_count: billableBranches,
       monthly_rate: billing.monthly_rate,
       discount_pct: discountPct,
       onboarding_fee_charged: onboardingFeeCharged,
