@@ -77,13 +77,14 @@ export async function sendInvoiceWhatsApp(
 }
 
 /**
- * Turn on once Meta approves hms_client_payment_received.
+ * hms_client_payment_received was approved by Meta on 2026-08-08 (verified
+ * against the Graph API: status APPROVED, params 1-6).
  *
- * Sending against a template still in review fails with 132001, so this stays
- * off until the approval lands. Marking an invoice paid must never break
- * because a message could not go out.
+ * Kept as a switch rather than deleted: if the template is ever paused or
+ * rejected on a re-review, this turns the send off without touching the
+ * mark-paid path, which must never break because a message cannot go out.
  */
-const PAYMENT_RECEIVED_ENABLED = false;
+const PAYMENT_RECEIVED_ENABLED = true;
 
 /**
  * Confirms to the CLIENT that we received their platform payment.
