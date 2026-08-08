@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/select";
 import { formatDateTime, cn } from "@/lib/utils";
 import type { WhatsAppLogRow, WhatsAppLogStats } from "@/app/actions/whatsapp-monitor";
+import { AUDIENCE_LABELS, type WhatsAppAudience } from "@/lib/whatsapp-audience";
 
 const ALL = "all";
 
@@ -42,6 +43,7 @@ export function WhatsAppMonitorClient({ rows, stats }: Props) {
   const [hostel, setHostel] = useState(ALL);
   const [type, setType] = useState(ALL);
   const [status, setStatus] = useState(ALL);
+  const [audience, setAudience] = useState(ALL);
 
   const hostels = useMemo(
     () => [...new Set(rows.map((r) => r.hostel_name).filter(Boolean) as string[])].sort(),
@@ -56,13 +58,14 @@ export function WhatsAppMonitorClient({ rows, stats }: Props) {
     let list = rows;
     if (hostel !== ALL) list = list.filter((r) => r.hostel_name === hostel);
     if (type !== ALL) list = list.filter((r) => r.message_type === type);
+    if (audience !== ALL) list = list.filter((r) => r.audience === audience);
     if (status === "problems") list = list.filter((r) => r.status === "failed" || r.status === "undelivered");
     else if (status !== ALL) list = list.filter((r) => r.status === status);
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
         (r) =>
-          (r.tenant_name ?? "").toLowerCase().includes(q) ||
+          (r.recipient_name ?? "").toLowerCase().includes(q) ||
           r.phone.includes(q) ||
           (r.hostel_name ?? "").toLowerCase().includes(q) ||
           (r.template ?? "").toLowerCase().includes(q) ||
@@ -70,9 +73,9 @@ export function WhatsAppMonitorClient({ rows, stats }: Props) {
       );
     }
     return list;
-  }, [rows, search, hostel, type, status]);
+  }, [rows, search, hostel, type, status, audience]);
 
-  const active = search.trim() !== "" || hostel !== ALL || type !== ALL || status !== ALL;
+  const active = search.trim() !== "" || hostel !== ALL || type !== ALL || status !== ALL || audience !== ALL;
 
   const tiles = [
     { label: "Delivered", value: stats.delivered, Icon: CheckCheck, cls: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
@@ -135,6 +138,16 @@ export function WhatsAppMonitorClient({ rows, stats }: Props) {
                 <SelectItem value="failed">Failed</SelectItem>
               </SelectContent>
             </Select>
+            <Select value={audience} onValueChange={setAudience}>
+              <SelectTrigger className="h-9 text-xs lg:w-44"><SelectValue placeholder="Sent to" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>Everyone</SelectItem>
+                <SelectItem value="tenant">Tenants</SelectItem>
+                <SelectItem value="client_invoice">Clients — invoices</SelectItem>
+                <SelectItem value="client_account">Clients — account</SelectItem>
+                <SelectItem value="unknown">Unattributed</SelectItem>
+              </SelectContent>
+            </Select>
             <Select value={hostel} onValueChange={setHostel}>
               <SelectTrigger className="h-9 text-xs lg:w-52"><SelectValue placeholder="Hostel" /></SelectTrigger>
               <SelectContent>
@@ -151,7 +164,7 @@ export function WhatsAppMonitorClient({ rows, stats }: Props) {
             </Select>
             {active && (
               <button
-                onClick={() => { setSearch(""); setHostel(ALL); setType(ALL); setStatus(ALL); }}
+                onClick={() => { setSearch(""); setHostel(ALL); setType(ALL); setStatus(ALL); setAudience(ALL); }}
                 className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md border border-sidebar-border text-xs text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
               >
                 <X className="w-3.5 h-3.5" /> Reset
@@ -198,8 +211,23 @@ export function WhatsAppMonitorClient({ rows, stats }: Props) {
                       return (
                         <tr key={r.id} className="align-top hover:bg-muted/20 transition-colors">
                           <td className="px-4 py-3">
-                            <p className="font-medium truncate max-w-[170px]">{r.tenant_name ?? "—"}</p>
+                            <p className="font-medium truncate max-w-[170px]">
+                              {r.recipient_name ?? "Unattributed"}
+                            </p>
                             <p className="text-xs text-muted-foreground">{r.phone}</p>
+                            {/* Names the audience on the row itself: a client
+                                invoice and a tenant rent reminder look identical
+                                otherwise, and they are entirely different
+                                conversations. */}
+                            <span className={cn(
+                              "inline-block mt-1 text-[10px] px-1.5 py-0.5 rounded border",
+                              r.audience === "tenant" && "bg-blue-500/10 text-blue-400 border-blue-500/20",
+                              r.audience === "client_invoice" && "bg-amber/10 text-amber border-amber/25",
+                              r.audience === "client_account" && "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+                              r.audience === "unknown" && "bg-white/5 text-muted-foreground border-white/10",
+                            )}>
+                              {AUDIENCE_LABELS[r.audience as WhatsAppAudience]}
+                            </span>
                           </td>
                           <td className="px-4 py-3 hidden sm:table-cell">
                             <p className="text-xs truncate max-w-[170px]">{r.hostel_name ?? "—"}</p>

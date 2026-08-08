@@ -2,6 +2,7 @@
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
+import type { WhatsAppAudience } from "@/lib/whatsapp-audience";
 
 async function requireSuperAdmin() {
   const supabase = await createClient();
@@ -26,6 +27,11 @@ export interface WhatsAppLogRow {
   hostel_id: string | null;
   hostel_name: string | null;
   tenant_name: string | null;
+  owner_name: string | null;
+  /** tenant_name, else owner_name, else null — never a phone number, so the UI
+   *  can decide how to present an unresolved recipient. */
+  recipient_name: string | null;
+  audience: WhatsAppAudience;
   phone: string;
   message_type: string;
   template: string | null;
@@ -67,7 +73,7 @@ export async function listWhatsAppLog(days = 30): Promise<{
     const { data, error } = await admin
       .from("hms_whatsapp_messages")
       .select(
-        "id, hostel_id, tenant_id, phone, message_type, template, status, error, error_code, created_at, hostel:hms_hostels(name), tenant:hms_tenants(full_name)"
+        "id, hostel_id, tenant_id, owner_id, phone, message_type, template, status, error, error_code, created_at, hostel:hms_hostels(name), tenant:hms_tenants(full_name)"
       )
       .gte("created_at", since)
       .order("created_at", { ascending: false })
@@ -75,18 +81,53 @@ export async function listWhatsAppLog(days = 30): Promise<{
     if (error) throw error;
 
     type Joined = WhatsAppLogRow & {
+      tenant_id: string | null;
+      owner_id: string | null;
       hostel: { name: string } | { name: string }[] | null;
       tenant: { full_name: string } | { full_name: string }[] | null;
     };
 
-    const rows: WhatsAppLogRow[] = ((data ?? []) as unknown as Joined[]).map((r) => {
+    const joined = (data ?? []) as unknown as Joined[];
+
+    // Owners resolved in ONE query keyed on owner_id, never by phone. A phone
+    // lookup was tried and rejected: 923313454321 belongs to two profiles (a
+    // shared test number), so it would print the wrong client's name on a real
+    // message — worse than showing none.
+    const ownerIds = [...new Set(joined.map((r) => r.owner_id).filter((v): v is string => !!v))];
+    const ownerNames = new Map<string, string>();
+    if (ownerIds.length > 0) {
+      const { data: owners } = await admin
+        .from("hms_profiles")
+        .select("id, full_name, email")
+        .in("id", ownerIds);
+      for (const o of owners ?? []) {
+        ownerNames.set(o.id as string, (o.full_name as string) || (o.email as string) || "");
+      }
+    }
+
+    const rows: WhatsAppLogRow[] = joined.map((r) => {
       const h = Array.isArray(r.hostel) ? r.hostel[0] : r.hostel;
       const t = Array.isArray(r.tenant) ? r.tenant[0] : r.tenant;
+      const ownerName = r.owner_id ? ownerNames.get(r.owner_id) ?? null : null;
+
+      // Purpose split, so chasing our own money is never mixed in with service
+      // messages about the client's business.
+      const audience: WhatsAppAudience = r.tenant_id
+        ? "tenant"
+        : r.owner_id
+        ? r.template === "hms_client_billing_due"
+          ? "client_invoice"
+          : "client_account"
+        : "unknown";
+
       return {
         id: r.id,
         hostel_id: r.hostel_id,
         hostel_name: h?.name ?? null,
         tenant_name: t?.full_name ?? null,
+        owner_name: ownerName,
+        recipient_name: t?.full_name ?? ownerName ?? null,
+        audience,
         phone: r.phone,
         message_type: r.message_type,
         template: r.template,

@@ -16,6 +16,10 @@ export interface SendWhatsAppResult {
 export interface WhatsAppSendContext {
   hostelId: string | null;
   tenantId: string | null;
+  /** The CLIENT (hostel owner) a message was addressed to, when it wasn't a
+   *  tenant — invoice reminders, provisioning, the owner's daily summary.
+   *  Never set alongside tenantId; see migration 163. */
+  ownerId?: string | null;
   messageType: "reminder" | "announcement" | "welcome" | "leaving_reminder" | "test" | "receipt";
 }
 
@@ -44,6 +48,7 @@ async function logAttempt(args: {
     await admin.from("hms_whatsapp_messages").insert({
       hostel_id: args.context.hostelId,
       tenant_id: args.context.tenantId,
+      owner_id: args.context.ownerId ?? null,
       phone: args.phone,
       message_type: args.context.messageType,
       template: args.template,
@@ -63,6 +68,7 @@ async function logFailure(phone: string, error: string, context: WhatsAppSendCon
     await admin.from("hms_whatsapp_failures").insert({
       hostel_id: context.hostelId,
       tenant_id: context.tenantId,
+      owner_id: context.ownerId ?? null,
       phone,
       message_type: context.messageType,
       error,

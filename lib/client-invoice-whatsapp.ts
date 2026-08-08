@@ -70,7 +70,7 @@ export async function sendInvoiceWhatsApp(
       dueDate: invoice.due_date as string,
       invoiceUrl: `${SITE_URL}/invoice/${invoice.share_token}`,
     }),
-    { hostelId: null, tenantId: null, messageType: "reminder" }
+    { hostelId: null, tenantId: null, ownerId: invoice.owner_id as string, messageType: "reminder" }
   );
 
   return result.ok ? { sent: true } : { sent: false, reason: result.error };

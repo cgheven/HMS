@@ -290,7 +290,7 @@ export async function provisionOnboarding(submissionId: string): Promise<Provisi
             businessName: firstHostel?.name,
             email: ownerEmail,
           }),
-          { hostelId: hostelIds[0], tenantId: null, messageType: "welcome" }
+          { hostelId: hostelIds[0], tenantId: null, ownerId, messageType: "welcome" }
         );
       }
     } catch (err) {

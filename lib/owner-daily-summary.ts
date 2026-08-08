@@ -134,7 +134,7 @@ export async function sendOwnerDailySummaries(
         bills: billsAmt,
         other: otherAmt,
       }),
-      { hostelId: h.id as string, tenantId: null, messageType: "announcement" }
+      { hostelId: h.id as string, tenantId: null, ownerId: h.owner_id as string, messageType: "announcement" }
     );
 
     if (res.ok) result.sent++;
