@@ -106,11 +106,23 @@ function amountInWords(n: number): string {
   return words(rounded) + " Rupees Only";
 }
 
+/**
+ * `mode: "invoice"` prints the SAME itemised breakdown for a bill that has not
+ * been collected yet. Only the framing differs — a receipt asserts money was
+ * received, and printing that over an unpaid bill is a false document. An
+ * invoice asserts the opposite: this is what you owe.
+ *
+ * One generator rather than two, because the breakdown is the entire value of
+ * the document and a second copy of it would drift from this one the first time
+ * a charge type is added.
+ */
 export function generateReceiptPDF(
   payment: ReceiptPayment,
   tenant: ReceiptTenant,
-  hostel: ReceiptHostel
+  hostel: ReceiptHostel,
+  mode: "receipt" | "invoice" = "receipt"
 ): Uint8Array {
+  const isInvoice = mode === "invoice";
   const W = 250;      // narrow thermal width in pts
   const ML = 12;      // left margin
   const MR = W - 12;  // right edge
@@ -187,19 +199,28 @@ export function generateReceiptPDF(
   if (hostel.phone) { addCenter(`Tel: ${hostel.phone}`, 7, false); nl(10); }
   nl(3); addDash(); nl(10);
   addCenter(
-    isReservation ? "SEAT RESERVATION RECEIPT" : isPartial ? "PARTIAL PAYMENT RECEIPT" : "PAYMENT RECEIPT",
+    isInvoice
+      ? "INVOICE"
+      : isReservation ? "SEAT RESERVATION RECEIPT" : isPartial ? "PARTIAL PAYMENT RECEIPT" : "PAYMENT RECEIPT",
     9, true
   ); nl(10);
   addDash(); nl(10);
 
-  addKv("Receipt #", payment.receipt_number ?? "N/A"); nl(12);
-  addKv(isReservation ? "Collected On" : "Date", fmtDate(payment.payment_date)); nl(12);
-  if (isReservation) {
-    if (payment.reservation_from) { addKv("Seat Held From", fmtDate(payment.reservation_from)); nl(12); }
-  } else {
+  if (isInvoice) {
+    // No receipt number, date or method: none of them exist yet, and printing
+    // "Method: —" on a bill invites the reading that payment was attempted.
     addKv("Period", fmtMonth(payment.for_month)); nl(12);
+    addKv("Issued", fmtDate(new Date().toISOString().slice(0, 10))); nl(12);
+  } else {
+    addKv("Receipt #", payment.receipt_number ?? "N/A"); nl(12);
+    addKv(isReservation ? "Collected On" : "Date", fmtDate(payment.payment_date)); nl(12);
+    if (isReservation) {
+      if (payment.reservation_from) { addKv("Seat Held From", fmtDate(payment.reservation_from)); nl(12); }
+    } else {
+      addKv("Period", fmtMonth(payment.for_month)); nl(12);
+    }
+    addKv("Method", (payment.payment_method ?? "—").toUpperCase()); nl(12);
   }
-  addKv("Method", (payment.payment_method ?? "—").toUpperCase()); nl(12);
   addDash(); nl(10);
 
   add(ML, "Tenant:", 8, true); nl(12);
@@ -286,7 +307,19 @@ export function generateReceiptPDF(
   }
   nl(2); addDash(); nl(10);
 
-  if (isPartial) {
+  if (isInvoice) {
+    // All three lines when something has been paid. The middle number is the one
+    // that ends the argument — a tenant disputing "why 8,500?" is really asking
+    // what happened to the 10,000 they already handed over.
+    const paid = Number(payment.amount_paid ?? 0);
+    if (paid > 0) {
+      addKv("Total Bill", pk(total)); nl(12);
+      addKv("Already Paid", pk(paid)); nl(12);
+      addKv("AMOUNT DUE", pk(Math.max(0, total - paid)), true); nl(15);
+    } else {
+      addKv("AMOUNT DUE", pk(total), true); nl(15);
+    }
+  } else if (isPartial) {
     // Partial payment — show what's owed, what's actually been received, and what's
     // left, so this receipt can't be mistaken for proof the full amount was paid.
     const remaining = Math.max(0, total - payment.amount_paid!);
@@ -300,7 +333,11 @@ export function generateReceiptPDF(
 
   // For a partial payment, spell out what was actually received — spelling out
   // the full amount due here would misrepresent it as fully paid.
-  const wordsStr = amountInWords(isPartial ? payment.amount_paid! : total);
+  const wordsStr = amountInWords(
+    isInvoice
+      ? Math.max(0, total - Number(payment.amount_paid ?? 0))
+      : isPartial ? payment.amount_paid! : total
+  );
   // Render "In Words: <value>" on one line; wrap remainder if it overflows page width.
   // Use explicit gap rather than trailing space — PDF renderers often discard trailing
   // whitespace in text strings, making the space invisible despite correct positioning.
@@ -329,8 +366,13 @@ export function generateReceiptPDF(
   }
   nl(4); addDash(); nl(10);
 
-  addCenter("Thank you for your payment.", 7, false); nl(9);
-  addCenter("Keep this receipt for your records.", 7, false); nl(10);
+  if (isInvoice) {
+    addCenter("This is a bill, not a receipt.", 7, false); nl(9);
+    addCenter("Please clear the amount due.", 7, false); nl(10);
+  } else {
+    addCenter("Thank you for your payment.", 7, false); nl(9);
+    addCenter("Keep this receipt for your records.", 7, false); nl(10);
+  }
   addDash(); nl(8);
 
   const PAGE_H = yTop + 10;

@@ -2,8 +2,7 @@ import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { TEMPLATES, tenantCheckoutParams } from "@/lib/whatsapp-templates";
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+import { billLinkForPayment } from "@/lib/bill-link";
 
 /**
  * Sends hms_tenant_checkout once, as the tenant leaves: thank-you, receipt link
@@ -77,10 +76,9 @@ export async function sendCheckoutMessage(
 /**
  * The tenant's most recent settled bill, as a shareable receipt link.
  *
- * Reuses an existing unexpired link rather than minting a second one for the
- * same bill — hms_invoice_links has no uniqueness constraint, so repeated
- * checkouts of the same tenant would otherwise accumulate live credentials for
- * one receipt.
+ * Only finds WHICH bill; minting is billLinkForPayment's job, shared with the
+ * payment reminders so both reuse an existing link instead of each leaving its
+ * own credential behind for the same payment.
  */
 async function resolveReceiptUrl(
   admin: ReturnType<typeof createAdminClient>,
@@ -98,24 +96,5 @@ async function resolveReceiptUrl(
     .maybeSingle();
   if (!payment) return null;
 
-  const { data: existing } = await admin
-    .from("hms_invoice_links")
-    .select("token")
-    .eq("payment_id", payment.id)
-    .eq("hostel_id", hostelId)
-    .is("installment_id", null)
-    .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  if (existing?.token) return `${SITE_URL}/r/${existing.token}`;
-
-  const { data: created, error } = await admin
-    .from("hms_invoice_links")
-    .insert({ payment_id: payment.id, hostel_id: hostelId })
-    .select("token")
-    .single();
-  if (error || !created?.token) return null;
-
-  return `${SITE_URL}/r/${created.token}`;
+  return billLinkForPayment(payment.id as string, hostelId);
 }

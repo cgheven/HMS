@@ -1,11 +1,24 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { pktTodayDateString } from "@/lib/pkt-time";
-import { TEMPLATES, reminderFullParams, reminderPartialParams } from "@/lib/whatsapp-templates";
+import { TEMPLATES, reminderFullParams, reminderFullV2Params, reminderPartialParams } from "@/lib/whatsapp-templates";
+import { billLinkForPayment } from "@/lib/bill-link";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
 import { processInBatches } from "@/lib/batch";
 import type { PaymentMethodAccount } from "@/types";
+
+/**
+ * hms_payment_reminder_full_v2 was approved by Meta on 2026-08-08 (verified
+ * against the Graph API: status APPROVED, params 1-8), so full reminders now
+ * carry a link to the itemised bill.
+ *
+ * A single switch rather than a per-hostel setting: the template is either
+ * approved for the whole WhatsApp Business account or it is not. If a bill link
+ * cannot be minted for a payment the code falls back to v1 on its own, so this
+ * can only ever add the link, never break a send.
+ */
+const BILL_LINK_ENABLED = true;
 
 export interface ReminderPaymentRow {
   id: string;
@@ -150,7 +163,22 @@ export async function runReminderPass(
     const alreadyPaid = Number(p.amount_paid ?? 0);
     const isPartial = p.status === "partially_paid" && alreadyPaid > 0;
 
-    const tpl = isPartial ? TEMPLATES.reminderPartial : TEMPLATES.reminderFull;
+    // v2 carries a link to the itemised bill. Flipped on only once Meta has
+    // APPROVED hms_payment_reminder_full_v2 — sending against a template still
+    // in review fails every reminder for every hostel with error 132001, so the
+    // switch stays off until the approval lands.
+    //
+    // Only the FULL reminder has a v2. A partially-paid tenant keeps the v1
+    // wording and gets no bill link until a partial v2 is approved too.
+    const billUrl = BILL_LINK_ENABLED && !isPartial
+      ? await billLinkForPayment(p.id, hostelId)
+      : null;
+
+    const useV2 = !!billUrl;
+    const tpl = isPartial
+      ? TEMPLATES.reminderPartial
+      : useV2 ? TEMPLATES.reminderFullV2 : TEMPLATES.reminderFull;
+
     const params = isPartial
       ? reminderPartialParams({
           tenantName: p.tenant?.full_name,
@@ -159,6 +187,15 @@ export async function runReminderPass(
           forMonth: p.for_month,
           hostelName: p.hostel?.name,
           accounts: p.hostel?.payment_methods,
+        })
+      : useV2
+      ? reminderFullV2Params({
+          tenantName: p.tenant?.full_name,
+          amountDue: total,
+          forMonth: p.for_month,
+          hostelName: p.hostel?.name,
+          accounts: p.hostel?.payment_methods,
+          billUrl: billUrl!,
         })
       : reminderFullParams({
           tenantName: p.tenant?.full_name,

@@ -23,6 +23,7 @@ export const TEMPLATES = {
   clientBillingDue: { name: "hms_client_billing_due", language: "en" },
   clientProvisioned: { name: "hms_client_provisioning_notification", language: "en" },
   tenantCheckout: { name: "hms_tenant_checkout", language: "en" },
+  reminderFullV2: { name: "hms_payment_reminder_full_v2", language: "en" },
 } as const;
 
 const pkr = (n: number) => new Intl.NumberFormat("en-PK").format(Math.round(n));
@@ -48,6 +49,15 @@ export function primaryAccountLine(methods: PaymentMethodAccount[] | null | unde
     (p): p is string => !!p && p.trim() !== ""
   );
   return parts.join(" - ").replace(/\s+/g, " ").trim();
+}
+
+/** The account whose fields feed the split bank block in v2 templates. Same
+ *  "first account only" rule as primaryAccountLine — a tenant needs one place
+ *  to send money, not a list. */
+function firstUsableAccount(
+  methods: PaymentMethodAccount[] | null | undefined
+): PaymentMethodAccount | undefined {
+  return (methods ?? [])[0];
 }
 
 /** Every parameter must be a non-empty single-line string or Meta rejects the
@@ -156,6 +166,36 @@ export function seatReservedParams(a: SeatReservedParamArgs): string[] {
     clean(pkr(a.depositCollected), "0"),
     clean(a.hostelName ?? "", "your hostel"),
     clean(a.expectedJoining ? formatDayLong(a.expectedJoining) : "", "to be confirmed"),
+  ];
+}
+
+export interface ReminderFullV2Args extends ReminderParamArgs {
+  /** Absolute URL to the itemised bill. */
+  billUrl: string;
+}
+
+/**
+ * hms_payment_reminder_full_v2 — the same reminder plus {{5}} the itemised bill,
+ * with the bank block split across {{6}}-{{8}}.
+ *
+ * Splitting the bank line is why this needs its own mapper: v1 joined bank,
+ * title and number into one string, so one missing field just shortened the
+ * line. Here each is its own parameter, and Meta rejects an EMPTY parameter
+ * outright — 3 of 16 hostels have no payment account configured at all, so
+ * without a per-field fallback every reminder for those hostels would fail
+ * rather than merely look sparse.
+ */
+export function reminderFullV2Params(a: ReminderFullV2Args): string[] {
+  const m = firstUsableAccount(a.accounts);
+  return [
+    clean(firstName(a.tenantName), "there"),
+    clean(pkr(a.amountDue), "0"),
+    clean(a.forMonth ? formatMonthLong(a.forMonth) : "", "this month"),
+    clean(a.hostelName ?? "", "your hostel"),
+    a.billUrl,
+    clean(m?.label ?? "", "Contact hostel management"),
+    clean(m?.account_title ?? "", "—"),
+    clean(m?.account_number || m?.iban || "", "—"),
   ];
 }
 

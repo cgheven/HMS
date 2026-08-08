@@ -168,8 +168,19 @@ export async function GET(
   // row, so it still needs the "has this actually been collected" guard.
   // Installment-scoped links are always historical snapshots of money that was
   // genuinely received, so this guard doesn't apply to them.
-  if (!installmentSnapshot && payment.status !== "paid" && payment.status !== "partially_paid") {
-    return new NextResponse("This payment hasn't been collected yet — no receipt is available.", { status: 409 });
+  // An uncollected bill is served as an INVOICE rather than refused. It used to
+  // 409 here, which was right while only receipts existed: a receipt asserts
+  // money was received. An invoice asserts the opposite, and it is the same
+  // itemised breakdown the tenant needs when they ask why the figure is what it
+  // is. Installment-scoped links are always historical snapshots of money that
+  // WAS received, so they are never invoices.
+  const isInvoice =
+    !installmentSnapshot && payment.status !== "paid" && payment.status !== "partially_paid";
+
+  // A waived bill is owed by nobody. Printing "AMOUNT DUE" over it would ask a
+  // tenant for money the hostel has already written off.
+  if (isInvoice && payment.status === "waived") {
+    return new NextResponse("This bill has been waived — nothing is due.", { status: 409 });
   }
 
   // Tracks the updated_at the cached bytes will correspond to. The self-heal
@@ -277,11 +288,12 @@ export async function GET(
       name: hostel.name,
       address: hostel.address,
       phone: hostel.phone,
-    }
+    },
+    isInvoice ? "invoice" : "receipt"
   );
 
   const tenantName = (tenant as { full_name?: string })?.full_name?.replace(/\s+/g, "_") ?? "receipt";
-  const filename = `receipt_${payment.for_month}_${tenantName}.pdf`;
+  const filename = `${isInvoice ? "invoice" : "receipt"}_${payment.for_month}_${tenantName}.pdf`;
   const body = Buffer.from(pdfBytes);
 
   // Persist for next time. Best-effort: a storage or bookkeeping failure must
