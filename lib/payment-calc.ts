@@ -139,13 +139,23 @@ export function tenantDueDay(checkIn: string, forMonth: string): number {
   return Math.min(checkInDay, daysInMonth);
 }
 
+/** Reminders per unpaid bill, per month. Beyond this a tenant reads it as spam,
+ *  blocks the number, and every future reminder to them is lost — including the
+ *  ones that would have worked. Each message is also billed by Meta. */
+export const MAX_REMINDERS_PER_MONTH = 6;
+
 // A single monthly nudge isn't enough collections pressure — once a tenant is
 // actually overdue, remind every 3 days instead of waiting for next month's
-// anniversary to roll around. Day 0 (the due day itself) always fires; after
-// that, every 3rd day past due fires again (3, 6, 9, ...) for as long as
-// still unpaid. Before the due day arrives, this stays silent.
+// anniversary to roll around. Day 0 (the due day itself) always fires, then
+// every 3rd day past due: 0, 3, 6, 9, 12, 15 — six in total, then silence for
+// the rest of the month. Before the due day arrives, this stays silent too.
+//
+// The cap matters most for tenants due early in the month: uncapped, someone
+// due on the 1st received eleven messages about one bill while someone due on
+// the 29th received one, purely because of when they moved in.
 export function shouldRemindToday(dueDay: number, todayDayOfMonth: number): boolean {
   const daysPastDue = todayDayOfMonth - dueDay;
   if (daysPastDue < 0) return false;
-  return daysPastDue % 3 === 0;
+  if (daysPastDue % 3 !== 0) return false;
+  return daysPastDue / 3 < MAX_REMINDERS_PER_MONTH;
 }
