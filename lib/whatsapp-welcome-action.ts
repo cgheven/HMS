@@ -121,7 +121,27 @@ async function buildWelcomeText(tenantId: string): Promise<{ ok: true; data: Bui
 // automatic background send. Branches without WhatsApp API access simply get
 // no auto-send, same as before — they still have the manual "Resend Welcome"
 // button below, which does fall back to wa.me.
+/**
+ * AUTOMATIC welcome send — currently DISABLED.
+ *
+ * The message is free-form text, and WhatsApp only accepts free-form outside an
+ * approved template if the recipient messaged the business in the last 24 hours.
+ * A tenant being added never has. Every automatic welcome ever attempted was
+ * rejected with 131047 — 5 of 5 on production — so no tenant has ever received
+ * one. It logged a failure row against each new tenant and nothing else.
+ *
+ * Re-enable by flipping this to true, but only once an approved template
+ * (hms_tenant_welcome) exists and this sends via sendWhatsAppTemplateMessage —
+ * turning it back on as free-form just resumes failing silently.
+ *
+ * Left in place rather than deleted at all five call sites: the send logic, the
+ * phone normalisation and the message builder are all still correct and are
+ * shared with the manual wa.me path below, which DOES work.
+ */
+const AUTO_WELCOME_ENABLED = false;
+
 export async function sendTenantWelcomeMessageAction(tenantId: string): Promise<void> {
+  if (!AUTO_WELCOME_ENABLED) return;
   try {
     const built = await buildWelcomeText(tenantId);
     if (!built.ok) {

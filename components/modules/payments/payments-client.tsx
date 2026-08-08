@@ -199,6 +199,25 @@ function prevMonthOf(month: string): string {
 // Stable identity. This backs the acReadings prop, which feeds a useMemo and a
 // useEffect — an inline `= []` default would mint a new array on every render.
 /**
+ * Which message-filter bucket a tenant falls into.
+ *
+ * Four buckets, not six statuses: an owner is asking "did it land, did they
+ * read it, and who heard nothing" — queued and sent are both just "on its way",
+ * and failed and undelivered are both "did not arrive".
+ */
+function msgBucket(m: { status: string; error_code: number | null } | undefined): string {
+  if (!m) return "none";
+  if (m.status === "read" || m.status === "delivered") return "delivered";
+  // queued and sent land here too. They are only "not delivered YET" rather
+  // than failed, but the alternative — their own dropdown option for a state
+  // that usually lasts seconds — gives a transient case the same weight as a
+  // dead phone number, and leaving them out of every bucket made those tenants
+  // invisible under every filter. The row badge still says "Sent", so the
+  // difference is visible where it matters.
+  return "failed";
+}
+
+/**
  * The last WhatsApp we sent this tenant, as one short phrase.
  *
  * Deliberately only the LATEST message and no history: an owner wants to know
@@ -293,6 +312,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     [allAcReadings, selectedMonth]
   );
   const [roomFilter, setRoomFilter] = useState<string>("all");
+  const [msgFilter, setMsgFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<StatusChip>("all");
   const [search, setSearch] = useState("");
   // joinUnits keyed by `${tenantId}_${month}` — stores the absolute meter reading at join time
@@ -920,9 +940,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     return activePayments.filter(p => {
       if (q && !p.tenant?.full_name?.toLowerCase().includes(q)) return false;
       if (roomFilter !== "all" && p.tenant?.room_id !== roomFilter) return false;
+      if (msgFilter !== "all") {
+        const m = p.tenant_id ? lastWhatsApp[p.tenant_id] : undefined;
+        // Read is a subset of Delivered, not a rival to it: a read message did
+        // reach the phone, so it belongs under both — an owner filtering
+        // "Delivered" and not seeing the ones that were read would be baffling.
+        if (msgFilter === "read" ? m?.status !== "read" : msgBucket(m) !== msgFilter) return false;
+      }
       return true;
     });
-  }, [activePayments, roomFilter, search]);
+  }, [activePayments, roomFilter, search, msgFilter, lastWhatsApp]);
 
   // Everything the status chips are counted against — scope narrowed by the AC
   // toggle, but never by the chips themselves.
@@ -1430,6 +1457,46 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     </button>
                   )}
 
+                  {/* WhatsApp delivery filter. Counts are computed on the
+                      room/search scope but IGNORE the message filter itself, so
+                      the numbers stay put while you switch between options
+                      instead of collapsing to the one you picked. */}
+                  {(() => {
+                    const scope = activePayments.filter(p => {
+                      const q = search.trim().toLowerCase();
+                      if (q && !p.tenant?.full_name?.toLowerCase().includes(q)) return false;
+                      if (roomFilter !== "all" && p.tenant?.room_id !== roomFilter) return false;
+                      return true;
+                    });
+                    const n = (b: string) =>
+                      scope.filter(p => msgBucket(p.tenant_id ? lastWhatsApp[p.tenant_id] : undefined) === b).length;
+                    const counts = {
+                      delivered: n("delivered"),
+                      read: scope.filter(p => (p.tenant_id ? lastWhatsApp[p.tenant_id]?.status : undefined) === "read").length,
+                      failed: n("failed"),
+                      // No message on record at all — distinct from "never
+                      // arrived", where we tried and WhatsApp refused.
+                      none: n("none"),
+                    };
+                    // Nobody has been messaged at all — a filter that cannot
+                    // narrow anything is just clutter.
+                    if (counts.none === scope.length) return null;
+                    return (
+                      <Select value={msgFilter} onValueChange={setMsgFilter}>
+                        <SelectTrigger className="h-7 text-xs flex-1 min-w-[9rem] sm:flex-none sm:w-44">
+                          <SelectValue placeholder="Any message status" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All messages</SelectItem>
+                          <SelectItem value="delivered">Delivered ({counts.delivered})</SelectItem>
+                          <SelectItem value="read">Read ({counts.read})</SelectItem>
+                          <SelectItem value="failed">Not delivered ({counts.failed})</SelectItem>
+                          <SelectItem value="none">Never sent ({counts.none})</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    );
+                  })()}
+
                   {/* Room filter dropdown */}
                   {roomsInMonth.length > 1 && (
                     <Select value={roomFilter} onValueChange={setRoomFilter}>
@@ -1476,7 +1543,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 <div className="space-y-2 md:space-y-0.5 mt-1">
                   {filteredPayments.map((p) => <PaymentRow key={p.id} p={p} />)}
                 </div>
-                {filteredPayments.length === 0 && (search || roomFilter !== "all" || statusFilter !== "all" || acOnly) && (
+                {filteredPayments.length === 0 && (search || roomFilter !== "all" || statusFilter !== "all" || acOnly || msgFilter !== "all") && (
                   <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
                     {search
                       ? `No results for "${search}"`
