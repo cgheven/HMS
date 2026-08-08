@@ -38,7 +38,7 @@ export async function sendOwnerDailySummaries(
 
   const { data: hostels, error } = await admin
     .from("hms_hostels")
-    .select("id, name, owner_id, whatsapp_enabled");
+    .select("id, name, owner_id, whatsapp_enabled, phone, whatsapp");
   if (error) throw error;
 
   const granted = (hostels ?? []).filter((h) => h.whatsapp_enabled);
@@ -101,9 +101,17 @@ export async function sendOwnerDailySummaries(
 
   for (const h of granted) {
     const owner = ownerById.get(h.owner_id);
-    const digits = (owner?.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
+
+    // Profile first, then THIS branch's own numbers — the same chain
+    // sendInvoiceWhatsApp already uses. Reading only the profile meant a client
+    // whose number is recorded on their branches but not their profile was
+    // skipped every single day, silently: Chohan Executive has 03049190319 on
+    // both branches and never received a summary, while the invoice reminders
+    // to the same client went through fine.
+    const raw = owner?.phone || (h.whatsapp as string | null) || (h.phone as string | null) || "";
+    const digits = raw.replace(/\D/g, "").replace(/^0/, "92");
     if (digits.length < 11) {
-      skip("owner has no phone");
+      skip("no phone on the owner profile or the branch");
       continue;
     }
 
