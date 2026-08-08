@@ -2092,29 +2092,54 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     return filterList(map[tab] ?? active);
   }
 
+  // ONE definition per column, used by both exports. Previously the PDF and the
+  // Excel each hard-coded their own list, which is how CNIC ended up in both
+  // with no way to leave it out — and how they had silently drifted apart (the
+  // spreadsheet also carried email, the PDF did not).
+  const EXPORT_COLUMNS: {
+    key: string;
+    label: string;
+    sensitive?: boolean;
+    get: (t: Tenant, room: Room | null) => string | number;
+  }[] = [
+    { key: "name",    label: "Name",           get: (t) => t.full_name },
+    { key: "phone",   label: "Phone",          get: (t) => t.phone ?? "" },
+    { key: "email",   label: "Email",          sensitive: true, get: (t) => t.email ?? "" },
+    { key: "cnic",    label: "CNIC",           sensitive: true, get: (t) => t.cnic ?? "" },
+    { key: "type",    label: "Type",           get: (t) => capitalize(t.type) },
+    { key: "package", label: "Package",        get: (t) => PACKAGE_TIER_LABELS[t.package_tier as PackageTier] ?? t.package_tier },
+    { key: "room",    label: "Room",           get: (_t, room) => (room ? `Rm ${room.room_number}` : "") },
+    { key: "bed",     label: "Bed",            get: (t) => t.bed_number ?? "" },
+    { key: "rent",    label: "Monthly Rent",   get: (t) => t.monthly_rent },
+    { key: "deposit", label: "Security Deposit", get: (t) => t.security_deposit },
+    { key: "vtype",   label: "Vehicle Type",   get: (t) => t.vehicle_type ?? "" },
+    { key: "vnumber", label: "Plate Number",   get: (t) => t.vehicle_number ?? "" },
+    { key: "vmodel",  label: "Vehicle Model",  get: (t) => t.vehicle_model ?? "" },
+    { key: "checkin", label: "Check In",       get: (t) => t.check_in ?? "" },
+    { key: "checkout",label: "Check Out",      get: (t) => t.check_out ?? "" },
+  ];
+
+  // Sensitive columns start UNCHECKED. An export is the easiest way for a
+  // tenant's ID number to leave the building — it has to be chosen
+  // deliberately, not left in by default.
+  const [exportCols, setExportCols] = useState<Set<string>>(
+    () => new Set(EXPORT_COLUMNS.filter((c) => !c.sensitive).map((c) => c.key))
+  );
+  const [exportFormat, setExportFormat] = useState<"excel" | "pdf" | null>(null);
+
+  function chosenColumns() {
+    const picked = EXPORT_COLUMNS.filter((c) => exportCols.has(c.key));
+    return picked.length > 0 ? picked : EXPORT_COLUMNS.filter((c) => c.key === "name");
+  }
+
   async function exportExcel() {
     setExportLoading("excel");
     try {
       const XLSX = await import("xlsx");
+      const cols = chosenColumns();
       const rows = getCurrentFilteredList().map((t) => {
         const room = t.room_id ? roomMap[t.room_id] : null;
-        return {
-          Name: t.full_name,
-          Phone: t.phone ?? "",
-          Email: t.email ?? "",
-          CNIC: t.cnic ?? "",
-          Type: capitalize(t.type),
-          Package: PACKAGE_TIER_LABELS[t.package_tier as PackageTier] ?? t.package_tier,
-          Room: room ? `Rm ${room.room_number}` : "",
-          Bed: t.bed_number ?? "",
-          "Monthly Rent (PKR)": t.monthly_rent,
-          "Security Deposit (PKR)": t.security_deposit,
-          "Vehicle Type": t.vehicle_type ?? "",
-          "Plate Number": t.vehicle_number ?? "",
-          "Vehicle Model": t.vehicle_model ?? "",
-          "Check In": t.check_in ?? "",
-          "Check Out": t.check_out ?? "",
-        };
+        return Object.fromEntries(cols.map((c) => [c.label, c.get(t, room)]));
       });
       const ws = XLSX.utils.json_to_sheet(rows);
       const wb = XLSX.utils.book_new();
@@ -2143,25 +2168,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       doc.setTextColor(120, 120, 120);
       doc.text(`Generated ${new Date().toLocaleDateString()}${typeFilter !== "all" ? ` · Type: ${capitalize(typeFilter)}` : ""}${depositFilter ? " · With Deposit" : ""}`, 14, 23);
 
+      const cols = chosenColumns();
       const rows = getCurrentFilteredList().map((t) => {
         const room = t.room_id ? roomMap[t.room_id] : null;
-        return [
-          t.full_name,
-          t.phone ?? "—",
-          t.cnic ?? "—",
-          capitalize(t.type),
-          PACKAGE_TIER_LABELS[t.package_tier as PackageTier] ?? t.package_tier,
-          room ? `Rm ${room.room_number}${t.bed_number ? ` · ${t.bed_number}` : ""}` : "—",
-          t.monthly_rent ? `Rs ${t.monthly_rent.toLocaleString()}` : "—",
-          t.security_deposit > 0 ? `Rs ${t.security_deposit.toLocaleString()}` : "—",
-          t.vehicle_number ?? "—",
-          t.check_in ?? "—",
-        ];
+        return cols.map((c) => {
+          const v = c.get(t, room);
+          if (c.key === "rent" || c.key === "deposit") {
+            return Number(v) > 0 ? `Rs ${Number(v).toLocaleString()}` : "—";
+          }
+          return v === "" || v == null ? "—" : String(v);
+        });
       });
 
       autoTable(doc, {
         startY: 28,
-        head: [["Name", "Phone", "CNIC", "Type", "Package", "Room", "Rent", "Deposit", "Vehicle", "Check In"]],
+        head: [cols.map((c) => c.label)],
         body: rows,
         theme: "striped",
         headStyles: { fillColor: [245, 158, 11], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 9 },
@@ -2240,11 +2261,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         </div>
         {tab !== "applications" && (
           <div className="flex items-center gap-1.5 shrink-0">
-            <Button variant="outline" size="sm" className="h-9 w-9 p-0 sm:w-auto sm:px-3 sm:gap-1.5 text-xs" disabled={!!exportLoading} onClick={exportExcel} title="Export to Excel">
+            <Button variant="outline" size="sm" className="h-9 w-9 p-0 sm:w-auto sm:px-3 sm:gap-1.5 text-xs" disabled={!!exportLoading} onClick={() => setExportFormat("excel")} title="Export to Excel">
               {exportLoading === "excel" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />}
               <span className="hidden sm:inline">Excel</span>
             </Button>
-            <Button variant="outline" size="sm" className="h-9 w-9 p-0 sm:w-auto sm:px-3 sm:gap-1.5 text-xs" disabled={!!exportLoading} onClick={exportPDF} title="Export to PDF">
+            <Button variant="outline" size="sm" className="h-9 w-9 p-0 sm:w-auto sm:px-3 sm:gap-1.5 text-xs" disabled={!!exportLoading} onClick={() => setExportFormat("pdf")} title="Export to PDF">
               {exportLoading === "pdf" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5 text-rose-400" />}
               <span className="hidden sm:inline">PDF</span>
             </Button>
@@ -3279,6 +3300,72 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       />
 
       {/* Add / Edit Dialog */}
+      {/* ── Export column picker ─────────────────────────── */}
+      <Dialog open={!!exportFormat} onOpenChange={(o) => !o && setExportFormat(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              Export {exportFormat === "pdf" ? "PDF" : "Excel"} — {getCurrentFilteredList().length} tenant
+              {getCurrentFilteredList().length === 1 ? "" : "s"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-1">
+            <p className="text-xs text-muted-foreground mb-3">Choose what to include.</p>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 max-h-[46vh] overflow-y-auto">
+              {EXPORT_COLUMNS.map((c) => {
+                const on = exportCols.has(c.key);
+                return (
+                  <button
+                    key={c.key}
+                    type="button"
+                    onClick={() =>
+                      setExportCols((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(c.key)) next.delete(c.key);
+                        else next.add(c.key);
+                        return next;
+                      })
+                    }
+                    className={cn(
+                      "flex items-center gap-2 rounded-lg border px-2.5 py-2 text-xs text-left transition-colors",
+                      on ? "border-amber/40 bg-amber/[0.07] text-foreground" : "border-sidebar-border text-muted-foreground hover:border-white/20"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "w-3.5 h-3.5 rounded border shrink-0 flex items-center justify-center",
+                        on ? "bg-amber border-amber" : "border-muted-foreground/40"
+                      )}
+                    >
+                      {on && <Check className="w-2.5 h-2.5 text-background" />}
+                    </span>
+                    <span className="truncate">{c.label}</span>
+                    {/* Named on the control itself: an owner ticking CNIC should
+                        know what they are putting into a file they may forward. */}
+                    {c.sensitive && <span className="ml-auto text-[9px] text-amber/80 shrink-0">private</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setExportFormat(null)}>Cancel</Button>
+            <Button
+              disabled={!!exportLoading}
+              onClick={() => {
+                const fmt = exportFormat;
+                setExportFormat(null);
+                if (fmt === "pdf") void exportPDF();
+                else void exportExcel();
+              }}
+              className="bg-amber/10 border border-amber/25 text-amber hover:bg-amber/20"
+            >
+              Download
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
