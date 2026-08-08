@@ -3,6 +3,8 @@ import { randomBytes } from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { TEMPLATES, paymentConfirmedParams } from "@/lib/whatsapp-templates";
+import { sendPaymentReceiptEmail } from "@/lib/email";
+import { formatMonthLong } from "@/lib/utils";
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
 
@@ -27,7 +29,7 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<void> 
     const { data: payment } = await admin
       .from("hms_payments")
       .select(
-        "id, hostel_id, tenant_id, for_month, amount_paid, status, tenant:hms_tenants(full_name, phone), hostel:hms_hostels(name, whatsapp_enabled)"
+        "id, hostel_id, tenant_id, for_month, amount_paid, status, tenant:hms_tenants(full_name, phone, email), hostel:hms_hostels(name, whatsapp_enabled)"
       )
       .eq("id", paymentId)
       .maybeSingle();
@@ -36,9 +38,13 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<void> 
     const tenant = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
     const hostel = Array.isArray(payment.hostel) ? payment.hostel[0] : payment.hostel;
 
-    if (!hostel?.whatsapp_enabled) return;
     const digits = (tenant?.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
-    if (digits.length < 11) return;
+    const canWhatsApp = !!hostel?.whatsapp_enabled && digits.length >= 11;
+    const tenantEmail = ((tenant as { email?: string | null } | null)?.email ?? "").trim();
+
+    // Nothing to send on either channel — stop before minting a receipt link
+    // that no one will ever open.
+    if (!canWhatsApp && !tenantEmail) return;
 
     // Reuse the receipt link already shared for this payment rather than
     // minting another permanent public token — same rule createInvoiceLink
@@ -68,6 +74,30 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<void> 
       }
     }
 
+    const receiptUrl = `${SITE_URL}/r/${token}`;
+
+    // Email first, and independently of WhatsApp. The WhatsApp send is gated on
+    // a per-branch Super Admin switch that is off for most hostels; a tenant
+    // with an email on file should still get their receipt regardless. Wrapped
+    // so a Resend outage cannot stop the WhatsApp send below, and neither can
+    // affect the payment, which is already recorded.
+    if (tenantEmail) {
+      try {
+        await sendPaymentReceiptEmail({
+          tenantEmail,
+          tenantName: tenant?.full_name ?? "there",
+          hostelName: hostel?.name ?? "your hostel",
+          amountPaid: Number(payment.amount_paid ?? 0),
+          forMonth: formatMonthLong(payment.for_month as string),
+          receiptUrl,
+        });
+      } catch (err) {
+        console.error(`[payment-confirmation] receipt email failed for payment ${paymentId}:`, err);
+      }
+    }
+
+    if (!canWhatsApp) return;
+
     const result = await sendWhatsAppTemplateMessage(
       digits,
       TEMPLATES.paymentConfirmed.name,
@@ -76,7 +106,7 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<void> 
         tenantName: tenant?.full_name,
         amountPaid: Number(payment.amount_paid ?? 0),
         forMonth: payment.for_month as string,
-        receiptUrl: `${SITE_URL}/r/${token}`,
+        receiptUrl,
         hostelName: hostel?.name,
       }),
       { hostelId: payment.hostel_id as string, tenantId: payment.tenant_id as string, messageType: "receipt" }

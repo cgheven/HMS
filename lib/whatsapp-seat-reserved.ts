@@ -2,6 +2,8 @@ import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { TEMPLATES, seatReservedParams } from "@/lib/whatsapp-templates";
+import { sendSeatReservedEmail } from "@/lib/email";
+import { formatDayLong } from "@/lib/utils";
 
 /**
  * Sends hms_seat_reserved once, when a reservation deposit is actually taken
@@ -24,24 +26,43 @@ export async function sendSeatReservedConfirmation(tenantId: string): Promise<vo
     const { data: tenant } = await admin
       .from("hms_tenants")
       .select(
-        "id, full_name, phone, check_in, deposit_collected_amount, hostel_id, hostel:hms_hostels(name, whatsapp_enabled)"
+        "id, full_name, phone, email, check_in, deposit_collected_amount, hostel_id, hostel:hms_hostels(name, whatsapp_enabled)"
       )
       .eq("id", tenantId)
       .maybeSingle();
     if (!tenant) return;
 
     const hostel = Array.isArray(tenant.hostel) ? tenant.hostel[0] : tenant.hostel;
-    if (!hostel?.whatsapp_enabled) return;
 
-    const digits = (tenant.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
-    if (digits.length < 11) return;
-
-    // The template states "we have received Rs X". Only what was genuinely
+    // The message states "we have received Rs X". Only what was genuinely
     // collected justifies that sentence — the agreed security_deposit figure
     // is a promise, not a receipt, and is set for 7 of 9 waiting tenants whose
-    // money was never recorded.
+    // money was never recorded. Checked before either channel.
     const collected = Number(tenant.deposit_collected_amount ?? 0);
     if (collected <= 0) return;
+
+    const digits = (tenant.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
+    const canWhatsApp = !!hostel?.whatsapp_enabled && digits.length >= 11;
+    const tenantEmail = ((tenant as { email?: string | null }).email ?? "").trim();
+
+    // Email is NOT gated on whatsapp_enabled. That switch is off for 15 of 16
+    // branches, so putting the email behind it would have made this look built
+    // while never sending anything.
+    if (tenantEmail) {
+      try {
+        await sendSeatReservedEmail({
+          tenantEmail,
+          tenantName: tenant.full_name,
+          hostelName: hostel?.name ?? "your hostel",
+          depositCollected: collected,
+          expectedJoining: tenant.check_in ? formatDayLong(tenant.check_in as string) : null,
+        });
+      } catch (err) {
+        console.error(`[seat-reserved] deposit email failed for tenant ${tenantId}:`, err);
+      }
+    }
+
+    if (!canWhatsApp) return;
 
     const result = await sendWhatsAppTemplateMessage(
       digits,

@@ -687,6 +687,106 @@ export interface ClientCredentialsEmailData {
  * Throws on failure. Resend returns { error } instead of rejecting, so an
  * unchecked call here would silently create an account nobody can log into.
  */
+interface PaymentReceiptEmailData {
+  tenantEmail: string;
+  tenantName: string;
+  hostelName: string;
+  amountPaid: number;
+  forMonth: string;
+  receiptUrl: string;
+}
+
+/**
+ * Payment confirmation to the TENANT, alongside the WhatsApp one.
+ *
+ * Sent only when a tenant actually has an email on file — 45 of 621 active
+ * tenants today, so this is silent for most. That is fine: it costs nothing
+ * when there is no address, and the WhatsApp receipt remains the primary
+ * channel.
+ *
+ * Deliberately does NOT attach the PDF. The receipt link renders the same
+ * document, always reflects the live payment, and keeps this email small
+ * enough to arrive reliably.
+ */
+export async function sendPaymentReceiptEmail(data: PaymentReceiptEmailData): Promise<void> {
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Payment received</h2>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
+      Assalam o Alaikum ${esc(data.tenantName)}, we have received your payment for
+      <strong style="color:#f59e0b;">${esc(data.forMonth)}</strong>.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      ${row("Amount Received", `<span style="color:#4ade80;font-weight:700;">Rs ${data.amountPaid.toLocaleString()}</span>`)}
+      ${row("For", esc(data.forMonth))}
+      ${row("Hostel", esc(data.hostelName))}
+    </table>
+    <div style="margin:24px 0 0;">
+      <a href="${esc(data.receiptUrl)}"
+         style="display:inline-block;background:#f59e0b;color:#18181b;font-weight:600;font-size:14px;padding:11px 20px;border-radius:8px;text-decoration:none;">
+        View your receipt
+      </a>
+    </div>
+    <p style="margin:20px 0 0;font-size:12px;color:#71717a;">
+      Keep this email for your records. If anything looks wrong, contact hostel management.
+    </p>
+  `;
+
+  await resend.emails.send({
+    from: FROM,
+    to: data.tenantEmail,
+    subject: `Payment received — ${data.forMonth} — ${data.hostelName}`,
+    html: baseHtml("Payment Received", body),
+  });
+}
+
+interface SeatReservedEmailData {
+  tenantEmail: string;
+  tenantName: string;
+  hostelName: string;
+  depositCollected: number;
+  expectedJoining: string | null;
+}
+
+/**
+ * Booking deposit confirmation to the TENANT.
+ *
+ * Arguably the most important receipt we send: the tenant has handed over money
+ * for a room they have not moved into yet, and until now had nothing on paper.
+ * There is no receipt link because no hms_payments row exists yet — a
+ * reservation is recorded on the tenant, not as a bill — so the figures are
+ * spelled out in the email body instead.
+ *
+ * Says the deposit is adjustable against the first bill, because "is this money
+ * gone?" is the question a tenant actually has after paying it.
+ */
+export async function sendSeatReservedEmail(data: SeatReservedEmailData): Promise<void> {
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Your seat is reserved</h2>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
+      Assalam o Alaikum ${esc(data.tenantName)}, we have received your booking deposit for
+      <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>. Your seat is held.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      ${row("Deposit Received", `<span style="color:#4ade80;font-weight:700;">Rs ${data.depositCollected.toLocaleString()}</span>`)}
+      ${row("Hostel", esc(data.hostelName))}
+      ${data.expectedJoining ? row("Expected Joining", esc(data.expectedJoining)) : ""}
+    </table>
+    <p style="margin:24px 0 0;font-size:13px;color:#a1a1aa;">
+      This amount is adjusted against your first bill when you move in.
+    </p>
+    <p style="margin:12px 0 0;font-size:12px;color:#71717a;">
+      Keep this email as proof of your booking. If anything looks wrong, contact hostel management.
+    </p>
+  `;
+
+  await resend.emails.send({
+    from: FROM,
+    to: data.tenantEmail,
+    subject: `Seat reserved — ${data.hostelName}`,
+    html: baseHtml("Seat Reserved", body),
+  });
+}
+
 export async function sendClientCredentialsEmail(data: ClientCredentialsEmailData): Promise<void> {
   const body = `
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Your Pulse account is ready</h2>
