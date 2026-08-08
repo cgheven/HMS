@@ -190,11 +190,19 @@ export async function markInvoiceStatus(
       .eq("id", invoiceId);
     if (error) throw error;
 
-    // Fire-and-forget: the payment is already recorded, and a Meta outage must
-    // never fail marking an invoice paid.
+    // Both channels, fire-and-forget: the payment is already recorded, and an
+    // outage at Meta or Resend must never fail marking an invoice paid.
+    //
+    // Email is the one that always lands — all 9 client owners have an address
+    // on file, and it is the record they keep for their own books. WhatsApp is
+    // the one they notice. Independent of each other, so a failure in either
+    // still leaves the client informed by the other.
     if (status === "paid" && wasUnpaid) {
+      void sendInvoiceMail(admin, invoiceId, "receipt").then((r) => {
+        if (!r.sent) console.error(`[client-payment-received] email not sent for invoice ${invoiceId}: ${r.reason}`);
+      });
       void sendPaymentReceivedWhatsApp(admin, invoiceId).then((r) => {
-        if (!r.sent) console.error(`[client-payment-received] not sent for invoice ${invoiceId}: ${r.reason}`);
+        if (!r.sent) console.error(`[client-payment-received] whatsapp not sent for invoice ${invoiceId}: ${r.reason}`);
       });
     }
 

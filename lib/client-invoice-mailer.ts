@@ -30,7 +30,7 @@ export async function sendInvoiceMail(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   admin: SupabaseClient<any, any, any>,
   invoiceId: string,
-  kind: "invoice" | "reminder"
+  kind: "invoice" | "reminder" | "receipt"
 ): Promise<InvoiceMailResult> {
   const { data: invoice, error } = await admin
     .from("hms_platform_invoices")
@@ -39,7 +39,14 @@ export async function sendInvoiceMail(
     .maybeSingle();
 
   if (error || !invoice) return { sent: false, reason: "Invoice not found" };
-  if (invoice.status !== "unpaid") return { sent: false, reason: `Invoice is ${invoice.status}` };
+  // An invoice or a reminder is only valid while money is still owed; a receipt
+  // is only valid once it is not. Sending either against the wrong status would
+  // be a false statement about the client's account.
+  if (kind === "receipt") {
+    if (invoice.status !== "paid") return { sent: false, reason: `Invoice is ${invoice.status}` };
+  } else if (invoice.status !== "unpaid") {
+    return { sent: false, reason: `Invoice is ${invoice.status}` };
+  }
 
   const [{ data: profile }, { data: authUser }] = await Promise.all([
     admin.from("hms_profiles").select("full_name, phone").eq("id", invoice.owner_id).maybeSingle(),
@@ -119,18 +126,23 @@ export async function sendInvoiceMail(
     invoiceUrl: `${SITE_URL}/invoice/${invoice.share_token}`,
     lines,
     daysOverdue,
-    isReminder: kind === "reminder",
+    kind,
   });
 
-  const now = new Date().toISOString();
-  await admin
-    .from("hms_platform_invoices")
-    .update(
-      kind === "invoice"
-        ? { first_sent_at: now, last_reminder_at: now }
-        : { last_reminder_at: now, reminder_count: (invoice.reminder_count ?? 0) + 1 }
-    )
-    .eq("id", invoiceId);
+  // A receipt writes no bookkeeping. first_sent_at arms the reminder clock and
+  // reminder_count counts chases — a receipt is neither, and touching either
+  // would restart or inflate the chase history of an invoice already settled.
+  if (kind !== "receipt") {
+    const now = new Date().toISOString();
+    await admin
+      .from("hms_platform_invoices")
+      .update(
+        kind === "invoice"
+          ? { first_sent_at: now, last_reminder_at: now }
+          : { last_reminder_at: now, reminder_count: (invoice.reminder_count ?? 0) + 1 }
+      )
+      .eq("id", invoiceId);
+  }
 
   return { sent: true, redirectedTo };
 }

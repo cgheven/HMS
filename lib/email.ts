@@ -174,7 +174,8 @@ interface ClientInvoiceEmailData {
   invoiceUrl: string;
   /** Days overdue; 0 or less means not yet due. Drives the tone of the copy. */
   daysOverdue: number;
-  isReminder: boolean;
+  /** invoice = first send · reminder = chasing · receipt = we have been paid. */
+  kind: "invoice" | "reminder" | "receipt";
   /** The same breakdown the PDF shows, rendered inline. Deliberately NOT sent as
    *  an attachment: attachments are a spam-filter signal on a dunning email and
    *  a download-then-open detour on a phone, and invoiceUrl already serves the
@@ -200,14 +201,22 @@ export async function sendClientInvoiceEmail(
   const testOverride = process.env.CLIENT_INVOICE_TEST_EMAIL?.trim();
   const recipient = testOverride || data.clientEmail;
 
-  const overdue = data.daysOverdue > 0;
-  const heading = data.isReminder
+  const isReceipt = data.kind === "receipt";
+  const isReminder = data.kind === "reminder";
+  // A paid invoice is never overdue, whatever the due date says.
+  const overdue = !isReceipt && data.daysOverdue > 0;
+
+  const heading = isReceipt
+    ? `Payment received — ${data.periodLabel}`
+    : isReminder
     ? overdue
       ? `Payment overdue — ${data.periodLabel}`
       : `Payment reminder — ${data.periodLabel}`
     : `Your invoice for ${data.periodLabel}`;
 
-  const lead = data.isReminder
+  const lead = isReceipt
+    ? `we have received your payment for <strong style="color:#f59e0b;">${esc(data.periodLabel)}</strong>. Thank you.`
+    : isReminder
     ? overdue
       ? `This invoice is <strong style="color:#fb7185;">${data.daysOverdue} day${data.daysOverdue === 1 ? "" : "s"} overdue</strong>. If you've already paid, please ignore this message.`
       : `A quick reminder that this invoice is due on <strong style="color:#f59e0b;">${esc(data.dueDate)}</strong>.`
@@ -220,12 +229,12 @@ export async function sendClientInvoiceEmail(
     <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;">
       ${data.lines.map(lineRow).join("")}
       <tr>
-        <td style="padding:14px 0 0;font-size:14px;font-weight:700;color:#fff;">Total due</td>
-        <td style="padding:14px 0 0;font-size:19px;font-weight:700;color:#f59e0b;text-align:right;white-space:nowrap;">${formatPkr(data.amount)}</td>
+        <td style="padding:14px 0 0;font-size:14px;font-weight:700;color:#fff;">${isReceipt ? "Total paid" : "Total due"}</td>
+        <td style="padding:14px 0 0;font-size:19px;font-weight:700;color:${isReceipt ? "#4ade80" : "#f59e0b"};text-align:right;white-space:nowrap;">${formatPkr(data.amount)}</td>
       </tr>
       <tr>
         <td colspan="2" style="padding:4px 0 0;font-size:12px;color:${overdue ? "#fb7185" : "#71717a"};">
-          ${overdue ? `Was due ${esc(data.dueDate)}` : `Due ${esc(data.dueDate)}`}
+          ${isReceipt ? "Paid in full — nothing further is due." : overdue ? `Was due ${esc(data.dueDate)}` : `Due ${esc(data.dueDate)}`}
         </td>
       </tr>
     </table>
@@ -238,7 +247,9 @@ export async function sendClientInvoiceEmail(
     </p>
   `;
 
-  const subject = data.isReminder
+  const subject = isReceipt
+    ? `Payment received — Pulse invoice ${data.periodLabel}`
+    : isReminder
     ? overdue
       ? `Overdue: ${formatPkr(data.amount)} — Pulse invoice ${data.periodLabel}`
       : `Reminder: ${formatPkr(data.amount)} due ${data.dueDate} — Pulse invoice ${data.periodLabel}`
