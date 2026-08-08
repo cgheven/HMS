@@ -956,6 +956,7 @@ export async function getPaymentsPageData(forMonth: string) {
     { data: acReadings, error: acReadingsErr },
     { data: acJoinReadings, error: acJoinErr },
     { data: waitingTenants, error: waitingErr },
+    { data: waMessages },
   ] = await Promise.all([
     supabase.from("hms_payments")
       .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
@@ -991,6 +992,25 @@ export async function getPaymentsPageData(forMonth: string) {
       .select("id")
       .eq("hostel_id", hostelId)
       .eq("is_waiting", true),
+    // Last WhatsApp status per tenant, for the delivery tick on each row.
+    // Whole window fetched and reduced in JS rather than one query per tenant:
+    // PostgREST has no DISTINCT ON, and this is a few rows per hostel.
+    //
+    // 131047 is EXCLUDED deliberately. It means "free-form message outside the
+    // 24-hour window" — WhatsApp only allows free-form text if the person
+    // messaged the business in the last 24 hours, which a newly added tenant
+    // never has. So the automatic welcome message always fails this way. That
+    // is a limitation of OUR send, not a fact about the tenant, and showing a
+    // new tenant as "Not delivered" for a message the owner never chose to send
+    // reports the wrong thing entirely. Template sends are exempt from the
+    // window, so 131047 can only ever be a free-form send.
+    supabase.from("hms_whatsapp_messages")
+      .select("tenant_id, status, error_code, created_at")
+      .eq("hostel_id", hostelId)
+      .not("tenant_id", "is", null)
+      .or("error_code.is.null,error_code.neq.131047")
+      .gte("created_at", new Date(Date.now() - 45 * 86_400_000).toISOString())
+      .order("created_at", { ascending: false }),
   ]);
 
   // supabase-js RETURNS errors, it does not throw them. Swallowing one here
@@ -1019,6 +1039,15 @@ export async function getPaymentsPageData(forMonth: string) {
     autoReminderEnabled: hostel?.whatsapp_enabled ?? false,
     acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
+    // Newest first from the query, so the FIRST row seen per tenant is the
+    // latest — no sorting or comparison needed.
+    lastWhatsApp: Object.fromEntries(
+      ((waMessages ?? []) as { tenant_id: string; status: string; error_code: number | null; created_at: string }[])
+        .reduce((map, m) => {
+          if (!map.has(m.tenant_id)) map.set(m.tenant_id, m);
+          return map;
+        }, new Map<string, { tenant_id: string; status: string; error_code: number | null; created_at: string }>())
+    ) as Record<string, { status: string; error_code: number | null; created_at: string }>,
     waitingTenantIds: (waitingTenants ?? []).map((t) => t.id as string),
   };
 }

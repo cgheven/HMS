@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
-import { cn, formatCurrency, formatDate, formatDateInput, formatDayLong, formatMonthLong } from "@/lib/utils";
+import { cn, formatCurrency, formatDate, formatDateInput, formatDateTime, formatDayLong, formatMonthLong } from "@/lib/utils";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier, StaffPermission } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { countBillableNights } from "@/lib/daily-billing";
@@ -88,6 +88,8 @@ interface Props {
    *  the selected month and the preceding one from this, so stepping months needs
    *  no round trip. */
   acReadings?: { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null }[];
+  /** Latest WhatsApp status per tenant id — drives the delivery tick. */
+  lastWhatsApp?: Record<string, { status: string; error_code: number | null; created_at: string }>;
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
   // Tenants currently on the waiting list — a payment row can outlive an
   // active tenant being edited back to waiting, so the headline stats below
@@ -196,9 +198,46 @@ function prevMonthOf(month: string): string {
 
 // Stable identity. This backs the acReadings prop, which feeds a useMemo and a
 // useEffect — an inline `= []` default would mint a new array on every render.
+/**
+ * The last WhatsApp we sent this tenant, as one short phrase.
+ *
+ * Deliberately only the LATEST message and no history: an owner wants to know
+ * "did my reminder land?", and six rows of ticks per tenant answers a question
+ * nobody asked.
+ *
+ * `read` is the only positive worth shouting about; everything else is either
+ * neutral or a problem. Note that a tenant can switch read receipts off in
+ * WhatsApp, so "Delivered" never becoming "Read" does NOT mean ignored — which
+ * is why delivered stays neutral grey rather than looking like a failure.
+ */
+function waTick(m: { status: string; error_code: number | null } | undefined):
+  { label: string; cls: string } | null {
+  if (!m) return null;
+  switch (m.status) {
+    case "read":
+      return { label: "Read", cls: "text-emerald-400 border-emerald-500/25 bg-emerald-500/10" };
+    case "delivered":
+      return { label: "Delivered", cls: "text-muted-foreground border-white/10 bg-white/5" };
+    case "sent":
+    case "queued":
+      return { label: "Sent", cls: "text-muted-foreground border-white/10 bg-white/5" };
+    case "undelivered":
+      // 131026 is the one an owner can actually act on: the number simply is
+      // not on WhatsApp, so every reminder to it has been shouting into a void.
+      return {
+        label: m.error_code === 131026 ? "Not on WhatsApp" : "Not delivered",
+        cls: "text-amber border-amber/25 bg-amber/10",
+      };
+    case "failed":
+      return { label: "Failed", cls: "text-rose-400 border-rose-500/25 bg-rose-500/10" };
+    default:
+      return null;
+  }
+}
+
 const NO_AC_READINGS: NonNullable<Props["acReadings"]> = [];
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings: allAcReadings = NO_AC_READINGS, acJoinReadings = [], partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings: allAcReadings = NO_AC_READINGS, acJoinReadings = [], lastWhatsApp = {}, partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
   const isPartner = !!partnerTier;
   const isManager = !!managerPermissions;
   const canCollect = managerPermissions?.includes("collect_payments") ?? false;
@@ -1046,7 +1085,22 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           {/* Row 1: name + amount */}
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold text-foreground leading-tight">{p.tenant?.full_name ?? "—"}</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-sm font-semibold text-foreground leading-tight">{p.tenant?.full_name ?? "—"}</p>
+                {(() => {
+                  const tick = waTick(p.tenant_id ? lastWhatsApp[p.tenant_id] : undefined);
+                  if (!tick) return null;
+                  const when = p.tenant_id ? lastWhatsApp[p.tenant_id]?.created_at : undefined;
+                  return (
+                    <span
+                      className={cn("text-[10px] px-1.5 py-0.5 rounded border font-medium whitespace-nowrap", tick.cls)}
+                      title={when ? `Last WhatsApp ${formatDateTime(when)}` : undefined}
+                    >
+                      {tick.label}
+                    </span>
+                  );
+                })()}
+              </div>
               <div className="flex items-center gap-2 mt-1 flex-wrap">
                 {room && <span className="text-xs text-muted-foreground">Rm {room.room_number}</span>}
                 <span className={cn("text-xs", isReservation ? "text-violet-400" : "text-blue-400")}>{tierLabel}</span>
@@ -1106,6 +1160,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             <div className="flex items-center gap-2 flex-wrap mt-0.5">
               {room && <span className="text-xs text-muted-foreground">Rm {room.room_number}</span>}
               {isLate && <span className="text-xs text-rose-400 font-medium">Late</span>}
+              {(() => {
+                const tick = waTick(p.tenant_id ? lastWhatsApp[p.tenant_id] : undefined);
+                if (!tick) return null;
+                const when = p.tenant_id ? lastWhatsApp[p.tenant_id]?.created_at : undefined;
+                return (
+                  <span
+                    className={cn("text-[10px] px-1.5 py-0.5 rounded border font-medium whitespace-nowrap", tick.cls)}
+                    title={when ? `Last WhatsApp ${formatDateTime(when)}` : undefined}
+                  >
+                    {tick.label}
+                  </span>
+                );
+              })()}
               {p.payment_date && (
                 <span className="text-xs text-muted-foreground">
                   {isReservation ? "Collected" : "Paid"} {formatDate(p.payment_date)}
