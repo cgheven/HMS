@@ -24,6 +24,7 @@ export const TEMPLATES = {
   clientProvisioned: { name: "hms_client_provisioning_notification", language: "en" },
   tenantCheckout: { name: "hms_tenant_checkout", language: "en" },
   reminderFullV2: { name: "hms_payment_reminder_full_v2", language: "en" },
+  clientPaymentReceived: { name: "hms_client_payment_received", language: "en" },
 } as const;
 
 const pkr = (n: number) => new Intl.NumberFormat("en-PK").format(Math.round(n));
@@ -299,6 +300,35 @@ export function clientBillingDueParams(a: ClientBillingDueArgs): string[] {
     clean(a.periodLabel, "this period"),
     clean(pkr(a.amount), "0"),
     clean(a.dueDate ? formatDayLong(a.dueDate) : "", "as per invoice"),
+    clean(a.invoiceUrl, "https://hostel.yourpulse.io"),
+  ];
+}
+
+export interface ClientPaymentReceivedArgs {
+  clientName: string | null | undefined;
+  businessName: string | null | undefined;
+  periodLabel: string;
+  amount: number;
+  /** ISO date the payment was recorded. */
+  receivedOn: string | null | undefined;
+  invoiceUrl: string;
+}
+
+/**
+ * hms_client_payment_received — the receipt half of clientBillingDue.
+ *
+ * Same six slots in the same order as the reminder that preceded it, so a
+ * client reading both sees one continuous thread rather than two unrelated
+ * messages. Carries no bank details, unlike the reminder: they have already
+ * paid, and printing an account number on a receipt invites a second payment.
+ */
+export function clientPaymentReceivedParams(a: ClientPaymentReceivedArgs): string[] {
+  return [
+    clean(firstName(a.clientName), "there"),
+    clean(a.businessName ?? "", "your hostel"),
+    clean(a.periodLabel, "this period"),
+    clean(pkr(a.amount), "0"),
+    clean(a.receivedOn ? formatDayLong(a.receivedOn) : "", "today"),
     clean(a.invoiceUrl, "https://hostel.yourpulse.io"),
   ];
 }

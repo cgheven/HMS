@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { writeAuditLog } from "@/lib/audit";
 import { generateInvoiceForOwner } from "@/lib/invoice-generation";
 import { sendInvoiceMail } from "@/lib/client-invoice-mailer";
-import { sendInvoiceWhatsApp } from "@/lib/client-invoice-whatsapp";
+import { sendInvoiceWhatsApp, sendPaymentReceivedWhatsApp } from "@/lib/client-invoice-whatsapp";
 import type { ClientBilling, PlatformInvoice } from "@/types";
 
 async function requireSuperAdmin() {
@@ -169,6 +169,17 @@ export async function markInvoiceStatus(
     const caller = await requireSuperAdmin();
     const admin = createAdminClient();
 
+    // Read the status BEFORE the write, so the confirmation fires only on a real
+    // unpaid -> paid transition. Re-marking an already-paid invoice (a correction,
+    // a double click, or paid -> unpaid -> paid) would otherwise send the client a
+    // second "we received your payment" for money that arrived once.
+    const { data: before } = await admin
+      .from("hms_platform_invoices")
+      .select("status")
+      .eq("id", invoiceId)
+      .maybeSingle();
+    const wasUnpaid = before?.status === "unpaid";
+
     const { error } = await admin
       .from("hms_platform_invoices")
       .update({
@@ -178,6 +189,14 @@ export async function markInvoiceStatus(
       })
       .eq("id", invoiceId);
     if (error) throw error;
+
+    // Fire-and-forget: the payment is already recorded, and a Meta outage must
+    // never fail marking an invoice paid.
+    if (status === "paid" && wasUnpaid) {
+      void sendPaymentReceivedWhatsApp(admin, invoiceId).then((r) => {
+        if (!r.sent) console.error(`[client-payment-received] not sent for invoice ${invoiceId}: ${r.reason}`);
+      });
+    }
 
     await writeAuditLog({
       actor_id: caller.id,
