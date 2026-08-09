@@ -1,4 +1,5 @@
 "use server";
+import { getProfile } from "@/lib/auth";
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -8,22 +9,25 @@ import { sendInvoiceMail } from "@/lib/client-invoice-mailer";
 import { sendInvoiceWhatsApp, sendPaymentReceivedWhatsApp } from "@/lib/client-invoice-whatsapp";
 import type { ClientBilling, PlatformInvoice } from "@/types";
 
+/**
+ * Delegates to lib/auth's cache()d getProfile instead of re-authenticating.
+ *
+ * This file used to run its own getUser() + profile SELECT. So did four other
+ * action files and the super-admin layout — six uncached copies of the same two
+ * round trips. One Dashboard render performed the identical auth check three to
+ * four times, and with functions in us-east and Postgres in Singapore each of
+ * those round trips cost ~264ms.
+ *
+ * Deliberately keeps THROWING rather than calling lib/auth's requireSuperAdmin,
+ * which redirects: these are server actions whose callers catch the error and
+ * surface it in the UI, and a redirect() thrown inside those catch blocks would
+ * be swallowed as a generic failure.
+ */
 async function requireSuperAdmin() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) throw new Error("Unauthorized");
-
-  const admin = createAdminClient();
-  const { data: profile } = await admin
-    .from("hms_profiles")
-    .select("role")
-    .eq("id", user.id)
-    .single();
-
-  if (profile?.role !== "super_admin") throw new Error("Forbidden: super_admin access required");
-  return user;
+  const profile = await getProfile();
+  if (!profile) throw new Error("Unauthorized");
+  if (profile.role !== "super_admin") throw new Error("Forbidden: super_admin access required");
+  return profile;
 }
 
 // ── getClientBilling ──────────────────────────────────────────────────────────

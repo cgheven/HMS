@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { getProfile } from "@/lib/auth";
 import { SuperAdminShell } from "@/components/layout/super-admin-shell";
 
 export default async function SuperAdminLayout({
@@ -8,25 +7,17 @@ export default async function SuperAdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/login");
-
-  // Use service role to bypass RLS and read the role column
-  const admin = createAdminClient();
-  const { data: profile, error } = await admin
-    .from("hms_profiles")
-    .select("role")
-    .eq("id", user.id)
-    .single();
-
-  if (error || profile?.role !== "super_admin") redirect("/dashboard");
+  // The cache()d lookup, not its own getUser + profile SELECT. The layout runs
+  // on every Super Admin navigation and used to pay two uncached round trips
+  // that the page's own guard then paid again — with functions in us-east and
+  // Postgres in Singapore, each was ~264ms. Sharing the cache means the whole
+  // navigation authenticates once.
+  const profile = await getProfile();
+  if (!profile) redirect("/login");
+  if (profile.role !== "super_admin") redirect("/dashboard");
 
   return (
-    <SuperAdminShell email={user.email ?? ""}>
+    <SuperAdminShell email={profile.email ?? ""}>
       {children}
     </SuperAdminShell>
   );

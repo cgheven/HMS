@@ -34,6 +34,8 @@ export type ApplicationStatus = "pending" | "approved" | "rejected";
 
 export interface Profile {
   id: string;
+  /** Present on hms_profiles; mirrored from auth.users at signup. Used by the Super Admin audit log. */
+  email: string | null;
   role: Role;
   full_name: string | null;
   phone: string | null;
