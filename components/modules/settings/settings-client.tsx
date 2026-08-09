@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useRef, useState, useTransition } from "react";
-import { Building2, User, Save, Loader2, Globe, ExternalLink, Clock, Phone, RefreshCw, Utensils, GitBranch, Plus, Check, ArrowRightLeft, Handshake, Eye, EyeOff, Trash2, X, Pencil, FormInput, ImagePlus, MessageCircle, ShieldCheck } from "lucide-react";
+import { useEffect, useState, useTransition } from "react";
+import { Building2, User, Save, Loader2, Globe, Clock, Phone, RefreshCw, Utensils, GitBranch, Plus, Check, ArrowRightLeft, Handshake, Eye, EyeOff, Trash2, X, Pencil, FormInput, MessageCircle, ShieldCheck } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useHostelContext } from "@/contexts/hostel-context";
@@ -15,23 +16,12 @@ import { listPartners, createPartner, removePartner, updatePartnerTier, getExist
 import type { PartnerRow, ExistingPartnerOption } from "@/app/actions/partners";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PARTNER_TIER_LABELS } from "@/lib/partner-tier-labels";
-import type { HostelType, Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier, PartnerTier, WifiNetwork, MealTimes } from "@/types";
+import type { Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier, PartnerTier, WifiNetwork, MealTimes } from "@/types";
 import { DEFAULT_FORM_CONFIG } from "@/types";
-import { savePaymentRecoverySettings, saveWelcomeSettings, getMySubdomain, claimMySubdomain } from "@/app/actions/settings";
-import { SUBDOMAIN_ROOT, normalizeSubdomain, subdomainError, suggestSubdomain, subdomainUrl } from "@/lib/subdomain";
+import { savePaymentRecoverySettings, saveWelcomeSettings } from "@/app/actions/settings";
 import { DEFAULT_REMINDER_TEMPLATE, formatAccounts, buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { DEFAULT_WELCOME_TEMPLATE, buildWelcomeMessage } from "@/lib/whatsapp-welcome";
 import { SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
-
-const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
-  { value: "boys",   label: "Boys Only" },
-  { value: "girls",  label: "Girls Only" },
-];
-
-const ALL_AMENITIES = [
-  "WiFi", "AC", "Generator / UPS", "Meals Included", "Laundry",
-  "Parking", "CCTV", "Hot Water", "Study Room", "Attached Bath", "Security Guard", "Cupboard",
-];
 
 type PkgPriceEntry = { no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string };
 type PkgPriceForm = Record<PackageTier, PkgPriceEntry>;
@@ -106,31 +96,9 @@ export function SettingsClient() {
   const [hostelForm, setHostelForm] = useState({
     name: "", address: "", city: "", area: "", phone: "", whatsapp: "", email: "", total_capacity: "",
   });
-  const [listingForm, setListingForm] = useState({
-    listing_enabled: true,
-    maps_url: "",
-    description: "",
-    hostel_type: "" as HostelType | "",
-    amenities: [] as string[],
-    food_closed_on_sundays: false,
-  });
   const [profileForm, setProfileForm] = useState({ full_name: "" });
   const [savingHostel, setSavingHostel] = useState(false);
-
-  // ── Branded subdomain (owner-level, one time only) ───────────────────────
-  const [subdomain, setSubdomain] = useState<string | null>(null);
-  const [subdomainLoaded, setSubdomainLoaded] = useState(false);
-  const [subdomainInput, setSubdomainInput] = useState("");
-  const [claimingSubdomain, setClaimingSubdomain] = useState(false);
-  const [subdomainConfirm, setSubdomainConfirm] = useState(false);
-  const subdomainCandidate = normalizeSubdomain(subdomainInput);
-  const subdomainInvalid = subdomainInput.trim() === "" ? null : subdomainError(subdomainInput);
-  const [savingListing, setSavingListing] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
-
-  const [coverImageUrl, setCoverImageUrl] = useState<string | null>(null);
-  const [uploadingCover, setUploadingCover] = useState(false);
-  const coverInputRef = useRef<HTMLInputElement>(null);
 
   const [packageForm, setPackageForm] = useState<{ ac_per_unit_rate: string; security_deposit: string; registration_fee: string; ac_maintenance_rate: string; notice_period_days: string; washroom_premium: string; prices: PkgPriceForm }>({
     ac_per_unit_rate: "", security_deposit: "", registration_fee: "", ac_maintenance_rate: "", notice_period_days: "30", washroom_premium: "", prices: emptyPriceForm(),
@@ -453,31 +421,6 @@ export function SettingsClient() {
     await fetchBranches();
   }
 
-
-  async function handleClaimSubdomain() {
-    if (subdomainInvalid || !subdomainCandidate) return;
-    setClaimingSubdomain(true);
-    const res = await claimMySubdomain(subdomainCandidate);
-    setClaimingSubdomain(false);
-    setSubdomainConfirm(false);
-    if (res.error) {
-      toast({ title: "Could not set subdomain", description: res.error, variant: "destructive" });
-      return;
-    }
-    setSubdomain(res.subdomain ?? null);
-    setSubdomainInput("");
-    toast({ title: "Subdomain is live", description: subdomainUrl(res.subdomain!) });
-  }
-
-  useEffect(() => {
-    // Owner-level and owner-guarded server-side, same reasoning as branches below.
-    if (isPartner) return;
-    getMySubdomain().then((res) => {
-      if (!res.error) setSubdomain(res.subdomain ?? null);
-      setSubdomainLoaded(true);
-    });
-  }, [isPartner]);
-
   useEffect(() => {
     // Branches/Partners cards are owner-only, and both actions are guarded
     // owner-only server-side — fetching them as a partner is a wasted round
@@ -498,15 +441,6 @@ export function SettingsClient() {
         email: hostel.email ?? "",
         total_capacity: hostel.total_capacity?.toString() ?? "",
       });
-      setListingForm({
-        listing_enabled: hostel.listing_enabled ?? true,
-        maps_url: hostel.maps_url ?? "",
-        description: hostel.description ?? "",
-        hostel_type: hostel.hostel_type ?? "",
-        amenities: hostel.amenities ?? [],
-        food_closed_on_sundays: hostel.food_closed_on_sundays ?? false,
-      });
-      setCoverImageUrl(hostel.cover_image_url ?? null);
       fetchWaitlist(hostel.id);
       fetchPackageConfig(hostel.id);
       if (!isPartner) fetchPartners(hostel.id);
@@ -544,103 +478,18 @@ export function SettingsClient() {
     toast({ title: "Hostel settings saved" });
   }
 
-  async function saveListing(e: React.FormEvent) {
-    e.preventDefault();
-    if (!hostelId) return;
-    setSavingListing(true);
-    const supabase = createClient();
-    const updatePayload: Record<string, unknown> = {
-      listing_enabled: listingForm.listing_enabled,
-      maps_url: listingForm.maps_url || null,
-      description: listingForm.description || null,
-      hostel_type: listingForm.hostel_type || null,
-      amenities: listingForm.amenities,
-      food_closed_on_sundays: listingForm.food_closed_on_sundays,
-    };
-    // Every hostel already gets a slug from hms_set_hostel_slug on creation
-    // (a short id-derived code, see migration 140) — this is just a safety
-    // net for any legacy row that predates that trigger and still has none.
-    if (listingForm.listing_enabled && !hostel?.slug) {
-      updatePayload.slug = hostelId.replace(/-/g, "").slice(0, 8);
-    }
-    const { data, error } = await supabase.from("hms_hostels").update(updatePayload).eq("id", hostelId).select("id");
-    setSavingListing(false);
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    if (!data || data.length === 0) {
-      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
-      return;
-    }
-    toast({
-      title: listingForm.listing_enabled ? "Listing published" : "Listing hidden",
-      description: listingForm.listing_enabled
-        ? "Your hostel is now visible on the public directory. The application form link is now active."
-        : "Your hostel has been removed from the public directory.",
-    });
-  }
-
-  async function uploadCoverImage(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file || !hostelId) return;
-    if (file.size > 3 * 1024 * 1024) {
-      toast({ title: "File too large", description: "Cover image must be under 3 MB.", variant: "destructive" });
-      return;
-    }
-    setUploadingCover(true);
-    const supabase = createClient();
-    // Derive MIME type from file name extension — not file.type which is browser-determined and can be empty/spoofed
-    const fname = file.name.toLowerCase();
-    const ext = fname.endsWith(".png") ? "png" : fname.endsWith(".webp") ? "webp" : "jpg";
-    const contentType = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
-    const path = `${hostelId}/cover.${ext}`;
-    const { error: uploadErr } = await supabase.storage
-      .from("hostel-covers")
-      .upload(path, file, { upsert: true, contentType });
-    if (uploadErr) {
-      toast({ title: "Upload failed", description: uploadErr.message, variant: "destructive" });
-      setUploadingCover(false);
-      return;
-    }
-    const { data: { publicUrl } } = supabase.storage.from("hostel-covers").getPublicUrl(path);
-    const { data: updated, error: updateErr } = await supabase
-      .from("hms_hostels")
-      .update({ cover_image_url: publicUrl })
-      .eq("id", hostelId)
-      .select("id");
-    if (updateErr) {
-      toast({ title: "Error", description: updateErr.message, variant: "destructive" });
-    } else if (!updated || updated.length === 0) {
-      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
-    } else {
-      setCoverImageUrl(publicUrl);
-      toast({ title: "Cover image updated" });
-    }
-    setUploadingCover(false);
-    if (coverInputRef.current) coverInputRef.current.value = "";
-  }
-
-  async function removeCoverImage() {
-    if (!hostelId) return;
-    const supabase = createClient();
-    // Delete the storage object across all possible extensions to avoid orphaned files
-    await Promise.all(["jpg", "jpeg", "png", "webp"].map((ext) =>
-      supabase.storage.from("hostel-covers").remove([`${hostelId}/cover.${ext}`])
-    ));
-    const { data, error } = await supabase.from("hms_hostels").update({ cover_image_url: null }).eq("id", hostelId).select("id");
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    if (!data || data.length === 0) {
-      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
-      return;
-    }
-    setCoverImageUrl(null);
-    toast({ title: "Cover image removed" });
-  }
-
   async function saveProfile(e: React.FormEvent) {
     e.preventDefault();
     if (!profile) return;
     setSavingProfile(true);
     const supabase = createClient();
-    const { data, error } = await supabase.from("hms_profiles").update({ full_name: profileForm.full_name }).eq("id", profile.id).select("id");
+    const { data, error } = await supabase
+      .from("hms_profiles")
+      .update({
+        full_name: profileForm.full_name,
+      })
+      .eq("id", profile.id)
+      .select("id");
     setSavingProfile(false);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     if (!data || data.length === 0) {
@@ -737,13 +586,6 @@ export function SettingsClient() {
     toast({ title: "Form fields saved" });
   }
 
-  function toggleAmenity(a: string) {
-    setListingForm((f) => ({
-      ...f,
-      amenities: f.amenities.includes(a) ? f.amenities.filter((x) => x !== a) : [...f.amenities, a],
-    }));
-  }
-
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
@@ -810,322 +652,22 @@ export function SettingsClient() {
 
       <Separator />
 
-      {/* Branded Subdomain — owner-level, covers every branch, one time only.
-          Hidden from partners: claimMySubdomain is requireOwnerOrAbove. */}
-      {!isPartner && subdomainLoaded && (
-        <>
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <Globe className="w-4 h-4 text-muted-foreground" />
-                <CardTitle className="text-base">Your Own Web Address</CardTitle>
-              </div>
-              <CardDescription>
-                A branded address for your business — easier to share and remember than a link with a code in it.
-                {branches.length > 1
-                  ? ` One address for all ${branches.length} of your branches, not per branch — set it here or on any other branch, it's the same address.`
-                  : " Covers your whole business, including any branches you add later."}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {subdomain ? (
-                <div className="flex items-center justify-between gap-3 p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5">
-                  <div className="min-w-0">
-                    <p className="text-xs text-muted-foreground">Your address</p>
-                    <p className="text-sm font-mono font-medium text-foreground truncate mt-0.5">
-                      {subdomain}.{SUBDOMAIN_ROOT}
-                    </p>
-                  </div>
-                  <a
-                    href={subdomainUrl(subdomain)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border border-sidebar-border text-xs font-medium text-muted-foreground hover:text-amber hover:bg-amber/10 transition-colors shrink-0"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" /> Visit
-                  </a>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-amber/5 border border-amber/20 text-xs">
-                    <ShieldCheck className="w-3.5 h-3.5 text-amber shrink-0 mt-0.5" />
-                    <span className="text-muted-foreground">
-                      <strong className="text-amber">You can only set this once.</strong> It cannot be changed
-                      or undone afterwards, because you will be printing it on signs and sending it to residents.
-                      Choose the name of your business, and check the spelling carefully.
-                    </span>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <Label>Choose your address</Label>
-                    <div className="flex items-stretch">
-                      <Input
-                        value={subdomainInput}
-                        onChange={(e) => { setSubdomainInput(e.target.value); setSubdomainConfirm(false); }}
-                        // Suggest from EVERY branch, not the one being viewed —
-                        // this address covers the business, so "Syed Residencies
-                        // Branch UMT" must not steer them to a campus name.
-                        placeholder={
-                          suggestSubdomain(branches.length > 0 ? branches.map((b) => b.name) : [hostelForm.name])
-                          || "yourhostel"
-                        }
-                        autoComplete="off"
-                        spellCheck={false}
-                        className={`rounded-r-none font-mono ${subdomainInvalid ? "border-rose-500/50" : ""}`}
-                      />
-                      <span className="inline-flex items-center px-3 rounded-r-md border border-l-0 border-sidebar-border bg-white/[0.03] text-xs text-muted-foreground whitespace-nowrap">
-                        .{SUBDOMAIN_ROOT}
-                      </span>
-                    </div>
-                    {subdomainInvalid ? (
-                      <p className="text-xs text-rose-400">{subdomainInvalid}</p>
-                    ) : (
-                      <p className="text-xs text-muted-foreground">
-                        Lowercase letters, numbers and hyphens · 3–63 characters
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Show the finished address before they commit — reading it
-                      whole is what catches a typo, not re-reading the input. */}
-                  {subdomainCandidate && !subdomainInvalid && (
-                    <div className="p-4 rounded-xl border border-sidebar-border bg-white/[0.02]">
-                      <p className="text-xs text-muted-foreground">Your address will be</p>
-                      <p className="text-base font-mono font-semibold text-amber break-all mt-1">
-                        {subdomainCandidate}.{SUBDOMAIN_ROOT}
-                      </p>
-                    </div>
-                  )}
-
-                  {subdomainConfirm ? (
-                    <div className="p-4 rounded-xl border border-amber/30 bg-amber/5 space-y-3">
-                      <p className="text-sm text-foreground">
-                        Set your address to{" "}
-                        <strong className="font-mono">{subdomainCandidate}.{SUBDOMAIN_ROOT}</strong> permanently?
-                      </p>
-                      <p className="text-xs text-muted-foreground">This cannot be undone.</p>
-                      <div className="flex gap-2">
-                        <Button onClick={handleClaimSubdomain} disabled={claimingSubdomain} className="gap-2">
-                          {claimingSubdomain ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                          Yes, set it permanently
-                        </Button>
-                        <Button variant="outline" onClick={() => setSubdomainConfirm(false)} disabled={claimingSubdomain}>
-                          Cancel
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <Button
-                      onClick={() => setSubdomainConfirm(true)}
-                      disabled={!subdomainCandidate || !!subdomainInvalid}
-                      className="gap-2"
-                    >
-                      <Globe className="w-4 h-4" /> Set my address
-                    </Button>
-                  )}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Separator />
-        </>
-      )}
-
-      {/* Public Listing */}
+      {/* Where the public-site controls went. Deliberately sits exactly where
+          they used to, so nobody who bookmarked this page is stranded. Ungated:
+          partners had the Public Listing card here too. */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
             <Globe className="w-4 h-4 text-muted-foreground" />
-            <CardTitle className="text-base">Public Listing</CardTitle>
+            <CardTitle className="text-base">Your public website</CardTitle>
           </div>
-          <CardDescription>
-            Publish your own page so tenants can view rooms and apply directly — share the link on WhatsApp, Facebook, or anywhere else.{" "}
-            <a href="/find" target="_blank" className="inline-flex items-center gap-0.5 text-amber hover:underline">
-              Preview my page <ExternalLink className="w-3 h-3" />
-            </a>
-          </CardDescription>
+          {/* Role-neutral on purpose: the web address, appearance and social
+              links cards on /website are owner-only, so naming them here would
+              promise a partner four things and show them two. */}
+          <CardDescription>Your public listing and branding now have their own page.</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={saveListing} className="space-y-5">
-            <fieldset disabled={!canFullTier} className="space-y-5 min-w-0">
-            {/* Toggle */}
-            <div className="flex items-center justify-between p-4 rounded-xl border border-sidebar-border bg-white/[0.02]">
-              <div>
-                <p className="text-sm font-medium text-foreground">
-                  {listingForm.listing_enabled ? "Listed publicly" : "Not listed"}
-                </p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {listingForm.listing_enabled
-                    ? "Your hostel appears in the public directory."
-                    : "Enable to appear in the public hostel directory."}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setListingForm((f) => ({ ...f, listing_enabled: !f.listing_enabled }))}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none ${
-                  listingForm.listing_enabled ? "bg-amber" : "bg-muted"
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform ${
-                    listingForm.listing_enabled ? "translate-x-5" : "translate-x-0"
-                  }`}
-                />
-              </button>
-            </div>
-
-            {listingForm.listing_enabled && (
-              <>
-                {/* Info notice */}
-                <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-amber/5 border border-amber/15 text-xs text-muted-foreground">
-                  <Building2 className="w-3.5 h-3.5 text-amber shrink-0 mt-0.5" />
-                  <span>
-                    Name, city, area, phone, email, and capacity are pulled from{" "}
-                    <strong className="text-foreground">Hostel Information</strong> above — no need to enter them again.
-                  </span>
-                </div>
-
-                {/* Cover Image */}
-                <div className="space-y-2">
-                  <Label>Cover Image</Label>
-                  <p className="text-xs text-muted-foreground">Shown on the /find directory card. JPEG, PNG or WebP · max 3 MB.</p>
-                  {coverImageUrl ? (
-                    <div className="relative w-full h-36 rounded-xl overflow-hidden border border-white/[0.08] group">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={coverImageUrl} alt="Cover" className="w-full h-full object-cover" />
-                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-colors flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                        <button
-                          type="button"
-                          onClick={() => coverInputRef.current?.click()}
-                          className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-medium backdrop-blur-sm transition-colors"
-                        >
-                          {uploadingCover ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImagePlus className="w-3.5 h-3.5" />}
-                          Replace
-                        </button>
-                        <button
-                          type="button"
-                          onClick={removeCoverImage}
-                          className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-xs font-medium backdrop-blur-sm transition-colors"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" /> Remove
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => coverInputRef.current?.click()}
-                      disabled={uploadingCover}
-                      className="w-full h-28 rounded-xl border-2 border-dashed border-white/[0.08] hover:border-amber/30 hover:bg-amber/[0.02] flex flex-col items-center justify-center gap-2 text-muted-foreground hover:text-foreground transition-all"
-                    >
-                      {uploadingCover
-                        ? <Loader2 className="w-5 h-5 animate-spin text-amber" />
-                        : <ImagePlus className="w-5 h-5" />}
-                      <span className="text-xs">{uploadingCover ? "Uploading…" : "Click to upload cover image"}</span>
-                    </button>
-                  )}
-                  <input
-                    ref={coverInputRef}
-                    type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    className="hidden"
-                    onChange={uploadCoverImage}
-                  />
-                </div>
-
-                {/* Google Maps link */}
-                <div className="space-y-1.5">
-                  <Label>Google Maps Link</Label>
-                  <Input type="url" placeholder="https://maps.google.com/…" value={listingForm.maps_url} onChange={(e) => setListingForm({ ...listingForm, maps_url: e.target.value })} />
-                </div>
-
-                {/* Description */}
-                <div className="space-y-1.5">
-                  <Label>Short Description</Label>
-                  <textarea
-                    rows={3}
-                    placeholder="Tell prospective tenants about your hostel…"
-                    value={listingForm.description}
-                    onChange={(e) => setListingForm({ ...listingForm, description: e.target.value })}
-                    className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none"
-                  />
-                </div>
-
-                {/* Hostel Type */}
-                <div className="space-y-2">
-                  <Label>Hostel Type</Label>
-                  <div className="flex flex-wrap gap-2">
-                    {HOSTEL_TYPES.map((t) => (
-                      <button
-                        key={t.value}
-                        type="button"
-                        onClick={() => setListingForm((f) => ({ ...f, hostel_type: f.hostel_type === t.value ? "" : t.value }))}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                          listingForm.hostel_type === t.value
-                            ? "bg-amber/10 text-amber border-amber/30"
-                            : "border-sidebar-border text-muted-foreground hover:text-foreground hover:border-sidebar-border/80"
-                        }`}
-                      >
-                        {t.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Amenities */}
-                <div className="space-y-2">
-                  <Label>Amenities</Label>
-                  <div className="flex flex-wrap gap-2">
-                    {ALL_AMENITIES.map((a) => (
-                      <button
-                        key={a}
-                        type="button"
-                        onClick={() => toggleAmenity(a)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                          listingForm.amenities.includes(a)
-                            ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-                            : "border-sidebar-border text-muted-foreground hover:text-foreground"
-                        }`}
-                      >
-                        {a}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Kitchen / Sunday food */}
-                <div className="flex items-center justify-between p-3.5 rounded-xl border border-sidebar-border bg-white/[0.02]">
-                  <div>
-                    <p className="text-sm font-medium text-foreground">Kitchen closed on Sundays</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">Enable if meals are not served on Sundays — shown on your public page</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setListingForm((f) => ({ ...f, food_closed_on_sundays: !f.food_closed_on_sundays }))}
-                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none ${
-                      listingForm.food_closed_on_sundays ? "bg-amber" : "bg-muted"
-                    }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform ${
-                        listingForm.food_closed_on_sundays ? "translate-x-5" : "translate-x-0"
-                      }`}
-                    />
-                  </button>
-                </div>
-              </>
-            )}
-
-            </fieldset>
-            {canFullTier ? (
-              <Button type="submit" disabled={savingListing} className="gap-2">
-                {savingListing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                Save Listing
-              </Button>
-            ) : readOnlyNote}
-          </form>
+          <Button asChild variant="outline"><Link href="/website">Open Website settings</Link></Button>
         </CardContent>
       </Card>
 

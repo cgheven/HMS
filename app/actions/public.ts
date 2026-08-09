@@ -17,6 +17,25 @@ export interface BranchPublicInfo {
   notice_period_days: number | null;
 }
 
+/** Everything the public site needs about the OWNER rather than a branch. One
+ *  shape shared by both entry points so /find/{slug} and the branded subdomain
+ *  can never drift; previously this was hand-duplicated at three call sites. */
+export type OwnerSitePayload = {
+  ownerName?: string | null;
+  logoUrl?: string | null;
+  instagramHandle?: string | null;
+  facebookHandle?: string | null;
+  /** Owner-chosen appearance, resolved from NULL to "light" here so no caller
+   *  has to know that NULL is the default. Honoured by every route under the
+   *  branded subdomain — home, branch and application form — so the site is one
+   *  palette end to end. The path routes (/find/{slug}, /join/{slug}) belong to
+   *  the Pulse directory rather than to one owner and stay light. */
+  theme?: "light" | "dark";
+  branches?: PublicHostel[];
+  branchInfo?: BranchPublicInfo[];
+  error?: string;
+};
+
 // ---------------------------------------------------------------------------
 // Image validation helpers (F-004: magic-byte check)
 // ---------------------------------------------------------------------------
@@ -117,14 +136,7 @@ export async function getPublicHostels(): Promise<{ hostels?: PublicHostel[]; er
 // hms_profiles.subdomain). Not exported: this file is "use server", so anything
 // exported becomes a callable server action, and an owner_id-keyed lookup must
 // never be reachable from the browser.
-async function branchesForOwner(
-  ownerId: string
-): Promise<{
-  ownerName?: string | null;
-  branches?: PublicHostel[];
-  branchInfo?: BranchPublicInfo[];
-  error?: string;
-}> {
+async function branchesForOwner(ownerId: string): Promise<OwnerSitePayload> {
   const admin = createAdminClient();
 
   const { data, error } = await admin
@@ -139,7 +151,7 @@ async function branchesForOwner(
   if (hostels.length === 0) return { error: "Hostel not found" };
 
   const ids = hostels.map((h) => h.id);
-  const [{ data: rooms }, { data: profile }, { data: configs }] = await Promise.all([
+  const [{ data: rooms }, { data: profile, error: profileErr }, { data: configs }] = await Promise.all([
     // Room shape matches what buildPackageOptions needs, so the headline price
     // is derived exactly the way the branch page derives it.
     admin
@@ -147,12 +159,25 @@ async function branchesForOwner(
       .select("id, hostel_id, room_number, floor, type, capacity, occupied, monthly_rent, status, has_ac, has_cooler, has_attached_washroom")
       .in("hostel_id", ids)
       .neq("status", "maintenance"),
-    admin.from("hms_profiles").select("full_name").eq("id", ownerId).maybeSingle(),
+    // One query, not two: these owner-level columns ride along inside the
+    // existing fan-out, so branding, socials and theme cost no extra round trip.
+    admin
+      .from("hms_profiles")
+      .select("full_name, business_name, logo_url, instagram_handle, facebook_handle, public_theme")
+      .eq("id", ownerId)
+      .maybeSingle(),
     admin
       .from("hms_package_configs")
       .select("*")
       .in("hostel_id", ids),
   ]);
+
+  // A renamed or missing column here comes back as an error with data = null,
+  // and without this line that reads as "this owner has no profile": the
+  // trading name, logo and socials would silently blank on every client's
+  // public page with nothing in the logs. Throw so the wrappers' catch turns it
+  // into the visible "Something went wrong" instead.
+  if (profileErr) throw profileErr;
 
   // Availability counts only rooms actually on offer, matching the badge shown
   // on each card.
@@ -201,12 +226,35 @@ async function branchesForOwner(
     };
   });
 
+  // Trading name first, personal name only as a fallback. Without this the
+  // public site headlines the owner's own name — "Najam" where "Najam Hostels"
+  // belongs — which reads as an unfinished profile to a prospect.
+  const brandName =
+    (profile as { business_name?: string | null } | null)?.business_name?.trim() || profile?.full_name || null;
+  const brandLogo = (profile as { logo_url?: string | null } | null)?.logo_url ?? null;
+
+  const site = profile as {
+    instagram_handle?: string | null;
+    facebook_handle?: string | null;
+    public_theme?: string | null;
+  } | null;
+
+  // Anything that is not exactly "dark" resolves to light, including NULL and
+  // any value a widened CHECK might introduce later. Light is what every client
+  // is served today, so an owner who never opens the Appearance control can
+  // never be flipped by a schema change.
+  const theme: "light" | "dark" = site?.public_theme === "dark" ? "dark" : "light";
+
   return {
-    ownerName: profile?.full_name ?? null,
+    ownerName: brandName,
+    logoUrl: brandLogo,
+    instagramHandle: site?.instagram_handle ?? null,
+    facebookHandle: site?.facebook_handle ?? null,
+    theme,
     branchInfo,
     branches: hostels.map((h) => ({
       ...h,
-      owner_name: profile?.full_name ?? null,
+      owner_name: brandName,
       available_beds: availMap[h.id] ?? 0,
     })),
   };
@@ -218,7 +266,7 @@ async function branchesForOwner(
 // a global directory that also surfaces competitors.
 export const getPublicHostelsByOwner = cache(async function getPublicHostelsByOwner(
   slug: string
-): Promise<{ ownerName?: string | null; branches?: PublicHostel[]; branchInfo?: BranchPublicInfo[]; error?: string }> {
+): Promise<OwnerSitePayload> {
   try {
     const admin = createAdminClient();
 
@@ -246,7 +294,7 @@ export const getPublicHostelsByOwner = cache(async function getPublicHostelsByOw
 // its subdomain too.
 export const getPublicHostelsBySubdomain = cache(async function getPublicHostelsBySubdomain(
   subdomain: string
-): Promise<{ ownerName?: string | null; branches?: PublicHostel[]; branchInfo?: BranchPublicInfo[]; error?: string }> {
+): Promise<OwnerSitePayload> {
   try {
     const normalized = subdomain.trim().toLowerCase();
     if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(normalized)) return { error: "Hostel not found" };
@@ -289,7 +337,7 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
     const { start: monthStart, end: monthEnd } = getMonthRange();
 
     const [{ data: profile }, { data: rooms }, { data: foodItems }, { data: pkgConfig }] = await Promise.all([
-      admin.from("hms_profiles").select("full_name").eq("id", hostelData.owner_id).maybeSingle(),
+      admin.from("hms_profiles").select("full_name, business_name").eq("id", hostelData.owner_id).maybeSingle(),
       admin
         .from("hms_rooms")
         .select("id,room_number,floor,type,capacity,occupied,monthly_rent,status,has_ac,has_cooler,has_attached_washroom,photo_path,photo_path_2,photo_path_3,photo_path_4,photo_path_5")
@@ -327,7 +375,12 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
     return {
       hostel: {
         ...hostelData,
-        owner_name: profile?.full_name ?? null,
+        // Same trading-name-first rule as the business page, so a branch page
+        // and the site it sits under never disagree about who runs it.
+        owner_name:
+          (profile as { business_name?: string | null } | null)?.business_name?.trim() ||
+          profile?.full_name ||
+          null,
         available_beds,
         rooms: (rooms ?? []) as PublicRoom[],
         food_menu: (foodItems ?? []) as FoodItem[],

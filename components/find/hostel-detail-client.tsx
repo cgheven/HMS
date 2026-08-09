@@ -16,6 +16,18 @@ import { getSeaterPrice, getSeaterDeposit, SEATER_CAPACITIES, SEATER_LABELS } fr
 import { buildPackageOptions } from "@/lib/room-pricing";
 import type { PublicHostelDetail, PublicRoom, FoodItem, MealType, SpaceType, PackageConfig, PackageTier, FoodMenuType } from "@/types";
 
+// COLOUR RULE FOR THIS FILE. It renders under both public palettes now — a
+// branded site set to dark serves its branch pages dark too — so nothing here
+// may assume a white page. The room chips, menu headers and seat counters use
+// the pub-* tokens (app/(public)/public-theme.css), whose light values are the
+// exact hexes they replaced. Two deliberate exceptions stay literal:
+//   · the solid #006c49 WhatsApp buttons — a brand fill with white on it, which
+//     reads the same on either palette;
+//   · #191c1d scrims and the white photo dots — these sit ON A PHOTOGRAPH, not
+//     on the page, so they must not follow the theme. (bg-foreground would
+//     become a WHITE scrim with white text on it once the page is dark.)
+// Anything new that is not on a photo belongs on a token.
+
 // ── WhatsApp icon ─────────────────────────────────────────────────────────────
 
 function WhatsAppIcon({ cls = "w-4 h-4" }: { cls?: string }) {
@@ -120,22 +132,25 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
   return (
     <>
       <div role="dialog" aria-modal="true" aria-label={`Room ${room.room_number} details`} className="fixed inset-0 z-50 flex items-center justify-center sm:p-4">
-        <div className="absolute inset-0 bg-black/75 backdrop-blur-md" onClick={onClose} />
+        <div className="absolute inset-0 bg-[#191c1d]/45 backdrop-blur-md" onClick={onClose} />
 
         {/* Modal container */}
-        <div className="relative w-full h-full sm:h-auto sm:max-h-[90vh] sm:max-w-4xl rounded-none sm:rounded-2xl border-0 sm:border sm:border-white/[0.08] bg-[#0E0E10] shadow-2xl overflow-hidden flex flex-col sm:flex-row">
+        <div className="relative w-full h-full sm:h-auto sm:max-h-[90vh] sm:max-w-4xl rounded-none sm:rounded-2xl border-0 sm:border sm:border-border bg-surface-dialog shadow-2xl overflow-hidden flex flex-col sm:flex-row">
 
           {/* Close button — min 44px touch target (H6) */}
           <button
             onClick={onClose}
             aria-label="Close room details"
-            className="absolute top-3 right-3 z-10 w-11 h-11 flex items-center justify-center rounded-full bg-black/60 hover:bg-black/80 text-white transition-colors"
+            className="absolute top-3 right-3 z-10 w-11 h-11 flex items-center justify-center rounded-full bg-[#191c1d]/70 hover:bg-[#191c1d] text-white transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
 
           {/* LEFT PANEL — photo + thumbnails */}
-          <div className="w-full sm:w-[55%] shrink-0 flex flex-col bg-[#090909]">
+          {/* Same surface as the dialog panel. The original used a slightly darker
+              #090909 here, but the photo rarely fills the pane and the leftover
+              area then read as a second, blacker panel inside the modal. */}
+          <div className="w-full sm:w-[55%] shrink-0 flex flex-col bg-surface-dialog">
 
             {/* Photo area */}
             <div className="relative h-56 sm:h-72 overflow-hidden">
@@ -185,16 +200,16 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                   {/* Full overlay */}
                   {isFull && (
                     <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                      <span className="text-sm font-semibold text-rose-300 bg-rose-500/20 border border-rose-400/30 px-3 py-1.5 rounded-full">Full</span>
+                      <span className="text-sm font-semibold text-foreground bg-background/95 border border-input px-3 py-1.5 rounded-full">Full</span>
                     </div>
                   )}
                 </>
               ) : (
-                <div className="w-full h-full bg-gradient-to-br from-white/[0.04] to-transparent flex items-center justify-center">
-                  <BedDouble className="w-12 h-12 text-muted-foreground/15" />
+                <div className="w-full h-full bg-muted flex items-center justify-center">
+                  <BedDouble className="w-12 h-12 text-border" />
                   {isFull && (
-                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                      <span className="text-sm font-semibold text-rose-300 bg-rose-500/20 border border-rose-400/30 px-3 py-1.5 rounded-full">Full</span>
+                    <div className="absolute inset-0 bg-[#191c1d]/40 flex items-center justify-center">
+                      <span className="text-sm font-semibold text-foreground bg-background/95 border border-input px-3 py-1.5 rounded-full">Full</span>
                     </div>
                   )}
                 </div>
@@ -203,13 +218,13 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
 
             {/* Thumbnail strip */}
             {photos.length > 1 && (
-              <div className="flex gap-2 p-3 border-t border-white/[0.05]">
+              <div className="flex gap-2 p-3 border-t border-border">
                 {photos.map((src, i) => (
                   <button
                     key={i}
                     onClick={() => setPhotoIdx(i)}
                     aria-label={`View photo ${i + 1}`}
-                    className={`w-16 h-12 rounded-lg overflow-hidden border-2 transition-all ${i === photoIdx ? "border-amber/60" : "border-white/[0.08] opacity-60 hover:opacity-100"}`}
+                    className={`w-16 h-12 rounded-lg overflow-hidden border-2 transition-all ${i === photoIdx ? "border-primary" : "border-border opacity-60 hover:opacity-100"}`}
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={src} alt={`Room ${room.room_number} photo ${i + 1}`} className="w-full h-full object-cover" />
@@ -232,29 +247,29 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
 
                 {/* Badges row */}
                 <div className="flex flex-wrap gap-2 mt-3">
-                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-white/[0.06] border border-white/[0.1] text-muted-foreground">
+                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-muted border border-border text-muted-foreground">
                     {SPACE_LABELS[room.type]}
                   </span>
 
                   {room.has_ac ? (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-blue-500/10 border border-blue-400/20 text-blue-400">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-pub-info/10 border border-pub-info/25 text-pub-info">
                       <Wind className="w-3 h-3" />
                       AC Available{hostel.package_config ? ` · ${formatCurrency(hostel.package_config.ac_per_unit_rate)}/unit` : ""}
                     </span>
                   ) : (
-                    <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-white/[0.04] border border-white/[0.07] text-muted-foreground/50">
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-muted border border-border text-muted-foreground">
                       No AC
                     </span>
                   )}
 
                   {room.has_cooler && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-cyan-500/10 border border-cyan-400/20 text-cyan-400">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-pub-cool/10 border border-pub-cool/25 text-pub-cool">
                       <Thermometer className="w-3 h-3" /> Cooler
                     </span>
                   )}
 
                   {room.has_attached_washroom && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-violet-500/10 border border-violet-400/20 text-violet-400">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-pub-violet/10 border border-pub-violet/25 text-pub-violet">
                       <Droplet className="w-3 h-3" /> Attached Washroom
                     </span>
                   )}
@@ -263,25 +278,25 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
 
               {/* Seats available */}
               <div className="flex items-center gap-3">
-                <div className={`flex flex-col items-center justify-center w-14 h-14 rounded-xl border ${isFull ? "bg-rose-500/5 border-rose-400/20" : "bg-emerald-500/8 border-emerald-400/20"}`}>
-                  <span className={`text-2xl font-bold leading-none ${isFull ? "text-rose-400" : "text-emerald-400"}`}>
+                <div className={`flex flex-col items-center justify-center w-14 h-14 rounded-xl border ${isFull ? "bg-surface-sunken border-border" : "bg-pub-success/10 border-pub-success/25"}`}>
+                  <span className={`text-2xl font-bold leading-none ${isFull ? "text-muted-foreground" : "text-pub-success"}`}>
                     {isFull ? "0" : available}
                   </span>
-                  <span className={`text-[9px] font-medium mt-0.5 ${isFull ? "text-rose-400/60" : "text-emerald-400/60"}`}>
+                  <span className={`text-[9px] font-medium mt-0.5 ${isFull ? "text-muted-foreground" : "text-pub-success"}`}>
                     {available === 1 ? "seat" : "seats"}
                   </span>
                 </div>
                 <div>
                   <p className="text-sm font-medium">{isFull ? "Room Full" : `${available} seat${available !== 1 ? "s" : ""} available`}</p>
-                  <p className="text-xs text-muted-foreground/50 mt-0.5">{room.occupied}/{room.capacity} occupied</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">{room.occupied}/{room.capacity} occupied</p>
                 </div>
               </div>
 
-              <div className="border-t border-white/[0.06]" />
+              <div className="border-t border-border" />
 
               {/* Package selector */}
               <div>
-                <p className="text-xs font-semibold text-muted-foreground/60 uppercase tracking-widest mb-3">Select Package</p>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-3">Select Package</p>
                 <div className="space-y-2">
                   {packages.map((pkg) => (
                     <button
@@ -298,10 +313,10 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                       }}
                       className={`w-full text-left rounded-xl border px-4 py-3.5 transition-all duration-200 ${
                         pkg.disabled
-                          ? "opacity-40 cursor-not-allowed border-white/[0.05] bg-white/[0.01]"
+                          ? "cursor-not-allowed border-border bg-muted text-muted-foreground"
                           : selectedTier === pkg.tier
-                          ? "border-amber/40 bg-amber/[0.06]"
-                          : "border-white/[0.07] bg-white/[0.02] hover:border-white/[0.12]"
+                          ? "border-primary bg-primary/[0.06]"
+                          : "border-border bg-card hover:border-input"
                       }`}
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -309,24 +324,24 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                           {/* Radio dot */}
                           <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
                             selectedTier === pkg.tier && !pkg.disabled
-                              ? "border-amber bg-amber/20"
-                              : "border-white/20"
+                              ? "border-primary bg-primary/15"
+                              : "border-input"
                           }`}>
                             {selectedTier === pkg.tier && !pkg.disabled && (
-                              <div className="w-1.5 h-1.5 rounded-full bg-amber" />
+                              <div className="w-1.5 h-1.5 rounded-full bg-primary" />
                             )}
                           </div>
                           <div className="min-w-0">
                             <p className="text-sm font-medium leading-tight">{pkg.label}</p>
-                            <p className="text-xs text-muted-foreground/60 mt-0.5">{pkg.subtitle}</p>
+                            <p className="text-xs text-muted-foreground mt-0.5">{pkg.subtitle}</p>
                             {pkg.extra && (
-                              <p className="text-[11px] text-muted-foreground/40 mt-0.5">{pkg.extra}</p>
+                              <p className="text-[11px] text-muted-foreground mt-0.5">{pkg.extra}</p>
                             )}
                           </div>
                         </div>
                         <div className="shrink-0 text-right">
-                          <p className="text-sm font-semibold text-amber">{formatCurrency(pkg.price)}</p>
-                          <p className="text-[10px] text-muted-foreground/40 mt-0.5">/mo</p>
+                          <p className="text-sm font-semibold text-primary">{formatCurrency(pkg.price)}</p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">/mo</p>
                         </div>
                       </div>
                     </button>
@@ -335,7 +350,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
 
                 {/* AC rate callout */}
                 {room.has_ac && hostel.package_config && (
-                  <div className="mt-3 rounded-lg border border-blue-400/15 bg-blue-500/[0.06] px-3 py-2 text-[11px] text-blue-400/80">
+                  <div className="mt-3 rounded-lg border border-pub-info/25 bg-pub-info/[0.06] px-3 py-2 text-[11px] text-pub-info">
                     AC units charged separately at {formatCurrency(hostel.package_config.ac_per_unit_rate)}/unit consumed
                   </div>
                 )}
@@ -344,12 +359,12 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
               {/* Add Meals — optional, independent of package. Only shown if hostel configured rates. */}
               {foodAddonOffered && foodRates && (
                 <div>
-                  <p className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-widest mb-2">
-                    Add Meals <span className="normal-case font-normal text-muted-foreground/40">(optional)</span>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">
+                    Add Meals <span className="normal-case font-normal text-muted-foreground">(optional)</span>
                   </p>
                   {hasIndividualFoodRates(foodRates) ? (
                     <>
-                      <div className="rounded-xl border border-white/[0.07] overflow-hidden divide-y divide-white/[0.05]">
+                      <div className="rounded-xl border border-border overflow-hidden divide-y divide-border">
                         {([
                           { key: "food_breakfast" as const, label: "Breakfast", rate: Number(foodRates.food_breakfast_rate) },
                           { key: "food_lunch" as const, label: "Lunch", rate: Number(foodRates.food_lunch_rate) },
@@ -361,15 +376,15 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                               key={m.key}
                               type="button"
                               onClick={() => setMeals({ ...meals, [m.key]: !checked })}
-                              className={`w-full flex items-center justify-between px-3.5 py-2.5 text-sm transition-colors ${checked ? "bg-amber/[0.06]" : "bg-white/[0.01] hover:bg-white/[0.03]"}`}
+                              className={`w-full flex items-center justify-between px-3.5 py-2.5 text-sm transition-colors ${checked ? "bg-primary/[0.06]" : "bg-card hover:bg-muted"}`}
                             >
                               <span className="flex items-center gap-2.5">
-                                <span className={`w-4 h-4 rounded shrink-0 border-2 flex items-center justify-center ${checked ? "border-amber bg-amber" : "border-white/20"}`}>
-                                  {checked && <Check className="w-3 h-3 text-black" strokeWidth={3} />}
+                                <span className={`w-4 h-4 rounded shrink-0 border-2 flex items-center justify-center ${checked ? "border-primary bg-primary" : "border-input"}`}>
+                                  {checked && <Check className="w-3 h-3 text-primary-foreground" strokeWidth={3} />}
                                 </span>
                                 <span className={checked ? "text-foreground" : "text-muted-foreground"}>{m.label}</span>
                               </span>
-                              <span className={`text-xs font-medium ${checked ? "text-amber" : "text-muted-foreground/60"}`}>+{formatCurrency(m.rate)}</span>
+                              <span className={`text-xs font-medium ${checked ? "text-primary" : "text-muted-foreground"}`}>+{formatCurrency(m.rate)}</span>
                             </button>
                           );
                         })}
@@ -377,7 +392,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                       {meals.food_breakfast && meals.food_lunch && meals.food_dinner
                         && Number(foodRates.food_all_meals_rate) > 0
                         && Number(foodRates.food_all_meals_rate) < (Number(foodRates.food_breakfast_rate) + Number(foodRates.food_lunch_rate) + Number(foodRates.food_dinner_rate)) && (
-                        <p className="text-[11px] text-emerald-400 mt-2">
+                        <p className="text-[11px] text-pub-success mt-2">
                           All-3-meals bundle applied: {formatCurrency(Number(foodRates.food_all_meals_rate))}/mo
                         </p>
                       )}
@@ -391,15 +406,15 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                         <button
                           type="button"
                           onClick={() => setMeals({ food_breakfast: !checked, food_lunch: !checked, food_dinner: !checked })}
-                          className={`w-full flex items-center justify-between px-3.5 py-2.5 text-sm rounded-xl border transition-colors ${checked ? "bg-amber/[0.06] border-amber/30" : "bg-white/[0.01] border-white/[0.07] hover:bg-white/[0.03]"}`}
+                          className={`w-full flex items-center justify-between px-3.5 py-2.5 text-sm rounded-xl border transition-colors ${checked ? "bg-primary/[0.06] border-primary" : "bg-card border-border hover:bg-muted"}`}
                         >
                           <span className="flex items-center gap-2.5">
-                            <span className={`w-4 h-4 rounded shrink-0 border-2 flex items-center justify-center ${checked ? "border-amber bg-amber" : "border-white/20"}`}>
-                              {checked && <Check className="w-3 h-3 text-black" strokeWidth={3} />}
+                            <span className={`w-4 h-4 rounded shrink-0 border-2 flex items-center justify-center ${checked ? "border-primary bg-primary" : "border-input"}`}>
+                              {checked && <Check className="w-3 h-3 text-primary-foreground" strokeWidth={3} />}
                             </span>
                             <span className={checked ? "text-foreground" : "text-muted-foreground"}>All Meals (Breakfast + Lunch + Dinner)</span>
                           </span>
-                          <span className={`text-xs font-medium ${checked ? "text-amber" : "text-muted-foreground/60"}`}>+{formatCurrency(Number(foodRates.food_all_meals_rate))}</span>
+                          <span className={`text-xs font-medium ${checked ? "text-primary" : "text-muted-foreground"}`}>+{formatCurrency(Number(foodRates.food_all_meals_rate))}</span>
                         </button>
                       );
                     })()
@@ -408,38 +423,38 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
               )}
 
               {/* Pricing summary */}
-              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] overflow-hidden">
+              <div className="rounded-xl border border-border bg-card overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3">
                   <span className="text-sm text-muted-foreground">{selected.label}</span>
-                  <span className="text-sm font-semibold text-amber">{formatCurrency(selected.price)}</span>
+                  <span className="text-sm font-semibold text-primary">{formatCurrency(selected.price)}</span>
                 </div>
                 {mealsCharge > 0 && (
-                  <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.05]">
+                  <div className="flex items-center justify-between px-4 py-3 border-t border-border">
                     <span className="text-sm text-muted-foreground">{mealsLabel}</span>
-                    <span className="text-sm font-semibold text-amber">{formatCurrency(mealsCharge)}</span>
+                    <span className="text-sm font-semibold text-primary">{formatCurrency(mealsCharge)}</span>
                   </div>
                 )}
-                <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.05]">
+                <div className="flex items-center justify-between px-4 py-3 border-t border-border">
                   <span className="text-sm text-muted-foreground">Security Deposit</span>
                   <span className="text-sm font-semibold">{formatCurrency(SECURITY_DEPOSIT)}</span>
                 </div>
-                <div className="flex items-center justify-between px-4 py-3 border-t border-white/[0.07] bg-white/[0.02]">
+                <div className="flex items-center justify-between px-4 py-3 border-t border-border bg-muted">
                   <span className="text-sm font-semibold">Total Due Today</span>
-                  <span className="text-sm font-bold text-amber">{formatCurrency(selected.price + mealsCharge + SECURITY_DEPOSIT)}</span>
+                  <span className="text-sm font-bold text-primary">{formatCurrency(selected.price + mealsCharge + SECURITY_DEPOSIT)}</span>
                 </div>
               </div>
-              <p className="text-[11px] text-muted-foreground/40 -mt-3">Monthly rent due on the 1st of each month</p>
+              <p className="text-[11px] text-muted-foreground -mt-3">Monthly rent due on the 1st of each month</p>
 
             </div>
 
             {/* CTA buttons — sticky on desktop, fixed on mobile */}
-            <div className="fixed bottom-0 left-0 right-0 sm:static sm:bottom-auto sm:left-auto sm:right-auto z-10 border-t border-white/[0.08] bg-[#0E0E10]/95 sm:bg-transparent backdrop-blur-md sm:backdrop-blur-none px-5 py-3.5 flex gap-2.5">
+            <div className="fixed bottom-0 left-0 right-0 sm:static sm:bottom-auto sm:left-auto sm:right-auto z-10 border-t border-border bg-surface-dialog/95 sm:bg-transparent backdrop-blur-md sm:backdrop-blur-none px-5 py-3.5 flex gap-2.5">
               {waMsg ? (
                 <a
                   href={waMsg}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex-1 flex items-center justify-center gap-2 h-11 rounded-xl bg-[#25D366]/10 hover:bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/25 text-sm font-semibold transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 h-11 rounded-xl bg-[#006c49] hover:bg-[#005238] text-white border border-[#006c49] text-sm font-semibold transition-colors"
                 >
                   <WhatsAppIcon cls="w-4 h-4" /> WhatsApp Now
                 </a>
@@ -449,7 +464,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
               {hostel.slug && (
                 <Link
                   href={`/join/${hostel.slug}?room=${encodeURIComponent(room.room_number)}`}
-                  className="flex-1 flex items-center justify-center gap-2 h-11 rounded-xl border border-white/[0.12] hover:border-white/20 hover:bg-white/[0.04] text-sm font-medium text-foreground transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 h-11 rounded-xl border border-primary hover:bg-primary/[0.06] text-sm font-medium text-primary transition-colors"
                 >
                   Apply / Register
                 </Link>
@@ -465,9 +480,9 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
 // ── Food menu ─────────────────────────────────────────────────────────────────
 
 const MEAL_HEADER_COLOR: Record<MealType, string> = {
-  breakfast: "text-amber",
-  lunch:     "text-emerald-400",
-  dinner:    "text-blue-400",
+  breakfast: "text-primary",
+  lunch:     "text-pub-success",
+  dinner:    "text-pub-info",
 };
 
 function byMealType(dayItems: FoodItem[]) {
@@ -486,12 +501,12 @@ interface FoodMenuRow { key: string; label: string; closed: boolean; meals: Part
 // obvious and cluttered).
 function FoodMenuTable({ rows }: { rows: FoodMenuRow[] }) {
   return (
-    <div className="overflow-x-auto rounded-xl border border-white/[0.07]">
+    <div className="overflow-x-auto rounded-xl border border-border">
       <table className="w-full min-w-[480px] border-collapse text-sm">
         <thead>
-          <tr className="border-b border-white/[0.07] bg-white/[0.02]">
-            <th className="px-3.5 py-2.5 text-left sticky left-0 bg-[#111113] z-10 border-r border-white/[0.05] w-[120px]">
-              <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Day</span>
+          <tr className="border-b border-border bg-muted">
+            <th className="px-3.5 py-2.5 text-left sticky left-0 bg-muted z-10 border-r border-border w-[120px]">
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">Day</span>
             </th>
             {(["breakfast", "lunch", "dinner"] as MealType[]).map((mealType) => (
               <th key={mealType} className="px-3.5 py-2.5 text-left">
@@ -504,11 +519,11 @@ function FoodMenuTable({ rows }: { rows: FoodMenuRow[] }) {
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.key} className={`border-b border-white/[0.05] last:border-0 ${row.closed ? "opacity-40" : ""}`}>
-              <td className="px-3.5 py-2.5 align-top sticky left-0 bg-[#111113] z-10 border-r border-white/[0.05]">
+            <tr key={row.key} className={`border-b border-border last:border-0 ${row.closed ? "text-muted-foreground" : ""}`}>
+              <td className="px-3.5 py-2.5 align-top sticky left-0 bg-card z-10 border-r border-border">
                 <span className="text-xs font-semibold">{row.label}</span>
                 {row.closed && (
-                  <span className="block mt-1 w-fit text-[10px] text-amber/70 bg-amber/10 border border-amber/20 px-1.5 py-0.5 rounded-full">Closed</span>
+                  <span className="block mt-1 w-fit text-[10px] text-muted-foreground bg-muted border border-border px-1.5 py-0.5 rounded-full">Closed</span>
                 )}
               </td>
               {(["breakfast", "lunch", "dinner"] as MealType[]).map((mealType) => {
@@ -517,9 +532,9 @@ function FoodMenuTable({ rows }: { rows: FoodMenuRow[] }) {
                   <td key={mealType} className="px-3.5 py-2.5 align-top">
                     {mealItems?.length
                       ? mealItems.map((item) => (
-                          <p key={item.id} className="text-[11px] text-foreground/80 leading-snug">{item.item_name}</p>
+                          <p key={item.id} className="text-[11px] text-foreground leading-snug">{item.item_name}</p>
                         ))
-                      : <span className="text-[11px] text-muted-foreground/25">—</span>}
+                      : <span className="text-[11px] text-muted-foreground">—</span>}
                   </td>
                 );
               })}
@@ -552,9 +567,9 @@ function FoodMenuSection({ items, closedOnSundays, menuType }: { items: FoodItem
     return (
       <section>
         <div className="flex items-center gap-2 mb-4">
-          <Utensils className="w-4 h-4 text-amber" />
+          <Utensils className="w-4 h-4 text-primary" />
           <h2 className="font-semibold text-base">Weekly Menu</h2>
-          {closedOnSundays && <span className="text-[11px] text-amber/70 bg-amber/10 border border-amber/20 px-2 py-0.5 rounded-full">Closed Sundays</span>}
+          {closedOnSundays && <span className="text-[11px] text-pub-warn bg-pub-warn/10 border border-pub-warn/25 px-2 py-0.5 rounded-full">Closed Sundays</span>}
         </div>
         <FoodMenuTable rows={rows} />
       </section>
@@ -581,9 +596,9 @@ function FoodMenuSection({ items, closedOnSundays, menuType }: { items: FoodItem
   return (
     <section>
       <div className="flex items-center gap-2 mb-4">
-        <Utensils className="w-4 h-4 text-amber" />
+        <Utensils className="w-4 h-4 text-primary" />
         <h2 className="font-semibold text-base">Monthly Menu</h2>
-        {closedOnSundays && <span className="text-[11px] text-amber/70 bg-amber/10 border border-amber/20 px-2 py-0.5 rounded-full">Closed Sundays</span>}
+        {closedOnSundays && <span className="text-[11px] text-pub-warn bg-pub-warn/10 border border-pub-warn/25 px-2 py-0.5 rounded-full">Closed Sundays</span>}
       </div>
       <FoodMenuTable rows={rows} />
     </section>
@@ -611,22 +626,22 @@ function WaitlistModal({ hostelId, hostelName, onClose }: { hostelId: string; ho
 
   return (
     <div role="dialog" aria-modal="true" aria-label="Join Waitlist" className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-[#111113] shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.06]">
+      <div className="absolute inset-0 bg-[#191c1d]/45 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-sm rounded-2xl border border-border bg-card shadow-xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div>
             <p className="font-semibold text-sm">Join Waitlist</p>
             <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-[220px]">{hostelName}</p>
           </div>
-          <button onClick={onClose} aria-label="Close" className="p-3 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors">
+          <button onClick={onClose} aria-label="Close" className="p-3 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
         <div className="px-5 py-5">
           {done ? (
             <div className="flex flex-col items-center gap-3 py-4 text-center">
-              <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
-                <Clock className="w-5 h-5 text-emerald-400" />
+              <div className="w-12 h-12 rounded-full bg-pub-success/10 border border-pub-success/25 flex items-center justify-center">
+                <Clock className="w-5 h-5 text-pub-success" />
               </div>
               <div>
                 <p className="font-medium">You&apos;re on the list!</p>
@@ -637,7 +652,7 @@ function WaitlistModal({ hostelId, hostelName, onClose }: { hostelId: string; ho
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
               <p className="text-sm text-muted-foreground">Leave your details — the owner contacts you directly on WhatsApp.</p>
-              {errorMsg && <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">{errorMsg}</p>}
+              {errorMsg && <p className="text-xs text-destructive bg-destructive/10 border border-destructive/25 rounded-lg px-3 py-2">{errorMsg}</p>}
               <div className="space-y-1.5">
                 <Label>Your Name *</Label>
                 <Input placeholder="Ali Ahmed" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -678,14 +693,14 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
       )}
 
       <div
-        className={`flex flex-col rounded-2xl border bg-[#111113] overflow-hidden cursor-pointer ${isFull ? "border-white/[0.05] opacity-60" : "border-white/[0.09] hover:border-amber/20 transition-colors"}`}
+        className={`flex flex-col rounded-2xl border overflow-hidden cursor-pointer transition-all ${isFull ? "border-border bg-surface-sunken" : "border-border bg-card shadow-sm hover:border-primary/40 hover:shadow-md"}`}
         onClick={() => setDetailOpen(true)}
       >
         {/* Photo area */}
         {photos.length > 0 ? (
           <div className="relative h-40 overflow-hidden group">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={photos[activePhoto]} alt={`Room ${room.room_number}`} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03]" />
+            <img src={photos[activePhoto]} alt={`Room ${room.room_number}`} className={`w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.03] ${isFull ? "grayscale opacity-70" : ""}`} />
 
             <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
               <span className="opacity-0 group-hover:opacity-100 transition-opacity text-white text-xs font-medium bg-black/50 px-2.5 py-1 rounded-full">
@@ -707,16 +722,16 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
 
             {isFull && (
               <div className="absolute inset-0 bg-black/55 flex items-center justify-center">
-                <span className="text-xs font-semibold text-rose-300 bg-rose-500/20 border border-rose-400/30 px-2.5 py-1 rounded-full">Full</span>
+                <span className="text-xs font-semibold text-foreground bg-background/95 border border-input px-2.5 py-1 rounded-full">Full</span>
               </div>
             )}
           </div>
         ) : (
-          <div className="relative h-40 bg-gradient-to-br from-white/[0.03] to-transparent border-b border-white/[0.05] flex items-center justify-center">
-            <BedDouble className="w-7 h-7 text-muted-foreground/20" />
+          <div className="relative h-40 bg-muted border-b border-border flex items-center justify-center">
+            <BedDouble className="w-7 h-7 text-border" />
             {isFull && (
-              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                <span className="text-xs font-semibold text-rose-300 bg-rose-500/20 border border-rose-400/30 px-2.5 py-1 rounded-full">Full</span>
+              <div className="absolute inset-0 bg-[#191c1d]/40 flex items-center justify-center">
+                <span className="text-xs font-semibold text-foreground bg-background/95 border border-input px-2.5 py-1 rounded-full">Full</span>
               </div>
             )}
           </div>
@@ -727,39 +742,39 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
           <div className="flex items-start justify-between gap-2">
             <div>
               <p className="font-semibold text-sm leading-tight">Room {room.room_number}</p>
-              <p className="text-[11px] text-muted-foreground/50 mt-0.5">
+              <p className="text-[11px] text-muted-foreground mt-0.5">
                 {SPACE_LABELS[room.type]}{room.floor != null ? ` · Floor ${room.floor}` : ""}
               </p>
             </div>
-            <div className={`shrink-0 flex flex-col items-center justify-center w-12 h-12 rounded-xl border ${isFull ? "bg-rose-500/5 border-rose-400/15" : "bg-emerald-500/8 border-emerald-400/20"}`}>
-              <span className={`text-lg font-bold leading-none ${isFull ? "text-rose-400" : "text-emerald-400"}`}>
+            <div className={`shrink-0 flex flex-col items-center justify-center w-12 h-12 rounded-xl border ${isFull ? "bg-background border-border" : "bg-pub-success/10 border-pub-success/25"}`}>
+              <span className={`text-lg font-bold leading-none ${isFull ? "text-muted-foreground" : "text-pub-success"}`}>
                 {isFull ? "0" : available}
               </span>
-              <span className={`text-[9px] font-medium mt-0.5 ${isFull ? "text-rose-400/60" : "text-emerald-400/60"}`}>
+              <span className={`text-[9px] font-medium mt-0.5 ${isFull ? "text-muted-foreground" : "text-pub-success"}`}>
                 {available === 1 ? "seat" : "seats"}
               </span>
             </div>
           </div>
 
           <div className="flex items-center justify-between text-xs">
-            <span className="font-semibold text-amber">{formatCurrency(cardPrice)}<span className="text-muted-foreground/50 font-normal">/mo</span></span>
-            <span className="text-muted-foreground/50">{room.occupied}/{room.capacity} occupied</span>
+            <span className="font-semibold text-primary">{formatCurrency(cardPrice)}<span className="text-muted-foreground font-normal">/mo</span></span>
+            <span className="text-muted-foreground">{room.occupied}/{room.capacity} occupied</span>
           </div>
 
           {(room.has_ac || room.has_cooler || room.has_attached_washroom) && (
             <div className="flex gap-1.5">
               {room.has_ac && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-400/20 text-[10px] font-medium">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-pub-info/10 text-pub-info border border-pub-info/25 text-[10px] font-medium">
                   <Wind className="w-2.5 h-2.5" /> AC
                 </span>
               )}
               {room.has_cooler && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-400/20 text-[10px] font-medium">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-pub-cool/10 text-pub-cool border border-pub-cool/25 text-[10px] font-medium">
                   <Thermometer className="w-2.5 h-2.5" /> Cooler
                 </span>
               )}
               {room.has_attached_washroom && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-500/10 text-violet-400 border border-violet-400/20 text-[10px] font-medium">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-pub-violet/10 text-pub-violet border border-pub-violet/25 text-[10px] font-medium">
                   <Droplet className="w-2.5 h-2.5" /> Washroom
                 </span>
               )}
@@ -800,27 +815,27 @@ function PackagePricingSection({
   return (
     <section>
       <div className="flex items-center gap-2 mb-3">
-        <Banknote className="w-4 h-4 text-amber" />
+        <Banknote className="w-4 h-4 text-primary" />
         <h2 className="font-semibold text-sm">Monthly Pricing</h2>
       </div>
-      <div className="rounded-xl border border-white/[0.08] bg-[#111113] overflow-hidden">
+      <div className="rounded-xl border border-border bg-card overflow-hidden">
         {/* A real <table> — not stacked CSS grid divs — so column widths are
             computed once across header + every row and stay aligned, instead
             of each row's "auto" columns sizing independently to their own content. */}
         <table className="w-full border-collapse">
           <thead>
-            <tr className="border-b border-white/[0.05]">
+            <tr className="border-b border-border">
               <th className="px-4 py-2 text-left font-normal">
-                <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Package</span>
+                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">Package</span>
               </th>
               {hasNonAcRooms && (
                 <th className="px-4 py-2 text-right font-normal">
-                  <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Standard</span>
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">Standard</span>
                 </th>
               )}
               {hasAcRooms && (
                 <th className="px-4 py-2 text-right font-normal">
-                  <span className="text-[10px] font-semibold text-blue-400/60 uppercase tracking-widest">AC Room</span>
+                  <span className="text-[10px] font-semibold text-pub-info uppercase tracking-widest">AC Room</span>
                 </th>
               )}
             </tr>
@@ -829,23 +844,23 @@ function PackagePricingSection({
             {rows.map((t, i) => {
               const p = prices[t.tier]!;
               return (
-                <tr key={t.tier} className={i !== 0 ? "border-t border-white/[0.05]" : ""}>
+                <tr key={t.tier} className={i !== 0 ? "border-t border-border" : ""}>
                   <td className="px-4 py-3">
                     <p className="text-sm font-medium leading-tight">{t.label}</p>
-                    <p className="text-[11px] text-muted-foreground/50 mt-0.5">{t.subtitle}</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">{t.subtitle}</p>
                   </td>
                   {hasNonAcRooms && (
                     <td className="px-4 py-3 text-right">
                       {p.no_ac > 0
-                        ? <span className="text-sm font-semibold text-amber tabular-nums">{formatCurrency(p.no_ac)}</span>
-                        : <span className="text-xs text-muted-foreground/30">—</span>}
+                        ? <span className="text-sm font-semibold text-primary tabular-nums">{formatCurrency(p.no_ac)}</span>
+                        : <span className="text-xs text-muted-foreground">—</span>}
                     </td>
                   )}
                   {hasAcRooms && (
                     <td className="px-4 py-3 text-right">
                       {p.ac > 0
-                        ? <span className="text-sm font-semibold text-blue-400 tabular-nums">{formatCurrency(p.ac)}</span>
-                        : <span className="text-xs text-muted-foreground/30">—</span>}
+                        ? <span className="text-sm font-semibold text-pub-info tabular-nums">{formatCurrency(p.ac)}</span>
+                        : <span className="text-xs text-muted-foreground">—</span>}
                     </td>
                   )}
                 </tr>
@@ -855,19 +870,19 @@ function PackagePricingSection({
         </table>
         {/* AC note */}
         {hasAcRooms && config.ac_per_unit_rate > 0 && (
-          <div className="border-t border-white/[0.05] px-4 py-2.5 flex items-center gap-2">
-            <Wind className="w-3 h-3 text-blue-400/60 shrink-0" />
-            <span className="text-[11px] text-blue-400/70">AC rooms billed additionally at {formatCurrency(config.ac_per_unit_rate)}/unit consumed</span>
+          <div className="border-t border-border px-4 py-2.5 flex items-center gap-2">
+            <Wind className="w-3 h-3 text-pub-info shrink-0" />
+            <span className="text-[11px] text-pub-info">AC rooms billed additionally at {formatCurrency(config.ac_per_unit_rate)}/unit consumed</span>
           </div>
         )}
         {/* Security deposit */}
         {config.security_deposit > 0 && (
-          <div className="border-t border-white/[0.05] px-4 py-2.5 flex items-center justify-between gap-2">
+          <div className="border-t border-border px-4 py-2.5 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <Banknote className="w-3 h-3 text-amber/60 shrink-0" />
-              <span className="text-[11px] text-muted-foreground/60">Security Deposit (one-time, refundable)</span>
+              <Banknote className="w-3 h-3 text-primary shrink-0" />
+              <span className="text-[11px] text-muted-foreground">Security Deposit (one-time, refundable)</span>
             </div>
-            <span className="text-[11px] font-semibold text-amber tabular-nums">{formatCurrency(config.security_deposit)}</span>
+            <span className="text-[11px] font-semibold text-primary tabular-nums">{formatCurrency(config.security_deposit)}</span>
           </div>
         )}
       </div>
@@ -899,27 +914,27 @@ function SeaterPricingSection({
   return (
     <section>
       <div className="flex items-center gap-2 mb-3">
-        <Banknote className="w-4 h-4 text-amber" />
+        <Banknote className="w-4 h-4 text-primary" />
         <h2 className="font-semibold text-sm">Monthly Pricing</h2>
       </div>
-      <div className="rounded-xl border border-white/[0.08] bg-[#111113] overflow-hidden">
+      <div className="rounded-xl border border-border bg-card overflow-hidden">
         {/* A real <table> — not stacked CSS grid divs — so column widths are
             computed once across header + every row and stay aligned, instead
             of each row's "auto" columns sizing independently to their own content. */}
         <table className="w-full border-collapse">
           <thead>
-            <tr className="border-b border-white/[0.05]">
+            <tr className="border-b border-border">
               <th className="px-4 py-2 text-left font-normal">
-                <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Seater</span>
+                <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">Seater</span>
               </th>
               {hasNonAcRooms && (
                 <th className="px-4 py-2 text-right font-normal">
-                  <span className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">Standard</span>
+                  <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">Standard</span>
                 </th>
               )}
               {hasAcRooms && (
                 <th className="px-4 py-2 text-right font-normal">
-                  <span className="text-[10px] font-semibold text-blue-400/60 uppercase tracking-widest">AC Room</span>
+                  <span className="text-[10px] font-semibold text-pub-info uppercase tracking-widest">AC Room</span>
                 </th>
               )}
             </tr>
@@ -930,27 +945,27 @@ function SeaterPricingSection({
               const depositNoAc = (p.deposit_no_ac ?? 0) > 0 ? p.deposit_no_ac! : config.security_deposit;
               const depositAc = (p.deposit_ac ?? 0) > 0 ? p.deposit_ac! : config.security_deposit;
               return (
-                <tr key={c} className={i !== 0 ? "border-t border-white/[0.05]" : ""}>
+                <tr key={c} className={i !== 0 ? "border-t border-border" : ""}>
                   <td className="px-4 py-3">
                     <p className="text-sm font-medium leading-tight">{SEATER_LABELS[c]}</p>
                   </td>
                   {hasNonAcRooms && (
                     <td className="px-4 py-3 text-right">
                       {p.no_ac > 0
-                        ? <span className="text-sm font-semibold text-amber tabular-nums">{formatCurrency(p.no_ac)}</span>
-                        : <span className="text-xs text-muted-foreground/30">—</span>}
+                        ? <span className="text-sm font-semibold text-primary tabular-nums">{formatCurrency(p.no_ac)}</span>
+                        : <span className="text-xs text-muted-foreground">—</span>}
                       {p.no_ac > 0 && depositNoAc > 0 && (
-                        <span className="block text-[10px] text-muted-foreground/50 mt-0.5">Dep {formatCurrency(depositNoAc)}</span>
+                        <span className="block text-[10px] text-muted-foreground mt-0.5">Dep {formatCurrency(depositNoAc)}</span>
                       )}
                     </td>
                   )}
                   {hasAcRooms && (
                     <td className="px-4 py-3 text-right">
                       {p.ac > 0
-                        ? <span className="text-sm font-semibold text-blue-400 tabular-nums">{formatCurrency(p.ac)}</span>
-                        : <span className="text-xs text-muted-foreground/30">—</span>}
+                        ? <span className="text-sm font-semibold text-pub-info tabular-nums">{formatCurrency(p.ac)}</span>
+                        : <span className="text-xs text-muted-foreground">—</span>}
                       {p.ac > 0 && depositAc > 0 && (
-                        <span className="block text-[10px] text-muted-foreground/50 mt-0.5">Dep {formatCurrency(depositAc)}</span>
+                        <span className="block text-[10px] text-muted-foreground mt-0.5">Dep {formatCurrency(depositAc)}</span>
                       )}
                     </td>
                   )}
@@ -961,14 +976,14 @@ function SeaterPricingSection({
         </table>
         {/* AC note */}
         {hasAcRooms && config.ac_per_unit_rate > 0 && (
-          <div className="border-t border-white/[0.05] px-4 py-2.5 flex items-center gap-2">
-            <Wind className="w-3 h-3 text-blue-400/60 shrink-0" />
-            <span className="text-[11px] text-blue-400/70">AC rooms billed additionally at {formatCurrency(config.ac_per_unit_rate)}/unit consumed</span>
+          <div className="border-t border-border px-4 py-2.5 flex items-center gap-2">
+            <Wind className="w-3 h-3 text-pub-info shrink-0" />
+            <span className="text-[11px] text-pub-info">AC rooms billed additionally at {formatCurrency(config.ac_per_unit_rate)}/unit consumed</span>
           </div>
         )}
         {/* Washroom note */}
         {hasWashroomRooms && config.washroom_premium > 0 && (
-          <div className="border-t border-white/[0.05] px-4 py-2.5 flex items-center gap-2">
+          <div className="border-t border-border px-4 py-2.5 flex items-center gap-2">
             <span className="text-[11px] text-muted-foreground">Rooms with an attached washroom: +{formatCurrency(config.washroom_premium)}/month</span>
           </div>
         )}
@@ -999,17 +1014,17 @@ function StickyBand({ hostel, onWaitlist, backHref }: StickyBandProps) {
         )}
         <span className="font-semibold text-sm truncate">{hostel.name}</span>
         {hostel.available_beds > 0
-          ? <span className="shrink-0 text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-400/20 px-2 py-0.5 rounded-full">{hostel.available_beds} free</span>
-          : <span className="shrink-0 text-[10px] text-rose-400 bg-rose-500/10 border border-rose-400/20 px-2 py-0.5 rounded-full">Full</span>
+          ? <span className="shrink-0 text-[10px] text-pub-success bg-pub-success/10 border border-pub-success/25 px-2 py-0.5 rounded-full">{hostel.available_beds} free</span>
+          : <span className="shrink-0 text-[10px] text-muted-foreground bg-muted border border-border px-2 py-0.5 rounded-full">Full</span>
         }
       </div>
       <div className="flex items-center gap-2 shrink-0">
         {waGeneral && (
-          <a href={waGeneral} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#25D366]/10 hover:bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/20 text-xs font-semibold transition-colors">
+          <a href={waGeneral} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-[#006c49] hover:bg-[#005238] text-white border border-[#006c49] text-xs font-semibold transition-colors">
             <WhatsAppIcon cls="w-3 h-3" /> <span className="hidden sm:inline">WhatsApp</span>
           </a>
         )}
-        <button onClick={onWaitlist} className="flex items-center gap-1.5 h-8 px-3 rounded-lg border border-white/[0.08] hover:bg-white/[0.05] text-xs text-muted-foreground transition-colors">
+        <button onClick={onWaitlist} className="flex items-center gap-1.5 h-8 px-3 rounded-lg border border-input hover:bg-muted text-xs text-foreground transition-colors">
           <Clock className="w-3 h-3" /> Waitlist
         </button>
       </div>
@@ -1023,10 +1038,16 @@ export function HostelDetailClient({
   hostel,
   backHref = null,
   backLabel = "Back",
+  logoUrl = null,
+  brandName = null,
 }: {
   hostel: PublicHostelDetail;
   backHref?: string | null;
   backLabel?: string;
+  // Optional: only the branded-subdomain route has a brand. /find/{slug} does
+  // not, and passes neither.
+  logoUrl?: string | null;
+  brandName?: string | null;
 }) {
   const [waitlistOpen, setWaitlistOpen] = useState(false);
   const [showBand, setShowBand]         = useState(false);
@@ -1061,105 +1082,147 @@ export function HostelDetailClient({
       {waitlistOpen && <WaitlistModal hostelId={hostel.id} hostelName={hostel.name} onClose={() => setWaitlistOpen(false)} />}
 
       {/* Sticky band */}
-      <div className={`fixed top-0 left-0 right-0 z-30 border-b border-white/[0.08] bg-[#0A0A0B]/95 backdrop-blur-md transition-all duration-300 ${showBand ? "translate-y-0 opacity-100" : "-translate-y-full opacity-0"}`}>
+      <div className={`fixed top-0 left-0 right-0 z-30 border-b border-border bg-background/95 backdrop-blur-md transition-all duration-300 ${showBand ? "translate-y-0 opacity-100" : "-translate-y-full opacity-0"}`}>
         <StickyBand hostel={hostel} onWaitlist={() => setWaitlistOpen(true)} backHref={backHref} />
       </div>
 
-      <div className="min-h-screen bg-[#0A0A0B]">
+      <div className="min-h-screen bg-background">
 
         {/* Compact header */}
         <div ref={infoRef}>
-          <nav className="border-b border-white/[0.05] bg-[#0A0A0B]">
-            <div className="max-w-5xl mx-auto px-4 sm:px-6 h-11 flex items-center gap-2">
+          {/* No breadcrumb bar. A full-width strip carrying "All Branches /
+              Rajput Hostel" read as app chrome on what is meant to be a
+              website, and it repeated the h1 directly beneath it. The back
+              link lives inside the header block instead. */}
+          <div className="border-b border-border bg-card">
+            <div className="max-w-5xl mx-auto px-4 sm:px-6 py-5 sm:py-6">
               {backHref && (
-                <>
-                  <Link href={backHref} className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors group text-sm">
-                    <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" /> {backLabel}
-                  </Link>
-                  <span className="text-muted-foreground/25 text-xs">/</span>
-                </>
+                <Link
+                  href={backHref}
+                  className="group inline-flex items-center gap-1.5 mb-3 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5 group-hover:-translate-x-0.5 transition-transform" />
+                  {backLabel}
+                </Link>
               )}
-              <span className="text-sm text-foreground/70 truncate">{hostel.name}</span>
-            </div>
-          </nav>
-
-          <div className="border-b border-white/[0.06] bg-[#0D0D0F]">
-            <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
               <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-6">
 
                 {/* Left: identity + location + amenities */}
                 <div className="min-w-0 flex-1">
 
-                  {/* Title + badges */}
-                  <div className="flex flex-wrap items-center gap-2 mb-3">
-                    <h1 className="font-serif text-2xl sm:text-[28px] font-medium leading-tight tracking-tight">{hostel.name}</h1>
-                    {hostel.hostel_type && (
-                      <span className="text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-amber/10 text-amber border border-amber/20 leading-none">
-                        {TYPE_LABELS[hostel.hostel_type]}
+                  {/* Logo left, name over location — the same lockup the front
+                      door uses, so the two pages read as one site. Gender and
+                      availability are facts about the branch, not part of its
+                      name, so they lead the facts strip below instead. */}
+                  <div className="flex items-center gap-3.5">
+                    {/* 56px is the height of the two-line text block beside it
+                        (28px name + 4px gap + 20px location), so the tile squares
+                        up with the text instead of floating centred against it.
+                        Same size the front door uses. */}
+                    {logoUrl && (
+                      <span className="w-14 h-14 rounded-xl overflow-hidden border border-border bg-card shrink-0">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={logoUrl} alt={brandName ?? "Logo"} className="w-full h-full object-contain" />
                       </span>
                     )}
-                    <span className={`text-[10px] font-semibold px-2.5 py-0.5 rounded-full border leading-none ${hostel.available_beds > 0 ? "bg-emerald-500/10 text-emerald-400 border-emerald-400/20" : "bg-rose-500/10 text-rose-400 border-rose-400/20"}`}>
-                      {hostel.available_beds > 0 ? `${hostel.available_beds} beds free` : "Currently full"}
-                    </span>
-                  </div>
-
-                  {/* Location + Maps button */}
-                  {(hostel.area || hostel.city) && (
-                    <div className="flex items-center gap-2 mb-4">
-                      <MapPin className="w-3.5 h-3.5 text-muted-foreground/40 shrink-0" />
-                      <span className="text-sm text-muted-foreground/60">
-                        {[hostel.area, hostel.city].filter(Boolean).join(", ")}
-                      </span>
-                      {safeMapsUrl && (
-                        <a
-                          href={safeMapsUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          aria-label="Open in Google Maps"
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.04] border border-white/[0.09] text-[11px] text-muted-foreground/60 hover:text-foreground hover:border-white/20 hover:bg-white/[0.07] transition-all"
-                        >
-                          <ExternalLink className="w-2.5 h-2.5" /> Maps
-                        </a>
+                    <div className="min-w-0">
+                      <h1 className="font-serif text-2xl sm:text-[28px] font-medium leading-tight tracking-tight truncate">{hostel.name}</h1>
+                      {/* Deliberately NOT flex-wrap. On a 375px screen the Maps
+                          pill wrapped to a third line, which left the 56px logo
+                          centred against a ~90px block — the same misalignment
+                          this lockup exists to avoid. The location truncates
+                          instead, so the block is always exactly two lines and
+                          the tile always squares up with it. */}
+                      {(hostel.area || hostel.city) && (
+                        <div className="flex items-center gap-2 mt-1 min-w-0 text-sm text-muted-foreground">
+                          <span className="inline-flex items-center gap-1.5 min-w-0">
+                            <MapPin className="w-3.5 h-3.5 shrink-0" />
+                            <span className="truncate">{[hostel.area, hostel.city].filter(Boolean).join(", ")}</span>
+                          </span>
+                          {safeMapsUrl && (
+                            <a
+                              href={safeMapsUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              aria-label="Open in Google Maps"
+                              className="inline-flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-full bg-card border border-border text-[11px] hover:text-foreground hover:border-input hover:bg-muted transition-all shrink-0"
+                            >
+                              {/* Label drops below sm so the pill costs ~30px
+                                  instead of ~70px, leaving the address readable
+                                  rather than truncated on a phone. */}
+                              <ExternalLink className="w-2.5 h-2.5" />
+                              <span className="hidden sm:inline">Maps</span>
+                            </a>
+                          )}
+                        </div>
                       )}
                     </div>
-                  )}
+                  </div>
+
 
                   {/* Description */}
                   {hostel.description && (
-                    <p className="text-sm text-muted-foreground/55 leading-relaxed line-clamp-2 max-w-xl mb-4">{hostel.description}</p>
+                    <p className="text-sm text-muted-foreground leading-relaxed line-clamp-2 max-w-xl mt-3">{hostel.description}</p>
                   )}
 
-                  {/* Amenity chips */}
-                  {(hostel.amenities ?? []).length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {(hostel.amenities ?? []).map((a) => (
-                        <span key={a} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/[0.03] border border-white/[0.07] text-[11px] text-muted-foreground/65">
-                          {AMENITY_ICONS[a] ?? null} {a}
-                        </span>
-                      ))}
-                    </div>
-                  )}
                 </div>
 
-                {/* Right: CTAs — WhatsApp (primary) + Waitlist only */}
-                <div className="flex sm:flex-col gap-2.5 shrink-0 sm:min-w-[160px]">
+                {/* Right: CTAs — WhatsApp (primary) + Waitlist only.
+                    Side by side, never stacked: two 44px buttons in a column
+                    made the CTA block ~98px tall and set the floor for the
+                    whole header band. In a row it is 44px, and since the
+                    amenities moved out of the left column there is nothing
+                    left that needs the width back. */}
+                <div className="flex gap-2.5 shrink-0">
                   {waGeneral && (
                     <a
                       href={waGeneral}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-[#25D366] hover:bg-[#20bd5a] text-black text-sm font-bold transition-colors shadow-[0_0_24px_rgba(37,211,102,0.18)] whitespace-nowrap"
+                      className="flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-[#006c49] hover:bg-[#005238] text-white text-sm font-bold transition-colors shadow-sm whitespace-nowrap"
                     >
                       <WhatsAppIcon cls="w-4 h-4" /> WhatsApp
                     </a>
                   )}
                   <button
                     onClick={() => setWaitlistOpen(true)}
-                    className="flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-white/[0.10] hover:border-white/[0.18] hover:bg-white/[0.04] text-sm text-muted-foreground/80 hover:text-foreground transition-all whitespace-nowrap"
+                    className="flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-input hover:border-foreground hover:bg-muted text-sm text-foreground transition-all whitespace-nowrap"
                   >
                     <Clock className="w-3.5 h-3.5" /> Join Waitlist
                   </button>
                 </div>
+              </div>
+
+              {/* Amenities sit BELOW the two-column row, not inside the left
+                  column, so they get the container's full width instead of the
+                  ~800px left over beside the CTA stack. Ten chips then fit one
+                  row rather than wrapping and dragging the header taller than
+                  the buttons. Uncapped on purpose: these are what sell a bed,
+                  and hiding three behind a "+3 more" on the highest-value
+                  surface of the page was the wrong trade. */}
+              <div className="flex flex-wrap items-center gap-1.5 mt-5 pt-5 border-t border-border">
+                {hostel.hostel_type && (
+                  <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-primary/[0.08] text-primary border border-primary/20">
+                    {TYPE_LABELS[hostel.hostel_type]}
+                  </span>
+                )}
+                <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border ${hostel.available_beds > 0 ? "bg-pub-success/10 text-pub-success border-pub-success/25" : "bg-muted text-muted-foreground border-border"}`}>
+                  {hostel.available_beds > 0 ? `${hostel.available_beds} beds free` : "Currently full"}
+                </span>
+                {(hostel.amenities ?? []).length > 0 && (
+                  <>
+                    {/* Availability and gender are a different KIND of fact from
+                        "has WiFi" — one changes hourly and decides whether you
+                        can live here at all. The rule keeps them from reading as
+                        two more amenities. */}
+                    <span aria-hidden="true" className="w-px h-4 bg-border mx-1" />
+                    {(hostel.amenities ?? []).map((a) => (
+                      <span key={a} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-muted border border-border text-[11px] text-muted-foreground">
+                        {AMENITY_ICONS[a] ?? null} {a}
+                      </span>
+                    ))}
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -1167,7 +1230,7 @@ export function HostelDetailClient({
 
         {/* Tab strip */}
         {(hostel.package_config || hostel.food_menu.length > 0) && (
-          <div className="border-b border-white/[0.06] bg-[#0D0D0F]">
+          <div className="border-b border-border bg-card">
             <div className="max-w-5xl mx-auto px-4 sm:px-6 flex">
               {(["rooms", "details"] as const).map((tab) => (
                 <button
@@ -1175,13 +1238,13 @@ export function HostelDetailClient({
                   onClick={() => setActiveTab(tab)}
                   className={`flex items-center gap-2 px-1 py-3 mr-6 text-sm font-medium border-b-2 transition-colors capitalize ${
                     activeTab === tab
-                      ? "border-amber text-foreground"
-                      : "border-transparent text-muted-foreground/50 hover:text-muted-foreground"
+                      ? "border-primary text-primary"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   {tab === "rooms" ? "Rooms" : "Packages & Menu"}
                   {tab === "rooms" && hostel.rooms.length > 0 && (
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full tabular-nums ${activeTab === "rooms" ? "bg-amber/15 text-amber" : "bg-white/[0.06] text-muted-foreground/40"}`}>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full tabular-nums ${activeTab === "rooms" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
                       {hostel.rooms.length}
                     </span>
                   )}
@@ -1200,8 +1263,8 @@ export function HostelDetailClient({
               {availableRooms.length > 0 && (
                 <section>
                   <div className="flex items-center gap-2 mb-4">
-                    <BedDouble className="w-4 h-4 text-emerald-400" />
-                    <h2 className="font-semibold text-sm">Available Rooms <span className="text-muted-foreground/50 font-normal">({availableRooms.length})</span></h2>
+                    <BedDouble className="w-4 h-4 text-pub-success" />
+                    <h2 className="font-semibold text-sm">Available Rooms <span className="text-muted-foreground font-normal">({availableRooms.length})</span></h2>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                     {availableRooms.map((room) => (
@@ -1214,8 +1277,8 @@ export function HostelDetailClient({
               {fullRooms.length > 0 && (
                 <section>
                   <div className="flex items-center gap-2 mb-4">
-                    <BedDouble className="w-4 h-4 text-muted-foreground/40" />
-                    <h2 className="font-semibold text-sm text-muted-foreground/60">Occupied Rooms <span className="font-normal">({fullRooms.length})</span></h2>
+                    <BedDouble className="w-4 h-4 text-muted-foreground" />
+                    <h2 className="font-semibold text-sm text-muted-foreground">Occupied Rooms <span className="font-normal">({fullRooms.length})</span></h2>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                     {fullRooms.map((room) => (
@@ -1226,9 +1289,9 @@ export function HostelDetailClient({
               )}
 
               {hostel.rooms.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-16 gap-3 text-center rounded-2xl border border-white/[0.05] bg-[#111113]">
-                  <BedDouble className="w-8 h-8 text-muted-foreground/20" />
-                  <p className="text-sm text-muted-foreground/50">Room details not listed yet.</p>
+                <div className="flex flex-col items-center justify-center py-16 gap-3 text-center rounded-2xl border border-border bg-card">
+                  <BedDouble className="w-8 h-8 text-border" />
+                  <p className="text-sm text-muted-foreground">Room details not listed yet.</p>
                 </div>
               )}
             </>
@@ -1273,9 +1336,9 @@ export function HostelDetailClient({
               )}
 
               {!hostel.package_config && hostel.food_menu.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-16 gap-3 text-center rounded-2xl border border-white/[0.05] bg-[#111113]">
-                  <Banknote className="w-8 h-8 text-muted-foreground/20" />
-                  <p className="text-sm text-muted-foreground/50">Pricing details not listed yet.</p>
+                <div className="flex flex-col items-center justify-center py-16 gap-3 text-center rounded-2xl border border-border bg-card">
+                  <Banknote className="w-8 h-8 text-border" />
+                  <p className="text-sm text-muted-foreground">Pricing details not listed yet.</p>
                 </div>
               )}
             </>
@@ -1284,12 +1347,12 @@ export function HostelDetailClient({
 
         {/* Mobile fixed bottom bar */}
         {waGeneral && (
-          <div className="fixed bottom-0 left-0 right-0 z-20 sm:hidden border-t border-white/[0.08] bg-[#0A0A0B]/95 backdrop-blur-md px-4 py-3">
+          <div className="fixed bottom-0 left-0 right-0 z-20 sm:hidden border-t border-border bg-background/95 backdrop-blur-md px-4 py-3">
             <div className="flex gap-2">
-              <a href={waGeneral} target="_blank" rel="noopener noreferrer" className="flex-1 flex items-center justify-center gap-2 h-11 rounded-xl bg-[#25D366]/10 hover:bg-[#25D366]/20 text-[#25D366] border border-[#25D366]/25 text-sm font-semibold transition-colors">
+              <a href={waGeneral} target="_blank" rel="noopener noreferrer" className="flex-1 flex items-center justify-center gap-2 h-11 rounded-xl bg-[#006c49] hover:bg-[#005238] text-white border border-[#006c49] text-sm font-semibold transition-colors">
                 <WhatsAppIcon cls="w-4 h-4" /> WhatsApp Now
               </a>
-              <button onClick={() => setWaitlistOpen(true)} className="flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-white/[0.08] hover:bg-white/[0.05] text-muted-foreground text-sm transition-colors">
+              <button onClick={() => setWaitlistOpen(true)} className="flex items-center justify-center gap-2 h-11 px-4 rounded-xl border border-input hover:bg-muted text-foreground text-sm transition-colors">
                 <Clock className="w-4 h-4" />
               </button>
             </div>

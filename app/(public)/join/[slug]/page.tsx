@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getPublicHostel } from "@/app/actions/public";
 import { JoinFormClient } from "./join-form-client";
+import { PublicShell } from "../../public-shell";
 
 interface Props {
   params: Promise<{ slug: string }>;
@@ -14,5 +15,9 @@ export default async function JoinPage({ params, searchParams }: Props) {
 
   if (error || !hostel) notFound();
 
-  return <JoinFormClient hostel={hostel} preselectedRoomNumber={room ?? null} />;
+  return (
+    <PublicShell>
+      <JoinFormClient hostel={hostel} preselectedRoomNumber={room ?? null} />
+    </PublicShell>
+  );
 }

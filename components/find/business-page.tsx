@@ -9,6 +9,7 @@ import {
 import type { PublicHostel } from "@/types";
 import type { BranchPublicInfo } from "@/app/actions/public";
 import { cn } from "@/lib/utils";
+import { socialUrl } from "@/lib/social";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { PULSE_SITE_URL, PULSE_SOCIALS, PULSE_TAGLINE } from "@/lib/pulse-brand";
 import { sharedAmenities, type Faq } from "@/lib/business-content";
@@ -29,11 +30,16 @@ function WhatsAppIcon({ className }: { className?: string }) {
 // Brand glyphs, same reason as WhatsApp above — lucide has no brand icons.
 // Instagram's mark is a gradient, not a flat colour, so it carries its own
 // fill rather than inheriting currentColor like the others.
-function InstagramIcon({ className }: { className?: string }) {
+// The gradient is defined inside the component, so every instance carries its
+// own <defs>. Two instances sharing one id is invalid HTML that still renders —
+// browsers resolve url(#id) to the first match in document order — and then
+// silently ignores any later edit to whichever definition lost. The default
+// keeps the Pulse footer icon byte-identical to before the prop existed.
+function InstagramIcon({ className, gradientId = "pulse-ig-gradient" }: { className?: string; gradientId?: string }) {
   return (
-    <svg viewBox="0 0 24 24" fill="url(#pulse-ig-gradient)" aria-hidden="true" className={className}>
+    <svg viewBox="0 0 24 24" fill={`url(#${gradientId})`} aria-hidden="true" className={className}>
       <defs>
-        <linearGradient id="pulse-ig-gradient" x1="0" y1="24" x2="24" y2="0">
+        <linearGradient id={gradientId} x1="0" y1="24" x2="24" y2="0">
           <stop offset="0" stopColor="#FFDD55" />
           <stop offset="0.35" stopColor="#FF543E" />
           <stop offset="0.7" stopColor="#C837AB" />
@@ -107,9 +113,9 @@ function BranchPhoto({ branch }: { branch: PublicHostel }) {
   // designed rather than broken.
   const initials = branch.name.split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
   return (
-    <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-amber/[0.07] to-transparent">
-      <Building2 className="w-7 h-7 text-amber/40" />
-      <span className="text-sm font-semibold tracking-widest text-amber/40">{initials}</span>
+    <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-gradient-to-br from-primary/[0.06] to-transparent">
+      <Building2 className="w-7 h-7 text-muted-foreground" />
+      <span className="text-sm font-semibold tracking-widest text-muted-foreground">{initials}</span>
     </div>
   );
 }
@@ -129,14 +135,17 @@ function BranchCard({
   // except that row, and the outer element stays a plain div.
   const body = (
     <>
-      <div className="relative h-40 overflow-hidden bg-[#101012]">
+      <div className="relative h-40 overflow-hidden bg-surface-sunken">
         <BranchPhoto branch={branch} />
         {branch.available_beds > 0 ? (
-          <span className="absolute top-3 right-3 px-2 py-1 rounded-lg bg-emerald-500/15 border border-emerald-500/25 backdrop-blur-sm text-[11px] font-semibold text-emerald-300">
+          <span className="absolute top-3 right-3 px-2 py-1 rounded-lg bg-card/95 border border-pub-success/30 backdrop-blur-sm text-[11px] font-semibold text-pub-success">
             {branch.available_beds} bed{branch.available_beds !== 1 ? "s" : ""} free
           </span>
         ) : (
-          <span className="absolute top-3 right-3 px-2 py-1 rounded-lg bg-white/10 border border-white/15 backdrop-blur-sm text-[11px] font-semibold text-white/70">
+          // Tokens, not fixed white: the pill sits on the card surface, which
+          // is near-black on the dark theme. A white chip there was the
+          // brightest thing on a sold-out card.
+          <span className="absolute top-3 right-3 px-2 py-1 rounded-lg bg-card/95 border border-card-border backdrop-blur-sm text-[11px] font-semibold text-muted-foreground">
             Fully booked
           </span>
         )}
@@ -144,7 +153,7 @@ function BranchCard({
 
       <div className="p-4 space-y-3">
         <div>
-          <h3 className="font-semibold text-foreground leading-tight group-hover:text-amber transition-colors">
+          <h3 className="font-semibold text-foreground leading-tight group-hover:text-primary transition-colors">
             {branch.name}
           </h3>
           {place && (
@@ -156,10 +165,10 @@ function BranchCard({
 
         {/* Same slot whether or not a price exists — an empty gap beside priced
             siblings reads as a broken feature, not an unset field. */}
-        <div className="flex items-end justify-between gap-2 pt-1 border-t border-white/[0.06]">
+        <div className="flex items-end justify-between gap-2 pt-1 border-t border-border">
           {info?.from_price ? (
             <div>
-              <p className="text-[10px] uppercase tracking-wider text-muted-foreground/60">From</p>
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground">From</p>
               <p className="text-lg font-bold text-foreground leading-tight">
                 {pkr(info.from_price)}
                 <span className="text-xs font-normal text-muted-foreground">/month</span>
@@ -169,7 +178,7 @@ function BranchCard({
             <p className="text-sm text-muted-foreground">Contact for pricing</p>
           )}
           {href && (
-            <span className="inline-flex items-center gap-1 text-xs font-medium text-amber shrink-0 pb-1">
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-primary shrink-0 pb-1">
               View <ArrowRight className="w-3 h-3 transition-transform group-hover:translate-x-0.5" />
             </span>
           )}
@@ -179,14 +188,29 @@ function BranchCard({
   );
 
   return (
-    <div className="group h-full flex flex-col rounded-2xl border border-white/[0.07] bg-white/[0.02] overflow-hidden transition-colors hover:border-amber/25">
+    <div className={cn(
+      // border-card-border, not border-border: the default edge is a 1.70:1
+      // hairline and the card surface is only 1.05:1 off the page, so the card
+      // had no perceptible outline at all. --card-border is defined in BOTH
+      // public scopes (public-theme.css) — the dark page has the same problem
+      // for the same reason, and the box-shadows below do nothing on a dark
+      // surface, so the border is the only thing holding the grid together.
+      "group h-full flex flex-col rounded-2xl border border-card-border overflow-hidden transition-all",
+      branch.available_beds > 0
+        ? "bg-card shadow-[0_1px_2px_rgba(16,24,40,0.06),0_1px_3px_rgba(16,24,40,0.10)] hover:border-primary/50 hover:shadow-[0_4px_12px_rgba(16,24,40,0.10)]"
+        // bg-surface-sunken, not bg-accent: --accent is darker than --card on the
+        // light palette but LIGHTER than it on the dark one, so a sold-out branch
+        // would have become the brightest card on a dark page. Same value as
+        // --accent on light, so nothing moves there.
+        : "bg-surface-sunken"
+    )}>
       {href ? <Link href={href} className="block">{body}</Link> : body}
       {safeMapsUrl && (
         <a
           href={safeMapsUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-auto inline-flex items-center gap-1.5 px-4 py-3 border-t border-white/[0.06] text-xs text-muted-foreground hover:text-amber hover:bg-white/[0.02] transition-colors"
+          className="mt-auto inline-flex items-center gap-1.5 px-4 py-3 border-t border-border text-xs text-muted-foreground hover:text-primary hover:bg-muted transition-colors"
         >
           <Navigation className="w-3 h-3" /> Directions
         </a>
@@ -199,6 +223,11 @@ function BranchCard({
 
 interface Props {
   ownerName: string | null;
+  /** Client logo. Falls back to a generic mark when absent. */
+  logoUrl?: string | null;
+  /** Owner-configured handles, not Pulse's. Validated at render by socialUrl(). */
+  instagramHandle?: string | null;
+  facebookHandle?: string | null;
   branches: PublicHostel[];
   branchInfo: BranchPublicInfo[];
   /** Built server-side so the visible answers and the FAQPage JSON-LD are one source. */
@@ -207,7 +236,9 @@ interface Props {
   hrefBase: string;
 }
 
-export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }: Props) {
+export function BusinessPage({
+  ownerName, logoUrl, instagramHandle, facebookHandle, branches, branchInfo, faqs, hrefBase,
+}: Props) {
   const heading = ownerName ?? branches[0]?.name ?? "Our Branches";
   const infoById = new Map(branchInfo.map((i) => [i.hostel_id, i]));
   const totalBeds = branches.reduce((s, b) => s + b.available_beds, 0);
@@ -226,46 +257,70 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
     [
       // Each in its own brand colour. Instagram supplies its own gradient fill,
       // so it gets no colour class — a text colour there would be ignored.
-      { key: "website", href: PULSE_SITE_URL, Icon: Globe, label: "Pulse website", color: "text-amber", ring: "hover:border-amber/40" },
+      { key: "website", href: PULSE_SITE_URL, Icon: Globe, label: "Pulse website", color: "text-primary", ring: "hover:border-primary/40" },
       { key: "facebook", href: PULSE_SOCIALS.facebook, Icon: FacebookIcon, label: "Pulse on Facebook", color: "text-[#1877F2]", ring: "hover:border-[#1877F2]/50" },
       { key: "instagram", href: PULSE_SOCIALS.instagram, Icon: InstagramIcon, label: "Pulse on Instagram", color: "", ring: "hover:border-[#C837AB]/50" },
       { key: "linkedin", href: PULSE_SOCIALS.linkedin, Icon: LinkedInIcon, label: "Pulse on LinkedIn", color: "text-[#0A66C2]", ring: "hover:border-[#0A66C2]/50" },
     ] as const
   ).filter((s) => !!s.href);
 
+  // The CLIENT's own handles, deliberately separate from `socials` above, which
+  // is PULSE's footer row. socialUrl re-validates the stored handle and returns
+  // null for anything that is not a plain handle, so a bad row drops the icon
+  // rather than emitting an href — the same shape as safeMapsUrl above. The
+  // filter is what keeps that guarantee: href on these anchors is only ever the
+  // non-null return of socialUrl(). Do not unroll this into literal anchors.
+  const clientSocials = (
+    [
+      { key: "instagram", href: socialUrl("instagram", instagramHandle), label: `${ownerName ?? heading} on Instagram`, ring: "hover:border-[#C837AB]/50", color: "" },
+      { key: "facebook", href: socialUrl("facebook", facebookHandle), label: `${ownerName ?? heading} on Facebook`, ring: "hover:border-[#1877F2]/50", color: "text-[#1877F2]" },
+    ] as const
+  ).filter((s): s is typeof s & { href: string } => !!s.href);
+
   const waBranch = branches.find((b) => b.whatsapp) ?? null;
   const phoneBranch = branches.find((b) => b.phone) ?? null;
   const hasContact = !!waBranch || !!phoneBranch;
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#0A0A0B]">
+    <div className="min-h-screen flex flex-col bg-background">
       {/* Header */}
-      <header className="border-b border-white/[0.06] bg-[#0D0D0F]">
+      <header className="border-b border-border bg-surface-header">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-          <div className="flex items-start sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-11 h-11 rounded-xl bg-amber/15 border border-amber/25 flex items-center justify-center shrink-0">
-                <Home className="w-5 h-5 text-amber" />
-              </div>
+          {/* A brand lockup: logo left, name and meta stacked beside it.
+              Sized so the logo spans BOTH text lines — stacked above the title
+              it left a band of empty space, and at 44px beside a three-line
+              block it floated aligned to nothing. Two lines and a matching
+              logo height means the block reads as one unit. */}
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-center gap-3.5 min-w-0">
+              {logoUrl ? (
+                <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl overflow-hidden border border-border bg-card shrink-0">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- client-supplied URL, not in next.config images */}
+                  <img src={logoUrl} alt={ownerName ?? "Logo"} className="w-full h-full object-contain" />
+                </div>
+              ) : (
+                <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-primary/[0.08] border border-primary/20 flex items-center justify-center shrink-0">
+                  <Home className="w-6 h-6 text-primary" />
+                </div>
+              )}
               <div className="min-w-0">
-                <h1 className="font-serif text-xl sm:text-3xl font-medium text-foreground leading-tight truncate">
+                <h1 className="font-serif text-2xl sm:text-3xl font-medium text-foreground leading-[1.15] tracking-tight truncate">
                   {heading}
                 </h1>
-                <p className="text-xs sm:text-sm text-muted-foreground/80 mt-1">
+                {/* One meta line, not three. The price used to sit on its own
+                    row, which made the block too tall for any logo to align to. */}
+                <p className="text-sm text-muted-foreground mt-1">
                   {branches.length} {branches.length === 1 ? "branch" : "branches"}
                   {city && ` · ${city}`}
                   {totalBeds > 0 && ` · ${totalBeds} bed${totalBeds !== 1 ? "s" : ""} available`}
+                  {fromPrice && (
+                    <>
+                      {" · from "}
+                      <span className="font-semibold text-foreground">{pkr(fromPrice)}</span>
+                      <span className="text-muted-foreground">/month</span>
+                    </>
+                  )}
                 </p>
-                {/* Inside the title block, not below the header — flush with the
-                    container edge it read as a stray line rather than part of
-                    the business's identity. */}
-                {fromPrice && (
-                  <p className="text-xs sm:text-sm text-muted-foreground mt-2">
-                    Rooms from{" "}
-                    <span className="text-base sm:text-lg font-bold text-foreground">{pkr(fromPrice)}</span>
-                    <span className="text-xs">/month</span>
-                  </p>
-                )}
               </div>
             </div>
 
@@ -276,7 +331,7 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
                 href={waLink(waBranch.whatsapp, "Assalam o Alaikum, I saw your hostel page and had a question about rooms.")}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center justify-center gap-2 h-10 sm:h-11 px-4 sm:px-5 rounded-xl bg-[#25D366]/15 border border-[#25D366]/35 text-[#25D366] text-sm font-semibold hover:bg-[#25D366]/25 transition-colors shrink-0"
+                className="inline-flex items-center justify-center gap-2 h-10 sm:h-11 px-4 sm:px-5 rounded-xl bg-[#006c49] border border-[#006c49] text-white text-sm font-semibold hover:bg-[#005238] transition-colors shrink-0"
               >
                 <WhatsAppIcon className="w-4 h-4 shrink-0" />
                 WhatsApp
@@ -284,7 +339,7 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
             ) : phoneBranch?.phone ? (
               <a
                 href={`tel:${phoneBranch.phone}`}
-                className="inline-flex items-center justify-center gap-2 h-10 sm:h-11 px-4 sm:px-5 rounded-xl bg-amber/15 border border-amber/30 text-amber text-sm font-semibold hover:bg-amber/20 transition-colors shrink-0"
+                className="inline-flex items-center justify-center gap-2 h-10 sm:h-11 px-4 sm:px-5 rounded-xl bg-primary border border-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors shrink-0"
               >
                 <Phone className="w-4 h-4 shrink-0" />
                 Call
@@ -296,7 +351,7 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
       </header>
 
       {/* Why book direct */}
-      <div className="border-b border-white/[0.06] bg-amber/[0.03]">
+      <div className="border-b border-border bg-surface-trust">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center gap-x-6 gap-y-1.5 text-xs">
           {[
             { t: "Direct contact with the owner", Icon: ShieldCheck },
@@ -304,7 +359,7 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
             { t: "Availability updated in real time", Icon: BedDouble },
           ].map(({ t, Icon }) => (
             <span key={t} className="inline-flex items-center gap-1.5 text-muted-foreground">
-              <Icon className="w-3.5 h-3.5 text-amber shrink-0" /> {t}
+              <Icon className="w-3.5 h-3.5 text-primary shrink-0" /> {t}
             </span>
           ))}
         </div>
@@ -331,14 +386,20 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
               <p className="text-xs text-muted-foreground mb-4">
                 Available at {branches.length === 1 ? "our hostel" : "every branch"}
               </p>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {/* Pills that wrap to their content, not grid cells that stretch.
+                  In a 4-column grid the word "WiFi" sat in a ~390px box and read
+                  as a button you were meant to press. */}
+              <div className="flex flex-wrap gap-2">
                 {amenities.map((a) => {
                   const Icon = AMENITY_ICONS[a] ?? ShieldCheck;
                   return (
-                    <div key={a} className="flex items-center gap-2.5 px-3.5 py-3 rounded-xl border border-white/[0.06] bg-white/[0.02]">
-                      <Icon className="w-4 h-4 text-amber shrink-0" />
-                      <span className="text-xs text-foreground truncate">{a}</span>
-                    </div>
+                    <span
+                      key={a}
+                      className="inline-flex items-center gap-2 pl-3 pr-3.5 py-2 rounded-full border border-border bg-card text-xs text-foreground"
+                    >
+                      <Icon className="w-3.5 h-3.5 text-primary shrink-0" />
+                      {a}
+                    </span>
                   );
                 })}
               </div>
@@ -350,8 +411,8 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
           {branches.length > 1 && prices.length > 0 && (
             <section>
               <h2 className="text-sm font-semibold text-foreground mb-4">Compare branches</h2>
-              <div className="rounded-2xl border border-white/[0.07] overflow-hidden">
-                <div className="hidden sm:grid grid-cols-[2fr_1fr_1fr] gap-4 px-4 py-2.5 bg-white/[0.03] text-[11px] font-medium text-muted-foreground">
+              <div className="rounded-2xl border border-border overflow-hidden">
+                <div className="hidden sm:grid grid-cols-[2fr_1fr_1fr] gap-4 px-4 py-2.5 bg-muted text-[11px] font-medium text-muted-foreground">
                   <span>Branch</span><span className="text-right">From</span><span className="text-right">Available</span>
                 </div>
                 {branches.map((b) => {
@@ -359,7 +420,7 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
                   return (
                     <div
                       key={b.id}
-                      className="grid grid-cols-2 sm:grid-cols-[2fr_1fr_1fr] gap-x-4 gap-y-1 px-4 py-3 border-t border-white/[0.06] first:border-t-0 sm:first:border-t"
+                      className="grid grid-cols-2 sm:grid-cols-[2fr_1fr_1fr] gap-x-4 gap-y-1 px-4 py-3 border-t border-border first:border-t-0 sm:first:border-t"
                     >
                       <div className="col-span-2 sm:col-span-1 min-w-0">
                         <p className="text-sm text-foreground truncate">{b.name}</p>
@@ -368,7 +429,7 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
                         )}
                       </div>
                       <div className="sm:text-right">
-                        <span className="sm:hidden text-[11px] text-muted-foreground/60">From </span>
+                        <span className="sm:hidden text-[11px] text-muted-foreground">From </span>
                         {i?.from_price ? (
                           <span className="text-sm font-semibold text-foreground">{pkr(i.from_price)}</span>
                         ) : (
@@ -376,7 +437,12 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
                         )}
                       </div>
                       <div className="text-right">
-                        <span className={cn("text-sm font-medium", b.available_beds > 0 ? "text-emerald-400" : "text-muted-foreground")}>
+                        {/* text-teal, not the literal #006c49: this sits on the
+                            page surface rather than on a white pill, and #006c49
+                            is 3.0:1 against the dark theme's background. --teal
+                            is #006c49 on the light theme and a bright cyan on
+                            the dark one. */}
+                        <span className={cn("text-sm font-medium", b.available_beds > 0 ? "text-teal" : "text-muted-foreground")}>
                           {b.available_beds > 0
                             ? `${b.available_beds} bed${b.available_beds !== 1 ? "s" : ""}`
                             : "Full"}
@@ -392,10 +458,10 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
           {/* Contact the owner */}
           {hasContact && (
             <section>
-              <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-5 sm:p-6">
+              <div className="rounded-2xl border border-border bg-card p-5 sm:p-6">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6">
                   <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <div className="w-11 h-11 rounded-full bg-amber/15 border border-amber/25 flex items-center justify-center shrink-0 text-amber font-semibold">
+                    <div className="w-11 h-11 rounded-full bg-primary border border-primary flex items-center justify-center shrink-0 text-primary-foreground font-semibold">
                       {(ownerName ?? heading).slice(0, 1).toUpperCase()}
                     </div>
                     <div className="min-w-0">
@@ -411,7 +477,7 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
                         href={waLink(waBranch.whatsapp, `Assalam o Alaikum, I saw your hostel page and had a question about rooms.`)}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-[#25D366]/15 border border-[#25D366]/35 text-[#25D366] text-sm font-semibold hover:bg-[#25D366]/25 transition-colors"
+                        className="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-[#006c49] border border-[#006c49] text-white text-sm font-semibold hover:bg-[#005238] transition-colors"
                       >
                         <WhatsAppIcon className="w-4 h-4 shrink-0" />
                         WhatsApp
@@ -420,13 +486,46 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
                     {phoneBranch?.phone && (
                       <a
                         href={`tel:${phoneBranch.phone}`}
-                        className="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-white/[0.1] text-foreground text-sm font-medium hover:bg-white/[0.04] transition-colors"
+                        className="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl border border-input text-foreground text-sm font-medium hover:bg-muted transition-colors"
                       >
                         <Phone className="w-4 h-4 shrink-0" /> {formatPhoneDisplay(phoneBranch.phone)}
                       </a>
                     )}
                   </div>
                 </div>
+
+                {/* Subordinate to the WhatsApp/Call row on every axis — below it
+                    rather than beside it, inside the card's own rule, w-8 against
+                    the pill's h-11, an xs label. These name the BUSINESS, never
+                    Pulse, so they can't be confused with the footer row. */}
+                {clientSocials.length > 0 && (
+                  <div className="mt-4 pt-4 border-t border-border flex items-center gap-3">
+                    <p className="text-xs text-muted-foreground">Follow {ownerName ?? heading}</p>
+                    <div className="flex items-center gap-2">
+                      {clientSocials.map(({ key, href, label, ring, color }) => (
+                        <a
+                          key={key}
+                          href={href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label={label}
+                          title={label}
+                          className={cn(
+                            "w-8 h-8 rounded-lg border border-border bg-card flex items-center justify-center transition-all hover:bg-muted",
+                            color,
+                            ring
+                          )}
+                        >
+                          {key === "instagram" ? (
+                            <InstagramIcon className="w-3.5 h-3.5" gradientId="client-ig-gradient" />
+                          ) : (
+                            <FacebookIcon className="w-3.5 h-3.5" />
+                          )}
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </section>
           )}
@@ -436,9 +535,9 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
             <h2 className="text-sm font-semibold text-foreground mb-4">Common questions</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {faqs.map((f) => (
-                <div key={f.q} className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+                <div key={f.q} className="rounded-xl border border-border bg-card p-4">
                   <p className="flex items-start gap-2 text-sm font-medium text-foreground">
-                    <HelpCircle className="w-3.5 h-3.5 text-amber shrink-0 mt-0.5" /> {f.q}
+                    <HelpCircle className="w-3.5 h-3.5 text-primary shrink-0 mt-0.5" /> {f.q}
                   </p>
                   <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed pl-5.5">{f.a}</p>
                 </div>
@@ -452,7 +551,7 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
           all appear above. This is the one surface every branded hostel page
           gives us, so it stays a clean marketing block rather than a second
           copy of the hostel's details. */}
-      <footer className="border-t border-white/[0.06] bg-[#0D0D0F] mt-auto">
+      <footer className="border-t border-border bg-surface-header mt-auto">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6">
             <a
@@ -461,15 +560,15 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
               rel="noopener noreferrer"
               className="group inline-flex items-center gap-2.5 shrink-0"
             >
-              <span className="w-9 h-9 rounded-lg overflow-hidden border border-amber/25 shrink-0">
+              <span className="w-9 h-9 rounded-lg overflow-hidden border border-border shrink-0">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src="/logo-mark.jpg" alt="Pulse" width={36} height={36} className="w-full h-full object-cover" />
               </span>
               <span className="min-w-0">
-                <span className="block text-sm font-bold text-foreground leading-none group-hover:text-amber transition-colors">
+                <span className="block text-sm font-bold text-foreground leading-none group-hover:text-primary transition-colors">
                   Pulse
                 </span>
-                <span className="block text-[10px] font-semibold tracking-[0.15em] uppercase text-amber/70 mt-1">
+                <span className="block text-[10px] font-semibold tracking-[0.15em] uppercase text-primary mt-1">
                   Pulse of Your Business
                 </span>
               </span>
@@ -488,7 +587,7 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
                       aria-label={label}
                       title={label}
                       className={cn(
-                        "w-9 h-9 rounded-lg border border-white/[0.08] bg-white/[0.02] flex items-center justify-center transition-all hover:bg-white/[0.06] hover:scale-105",
+                        "w-9 h-9 rounded-lg border border-border bg-card flex items-center justify-center transition-all hover:bg-muted hover:scale-105",
                         color,
                         ring
                       )}
@@ -499,19 +598,6 @@ export function BusinessPage({ ownerName, branches, branchInfo, faqs, hrefBase }
                 </div>
               )}
             </div>
-          </div>
-        </div>
-
-        <div className="border-t border-white/[0.04]">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-end">
-            <a
-              href={PULSE_SITE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[11px] text-muted-foreground/50 hover:text-amber transition-colors"
-            >
-              Run your hostel on Pulse &rarr;
-            </a>
           </div>
         </div>
       </footer>

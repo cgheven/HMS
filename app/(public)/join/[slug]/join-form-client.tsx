@@ -21,6 +21,10 @@ import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDe
 interface Props {
   hostel: PublicHostelDetail;
   preselectedRoomNumber: string | null;
+  // Optional: only the branded-subdomain route has a brand. /join/{slug} does
+  // not, and falls back to the generic mark.
+  logoUrl?: string | null;
+  brandName?: string | null;
 }
 
 const RELATIONSHIP_OPTIONS = [
@@ -28,7 +32,7 @@ const RELATIONSHIP_OPTIONS = [
   "Chachu (Paternal Uncle)", "Mamu (Maternal Uncle)", "Cousin", "Guardian", "Friend",
 ];
 
-export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
+export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, brandName = null }: Props) {
   const cfg = { ...DEFAULT_FORM_CONFIG, ...(hostel.form_config as FormConfig | null ?? {}) };
   const show = (key: keyof typeof cfg) => cfg[key]?.enabled !== false;
   const req  = (key: keyof typeof cfg) => cfg[key]?.required === true;
@@ -337,10 +341,10 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
 
   if (submitted) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center px-4">
+      <div className="pulse-form-surface min-h-screen bg-background flex items-center justify-center px-4">
         <div className="max-w-md w-full text-center space-y-5 animate-fade-in">
-          <div className="flex items-center justify-center w-16 h-16 rounded-full bg-emerald-500/10 border border-emerald-500/20 mx-auto">
-            <CheckCircle2 className="w-8 h-8 text-emerald-400" />
+          <div className="flex items-center justify-center w-16 h-16 rounded-full bg-pub-success/10 border border-pub-success/25 mx-auto">
+            <CheckCircle2 className="w-8 h-8 text-pub-success" />
           </div>
           <div>
             <h2 className="text-2xl font-serif font-normal tracking-tight text-foreground">
@@ -352,7 +356,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
               on WhatsApp soon.
             </p>
           </div>
-          <div className="rounded-xl border border-sidebar-border bg-card p-4 text-left space-y-2">
+          <div className="rounded-xl border border-border bg-card p-4 text-left space-y-2">
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">What happens next?</p>
             {[
               "The hostel owner reviews your application",
@@ -361,7 +365,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
               "Move-in and settle in!",
             ].map((step, i) => (
               <div key={i} className="flex items-start gap-2.5">
-                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-amber/10 border border-amber/20 text-amber text-xs font-bold shrink-0 mt-0.5">
+                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-primary border border-primary text-primary-foreground text-xs font-bold shrink-0 mt-0.5">
                   {i + 1}
                 </span>
                 <p className="text-sm text-muted-foreground">{step}</p>
@@ -374,13 +378,20 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="pulse-form-surface min-h-screen bg-background">
       {/* Header */}
-      <div className="border-b border-sidebar-border bg-sidebar/90 backdrop-blur-md">
+      <div className="border-b border-border bg-card/90 backdrop-blur-md">
         <div className="max-w-2xl mx-auto px-4 min-h-14 py-2.5 flex items-center gap-3">
-          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-amber/10 border border-amber/20 shrink-0">
-            <Home className="w-4 h-4 text-amber" />
-          </div>
+          {logoUrl ? (
+            <span className="w-9 h-9 rounded-lg overflow-hidden border border-border bg-card shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={logoUrl} alt={brandName ?? "Logo"} className="w-full h-full object-contain" />
+            </span>
+          ) : (
+            <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-primary/[0.08] border border-primary/20 shrink-0">
+              <Home className="w-4 h-4 text-primary" />
+            </div>
+          )}
           <div className="min-w-0">
             <p className="text-sm font-semibold text-foreground leading-snug">{hostel.name}</p>
             {(hostel.city || hostel.area) && (
@@ -405,14 +416,14 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Personal Info */}
-          <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
+          <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
             <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <User className="w-4 h-4 text-muted-foreground" /> Personal Information
             </h2>
 
             {/* Full Name — always visible */}
             <div className="space-y-1.5">
-              <Label>Full Name <span className="text-rose-400">*</span></Label>
+              <Label>Full Name <span className="text-destructive">*</span></Label>
               <Input
                 placeholder="Ahmed Khan"
                 value={form.full_name}
@@ -426,7 +437,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
               <div className="space-y-1.5">
                 <Label className="flex items-center gap-1.5">
                   <Phone className="w-3.5 h-3.5 text-muted-foreground" />
-                  WhatsApp Number <span className="text-rose-400">*</span>
+                  WhatsApp Number <span className="text-destructive">*</span>
                 </Label>
                 <Input
                   placeholder="0300 0000000"
@@ -441,7 +452,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                 <div className="space-y-1.5">
                   <Label className="flex items-center gap-1.5">
                     <Mail className="w-3.5 h-3.5 text-muted-foreground" />
-                    Email {req("email") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                    Email {req("email") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
                   </Label>
                   <Input
                     type="email"
@@ -459,7 +470,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
               <div className="space-y-1.5">
                 <Label className="flex items-center gap-1.5">
                   <CreditCard className="w-3.5 h-3.5 text-muted-foreground" />
-                  CNIC <span className="text-rose-400">*</span>
+                  CNIC <span className="text-destructive">*</span>
                 </Label>
                 <Input
                   placeholder="XXXXX-XXXXXXX-X"
@@ -479,7 +490,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
             {show("type") && (
               <div className="space-y-1.5">
                 <Label>
-                  Type <span className="text-rose-400">*</span>
+                  Type <span className="text-destructive">*</span>
                 </Label>
                 <Select
                   value={form.type}
@@ -507,7 +518,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                 {showStudentCategory && (
                   <div className="space-y-1.5">
                     <Label>
-                      Student Category {req("student_category") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                      Student Category {req("student_category") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
                     </Label>
                     <Select
                       value={form.student_category}
@@ -535,7 +546,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                 {showInstitute && !showSpecialization && (
                   <div className="space-y-1.5">
                     <Label>
-                      Institute Name {req("institute_name") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                      Institute Name {req("institute_name") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
                     </Label>
                     {renderInstituteField()}
                   </div>
@@ -590,7 +601,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
             {showInstitute && showSpecialization && (
               <div className="space-y-1.5">
                 <Label>
-                  Institute Name {req("institute_name") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                  Institute Name {req("institute_name") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
                 </Label>
                 {renderInstituteField()}
               </div>
@@ -623,7 +634,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                 </div>
                 <div className="space-y-1.5">
                   <Label>
-                    Organization {req("organization") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                    Organization {req("organization") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
                   </Label>
                   {/* The list follows the Type picked just above. Before a type
                       is chosen there is no right vocabulary to offer, so it
@@ -670,7 +681,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
             {showDepartment && (
               <div className="space-y-1.5">
                 <Label>
-                  Department / Field {req("department") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                  Department / Field {req("department") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
                 </Label>
                 {/* Both types get a dropdown — students browse academic
                     programmes, professionals browse workplace functions. */}
@@ -737,13 +748,13 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                   <img
                     src={cnicDoc.previewUrl}
                     alt="CNIC preview"
-                    className="w-24 h-16 object-cover rounded border border-sidebar-border"
+                    className="w-24 h-16 object-cover rounded border border-border"
                   />
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-7 text-xs gap-1 text-rose-400 hover:bg-rose-500/10"
+                    className="h-7 text-xs gap-1 text-destructive hover:bg-destructive/10"
                     onClick={() => {
                       URL.revokeObjectURL(cnicDoc.previewUrl);
                       setCnicDoc(null);
@@ -787,16 +798,16 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
               room picked here flows straight through to approval later, so
               staff doesn't have to re-figure it out. */}
           {showRoomPicker && (
-            <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
+            <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
-                  <BedDouble className="w-4 h-4 text-muted-foreground" /> Select Your Room {req("room_preference") && <span className="text-rose-400">*</span>}
+                  <BedDouble className="w-4 h-4 text-muted-foreground" /> Select Your Room {req("room_preference") && <span className="text-destructive">*</span>}
                 </h2>
                 {!showRoomList && selectedRoom && (
                   <button
                     type="button"
                     onClick={() => setShowRoomList(true)}
-                    className="text-xs font-medium text-amber hover:underline shrink-0"
+                    className="text-xs font-medium text-primary hover:underline shrink-0"
                   >
                     Change room
                   </button>
@@ -818,15 +829,15 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                       }}
                       className={cn(
                         "w-full flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-left transition-colors",
-                        checked ? "border-amber/40 bg-amber/[0.06]" : "border-sidebar-border hover:border-muted-foreground/30"
+                        checked ? "border-primary bg-primary/[0.06]" : "border-border hover:border-input"
                       )}
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <span className={cn(
                           "w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center",
-                          checked ? "border-amber bg-amber" : "border-sidebar-border"
+                          checked ? "border-primary bg-primary" : "border-input"
                         )}>
-                          {checked && <Check className="w-2.5 h-2.5 text-background" strokeWidth={3} />}
+                          {checked && <Check className="w-2.5 h-2.5 text-primary-foreground" strokeWidth={3} />}
                         </span>
                         <div className="min-w-0">
                           <p className="text-sm font-medium text-foreground">Room {room.room_number}</p>
@@ -835,7 +846,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                           </p>
                         </div>
                       </div>
-                      <span className="text-sm font-semibold text-amber shrink-0">{formatCurrency(price)}/mo</span>
+                      <span className="text-sm font-semibold text-primary shrink-0">{formatCurrency(price)}/mo</span>
                     </button>
                   );
                 })}
@@ -865,11 +876,11 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
           )}
 
           {show("move_in_date") && (
-            <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
+            <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
               <div className="space-y-1.5">
                 <Label className="flex items-center gap-1.5">
                   <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
-                  Preferred Move-in Date {req("move_in_date") ? <span className="text-rose-400">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                  Preferred Move-in Date {req("move_in_date") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
                 </Label>
                 <Input
                   type="date"
@@ -883,34 +894,34 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
 
           {/* Emergency Contact — configurable */}
           {show("permanent_address") && (
-            <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
+            <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
               <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
                 <Home className="w-4 h-4 text-muted-foreground" /> Permanent Address
                 {!req("permanent_address") && <span className="text-xs font-normal text-muted-foreground">(optional)</span>}
               </h2>
               <div className="space-y-1.5">
-                <Label>Home Address {req("permanent_address") && <span className="text-rose-400">*</span>}</Label>
+                <Label>Home Address {req("permanent_address") && <span className="text-destructive">*</span>}</Label>
                 <textarea
                   rows={3}
                   placeholder="House / street, area, city"
                   value={form.permanent_address}
                   onChange={(e) => setForm({ ...form, permanent_address: e.target.value })}
                   required={req("permanent_address")}
-                  className="w-full rounded-lg border border-sidebar-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50 resize-y"
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-y"
                 />
               </div>
             </div>
           )}
 
           {show("emergency_contact") && (
-            <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
+            <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
               <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
                 <ShieldAlert className="w-4 h-4 text-muted-foreground" /> Emergency Contact
                 {!req("emergency_contact") && <span className="text-xs font-normal text-muted-foreground">(optional)</span>}
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <Label>Contact Name {req("emergency_contact") && <span className="text-rose-400">*</span>}</Label>
+                  <Label>Contact Name {req("emergency_contact") && <span className="text-destructive">*</span>}</Label>
                   <Input
                     placeholder="Muhammad Ali"
                     value={form.emergency_contact}
@@ -919,7 +930,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Contact Phone {req("emergency_contact") && <span className="text-rose-400">*</span>}</Label>
+                  <Label>Contact Phone {req("emergency_contact") && <span className="text-destructive">*</span>}</Label>
                   <Input
                     placeholder="0300 0000000"
                     value={form.emergency_phone}
@@ -977,7 +988,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
 
           {/* Notes — configurable */}
           {show("notes") && (
-            <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-4">
+            <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
               <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
                 <MessageSquare className="w-4 h-4 text-muted-foreground" /> Message / Questions
                 {!req("notes") && <span className="text-xs font-normal text-muted-foreground">(optional)</span>}
@@ -995,7 +1006,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
 
 
           {error && (
-            <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
               {error}
             </div>
           )}
@@ -1003,7 +1014,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
           <Button
             type="submit"
             disabled={loading}
-            className="w-full bg-amber text-background hover:bg-amber/90 font-semibold h-11 text-base gap-2"
+            className="w-full bg-primary text-primary-foreground hover:bg-primary/90 font-semibold h-11 text-base gap-2"
           >
             {loading ? (
               <>
@@ -1071,7 +1082,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber }: Props) {
             <Button
               type="button"
               size="sm"
-              className="gap-1.5 h-8 text-xs bg-amber text-background hover:bg-amber/90 font-semibold"
+              className="gap-1.5 h-8 text-xs bg-primary text-primary-foreground hover:bg-primary/90 font-semibold"
               onClick={captureFromCamera}
               disabled={!!cameraError || !stream}
             >

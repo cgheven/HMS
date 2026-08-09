@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { getPublicHostel, getPublicHostelsByOwner } from "@/app/actions/public";
 import { HostelDetailClient } from "@/components/find/hostel-detail-client";
 import { BusinessClient } from "@/components/find/business-client";
+import { PublicShell } from "../../public-shell";
 
 // Always render fresh — package pricing, availability, and food menu change in real time
 export const dynamic = "force-dynamic";
@@ -22,13 +23,21 @@ export default async function HostelOrBusinessPage({ params }: Props) {
 
   if (error || !branches || branches.length === 0) notFound();
 
+  // No theme prop. Not a limitation — a deliberate boundary: /find is the Pulse
+  // directory, where a visitor may be comparing several businesses, and it stays
+  // one consistent surface. The owner's appearance choice governs their OWN
+  // domain, {label}.hostels.yourpulse.io, end to end.
   if (branches.length === 1) {
     const { hostel } = await getPublicHostel(slug);
     if (!hostel) notFound();
-    return <HostelDetailClient hostel={hostel} />;
+    return <PublicShell><HostelDetailClient hostel={hostel} /></PublicShell>;
   }
 
-  return <BusinessClient slug={slug} ownerName={ownerName ?? null} branches={branches} />;
+  return (
+    <PublicShell>
+      <BusinessClient slug={slug} ownerName={ownerName ?? null} branches={branches} />
+    </PublicShell>
+  );
 }
 
 export async function generateMetadata({ params }: Props) {

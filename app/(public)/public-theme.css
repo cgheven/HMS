@@ -1,0 +1,298 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Public listing site — "Academic Trust" light theme.
+
+   Scoped to app/(public)/ ONLY. This sheet is imported by app/(public)/layout.tsx,
+   so Next.js never ships it to a dashboard/admin/portal route. It contains
+   CUSTOM PROPERTIES and three named exceptions and NOTHING ELSE — it is loaded
+   unlayered, so it outranks Tailwind's utilities layer and any element/colour
+   rule added here would silently beat `text-*`/`bg-*` utilities site-wide.
+
+   Why two selectors carry the same token block:
+     :root:has(.pulse-public)  lands the variables on <html>, so they reach
+                               <body> (globals.css `body { @apply bg-background }`)
+                               AND every Radix portal, which mounts to body —
+                               components/ui/select.tsx, dialog.tsx and
+                               searchable-select.tsx are re-themed without a
+                               single edit to those shared files.
+     .pulse-public             the layout's own wrapper div. On an engine with
+                               no :has() support the visible page still themes
+                               light; portals stay entirely dark and internally
+                               consistent (their own white-alpha highlights
+                               still read), rather than a half-converted hybrid.
+
+   SURFACE DECISION (deliberate, not incidental): --background is WHITE and
+   --card is #f8f9fa, not the other way round. components/ui/input.tsx,
+   select.tsx:18, searchable-select.tsx:62 and dialog.tsx all hardcode
+   `bg-background`; had --background been #f8f9fa and --card white, all 29 form
+   controls on /join would have sat at 1.06:1 against their own card. Inverting
+   the pair gives white fields on #f8f9fa panels with a #74777f border (3.42:1),
+   and hands the room grid its available (raised) vs occupied (sunken) pair.
+
+   THE DARK BLOCK AT THE BOTTOM. An owner can set their branded site to dark
+   (hms_profiles.public_theme). Dark is NOT a second full palette — the app's own
+   tokens in globals.css already cover it. `.pulse-public-dark` overrides only the
+   handful of tokens whose LIGHT-page assumptions do not survive an inversion:
+   the sunken surface (--accent is darker than --card on light and LIGHTER on
+   dark, which flips "sold out" into the loudest card on the page), the card
+   outline (--card-border is only defined here, so dark would fall back to a
+   1.27:1 hairline), body ink contrast, and the five accent inks below.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+:root:has(.pulse-public) {
+  --background: 0 0% 100%;            /* #ffffff — page canvas + form-field fill */
+  --foreground: 195 7% 11%;           /* #191c1d — 17.0:1 on white */
+
+  --card: 210 17% 98%;                /* #f8f9fa — grouped panels, cards, popovers */
+  --card-foreground: 195 7% 11%;
+  --popover: 210 17% 98%;
+  --popover-foreground: 195 7% 11%;
+
+  --primary: 217 100% 8%;             /* #000f27 navy — 18.1:1 on white, white on it 19.1:1 */
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 210 13% 94%;           /* #eef0f2 */
+  --secondary-foreground: 195 7% 11%;
+
+  --muted: 210 13% 94%;               /* #eef0f2 — subtle fills, chips */
+  --muted-foreground: 222 7% 29%;     /* #44474e — 9.2:1 on white. NEVER #74777f (4.25:1) */
+
+  --accent: 210 13% 91%;              /* #e4e7ea — stronger fill, occupied surfaces */
+  --accent-foreground: 195 7% 11%;
+
+  /* The "this one is out of service" surface: a sold-out branch card, an
+     occupied room card. Must read SUNKEN, i.e. darker than the page, and
+     --accent only does that on a light palette. Same value --accent has here, so
+     nothing moves on the light page. */
+  --surface-sunken: 210 13% 91%;
+
+  /* The page header and the trust strip under it. They exist as tokens because
+     the two themes disagree about them in a way --card/--muted cannot express:
+     on light they ARE --card and --muted, but on dark the original public page
+     used a near-black header (#0D0D0F) that sits FLUSH with the page, while
+     globals.css's --card (#151B28) is a raised navy panel meant for dashboard
+     chrome. Using --card on dark turned the header into a floating slab. */
+  --surface-header: 210 17% 98%;      /* = --card on light */
+  /* The room dialog's own surface. It is one step LIGHTER than the page in the
+     original design so the modal lifts off the canvas behind it; pointing it at
+     --background made it the page black and the dialog lost its edge. */
+  --surface-dialog: 0 0% 100%;        /* white on light, as it ships today */
+  --surface-trust: 210 13% 94%;       /* = --muted on light */
+
+  --destructive: 3 71% 41%;           /* #b3261e — 6.6:1 on white */
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 229 10% 79%;              /* #c4c6cf — decorative edges only (1.70:1) */
+  --input: 224 5% 48%;                /* #74777f — control boundaries (3.42:1) */
+  /* A card needs a visible edge. --border is a 1.70:1 hairline and --card sits
+     only 1.05:1 off the white page, so a branch card had no perceptible
+     boundary at all; --input is the only darker token and reads far too heavy
+     across a large surface. This sits between the two. Decorative, so the 3:1
+     control-boundary threshold does not apply. */
+  --card-border: 218 9% 69%;          /* #a7adb8 — card outline (2.42:1 on white) */
+  --ring: 217 100% 8%;
+
+  --sidebar: 210 17% 98%;
+  --sidebar-foreground: 195 7% 11%;
+  --sidebar-border: 229 10% 79%;      /* select.tsx:60 puts this on the portalled dropdown */
+  --sidebar-accent: 217 100% 8%;
+  --sidebar-accent-foreground: 0 0% 100%;
+
+  /* Brand tokens. --amber is deliberately re-pointed to the navy primary INSIDE
+     THE PUBLIC SCOPE ONLY: it is a fail-safe, so any amber utility missed during
+     conversion degrades to navy-on-white (18.1:1) instead of gold-on-white
+     (1.92:1). --teal follows the WhatsApp/success green. */
+  --amber: 217 100% 8%;
+  --teal: 161 100% 21%;               /* #006c49 */
+
+  /* Accent inks for the branch page's room chips and menu headers. RGB channels,
+     not HSL, for one reason: these are the exact hexes those utilities used to
+     hardcode, and an HSL round-trip shifts them by a channel. `<alpha-value>` in
+     tailwind.config.ts keeps the /10 and /25 tints working. */
+  --pub-success: 0 108 73;            /* #006c49 — seats free, lunch */
+  --pub-info: 11 87 208;              /* #0b57d0 — AC, dinner */
+  --pub-cool: 0 104 125;              /* #00687d — cooler */
+  --pub-violet: 107 63 160;           /* #6b3fa0 — attached washroom */
+  --pub-warn: 138 83 0;               /* #8a5300 — kitchen closed */
+
+  color-scheme: light;
+}
+
+.pulse-public {
+  --background: 0 0% 100%;
+  --foreground: 195 7% 11%;
+
+  --card: 210 17% 98%;
+  --card-foreground: 195 7% 11%;
+  --popover: 210 17% 98%;
+  --popover-foreground: 195 7% 11%;
+
+  --primary: 217 100% 8%;
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 210 13% 94%;
+  --secondary-foreground: 195 7% 11%;
+
+  --muted: 210 13% 94%;
+  --muted-foreground: 222 7% 29%;
+
+  --accent: 210 13% 91%;
+  --accent-foreground: 195 7% 11%;
+
+  --surface-sunken: 210 13% 91%;
+  --surface-header: 210 17% 98%;
+  --surface-trust: 210 13% 94%;
+  --surface-dialog: 0 0% 100%;
+
+  --destructive: 3 71% 41%;
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 229 10% 79%;
+  --input: 224 5% 48%;
+  --card-border: 218 9% 69%;
+  --ring: 217 100% 8%;
+
+  --sidebar: 210 17% 98%;
+  --sidebar-foreground: 195 7% 11%;
+  --sidebar-border: 229 10% 79%;
+  --sidebar-accent: 217 100% 8%;
+  --sidebar-accent-foreground: 0 0% 100%;
+
+  --amber: 217 100% 8%;
+  --teal: 161 100% 21%;
+
+  --pub-success: 0 108 73;
+  --pub-info: 11 87 208;
+  --pub-cool: 0 104 125;
+  --pub-violet: 107 63 160;
+  --pub-warn: 138 83 0;
+}
+
+/* ── Dark public site ────────────────────────────────────────────────────────
+   Applied only when the owner has chosen it (hms_profiles.public_theme='dark').
+   An OVERRIDE block, not a palette: everything not named here comes from
+   globals.css, so there is only one place to change a shared token.
+
+   Both selectors for the same reason the light block carries both — :root:has()
+   lands the variables on <html> so Radix portals inherit them, and the class
+   itself keeps the visible page correct on an engine without :has(). */
+:root:has(.pulse-public-dark),
+.pulse-public-dark {
+  /* globals.css never defines --card-border, so border-card-border would fall
+     back to --border: 1.27:1 on the page, which is no outline at all — the very
+     state the light --card-border was introduced to fix. 2.45:1 here matches the
+     2.42:1 the light page ships with. */
+  /* These six reproduce the original public page EXACTLY. It never used
+     globals.css's palette: it hardcoded its own neutral near-blacks, which is
+     why inheriting the dashboard's navy tokens changed the whole character of
+     the page. Every value below round-trips to the original hex.
+
+       old markup                              computed      token
+       bg-[#0A0A0B]            (page)          #0A0A0B    -> --background
+       bg-[#0D0D0F]            (header/footer) #0D0D0E    -> --surface-header
+       bg-white/[0.02] on page (panels)        #0F0F10    -> --card
+       border-white/[0.07] on panel            #202021    -> --card-border
+       bg-[#101012]            (photo well)    #101012    -> --surface-sunken
+       bg-amber/[0.03] on header (trust strip) #141210    -> --surface-trust
+
+     Neutral, not navy: globals.css --background is #0D1117 and --card is
+     #151B28, both distinctly blue. That is right for dashboard chrome and wrong
+     for this page. */
+  --background: 240 4.8% 4.1%;        /* #0A0A0B */
+  --card: 240 3.2% 6.1%;              /* #0F0F10 */
+  --popover: 240 3.2% 6.1%;
+  --card-border: 240 1.5% 12.7%;      /* #202021 */
+  --surface-header: 240 3.7% 5.3%;    /* #0D0D0E */
+  --surface-dialog: 240 6.7% 5.9%;    /* #0E0E10 */
+  --surface-trust: 30 11.1% 7.1%;     /* #141210 */
+
+  /* The last of the navy. globals.css keeps --muted/--secondary/--accent/
+     --border/--input all at 213 30-32% saturation, which is why the room
+     dialog's "Professional" chip and its Total Due Today row came out blue
+     against a neutral panel. The original drew every one of those as a white
+     alpha over #0E0E10; these are those exact composites. */
+  --muted: 240 3.4% 11.4%;            /* #1C1C1E = white/[0.06] */
+  --secondary: 240 3.4% 11.4%;
+  --accent: 240 2.9% 13.3%;           /* #212123 = white/[0.08] */
+  --border: 240 3.1% 12.5%;           /* #1F1F21 = white/[0.07] */
+  --input: 240 2.3% 17.3%;            /* #2B2B2D = white/[0.12] */
+  --sidebar-border: 240 3.1% 12.5%;   /* select.tsx puts this on portalled menus */
+
+  /* globals.css's #6B7A99 is 3.28:1 on --muted and 3.93:1 on --card. That is
+     acceptable for dense dashboard chrome an owner reads every day; it is not
+     acceptable for the body copy of a page whose entire job is convincing a
+     stranger to move in. #A0A9BA is 6.1:1 on --muted, 7.3:1 on --card. */
+  --muted-foreground: 220 16% 68%;
+
+  /* Darker than the page, so an occupied room or a sold-out branch still reads
+     recessed. --accent would do the opposite here: it is LIGHTER than --card on
+     the dark palette, which would make the one card nobody can book the
+     brightest thing on the page. */
+  --surface-sunken: 240 5.9% 6.7%;    /* #101012 */
+
+  /* Light counterparts of the same five inks. Each clears 4.5:1 on --card and
+     on --muted; the light hexes are 3:1 or worse against a dark surface. */
+  --pub-success: 61 214 148;
+  --pub-info: 125 174 255;
+  --pub-cool: 93 209 229;
+  --pub-violet: 195 160 255;
+  --pub-warn: 240 180 90;
+}
+
+/* The application form keeps the palette it shipped with. Unlike the rest of the
+   branded site — which hardcoded neutral near-blacks — this page inherited
+   globals.css's tokens, so it has always been a shade cooler than the branch
+   page a visitor arrives from. Scoped to the form's own wrapper so the front
+   door, branch page and room dialog stay neutral. Overriding the VARIABLES
+   rather than a background-color is what carries the palette to the form inputs
+   and cards, which matched the page in the original. */
+.pulse-public-dark .pulse-form-surface {
+  --background: 212.7 31.4% 6.9%;     /* #0C1117 — page */
+  --card: 220 25% 11%;                /* #151A23 — nav bar, form cards */
+  --popover: 220 28% 14%;
+  --secondary: 213 32% 17%;
+  --muted: 213 32% 17%;
+  --accent: 213 32% 20%;
+  --border: 213 30% 16%;              /* #1E2D40 — field + card outlines */
+  --input: 213 30% 16%;
+}
+
+/* EXCEPTION 1 — globals.css:66-73 inverts the native date/time picker glyph so
+   it survives a dark theme. On a light page that inverts a dark glyph to white
+   and it disappears. The only date input on the public site is the move-in date
+   at app/(public)/join/[slug]/join-form-client.tsx. Specificity 0,3,1 (and
+   0,2,1 for the fallback) beats the global rule's 0,1,1. */
+:root:has(.pulse-public) input[type="date"]::-webkit-calendar-picker-indicator,
+:root:has(.pulse-public) input[type="time"]::-webkit-calendar-picker-indicator,
+:root:has(.pulse-public) input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+.pulse-public input[type="date"]::-webkit-calendar-picker-indicator,
+.pulse-public input[type="time"]::-webkit-calendar-picker-indicator,
+.pulse-public input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: none;
+}
+
+/* EXCEPTION 2 — components/ui/select.tsx:94 is `focus:bg-white/10` and
+   components/ui/searchable-select.tsx:114,127 are `hover:bg-white/10
+   focus:bg-white/10`. Those are literal white-alpha, not variable-driven, so on
+   a white popover the hover AND keyboard-focus highlight of every Select and
+   SearchableSelect vanishes — a focus-visibility regression, not a cosmetic
+   one. SearchableSelectProps exposes only a trigger className (no per-option
+   passthrough), so there is no call-site fix, and editing ui/* is forbidden.
+   Overriding from here is the only compliant route. Specificity 0,4,0 beats the
+   utility's 0,2,0. The popper-wrapper qualifier keeps this off the trigger. */
+:root:has(.pulse-public) [role="option"]:hover,
+:root:has(.pulse-public) [role="option"]:focus,
+:root:has(.pulse-public) [data-radix-popper-content-wrapper] button:hover,
+:root:has(.pulse-public) [data-radix-popper-content-wrapper] button:focus {
+  background-color: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+
+/* EXCEPTION 3 — components/ui/dialog.tsx DialogOverlay hardcodes `bg-black/80`
+   and DialogContent renders it internally with no className passthrough. An 80%
+   black scrim is oppressive over a light page; #191c1d at 45% reads as a modal
+   veil instead of a blackout. Same forbidden-file reasoning as above.
+   [class~="…"] matches the whole class token, so this reaches the Radix overlay
+   and nothing else — no public component uses a bare `bg-black/80`. */
+:root:has(.pulse-public) [data-state][class~="bg-black/80"] {
+  background-color: hsl(var(--foreground) / 0.45);
+}

@@ -194,8 +194,9 @@ export default function GuidePage() {
             </Card>
             <Card title="Public Listing (optional)">
               <p>
-                Turn on &quot;Listed publicly&quot; to get a shareable page at <Kbd>/find</Kbd> — add a cover
-                photo, description, hostel type, and amenities.
+                On the <Kbd>Website</Kbd> page, turn on &quot;Listed publicly&quot; to get a shareable page at{" "}
+                <Kbd>/find</Kbd> — add a cover photo, description, hostel type, and amenities. Your own web
+                address, business name, logo and social links live on the same page.
               </p>
             </Card>
             <Card title="Payment Recovery (optional)">

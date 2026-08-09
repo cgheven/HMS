@@ -343,10 +343,11 @@ export function RedflagClient({
             <>
               <p className="text-xs text-muted-foreground max-w-md">
                 RedFlag only shows reports from hostels of the same gender as your branch, so your
-                branch needs a gender set before this list can be shown.
+                branch needs a gender set before this list can be shown — set it under Public Listing
+                on the Website page.
               </p>
               <Button asChild variant="outline" size="sm" className="mt-3">
-                <Link href="/settings">Open Settings</Link>
+                <Link href="/website">Open Website settings</Link>
               </Button>
             </>
           ) : (

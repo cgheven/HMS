@@ -1,6 +1,6 @@
 "use client";
 import { Home } from "lucide-react";
-import { HostelCard } from "./find-client";
+import { HostelCard } from "./public/hostel-card";
 import type { PublicHostel } from "@/types";
 
 interface Props {
@@ -16,15 +16,15 @@ export function BusinessClient({ slug, ownerName, branches, hrefBase }: Props) {
   const heading = ownerName ?? branches[0]?.name ?? "Our Branches";
 
   return (
-    <div className="min-h-screen bg-[#0A0A0B]">
-      <div className="border-b border-white/[0.06] bg-[#0D0D0F]">
+    <div className="min-h-screen bg-background">
+      <div className="border-b border-border bg-card">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-amber/15 border border-amber/25 flex items-center justify-center shrink-0">
-            <Home className="w-4.5 h-4.5 text-amber" />
+          <div className="w-10 h-10 rounded-xl bg-primary/[0.08] border border-primary/20 flex items-center justify-center shrink-0">
+            <Home className="w-4.5 h-4.5 text-primary" />
           </div>
           <div>
             <h1 className="font-serif text-xl sm:text-2xl font-medium text-foreground leading-tight">{heading}</h1>
-            <p className="text-xs text-muted-foreground/70 mt-0.5">
+            <p className="text-xs text-muted-foreground mt-0.5">
               {branches.length} {branches.length === 1 ? "branch" : "branches"} · Direct contact · No fees
             </p>
           </div>

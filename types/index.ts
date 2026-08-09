@@ -40,6 +40,18 @@ export interface Profile {
   full_name: string | null;
   phone: string | null;
   avatar_url: string | null;
+  // Account-level public-site identity (migrations 155, 164, 165, 166).
+  // Optional because callers that build a Profile by hand predate these
+  // columns; every real read is a select("*") so they are always present at
+  // runtime.
+  subdomain?: string | null;
+  business_name?: string | null;
+  logo_url?: string | null;
+  instagram_handle?: string | null;
+  facebook_handle?: string | null;
+  /** Appearance of the owner's PUBLIC page only — the dashboard is always dark.
+   *  NULL means light, which is what every client is served today. */
+  public_theme?: "light" | "dark" | null;
   primary_hostel_id: string | null;
   is_active: boolean;
   created_at: string;

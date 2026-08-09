@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getPublicHostel, getPublicHostelsBySubdomain } from "@/app/actions/public";
 import { HostelDetailClient } from "@/components/find/hostel-detail-client";
+import { PublicShell } from "../../../public-shell";
 
 // Always render fresh — package pricing, availability, and food menu change in real time
 export const dynamic = "force-dynamic";
@@ -21,7 +22,7 @@ interface Props {
 export default async function SubdomainBranchPage({ params }: Props) {
   const { subdomain, branchSlug } = await params;
 
-  const [{ branches, error }, { hostel }] = await Promise.all([
+  const [{ branches, theme, logoUrl, ownerName, error }, { hostel }] = await Promise.all([
     getPublicHostelsBySubdomain(subdomain),
     getPublicHostel(branchSlug),
   ]);
@@ -29,7 +30,21 @@ export default async function SubdomainBranchPage({ params }: Props) {
   if (error || !branches || branches.length === 0 || !hostel) notFound();
   if (!branches.some((b) => b.id === hostel.id)) notFound();
 
-  return <HostelDetailClient hostel={hostel} backHref="/" backLabel="All Branches" />;
+  // The owner's appearance choice covers the WHOLE branded site, not just its
+  // front door: a visitor who clicks a branch card must not land on a page in
+  // the other palette. HostelDetailClient's room chips and menu headers are on
+  // the pub-* tokens for exactly this reason.
+  return (
+    <PublicShell theme={theme}>
+      <HostelDetailClient
+        hostel={hostel}
+        backHref="/"
+        backLabel="All Branches"
+        logoUrl={logoUrl}
+        brandName={ownerName}
+      />
+    </PublicShell>
+  );
 }
 
 export async function generateMetadata({ params }: Props) {

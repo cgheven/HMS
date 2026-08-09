@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getPublicHostel } from "@/app/actions/public";
 import { HostelDetailClient } from "@/components/find/hostel-detail-client";
+import { PublicShell } from "../../../public-shell";
 
 // Always render fresh — package pricing, availability, and food menu change in real time
 export const dynamic = "force-dynamic";
@@ -16,7 +17,11 @@ export default async function BranchDetailPage({ params }: Props) {
 
   if (error || !hostel) notFound();
 
-  return <HostelDetailClient hostel={hostel} backHref={`/find/${slug}`} backLabel="All Branches" />;
+  return (
+    <PublicShell>
+      <HostelDetailClient hostel={hostel} backHref={`/find/${slug}`} backLabel="All Branches" />
+    </PublicShell>
+  );
 }
 
 export async function generateMetadata({ params }: Props) {

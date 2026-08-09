@@ -9,6 +9,7 @@ import {
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
   MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2, Globe,
   ClipboardList, ShieldCheck, Search, Wallet, Flag, MessageSquareHeart,
+  LayoutTemplate,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
@@ -80,6 +81,10 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     items: [
       { href: "/billing",  label: "Billing",          icon: Wallet, ownerOnly: true },
       { href: "/settings", label: "Settings",         icon: Settings },
+      // Not ownerOnly: that flag is for account-level pages a partner has no
+      // row in. Partners edit the Public Listing and the branding here, exactly
+      // as they did when both lived in Settings.
+      { href: "/website",  label: "Website",          icon: LayoutTemplate },
       { href: "/find",     label: "My Public Page",   icon: Globe, newTab: true },
     ],
   },

@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getPublicHostel, getPublicHostelsBySubdomain } from "@/app/actions/public";
-import { JoinFormClient } from "@/app/join/[slug]/join-form-client";
+import { JoinFormClient } from "../../../../join/[slug]/join-form-client";
+import { PublicShell } from "../../../../public-shell";
 
 interface Props {
   params: Promise<{ subdomain: string; branchSlug: string }>;
@@ -27,7 +28,7 @@ export default async function SubdomainJoinPage({ params, searchParams }: Props)
   const { subdomain, branchSlug } = await params;
   const { room } = await searchParams;
 
-  const [{ branches, error }, { hostel }] = await Promise.all([
+  const [{ branches, theme, logoUrl, ownerName, error }, { hostel }] = await Promise.all([
     getPublicHostelsBySubdomain(subdomain),
     getPublicHostel(branchSlug),
   ]);
@@ -35,5 +36,17 @@ export default async function SubdomainJoinPage({ params, searchParams }: Props)
   if (error || !branches || branches.length === 0 || !hostel) notFound();
   if (!branches.some((b) => b.id === hostel.id)) notFound();
 
-  return <JoinFormClient hostel={hostel} preselectedRoomNumber={room ?? null} />;
+  // Themed like the rest of the branded site. The form's controls are all on
+  // bg-background / border-input / text-foreground, so they follow the palette;
+  // the only fixed inks in it are the pub-* success chips on the thank-you page.
+  return (
+    <PublicShell theme={theme}>
+      <JoinFormClient
+        hostel={hostel}
+        preselectedRoomNumber={room ?? null}
+        logoUrl={logoUrl}
+        brandName={ownerName}
+      />
+    </PublicShell>
+  );
 }

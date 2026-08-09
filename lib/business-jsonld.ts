@@ -1,6 +1,7 @@
 import type { PublicHostel } from "@/types";
 import type { BranchPublicInfo } from "@/app/actions/public";
 import { PULSE_SITE_URL } from "@/lib/pulse-brand";
+import { socialUrl } from "@/lib/social";
 
 /**
  * schema.org markup for a hostel business page.
@@ -17,6 +18,9 @@ import { PULSE_SITE_URL } from "@/lib/pulse-brand";
 
 interface Args {
   ownerName: string | null;
+  /** The client's own handles, not Pulse's. */
+  instagramHandle?: string | null;
+  facebookHandle?: string | null;
   branches: PublicHostel[];
   branchInfo: BranchPublicInfo[];
   /** Absolute origin this page is served from, e.g. https://najam.hostels.yourpulse.io */
@@ -117,7 +121,7 @@ export function serializeJsonLd(data: Json): string {
 }
 
 export function businessJsonLd({
-  ownerName, branches, branchInfo, origin, hrefBase, faqs,
+  ownerName, instagramHandle, facebookHandle, branches, branchInfo, origin, hrefBase, faqs,
 }: Args): Json {
   const infoById = new Map(branchInfo.map((i) => [i.hostel_id, i]));
   const name = ownerName ?? branches[0]?.name ?? "Hostels";
@@ -132,10 +136,15 @@ export function businessJsonLd({
     "@id": `${origin}#organization`,
     name,
     url: origin,
-    // No sameAs: those are Pulse's social profiles, not the client's. Asserting
-    // them here tells search engines this hostel IS Pulse. They belong only on
-    // the publisher node below.
   };
+  // sameAs carries the CLIENT's own profiles and only those — this is exactly
+  // what the property is for. Pulse's socials stay off this node, because
+  // asserting them here would tell a search engine that this hostel IS Pulse;
+  // they belong only on the publisher node below. Same socialUrl() guard as the
+  // rendered page, so nothing uncertain is ever asserted.
+  const sameAs = [socialUrl("instagram", instagramHandle), socialUrl("facebook", facebookHandle)]
+    .filter((u): u is string => !!u);
+  if (sameAs.length > 0) org.sameAs = sameAs;
   const logo = branches.find((b) => b.cover_image_url)?.cover_image_url;
   if (logo) org.image = logo;
   graph.push(org);

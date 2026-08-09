@@ -5,6 +5,7 @@ import { BusinessPage } from "@/components/find/business-page";
 import { buildFaqs } from "@/lib/business-content";
 import { businessJsonLd, serializeJsonLd } from "@/lib/business-jsonld";
 import { SUBDOMAIN_ROOT } from "@/lib/subdomain";
+import { PublicShell } from "../../public-shell";
 
 // Always render fresh — package pricing, availability, and food menu change in real time
 export const dynamic = "force-dynamic";
@@ -34,7 +35,8 @@ async function requestOrigin(subdomain: string): Promise<string> {
 // domain-relative (hrefBase="") so nobody gets bounced off mid-browse.
 export default async function SubdomainHomePage({ params }: Props) {
   const { subdomain } = await params;
-  const { branches, branchInfo, ownerName, error } = await getPublicHostelsBySubdomain(subdomain);
+  const { branches, branchInfo, ownerName, logoUrl, instagramHandle, facebookHandle, theme, error } =
+    await getPublicHostelsBySubdomain(subdomain);
 
   if (error || !branches || branches.length === 0) notFound();
 
@@ -44,6 +46,8 @@ export default async function SubdomainHomePage({ params }: Props) {
 
   const jsonLd = businessJsonLd({
     ownerName: ownerName ?? null,
+    instagramHandle,
+    facebookHandle,
     branches,
     branchInfo: info,
     origin,
@@ -51,8 +55,11 @@ export default async function SubdomainHomePage({ params }: Props) {
     faqs,
   });
 
+  // The one public route with an owner, so the one that can honour the owner's
+  // appearance choice. Everything else in app/(public)/ passes no theme and
+  // stays light.
   return (
-    <>
+    <PublicShell theme={theme}>
       {/* Structured data: what lets an answer engine quote this page rather
           than guess at it. Built from the same values rendered below. */}
       <script
@@ -62,12 +69,15 @@ export default async function SubdomainHomePage({ params }: Props) {
       />
       <BusinessPage
         ownerName={ownerName ?? null}
+        logoUrl={logoUrl ?? null}
+        instagramHandle={instagramHandle}
+        facebookHandle={facebookHandle}
         branches={branches}
         branchInfo={info}
         faqs={faqs}
         hrefBase=""
       />
-    </>
+    </PublicShell>
   );
 }
 
