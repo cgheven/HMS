@@ -509,7 +509,11 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     if (!rate || rate <= 0) return null;
     const isFirstInvoice = invoices.length === 0;
     const months = billingForm.cycle === "annual" ? 12 : 1;
-    const branches = Math.max(1, billingBranchCount);
+    // NOT Math.max(1, …). Zero billable branches is a real state now — every
+    // branch paused — and lib/invoice-generation.ts skips generation entirely
+    // rather than producing a Rs 0 invoice. Forcing 1 here would preview a
+    // charge that will never be raised.
+    const branches = billingBranchCount;
     const discountPct = clientDiscountPct(rate);
     const perBranchActual = rate * months;
     const perBranchList = STANDARD_CLIENT_MONTHLY_RATE * months;
@@ -619,7 +623,16 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                           <Globe className="w-3.5 h-3.5" />
                         </button>
                         <button
-                          onClick={() => openBilling(owner.owner_id, owner.owner_name ?? owner.owner_email, rows.length)}
+                          onClick={() => openBilling(
+                            owner.owner_id,
+                            owner.owner_name ?? owner.owner_email,
+                            // Billable branches only — the same filter
+                            // lib/invoice-generation.ts applies. rows.length
+                            // counted paused branches too, so pausing one left
+                            // this dialog previewing a total the generated
+                            // invoice would never match.
+                            rows.filter((h) => h.billing_active).length,
+                          )}
                           className="p-1.5 rounded-lg text-muted-foreground hover:text-amber hover:bg-amber/10 transition-colors"
                           title="Billing"
                         >
@@ -1103,6 +1116,17 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                 <p className="text-[11px] text-muted-foreground -mt-2">
                   The next invoice generated (manually or by the daily job) will cover the {billingForm.cycle} starting from this date — set it to when the client actually started, not necessarily today.
                 </p>
+
+                {/* Every branch paused: say so plainly rather than showing a
+                    breakdown for an invoice that will never be generated. */}
+                {billingBranchCount === 0 && (
+                  <div className="rounded-xl border border-amber/25 bg-amber/[0.06] px-4 py-3">
+                    <p className="text-xs text-amber font-medium">All branches paused from billing</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      No invoice will be generated for this client until at least one branch is resumed.
+                    </p>
+                  </div>
+                )}
 
                 {billingPreview && (
                   <div className="rounded-lg border border-sidebar-border bg-muted/20 p-3 space-y-1.5">

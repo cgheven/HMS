@@ -1,4 +1,5 @@
 "use server";
+import { isTestOwner } from "@/lib/test-accounts";
 import { getProfile } from "@/lib/auth";
 
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -329,14 +330,21 @@ export async function resetClientInvoices(ownerId: string): Promise<{ error?: st
     const caller = await requireSuperAdmin();
     const admin = createAdminClient();
 
-    const { count: paidCount, error: countErr } = await admin
-      .from("hms_platform_invoices")
-      .select("id", { count: "exact", head: true })
-      .eq("owner_id", ownerId)
-      .eq("status", "paid");
-    if (countErr) throw countErr;
-    if ((paidCount ?? 0) > 0) {
-      throw new Error("Cannot reset — this client has paid invoices. This is only for test accounts with no settled payments.");
+    // Paid invoices block a reset — a real client's settled billing history is
+    // not something to delete from a dialog. Known test accounts
+    // (lib/test-accounts.ts) are exempt: invoice generation cannot be rehearsed
+    // on a real client, so the only way to test it end to end is an account
+    // whose "payments" were never real money.
+    if (!isTestOwner(ownerId)) {
+      const { count: paidCount, error: countErr } = await admin
+        .from("hms_platform_invoices")
+        .select("id", { count: "exact", head: true })
+        .eq("owner_id", ownerId)
+        .eq("status", "paid");
+      if (countErr) throw countErr;
+      if ((paidCount ?? 0) > 0) {
+        throw new Error("Cannot reset — this client has paid invoices. This is only for test accounts with no settled payments.");
+      }
     }
 
     const { error } = await admin.from("hms_platform_invoices").delete().eq("owner_id", ownerId);
@@ -348,7 +356,9 @@ export async function resetClientInvoices(ownerId: string): Promise<{ error?: st
       action: "super_admin.reset_client_invoices",
       entity: "profile",
       entity_id: ownerId,
-      meta: {},
+      // Recorded so a reset that skipped the paid-invoice guard is answerable
+      // later, rather than looking identical to an ordinary one.
+      meta: { test_account: isTestOwner(ownerId) },
     });
 
     return {};
