@@ -181,6 +181,42 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
   const W = 480;
   const ML = 24;
   const MR = W - 24;
+  /**
+   * Draw text that must not cross into the next column.
+   *
+   * The BILLED TO column is ~101pt wide before it meets the vertical rule at
+   * COL_INFO - 14. An 8pt email of ~25 characters fits; a real one like
+   * muhammadfaizannadeem95@gmail.com is 32 and used to run straight through the
+   * divider and into the billing box.
+   *
+   * Shrinks a step at a time down to 6pt — an invoice is a document someone may
+   * need to read back, so truncating an email with an ellipsis would destroy
+   * information rather than present it. Only if it still will not fit does it
+   * split across two lines, and it returns the height consumed so the caller can
+   * advance past however many lines were used.
+   */
+  function fitText(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    d: any, text: string, x: number, y: number, maxWidth: number, baseSize = 8
+  ): number {
+    let size = baseSize;
+    d.setFontSize(size);
+    while (size > 6 && d.getTextWidth(text) > maxWidth) {
+      size -= 0.5;
+      d.setFontSize(size);
+    }
+    if (d.getTextWidth(text) <= maxWidth) {
+      d.text(text, x, y);
+      d.setFontSize(baseSize);
+      return 15;
+    }
+    // Still too wide at the floor — wrap rather than clip.
+    const lines: string[] = d.splitTextToSize(text, maxWidth);
+    lines.forEach((ln: string, i: number) => d.text(ln, x, y + i * (size + 2)));
+    d.setFontSize(baseSize);
+    return 15 + (lines.length - 1) * (size + 2);
+  }
+
   const COL_FROM = ML;
   const COL_BILLED = ML + 130;
   const COL_INFO = ML + 260;
@@ -297,7 +333,7 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       doc.setFontSize(9);
       doc.setTextColor(20, 20, 22);
       doc.text("PulseHub Private Limited", COL_FROM, leftY);
-      doc.text(client.owner_name, COL_BILLED, rightY);
+      fitText(doc, client.owner_name, COL_BILLED, rightY, COL_INFO - 14 - COL_BILLED - 6, 9);
     }
     leftY += 17;
     rightY += 17;
@@ -316,8 +352,12 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       doc.setFont("helvetica", "normal");
       doc.setFontSize(8);
       doc.setTextColor(...GRAY);
-      doc.text(client.owner_email, COL_BILLED + textX, rightY);
-      rightY += 15;
+      rightY += fitText(
+        doc, client.owner_email, COL_BILLED + textX, rightY,
+        // Stop short of the vertical rule at COL_INFO - 14, with a small gutter
+        // so a descender never touches the line.
+        COL_INFO - 14 - (COL_BILLED + textX) - 6
+      );
     }
 
     if (doc) {
@@ -334,8 +374,10 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       doc.setFont("helvetica", "normal");
       doc.setFontSize(8);
       doc.setTextColor(...GRAY);
-      doc.text(client.owner_phone, COL_BILLED + textX, rightY);
-      rightY += 15;
+      rightY += fitText(
+        doc, client.owner_phone, COL_BILLED + textX, rightY,
+        COL_INFO - 14 - (COL_BILLED + textX) - 6
+      );
     }
 
     if (doc) {
