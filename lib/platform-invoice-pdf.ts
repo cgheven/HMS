@@ -333,7 +333,7 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       doc.setFontSize(9);
       doc.setTextColor(20, 20, 22);
       doc.text("PulseHub Private Limited", COL_FROM, leftY);
-      fitText(doc, client.owner_name, COL_BILLED, rightY, COL_INFO - 14 - COL_BILLED - 6, 9);
+      fitText(doc, client.owner_name, COL_BILLED, rightY, COL_INFO - COL_BILLED - 10, 9);
     }
     leftY += 17;
     rightY += 17;
@@ -354,9 +354,9 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       doc.setTextColor(...GRAY);
       rightY += fitText(
         doc, client.owner_email, COL_BILLED + textX, rightY,
-        // Stop short of the vertical rule at COL_INFO - 14, with a small gutter
-        // so a descender never touches the line.
-        COL_INFO - 14 - (COL_BILLED + textX) - 6
+        // Runs up to the dark billing box, less a gutter so text never touches
+        // its edge. Wider than before, since the rule that used to sit here is gone.
+        COL_INFO - (COL_BILLED + textX) - 10
       );
     }
 
@@ -376,7 +376,7 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       doc.setTextColor(...GRAY);
       rightY += fitText(
         doc, client.owner_phone, COL_BILLED + textX, rightY,
-        COL_INFO - 14 - (COL_BILLED + textX) - 6
+        COL_INFO - (COL_BILLED + textX) - 10
       );
     }
 
@@ -425,8 +425,12 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
     if (doc) {
       doc.setDrawColor(...BORDER);
       doc.setLineWidth(0.6);
+      // One rule, between FROM and BILLED TO. The second one used to sit at
+      // COL_INFO - 14, immediately left of the dark billing box — a line drawn
+      // against a filled panel that already has its own hard edge, so it read as
+      // clutter and squeezed the BILLED TO column into 95pt. Removing it gives
+      // that column ~13pt more room and lets longer emails render at full size.
       doc.line(COL_BILLED - 14, sectionTop - 6, COL_BILLED - 14, sectionTop - 6 + dividerH);
-      doc.line(COL_INFO - 14, sectionTop - 6, COL_INFO - 14, sectionTop - 6 + dividerH);
     }
 
     y = sectionTop - headerIconSize * 0.6 + boxH + 24;
@@ -538,10 +542,21 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
     // the totals box (instead of stacked full-width below it) so the empty
     // left column next to that box gets used rather than wasted.
     const showBank = invoice.status === "unpaid";
+    // Word for word the same as the approved WhatsApp templates
+    // (hms_client_billing_due, hms_client_first_invoice). They previously read
+    // "UBL" and "PulseHub SMC Pvt Ltd" here while WhatsApp said "United Bank
+    // Limited" and "PULSEHUB SMC PRIVATE LIMITED" — the same account described
+    // two ways. A bank matches an account title literally, so an abbreviation
+    // on the document a client transfers from is a failed transfer waiting to
+    // happen. If these ever change, the two Meta templates must change with
+    // them, and that needs re-approval.
+    // Labels match the approved WhatsApp templates (Bank / Title / Account), which
+    // also buys back ~40pt: "Account Title:" pushed the value column so far right
+    // that PULSEHUB SMC PRIVATE LIMITED ran out of the box.
     const bankRows: [string, string][] = [
-      ["Bank", "UBL"],
-      ["Account Title", "PulseHub SMC Pvt Ltd"],
-      ["Account Number", "0253388111143"],
+      ["Bank", "United Bank Limited"],
+      ["Title", "PULSEHUB SMC PRIVATE LIMITED"],
+      ["Account", "0253388111143"],
     ];
     const bankX = ML;
     const bankW = boxX - ML - 20;
@@ -595,14 +610,29 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       doc.text("BANK DETAILS FOR PAYMENT", bankX + 14, y + bankPad + 6);
       let ry = y + bankPad + bankHeadH + 8;
       doc.setFontSize(8.5);
+
+      // Values share ONE left edge, set by the widest label.
+      //
+      // Each value used to be drawn at 14 + getTextWidth(its own label), so
+      // "UBL" started right after "Bank:" while the account number started far
+      // to the right of "Account Number:" — three values on three different
+      // x positions, which reads as sloppy on a document a client keeps.
+      // Measured in the same normal 8.5pt the labels are drawn in, or the
+      // column lands in the wrong place.
+      doc.setFont("helvetica", "normal");
+      const valueX =
+        bankX + 14 + Math.max(...bankRows.map(([k]) => doc.getTextWidth(`${k}: `)));
+
       for (const [k, v] of bankRows) {
-        const label = `${k}: `;
         doc.setFont("helvetica", "normal");
         doc.setTextColor(...GRAY);
-        doc.text(label, bankX + 14, ry);
+        doc.text(`${k}:`, bankX + 14, ry);
         doc.setFont("helvetica", "bold");
         doc.setTextColor(20, 20, 22);
-        doc.text(v, bankX + 14 + doc.getTextWidth(label), ry);
+        // Measured, not estimated. Bold CAPITALS are far wider than an average
+        // character width suggests — which is exactly how the account title came
+        // to overflow the box. fitText shrinks it to whatever actually fits.
+        fitText(doc, v, valueX, ry, bankX + bankW - 14 - valueX, 8.5);
         ry += bankRowH;
       }
     }
