@@ -1,7 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
-import { TEMPLATES, clientBillingDueParams, clientPaymentReceivedParams } from "@/lib/whatsapp-templates";
+import { TEMPLATES, clientBillingDueParams, clientFirstInvoiceParams, clientPaymentReceivedParams } from "@/lib/whatsapp-templates";
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
 
@@ -30,7 +30,7 @@ export async function sendInvoiceWhatsApp(
 ): Promise<InvoiceWhatsAppResult> {
   const { data: invoice } = await admin
     .from("hms_platform_invoices")
-    .select("id, owner_id, amount, period_label, due_date, share_token, status")
+    .select("id, owner_id, amount, period_label, due_date, share_token, status, is_first_invoice, onboarding_fee_charged")
     .eq("id", invoiceId)
     .maybeSingle();
 
@@ -54,6 +54,35 @@ export async function sendInvoiceWhatsApp(
     "";
   const digits = raw.replace(/\D/g, "").replace(/^0/, "92");
   if (digits.length < 11) return { sent: false, reason: "No phone number on file for this client" };
+
+  // The first invoice carries a one-time onboarding fee, so a single "Amount"
+  // line reads as a surprise — 16,000 against a 6,000 monthly rate, with no
+  // explanation. Itemise it once, then never again.
+  const onboarding = Number(invoice.onboarding_fee_charged ?? 0);
+  const useFirstInvoice =
+    FIRST_INVOICE_TEMPLATE_ENABLED && !!invoice.is_first_invoice && onboarding > 0;
+
+  if (useFirstInvoice) {
+    const total = Number(invoice.amount);
+    const first = await sendWhatsAppTemplateMessage(
+      digits,
+      TEMPLATES.clientFirstInvoice.name,
+      TEMPLATES.clientFirstInvoice.language,
+      clientFirstInvoiceParams({
+        clientName: profile?.full_name,
+        businessName: branches[0]?.name,
+        periodLabel: invoice.period_label as string,
+        onboardingFee: onboarding,
+        // Derived, never stored separately — so it cannot disagree with the
+        // total the client is actually being asked for.
+        subscriptionAmount: total - onboarding,
+        total,
+        invoiceUrl: `${SITE_URL}/invoice/${invoice.share_token}`,
+      }),
+      { hostelId: null, tenantId: null, ownerId: invoice.owner_id as string, messageType: "reminder" }
+    );
+    return first.ok ? { sent: true } : { sent: false, reason: first.error };
+  }
 
   const result = await sendWhatsAppTemplateMessage(
     digits,
@@ -85,6 +114,16 @@ export async function sendInvoiceWhatsApp(
  * mark-paid path, which must never break because a message cannot go out.
  */
 const PAYMENT_RECEIVED_ENABLED = true;
+
+/**
+ * Turn on once Meta approves hms_client_first_invoice.
+ *
+ * Off means first invoices keep using clientBillingDue exactly as today — the
+ * single-amount wording. So this can only ever improve the message, never break
+ * one: an unapproved template would fail with 132001 and the client would get
+ * nothing at all.
+ */
+const FIRST_INVOICE_TEMPLATE_ENABLED = false;
 
 /**
  * Confirms to the CLIENT that we received their platform payment.

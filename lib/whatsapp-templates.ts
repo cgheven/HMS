@@ -25,6 +25,7 @@ export const TEMPLATES = {
   tenantCheckout: { name: "hms_tenant_checkout", language: "en" },
   reminderFullV2: { name: "hms_payment_reminder_full_v2", language: "en" },
   clientPaymentReceived: { name: "hms_client_payment_received", language: "en" },
+  clientFirstInvoice: { name: "hms_client_first_invoice", language: "en" },
 } as const;
 
 const pkr = (n: number) => new Intl.NumberFormat("en-PK").format(Math.round(n));
@@ -300,6 +301,43 @@ export function clientBillingDueParams(a: ClientBillingDueArgs): string[] {
     clean(a.periodLabel, "this period"),
     clean(pkr(a.amount), "0"),
     clean(a.dueDate ? formatDayLong(a.dueDate) : "", "as per invoice"),
+    clean(a.invoiceUrl, "https://hostel.yourpulse.io"),
+  ];
+}
+
+export interface ClientFirstInvoiceArgs {
+  clientName: string | null | undefined;
+  businessName: string | null | undefined;
+  periodLabel: string;
+  /** The one-time fee, itemised so it is not mistaken for the new monthly rate. */
+  onboardingFee: number;
+  /** Everything except onboarding — the recurring part of this invoice. */
+  subscriptionAmount: number;
+  total: number;
+  invoiceUrl: string;
+}
+
+/**
+ * hms_client_first_invoice — used ONCE per client, for the invoice that carries
+ * the onboarding fee.
+ *
+ * Exists because clientBillingDue shows a single "Amount", so a first invoice of
+ * 16,000 against a 6,000 monthly rate reads as a surprise with no explanation.
+ * Splitting the line is the whole point; the template's closing sentence does
+ * the rest by saying the fee will not recur.
+ *
+ * "Subscription charges" rather than "monthly": on an annual cycle that figure
+ * is twelve months, and calling it monthly would understate the next invoice by
+ * a factor of twelve.
+ */
+export function clientFirstInvoiceParams(a: ClientFirstInvoiceArgs): string[] {
+  return [
+    clean(firstName(a.clientName), "there"),
+    clean(a.businessName ?? "", "your hostel"),
+    clean(a.periodLabel, "this period"),
+    clean(pkr(a.onboardingFee), "0"),
+    clean(pkr(a.subscriptionAmount), "0"),
+    clean(pkr(a.total), "0"),
     clean(a.invoiceUrl, "https://hostel.yourpulse.io"),
   ];
 }
