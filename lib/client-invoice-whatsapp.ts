@@ -41,7 +41,7 @@ export async function sendInvoiceWhatsApp(
     admin.from("hms_profiles").select("full_name, phone").eq("id", invoice.owner_id).maybeSingle(),
     admin
       .from("hms_hostels")
-      .select("name, phone, whatsapp, created_at")
+      .select("id, name, phone, whatsapp, created_at")
       .eq("owner_id", invoice.owner_id)
       .order("created_at", { ascending: true }),
   ]);
@@ -79,7 +79,16 @@ export async function sendInvoiceWhatsApp(
         total,
         invoiceUrl: `${SITE_URL}/invoice/${invoice.share_token}`,
       }),
-      { hostelId: null, tenantId: null, ownerId: invoice.owner_id as string, messageType: "reminder" }
+      {
+        // The branch named in the message body ({{2}} — branches[0]). A platform
+        // invoice is account-level, so this is not "the branch being billed";
+        // it is the branch the CLIENT saw, which is what makes the monitor page
+        // legible. Logging null left every client message showing "—".
+        hostelId: (branches[0]?.id as string | undefined) ?? null,
+        tenantId: null,
+        ownerId: invoice.owner_id as string,
+        messageType: "reminder",
+      }
     );
     return first.ok ? { sent: true } : { sent: false, reason: first.error };
   }
@@ -99,7 +108,16 @@ export async function sendInvoiceWhatsApp(
       dueDate: invoice.due_date as string,
       invoiceUrl: `${SITE_URL}/invoice/${invoice.share_token}`,
     }),
-    { hostelId: null, tenantId: null, ownerId: invoice.owner_id as string, messageType: "reminder" }
+    {
+        // The branch named in the message body ({{2}} — branches[0]). A platform
+        // invoice is account-level, so this is not "the branch being billed";
+        // it is the branch the CLIENT saw, which is what makes the monitor page
+        // legible. Logging null left every client message showing "—".
+        hostelId: (branches[0]?.id as string | undefined) ?? null,
+        tenantId: null,
+        ownerId: invoice.owner_id as string,
+        messageType: "reminder",
+      }
   );
 
   return result.ok ? { sent: true } : { sent: false, reason: result.error };
@@ -157,7 +175,7 @@ export async function sendPaymentReceivedWhatsApp(
     admin.from("hms_profiles").select("full_name, phone").eq("id", invoice.owner_id).maybeSingle(),
     admin
       .from("hms_hostels")
-      .select("name, phone, whatsapp, created_at")
+      .select("id, name, phone, whatsapp, created_at")
       .eq("owner_id", invoice.owner_id)
       .order("created_at", { ascending: true }),
   ]);
@@ -183,7 +201,12 @@ export async function sendPaymentReceivedWhatsApp(
       receivedOn: (invoice.paid_at as string | null) ?? null,
       invoiceUrl: `${SITE_URL}/invoice/${invoice.share_token}`,
     }),
-    { hostelId: null, tenantId: null, ownerId: invoice.owner_id as string, messageType: "receipt" }
+    {
+        hostelId: (branches[0]?.id as string | undefined) ?? null,
+        tenantId: null,
+        ownerId: invoice.owner_id as string,
+        messageType: "receipt",
+      }
   );
 
   return result.ok ? { sent: true } : { sent: false, reason: result.error };
