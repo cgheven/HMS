@@ -604,7 +604,10 @@ export function LeadsClient({ initialLeads, mode, salesReps = [], adminUserId = 
 
       <div className={cn("space-y-5", isAdmin ? "container mx-auto px-4 sm:px-6 py-6 max-w-7xl" : "pt-5")}>
         {/* Status filter tabs */}
-        <div className="flex gap-1 p-1 bg-white/[0.03] border border-sidebar-border rounded-xl w-fit overflow-x-auto">
+        {/* Wraps rather than scrolls: there are 9 chips and Rejected is the
+            last, so on a normal viewport it sat off the right edge with no
+            scrollbar hint — the filter existed and was simply unreachable. */}
+        <div className="flex flex-wrap gap-1 p-1 bg-white/[0.03] border border-sidebar-border rounded-xl">
           {STATUS_FILTERS.map(({ value, label }) => (
             <button
               key={value}

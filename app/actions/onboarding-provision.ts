@@ -238,13 +238,9 @@ export async function provisionOnboarding(submissionId: string): Promise<Provisi
         .eq("id", row.lead_id);
     }
 
-    // requireSuperAdmin returns hms_profiles, which carries no email column —
-    // read it off the session user for the audit trail.
-    const { data: { user: actor } } = await (await createClient()).auth.getUser();
-
     await writeAuditLog({
       actor_id: caller.id,
-      actor_email: actor?.email ?? "",
+      actor_email: caller.email ?? "",
       action: "super_admin.provision_onboarding",
       entity: "hostel",
       entity_id: hostelIds[0],
@@ -319,6 +315,58 @@ export interface SubmissionRow {
   branchNames: string[];
   partnerCount: number;
   data: OnboardingData;
+}
+
+/**
+ * Hide a submission from the Super Admin list.
+ *
+ * Sets status = 'abandoned', which listOnboardingSubmissions already filters
+ * out — the exclusion existed from the start, there was simply no way to put a
+ * row into it. That left 14 half-finished drafts and every provisioned account
+ * ever created stacked on one page with no way to clear any of them.
+ *
+ * Hides the RECORD only. A provisioned row's hostel, owner login and tenants are
+ * separate rows and are completely untouched — dismissing it removes a piece of
+ * paperwork, never a client. Deleting a client stays where it already is, on
+ * the Hostels page, behind its own confirmation.
+ *
+ * Reversible by design: nothing is deleted, so a row dismissed by mistake can be
+ * restored by setting its status back.
+ */
+export async function dismissOnboardingSubmission(
+  submissionId: string
+): Promise<{ error?: string }> {
+  try {
+    const caller = await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const { data: row } = await admin
+      .from("hms_onboarding_submissions")
+      .select("id, status")
+      .eq("id", submissionId)
+      .maybeSingle();
+    if (!row) return { error: "Submission not found" };
+
+    const { error } = await admin
+      .from("hms_onboarding_submissions")
+      .update({ status: "abandoned" })
+      .eq("id", submissionId);
+    if (error) throw new Error(error.message);
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: "super_admin.dismiss_onboarding_submission",
+      entity: "onboarding_submission",
+      entity_id: submissionId,
+      meta: { previous_status: row.status },
+    });
+
+    revalidatePath("/super-admin/onboarding");
+    return {};
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to dismiss submission" };
+  }
 }
 
 export async function listOnboardingSubmissions(): Promise<{

@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Building2, Loader2, Rocket, ChevronDown, ChevronRight, Copy, Check,
-  Link2, Users2, CheckCircle2,
+  Link2, Users2, CheckCircle2, X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,7 +13,7 @@ import {
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { SEATER_LABELS } from "@/lib/seater-pricing";
-import { provisionOnboarding } from "@/app/actions/onboarding-provision";
+import { dismissOnboardingSubmission, provisionOnboarding } from "@/app/actions/onboarding-provision";
 import type { ProvisionResult, SubmissionRow } from "@/app/actions/onboarding-provision";
 import type { OnboardingBranch, OnboardingBranchConfig } from "@/types";
 
@@ -22,13 +23,22 @@ export function OnboardingSubmissionsClient({
   initialSubmissions: SubmissionRow[];
 }) {
   const [rows, setRows] = useState(initialSubmissions);
+  const router = useRouter();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [provisioning, setProvisioning] = useState<string | null>(null);
   const [pending, setPending] = useState<SubmissionRow | null>(null);
   const [result, setResult] = useState<(ProvisionResult & { id: string }) | null>(null);
 
   const submitted = rows.filter((r) => r.status === "submitted");
-  const drafts = rows.filter((r) => r.status === "draft");
+  // Only drafts where someone actually started typing.
+  //
+  // Every draft on production today is anonymous: 14 rows, 0 with a name, 0
+  // linked to a lead. They are links that were generated and never opened, so
+  // the group listed 14 identical blank rows that could not tell you who to
+  // chase — and "Copy link" was useless because you could not tell which row
+  // belonged to whom. Nothing is deleted and the tokens stay valid, so anyone
+  // mid-signup is unaffected; the row simply appears once it has a name on it.
+  const drafts = rows.filter((r) => r.status === "draft" && r.ownerName.trim() !== "");
   const done = rows.filter((r) => r.status === "provisioned");
 
   async function handleProvision(row: SubmissionRow) {
@@ -47,15 +57,27 @@ export function OnboardingSubmissionsClient({
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-foreground tracking-tight">Onboarding</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Setup forms owners have filled in. Provisioning creates the account, every branch, and its
-          pricing in one step.
-        </p>
+    // Same frame as every other Super Admin page (Students, WhatsApp, Audit):
+    // a bordered h-14 header bar, then a max-w-7xl container with its own
+    // padding. This page had neither — just a bare heading in an unpadded div —
+    // so the title sat hard against the top-left corner and every row ran
+    // straight into the sidebar.
+    <div className="min-h-screen bg-background">
+      <div className="border-b border-sidebar-border px-4 sm:px-6 h-14 flex items-center">
+        <div className="flex items-center gap-3 max-w-7xl mx-auto w-full">
+          <div className="p-2 rounded-lg bg-amber/10 border border-amber/20">
+            <Rocket className="w-4 h-4 text-amber" />
+          </div>
+          <div>
+            <h1 className="text-base font-bold">Onboarding</h1>
+            <p className="text-xs text-muted-foreground">
+              Provisioning creates the account, every branch and its pricing in one step
+            </p>
+          </div>
+        </div>
       </div>
 
+      <div className="container mx-auto px-4 sm:px-6 py-6 max-w-7xl space-y-6">
       {result && (
         <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/[0.06] p-4 space-y-3">
           <div className="flex items-center gap-2">
@@ -72,56 +94,68 @@ export function OnboardingSubmissionsClient({
         </div>
       )}
 
-      <Group title="Ready to provision" count={submitted.length} tone="amber">
-        {submitted.length === 0
-          ? <Empty>Nothing waiting.</Empty>
-          : submitted.map((r) => (
+      <Group title="Ready to provision" count={submitted.length} tone="amber" emptyNote="nothing waiting">
+        {submitted.map((r) => (
               <Row
                 key={r.id} row={r}
                 expanded={expanded === r.id}
                 onToggle={() => setExpanded(expanded === r.id ? null : r.id)}
                 action={
-                  <Button size="sm" onClick={() => setPending(r)} disabled={provisioning === r.id} className="gap-1.5">
-                    {provisioning === r.id
-                      ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Creating…</>
-                      : <><Rocket className="w-3.5 h-3.5" /> Provision</>}
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <Button size="sm" onClick={() => setPending(r)} disabled={provisioning === r.id} className="gap-1.5">
+                      {provisioning === r.id
+                        ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Creating…</>
+                        : <><Rocket className="w-3.5 h-3.5" /> Provision</>}
+                    </Button>
+                    {/* Deny: nothing is created, the submission just leaves the queue. */}
+                    <DismissButton id={r.id} label="Deny — do not provision" onDone={() => router.refresh()} />
+                  </div>
                 }
               />
             ))}
       </Group>
 
-      <Group title="Still filling in" count={drafts.length} tone="muted">
-        {drafts.length === 0
-          ? <Empty>No drafts in progress.</Empty>
-          : drafts.map((r) => (
+      <Group title="Still filling in" count={drafts.length} tone="muted" emptyNote="no half-finished signups">
+        {drafts.map((r) => (
               <Row
                 key={r.id} row={r}
                 expanded={expanded === r.id}
                 onToggle={() => setExpanded(expanded === r.id ? null : r.id)}
-                action={<CopyLink token={r.token} />}
+                action={
+                  <div className="flex items-center gap-1">
+                    <CopyLink token={r.token} />
+                    <DismissButton id={r.id} label="Dismiss this draft" onDone={() => router.refresh()} />
+                  </div>
+                }
               />
             ))}
       </Group>
 
-      <Group title="Provisioned" count={done.length} tone="emerald">
-        {done.length === 0
-          ? <Empty>None yet.</Empty>
-          : done.map((r) => (
+      <Group title="Provisioned" count={done.length} tone="emerald" emptyNote="none yet">
+        {done.map((r) => (
               <Row
                 key={r.id} row={r}
                 expanded={expanded === r.id}
                 onToggle={() => setExpanded(expanded === r.id ? null : r.id)}
-                action={<span className="text-xs text-emerald-400 font-medium">Live</span>}
+                action={
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-emerald-400 font-medium">Live</span>
+                    {/* Clears the paperwork only — the hostel, its owner login and
+                        its tenants are untouched. Deleting a client lives on the
+                        Hostels page, behind its own confirmation. */}
+                    <DismissButton id={r.id} label="Hide from this list (account stays live)" onDone={() => router.refresh()} />
+                  </div>
+                }
               />
             ))}
       </Group>
 
-      <ProvisionDialog
-        row={pending}
-        onCancel={() => setPending(null)}
-        onConfirm={() => pending && handleProvision(pending)}
-      />
+        <ProvisionDialog
+          row={pending}
+          onCancel={() => setPending(null)}
+          onConfirm={() => pending && handleProvision(pending)}
+        />
+      </div>
     </div>
   );
 }
@@ -449,27 +483,63 @@ function Detail({ icon: Icon, title, children }: {
   );
 }
 
-function Group({ title, count, tone, children }: {
-  title: string; count: number; tone: "amber" | "emerald" | "muted"; children: React.ReactNode;
+function Group({ title, count, tone, emptyNote, children }: {
+  title: string; count: number; tone: "amber" | "emerald" | "muted";
+  /** Shown inline on the heading when the group is empty, instead of a box. */
+  emptyNote?: string;
+  children: React.ReactNode;
 }) {
   const dot = tone === "amber" ? "bg-amber" : tone === "emerald" ? "bg-emerald-400" : "bg-muted-foreground/40";
+  const empty = count === 0;
   return (
-    <section className="space-y-2.5">
+    <section className={empty ? "" : "space-y-2.5"}>
       <div className="flex items-center gap-2">
-        <span className={cn("w-1.5 h-1.5 rounded-full", dot)} />
-        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+        <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", empty ? "bg-muted-foreground/25" : dot)} />
+        <h2 className={cn("text-sm font-semibold", empty ? "text-muted-foreground" : "text-foreground")}>{title}</h2>
         <span className="text-xs text-muted-foreground">({count})</span>
+        {/* An empty group collapses to ONE line. Two empty groups each rendered a
+            dashed box six lines tall, which pushed the only real content — the
+            provisioned clients — below the fold on a full-height screen. The
+            heading still says the group exists and is empty; it just stops
+            occupying a third of the page to say so. */}
+        {empty && emptyNote && (
+          <span className="text-xs text-muted-foreground/50 truncate">— {emptyNote}</span>
+        )}
       </div>
-      <div className="space-y-2">{children}</div>
+      {!empty && <div className="space-y-2">{children}</div>}
     </section>
   );
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
+/**
+ * Hides one submission from this page. Never deletes an account.
+ *
+ * The three groups all grew without bound — 14 abandoned drafts, and every
+ * client ever provisioned — with nothing to clear them. This writes
+ * status='abandoned', which the list query already excludes.
+ */
+function DismissButton({ id, label, onDone }: { id: string; label: string; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
   return (
-    <div className="rounded-xl border border-dashed border-sidebar-border py-6 text-center">
-      <p className="text-xs text-muted-foreground">{children}</p>
-    </div>
+    <button
+      type="button"
+      disabled={busy}
+      title={label}
+      onClick={async (e) => {
+        e.stopPropagation();
+        setBusy(true);
+        const res = await dismissOnboardingSubmission(id);
+        setBusy(false);
+        if (res.error) {
+          toast({ title: "Could not dismiss", description: res.error, variant: "destructive" });
+          return;
+        }
+        onDone();
+      }}
+      className="p-1.5 rounded-md text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-40 shrink-0"
+    >
+      {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+    </button>
   );
 }
 
