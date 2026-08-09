@@ -116,14 +116,14 @@ export async function sendInvoiceWhatsApp(
 const PAYMENT_RECEIVED_ENABLED = true;
 
 /**
- * Turn on once Meta approves hms_client_first_invoice.
+ * hms_client_first_invoice was approved by Meta on 2026-08-09 (verified against
+ * the Graph API: status APPROVED, params 1-7).
  *
- * Off means first invoices keep using clientBillingDue exactly as today — the
- * single-amount wording. So this can only ever improve the message, never break
- * one: an unapproved template would fail with 132001 and the client would get
- * nothing at all.
+ * Kept as a switch rather than deleted: if the template is ever paused or fails
+ * a re-review, this turns it off and first invoices fall back to
+ * clientBillingDue rather than failing to send at all.
  */
-const FIRST_INVOICE_TEMPLATE_ENABLED = false;
+const FIRST_INVOICE_TEMPLATE_ENABLED = true;
 
 /**
  * Confirms to the CLIENT that we received their platform payment.
