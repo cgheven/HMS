@@ -616,21 +616,64 @@ export async function addBranchToOwner(data: {
 
 export async function getClientSubdomain(
   ownerId: string
-): Promise<{ subdomain?: string | null; error?: string }> {
+): Promise<{ subdomain?: string | null; enabled?: boolean; error?: string }> {
   try {
     await requireSuperAdmin();
     const admin = createAdminClient();
 
     const { data, error } = await admin
       .from("hms_profiles")
-      .select("subdomain")
+      .select("subdomain, subdomain_enabled")
       .eq("id", ownerId)
       .maybeSingle();
     if (error) throw error;
 
-    return { subdomain: data?.subdomain ?? null };
+    return { subdomain: data?.subdomain ?? null, enabled: data?.subdomain_enabled === true };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to load subdomain" };
+  }
+}
+
+/**
+ * Grant or revoke the branded-subdomain add-on for a client (migration 167).
+ *
+ * Governs CLAIMING only. Revoking does NOT release a subdomain already in use —
+ * three clients serve live traffic on theirs, and tearing one down must be a
+ * deliberate act via setClientSubdomain(null), never a side effect of a flag.
+ *
+ * Does not touch the mini website. Every client keeps /find/{slug}, their logo
+ * and their business name regardless: that is the acquisition hook, and this is
+ * the paid upgrade on top of it.
+ *
+ * Audit-logged like every other Super Admin grant — this changes what a client
+ * is entitled to, so it has to be answerable later.
+ */
+export async function setClientSubdomainEnabled(
+  ownerId: string,
+  enabled: boolean
+): Promise<{ success?: boolean; error?: string }> {
+  try {
+    const caller = await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const { error } = await admin
+      .from("hms_profiles")
+      .update({ subdomain_enabled: enabled })
+      .eq("id", ownerId);
+    if (error) throw error;
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: "super_admin.set_client_subdomain_enabled",
+      entity: "profile",
+      entity_id: ownerId,
+      meta: { enabled },
+    });
+
+    return { success: true };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to update subdomain access" };
   }
 }
 

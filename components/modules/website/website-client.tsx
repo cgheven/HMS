@@ -4,8 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Building2, Check, ExternalLink, Globe, ImagePlus, Loader2, Moon, Save,
-  ShieldCheck, Sun, Trash2, AtSign,
-} from "lucide-react";
+  ShieldCheck, Sun, Trash2, AtSign, Lock } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useHostelContext } from "@/contexts/hostel-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -35,6 +34,7 @@ const ALL_AMENITIES = [
 interface Props {
   hostelId: string | null;
   initialSubdomain: string | null;
+  subdomainEnabled: boolean;
   initialBusinessName: string;
   initialLogoUrl: string | null;
   initialInstagram: string;
@@ -45,6 +45,7 @@ interface Props {
 export function WebsiteClient({
   hostelId,
   initialSubdomain,
+  subdomainEnabled,
   initialBusinessName,
   initialLogoUrl,
   initialInstagram,
@@ -506,14 +507,32 @@ export function WebsiteClient({
                 </div>
               ) : (
                 <div className="space-y-4">
+                  {/* Locked shows the REAL control, disabled — the client sees
+                      the address they would get rather than a paragraph telling
+                      them about it. The card description above already explains
+                      what a branded address is; repeating it here said "a link
+                      with a code in it" twice on one screen. */}
                   <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-amber/5 border border-amber/20 text-xs">
-                    <ShieldCheck className="w-3.5 h-3.5 text-amber shrink-0 mt-0.5" />
-                    <span className="text-muted-foreground">
-                      <strong className="text-amber">You can only set this once.</strong> It cannot be changed
-                      or undone afterwards, because you will be printing it on signs and sending it to residents.
-                      Choose the name of your business, and check the spelling carefully.
-                    </span>
+                    {subdomainEnabled ? (
+                      <>
+                        <ShieldCheck className="w-3.5 h-3.5 text-amber shrink-0 mt-0.5" />
+                        <span className="text-muted-foreground">
+                          <strong className="text-amber">You can only set this once.</strong> It cannot be changed
+                          or undone afterwards, because you will be printing it on signs and sending it to residents.
+                          Choose the name of your business, and check the spelling carefully.
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-3.5 h-3.5 text-amber shrink-0 mt-0.5" />
+                        <span className="text-muted-foreground">
+                          <strong className="text-amber">Premium add-on.</strong> Contact us to enable it for your account.
+                        </span>
+                      </>
+                    )}
                   </div>
+
+                  <fieldset disabled={!subdomainEnabled} className={cn("space-y-4 min-w-0", !subdomainEnabled && "opacity-50")}>
 
                   <div className="space-y-1.5">
                     <Label>Choose your address</Label>
@@ -582,6 +601,7 @@ export function WebsiteClient({
                       <Globe className="w-4 h-4" /> Set my address
                     </Button>
                   )}
+                  </fieldset>
                 </div>
               )}
             </CardContent>

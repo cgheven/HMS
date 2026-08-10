@@ -10,7 +10,8 @@ import { Receipt,
 import {
   listAllHostels, createHostelForClient, addBranchToOwner,
   deleteHostel, deleteClient, setWhatsappEnabled, setBranchBillingActive,
-  getClientSubdomain, setClientSubdomain, type SuperHostelRow,
+  getClientSubdomain, setClientSubdomain,
+  setClientSubdomainEnabled, type SuperHostelRow,
 } from "@/app/actions/super-admin";
 import {
   getClientBilling, setClientBilling, generateInvoiceNow, markInvoiceStatus, updateInvoiceAmount, sendInvoiceEmail,
@@ -163,6 +164,8 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
   const [subValue, setSubValue] = useState("");
   /** What the DB currently holds — lets us tell "no change" from "cleared". */
   const [subCurrent, setSubCurrent] = useState<string | null>(null);
+  const [subEnabled, setSubEnabled] = useState(false);
+  const [subGranting, setSubGranting] = useState(false);
 
   const subNormalized = normalizeSubdomain(subValue);
   const subValidation = subValue.trim() === "" ? null : subdomainError(subValue);
@@ -178,11 +181,27 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
       toast({ title: "Could not load subdomain", description: res.error, variant: "destructive" });
     } else {
       setSubCurrent(res.subdomain ?? null);
+      setSubEnabled(res.enabled === true);
       // Prefill from the BUSINESS name, not the owner's personal name — the
       // subdomain is what residents see. Never overwrite a live one with a guess.
       setSubValue(res.subdomain ?? suggestSubdomain(branchNames));
     }
     setSubLoading(false);
+  }
+
+  async function toggleSubdomainAccess() {
+    if (!subTarget) return;
+    const next = !subEnabled;
+    setSubGranting(true);
+    setSubEnabled(next);            // optimistic; reverted below on failure
+    const res = await setClientSubdomainEnabled(subTarget.ownerId, next);
+    setSubGranting(false);
+    if (res.error) {
+      setSubEnabled(!next);
+      toast({ title: "Could not update access", description: res.error, variant: "destructive" });
+      return;
+    }
+    toast({ title: next ? "Subdomain add-on granted" : "Subdomain add-on revoked" });
   }
 
   /**
@@ -937,6 +956,35 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
             </div>
           ) : (
             <div className="space-y-4 py-1">
+              {/* The grant leads the dialog: whether the client is entitled to a
+                  subdomain is the decision, and setting the name is the
+                  consequence. Revoking never releases a live address — that is
+                  deliberate, and stays the explicit "Remove" action below. */}
+              <div className="flex items-center justify-between gap-3 p-3 rounded-xl border border-sidebar-border bg-white/[0.02]">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">Subdomain add-on</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {subEnabled
+                      ? "Client can claim their own web address."
+                      : "Locked — the client sees an upsell instead. Their mini website is unaffected."}
+                  </p>
+                  {subCurrent && !subEnabled && (
+                    <p className="text-xs text-amber mt-1">
+                      Already claimed — revoking does not take {subCurrent} offline.
+                    </p>
+                  )}
+                </div>
+                <Button
+                  size="sm"
+                  variant={subEnabled ? "outline" : "default"}
+                  onClick={toggleSubdomainAccess}
+                  disabled={subGranting}
+                  className="shrink-0"
+                >
+                  {subGranting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : subEnabled ? "Revoke" : "Grant"}
+                </Button>
+              </div>
+
               <div className="space-y-1.5">
                 <Label>Subdomain</Label>
                 <div className="flex items-stretch">

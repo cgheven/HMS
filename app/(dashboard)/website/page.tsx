@@ -16,6 +16,10 @@ export default async function WebsitePage() {
       key={ctx?.hostelId ?? ""}
       hostelId={ctx?.hostelId ?? null}
       initialSubdomain={p?.subdomain ?? null}
+      // Premium gate (migration 167). Rides along in the same select("*") as
+      // everything else here. The card renders locked rather than hidden: a
+      // client who cannot use this should still learn it exists.
+      subdomainEnabled={(p as { subdomain_enabled?: boolean } | null)?.subdomain_enabled === true}
       initialBusinessName={p?.business_name ?? ""}
       initialLogoUrl={p?.logo_url ?? null}
       initialInstagram={p?.instagram_handle ?? ""}

@@ -43,12 +43,24 @@ export async function claimMySubdomain(
     // Re-read rather than trusting anything the browser sent: this is the
     // one-time gate, and it is the only thing standing between a client and a
     // rename that breaks their printed material.
+    // subdomain_enabled comes back in the same read as the one-time gate, so
+    // the premium check costs no extra round trip. It is read from the DB, not
+    // taken from the client: the card is hidden when the flag is off, but a
+    // hidden card is not access control (migration 167 also pins the column
+    // against browser-side self-grant with a trigger).
     const { data: existing, error: readErr } = await admin
       .from("hms_profiles")
-      .select("subdomain")
+      .select("subdomain, subdomain_enabled")
       .eq("id", profile.id)
       .maybeSingle();
     if (readErr) throw readErr;
+
+    // Checked BEFORE the already-claimed gate on purpose: a client whose access
+    // was revoked after claiming should still be told their address is set,
+    // not that the feature is locked.
+    if (!existing?.subdomain && !existing?.subdomain_enabled) {
+      return { error: "Your own web address is a premium add-on. Contact us to enable it for your account." };
+    }
 
     if (existing?.subdomain) {
       return { error: "Your subdomain is already set and cannot be changed. Contact support if it's wrong." };

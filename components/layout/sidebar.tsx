@@ -133,7 +133,14 @@ interface SidebarProps { open: boolean; onClose: () => void; }
 export function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
   const { isAdmin } = useIsAdmin();
-  const { profile, hostels } = useHostelContext();
+  const { profile, hostels, hostel } = useHostelContext();
+  // Link straight at the public page instead of at /find, which exists only to
+  // resolve this slug server-side and redirect. That hop costs a full round trip
+  // plus a getAuthContext query before anything paints — and the slug is already
+  // in this context. Falls back to /find when the branch has no slug or is not
+  // listed, so the not-published and no-slug cases keep their existing handling.
+  const publicPageHref =
+    hostel?.slug && hostel.listing_enabled ? `/find/${hostel.slug}` : "/find";
   const isPartner = profile?.role === "partner";
   const singleBranch = (hostels?.length ?? 0) < 2;
 
@@ -142,7 +149,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
       ...group,
       items: group.items.filter(
         (item) => !(isPartner && item.ownerOnly) && !(singleBranch && item.multiBranchOnly)
-      ),
+      ).map((item) => (item.href === "/find" ? { ...item, href: publicPageHref } : item)),
     }))
     .filter((group) => group.items.length > 0);
 
