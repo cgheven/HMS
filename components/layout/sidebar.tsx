@@ -9,7 +9,7 @@ import {
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
   MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2, Globe,
   ClipboardList, ShieldCheck, Search, Wallet, Flag, MessageSquareHeart,
-  LayoutTemplate,
+  LayoutTemplate, Layers,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
@@ -23,7 +23,10 @@ import { useHostelContext } from "@/contexts/hostel-context";
 //              branch, keyed to owner_id, so a partner would see an empty page
 // Settings is shown, but its Branches and Partners cards are hidden inside the
 // page for the same reason (see settings-client.tsx).
-interface NavItem { href: string; label: string; icon: typeof LayoutDashboard; ownerOnly?: boolean; newTab?: boolean }
+// multiBranchOnly hides an item that has nothing to say with a single branch.
+// It is a UX decision, not a security control — /overview enforces owner-only
+// access with requireOwnerOrAbove() on the page AND inside its server action.
+interface NavItem { href: string; label: string; icon: typeof LayoutDashboard; ownerOnly?: boolean; multiBranchOnly?: boolean; newTab?: boolean }
 
 
 
@@ -73,6 +76,8 @@ const navGroups: { label: string; items: NavItem[] }[] = [
   {
     label: "Analytics",
     items: [
+      // The zoom-out sits above Reports, which is the zoom-in.
+      { href: "/overview", label: "All Branches", icon: Layers, ownerOnly: true, multiBranchOnly: true },
       { href: "/reports", label: "Reports", icon: BarChart3 },
     ],
   },
@@ -128,13 +133,16 @@ interface SidebarProps { open: boolean; onClose: () => void; }
 export function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
   const { isAdmin } = useIsAdmin();
-  const { profile } = useHostelContext();
+  const { profile, hostels } = useHostelContext();
   const isPartner = profile?.role === "partner";
+  const singleBranch = (hostels?.length ?? 0) < 2;
 
   const visibleGroups = navGroups
     .map((group) => ({
       ...group,
-      items: isPartner ? group.items.filter((item) => !item.ownerOnly) : group.items,
+      items: group.items.filter(
+        (item) => !(isPartner && item.ownerOnly) && !(singleBranch && item.multiBranchOnly)
+      ),
     }))
     .filter((group) => group.items.length > 0);
 

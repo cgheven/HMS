@@ -1217,3 +1217,52 @@ export interface RedflagListRow {
   reportedByHostelName: string | null
   reportedByHostelPhone: string | null
 }
+
+// ── Cross-branch portfolio (/overview) ──────────────────────────────────────
+// Aggregates only — no tenant name, phone, CNIC or room number ever crosses the
+// RSC boundary on this page. One record per (branch × month) so the client can
+// re-slice any period inside the prefetched window without another server call.
+
+/** One month of one branch. Every figure is the same definition the per-branch
+ *  Reports page uses — both sides call lib/report-math.ts. */
+export interface PortfolioBranchMonth {
+  monthKey: string
+  collected: number
+  pending: number
+  /** Refundable deposits sitting INSIDE `collected` — subtract for true profit. */
+  depositsCollected: number
+  expenses: number
+  kitchen: number
+  salaries: number
+}
+
+export interface PortfolioBranch {
+  id: string
+  name: string
+  city: string | null
+  /** Point-in-time NOW, never scoped to the selected period. */
+  activeMembers: number
+  beds: number
+  occupied: number
+  /** Refundable liability held today. Mirrors the branch Dashboard's
+   *  security_deposit_total, agreed figure included. */
+  depositsHeld: number
+  depositCount: number
+  /** Deposit money billed across the whole prefetched window that never arrived.
+   *  Window-wide on purpose so it does not move when the period pill changes. */
+  depositsUnreceived: number
+  months: PortfolioBranchMonth[]
+}
+
+export interface PortfolioMonth {
+  monthKey: string
+  label: string
+}
+
+export interface PortfolioSummary {
+  branches: PortfolioBranch[]
+  months: PortfolioMonth[]
+  windowFrom: string
+  windowTo: string
+  currentMonthKey: string
+}

@@ -5,6 +5,13 @@ import { createClient } from "@/lib/supabase/server";
 import { capitalize, getMonthRange } from "@/lib/utils";
 import { pktYearMonth } from "@/lib/pkt-time";
 import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
+import {
+  collectedFrom,
+  pendingFrom,
+  depositsCollectedFrom,
+  salaryCashOutFrom,
+  enumerateMonths,
+} from "@/lib/report-math";
 import type { Profile } from "@/types";
 
 // Per-day snapshot for the "Today" tab — one entry per date that had any
@@ -312,24 +319,7 @@ export async function getReportData(
     return { data: null, error: "Unauthorized" };
   }
 
-  // Generate month keys in the range
-  const monthKeys: { monthKey: string; label: string; start: string; end: string }[] = [];
-  const startDate = new Date(from + "-01");
-  const endDate = new Date(to + "-01");
-  const cursor = new Date(startDate);
-  while (cursor <= endDate) {
-    const mk = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, "0")}`;
-    const monthStart = `${mk}-01`;
-    const lastDay = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
-    const monthEnd = `${mk}-${String(lastDay).padStart(2, "0")}`;
-    monthKeys.push({
-      monthKey: mk,
-      label: cursor.toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
-      start: monthStart,
-      end: monthEnd,
-    });
-    cursor.setMonth(cursor.getMonth() + 1);
-  }
+  const monthKeys = enumerateMonths(from, to);
 
   const fullStart = monthKeys[0]?.start ?? from;
   const fullEnd = monthKeys[monthKeys.length - 1]?.end ?? to;
@@ -466,9 +456,9 @@ export async function getReportData(
 
   // Total revenue & pending
   const collectedPayments = payments.filter((p) => p.status === "paid" || p.status === "partially_paid");
-  const totalRevenue = collectedPayments.reduce((s, p) => s + Number(p.amount_paid ?? p.amount), 0);
+  const totalRevenue = collectedFrom(payments);
   const pendingPayments = payments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid");
-  const pendingCollections = pendingPayments.reduce((s, p) => s + Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0)), 0);
+  const pendingCollections = pendingFrom(payments);
 
   // Occupancy
   const totalCapacity = rooms.reduce((s, r) => s + r.capacity, 0);
@@ -481,10 +471,8 @@ export async function getReportData(
     // rent/food/AC split stays paid-only — a partial payment can't be cleanly
     // attributed across categories (which portion did it cover?).
     const mPaid = mPayments.filter((p) => p.status === "paid");
-    const mCollected = mPayments.filter((p) => p.status === "paid" || p.status === "partially_paid");
-    const mPending = mPayments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid");
-    const collected = mCollected.reduce((s, p) => s + Number(p.amount_paid ?? p.amount), 0);
-    const pending = mPending.reduce((s, p) => s + Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0)), 0);
+    const collected = collectedFrom(mPayments);
+    const pending = pendingFrom(mPayments);
     return {
       month: label,
       monthKey,
@@ -505,29 +493,12 @@ export async function getReportData(
   const monthlyExpenses = monthKeys.map(({ monthKey, label, start, end }) => {
     const exp = expenses.filter((e) => e.date >= start && e.date <= end).reduce((s, e) => s + Number(e.amount), 0);
     const kit = kitchen.filter((k) => k.date >= start && k.date <= end).reduce((s, k) => s + Number(k.amount), 0);
-    const sal =
-      salaries
-        .filter((s) => s.for_month === monthKey && s.status === "paid")
-        .reduce((sum, s) => sum + Number(s.amount) - Number(s.advance_deducted ?? 0), 0) +
-      advancesGiven
-        .filter((a) => a.advance_date >= start && a.advance_date <= end)
-        .reduce((sum, a) => sum + Number(a.amount), 0);
-    const colRows = payments.filter((p) => p.for_month === monthKey && (p.status === "paid" || p.status === "partially_paid"));
-    const col = colRows.reduce((s, p) => s + Number(p.amount_paid ?? p.amount), 0);
-    // Security deposits are refundable liabilities, not income. They ride inside
-    // `amount`, so `collected` legitimately contains them (it is cash received)
-    // but profit must not. Returned alongside rather than pre-subtracted so the
-    // Collected tile keeps meaning "cash in". Partially-paid bills allocate the
-    // deposit in proportion to how much of the bill was paid, matching
-    // getDashboardData — nothing records which component the money went to.
-    const dep = colRows.reduce((s, p) => {
-      const charged = Number(p.security_deposit_charge ?? 0);
-      if (charged <= 0) return s;
-      const amt = Number(p.amount ?? 0);
-      const paid = Number(p.amount_paid ?? p.amount ?? 0);
-      if (amt <= 0) return s + charged;
-      return s + Math.min(charged, charged * (paid / amt));
-    }, 0);
+    const sal = salaryCashOutFrom(salaries, advancesGiven, monthKey, start, end);
+    const monthPayments = payments.filter((p) => p.for_month === monthKey);
+    const col = collectedFrom(monthPayments);
+    // Deposits are returned alongside rather than pre-subtracted so the Collected
+    // tile keeps meaning "cash in" while profit can still exclude them.
+    const dep = depositsCollectedFrom(monthPayments);
     return { month: label, monthKey, expenses: exp, kitchen: kit, salaries: sal, collected: col, depositsCollected: dep };
   });
 
