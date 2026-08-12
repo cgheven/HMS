@@ -285,13 +285,15 @@ export function BusinessPage({
     <div className="min-h-screen flex flex-col bg-background">
       {/* Header */}
       <header className="border-b border-border bg-surface-header">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-5 sm:py-8">
           {/* A brand lockup: logo left, name and meta stacked beside it.
               Sized so the logo spans BOTH text lines — stacked above the title
               it left a band of empty space, and at 44px beside a three-line
               block it floated aligned to nothing. Two lines and a matching
               logo height means the block reads as one unit. */}
-          <div className="flex items-start justify-between gap-4">
+          {/* Stacks on a phone. Side by side, the button left the name ~230px and
+              truncated it to "Najam Ho…" while the meta ran to four lines. */}
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
             <div className="flex items-center gap-3.5 min-w-0">
               {logoUrl ? (
                 <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl overflow-hidden border border-border bg-card shrink-0">
@@ -304,12 +306,12 @@ export function BusinessPage({
                 </div>
               )}
               <div className="min-w-0">
-                <h1 className="font-serif text-2xl sm:text-3xl font-medium text-foreground leading-[1.15] tracking-tight truncate">
+                <h1 className="font-serif text-[22px] sm:text-3xl font-medium text-foreground leading-[1.15] tracking-tight truncate">
                   {heading}
                 </h1>
                 {/* One meta line, not three. The price used to sit on its own
                     row, which made the block too tall for any logo to align to. */}
-                <p className="text-sm text-muted-foreground mt-1">
+                <p className="text-[13px] sm:text-sm text-muted-foreground mt-1 leading-snug">
                   {branches.length} {branches.length === 1 ? "branch" : "branches"}
                   {city && ` · ${city}`}
                   {totalBeds > 0 && ` · ${totalBeds} bed${totalBeds !== 1 ? "s" : ""} available`}
@@ -331,7 +333,7 @@ export function BusinessPage({
                 href={waLink(waBranch.whatsapp, "Assalam o Alaikum, I saw your hostel page and had a question about rooms.")}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center justify-center gap-2 h-10 sm:h-11 px-4 sm:px-5 rounded-xl bg-[#006c49] border border-[#006c49] text-white text-sm font-semibold hover:bg-[#005238] transition-colors shrink-0"
+                className="inline-flex w-full sm:w-auto items-center justify-center gap-2 h-11 px-4 sm:px-5 rounded-xl bg-[#006c49] border border-[#006c49] text-white text-sm font-semibold hover:bg-[#005238] transition-colors shrink-0"
               >
                 <WhatsAppIcon className="w-4 h-4 shrink-0" />
                 WhatsApp
@@ -339,7 +341,7 @@ export function BusinessPage({
             ) : phoneBranch?.phone ? (
               <a
                 href={`tel:${phoneBranch.phone}`}
-                className="inline-flex items-center justify-center gap-2 h-10 sm:h-11 px-4 sm:px-5 rounded-xl bg-primary border border-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors shrink-0"
+                className="inline-flex w-full sm:w-auto items-center justify-center gap-2 h-11 px-4 sm:px-5 rounded-xl bg-primary border border-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors shrink-0"
               >
                 <Phone className="w-4 h-4 shrink-0" />
                 Call
