@@ -742,8 +742,10 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
           <div className="flex items-start justify-between gap-2">
             <div>
               <p className="font-semibold text-sm leading-tight">Room {room.room_number}</p>
+              {/* Non-breaking space so a narrow card wraps to "Student ·" /
+                  "Floor 1" rather than orphaning the floor number on its own. */}
               <p className="text-[11px] text-muted-foreground mt-0.5">
-                {SPACE_LABELS[room.type]}{room.floor != null ? ` · Floor ${room.floor}` : ""}
+                {SPACE_LABELS[room.type]}{room.floor != null ? ` · Floor ${room.floor}` : ""}
               </p>
             </div>
             <div className={`shrink-0 flex flex-col items-center justify-center w-12 h-12 rounded-xl border ${isFull ? "bg-background border-border" : "bg-pub-success/10 border-pub-success/25"}`}>
@@ -756,9 +758,13 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
             </div>
           </div>
 
-          <div className="flex items-center justify-between text-xs">
-            <span className="font-semibold text-primary">{formatCurrency(cardPrice)}<span className="text-muted-foreground font-normal">/mo</span></span>
-            <span className="text-muted-foreground">{room.occupied}/{room.capacity} occupied</span>
+          {/* Wraps rather than collides. These cards are two-per-row on a phone,
+              which leaves ~143px of content — not enough for both on one line,
+              and without the wrap "2/4 occupied" broke mid-phrase and sat
+              baseline-misaligned against the price. */}
+          <div className="flex items-baseline justify-between gap-x-2 gap-y-1 flex-wrap text-xs">
+            <span className="font-semibold text-primary whitespace-nowrap">{formatCurrency(cardPrice)}<span className="text-muted-foreground font-normal">/mo</span></span>
+            <span className="text-muted-foreground whitespace-nowrap">{room.occupied}/{room.capacity} occupied</span>
           </div>
 
           {(room.has_ac || room.has_cooler || room.has_attached_washroom) && (
