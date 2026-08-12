@@ -18,6 +18,7 @@ import { pktYearMonth } from "@/lib/pkt-time"
 import { isValidCnic, normalizeCnic } from "@/lib/cnic"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
 import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission, CheckoutInput, CheckoutSettlement } from "@/types"
+import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 
 function firstOfNextMonth(forMonth: string): string {
   const [y, m] = forMonth.split("-").map(Number);
@@ -723,6 +724,8 @@ export async function addTenantAsManager(
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,
       permanent_address: payload.permanent_address?.trim() || null,
+      father_name: payload.father_name?.trim() || null,
+      ...normalizeVisitPurpose(payload.purpose_of_visit, payload.purpose_of_visit_detail),
       emergency_phone: payload.emergency_phone || null,
       notes: payload.notes || null,
       is_waiting: payload.is_waiting,
@@ -868,6 +871,8 @@ export async function editTenantAsManager(
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,
       permanent_address: payload.permanent_address?.trim() || null,
+      father_name: payload.father_name?.trim() || null,
+      ...normalizeVisitPurpose(payload.purpose_of_visit, payload.purpose_of_visit_detail),
       emergency_phone: payload.emergency_phone || null,
       notes: payload.notes || null,
       is_waiting: payload.is_waiting,

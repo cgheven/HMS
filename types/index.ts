@@ -2,6 +2,8 @@ import type { SeaterPrices } from "@/lib/seater-pricing";
 
 export type SpaceType = "student" | "professional" | "general";
 export type StudentCategory = "university" | "college" | "test_preparation" | "professional_course" | "skills_training";
+/** Why a resident is in the city — orthogonal to SpaceType, which is what they are. Mirrors the CHECK in migration 168. */
+export type VisitPurpose = "education" | "employment" | "job_interview" | "exam" | "medical" | "business" | "tourism" | "other";
 export type RoomStatus = "available" | "occupied" | "maintenance";
 export type BillStatus = "paid" | "unpaid" | "overdue";
 export type BillCategory = "electricity" | "water" | "internet" | "gas" | "maintenance" | "other";
@@ -91,6 +93,8 @@ export interface FormConfig {
   move_in_date?: FormFieldConfig;
   emergency_contact?: FormFieldConfig;
   permanent_address?: FormFieldConfig;
+  father_name?: FormFieldConfig;
+  purpose_of_visit?: FormFieldConfig;
   notes?: FormFieldConfig;
   // Shown only when Type is Student/Professional respectively (never for
   // General) — foundational data for a future roommate-matching platform.
@@ -106,14 +110,37 @@ export const DEFAULT_FORM_CONFIG: Required<FormConfig> = {
   type:               { enabled: true, required: true },
   room_preference:    { enabled: true, required: false },
   move_in_date:       { enabled: true, required: false },
+  // The public form doubles as a casual registration/enquiry step, not only a
+  // committed admission — so required fields here cost real submissions. Only
+  // the zero-recall ones are mandatory. Emergency contact needs a phone number
+  // the applicant may not have to hand, so it stays optional HERE and is
+  // enforced in the staff Add Tenant dialog instead, where the person is
+  // present and there is no drop-off to lose. Owners can require any of these
+  // per branch from Settings.
   emergency_contact:  { enabled: true, required: false },
   permanent_address:  { enabled: true, required: true },
+  father_name:        { enabled: true, required: true },
+  purpose_of_visit:   { enabled: true, required: false },
   notes:              { enabled: true, required: false },
   institute_name:     { enabled: true, required: false },
   student_category:   { enabled: true, required: false },
   organization:       { enabled: true, required: false },
   department:         { enabled: true, required: false },
 };
+
+/**
+ * Emergency-contact relationships, shared by the public admission form, the
+ * staff Add Tenant dialog and the Approve Application dialog.
+ *
+ * One list because these are <Select> options bound to a stored string: a
+ * dialog whose list omits a value the applicant already picked renders blank
+ * and silently discards it on save. "Guardian" did exactly that before this
+ * was unified.
+ */
+export const RELATIONSHIP_OPTIONS: readonly string[] = [
+  "Father", "Mother", "Brother", "Sister", "Spouse",
+  "Chachu (Paternal Uncle)", "Mamu (Maternal Uncle)", "Cousin", "Guardian", "Friend",
+];
 
 export interface PaymentMethodAccount {
   id: string;
@@ -345,6 +372,11 @@ export interface Tenant {
   emergency_relationship: string | null;
   /** Tenant's home/permanent address — distinct from the hostel they live in. */
   permanent_address: string | null;
+  father_name: string | null;
+  /** Why they are in the city, as distinct from `type` (what they are). Render via visitPurposeLabel(). */
+  purpose_of_visit: VisitPurpose | null;
+  /** Only meaningful when purpose_of_visit is "other". */
+  purpose_of_visit_detail: string | null;
   notes: string | null;
   photo_url: string | null;
   documents: TenantDocument[];
@@ -973,6 +1005,9 @@ export interface TenantApplication {
   emergency_relationship: string | null;
   /** Applicant's home/permanent address — copied to the tenant on approval. */
   permanent_address: string | null;
+  father_name: string | null;
+  purpose_of_visit: VisitPurpose | null;
+  purpose_of_visit_detail: string | null;
   notes: string | null;
   photo_url: string | null;
   cnic_doc_path: string | null;

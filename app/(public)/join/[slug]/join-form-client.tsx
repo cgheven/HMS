@@ -14,8 +14,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { formatCurrency, cn } from "@/lib/utils";
 import { buildPackageOptions } from "@/lib/room-pricing";
 import { SEATER_LABELS } from "@/lib/seater-pricing";
-import type { PublicHostelDetail, PublicRoom, PackageTier, FormConfig, StudentCategory } from "@/types";
-import { DEFAULT_FORM_CONFIG } from "@/types";
+import type { PublicHostelDetail, PublicRoom, PackageTier, FormConfig, StudentCategory, VisitPurpose } from "@/types";
+import { DEFAULT_FORM_CONFIG, RELATIONSHIP_OPTIONS } from "@/types";
+import { VISIT_PURPOSE_OPTIONS, VISIT_PURPOSE_LABELS } from "@/lib/visit-purpose";
 import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets, departmentPresetsFor } from "@/lib/student-category-labels";
 
 interface Props {
@@ -26,11 +27,6 @@ interface Props {
   logoUrl?: string | null;
   brandName?: string | null;
 }
-
-const RELATIONSHIP_OPTIONS = [
-  "Father", "Mother", "Brother", "Sister", "Spouse",
-  "Chachu (Paternal Uncle)", "Mamu (Maternal Uncle)", "Cousin", "Guardian", "Friend",
-];
 
 export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, brandName = null }: Props) {
   const cfg = { ...DEFAULT_FORM_CONFIG, ...(hostel.form_config as FormConfig | null ?? {}) };
@@ -50,6 +46,9 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
 
   const [form, setForm] = useState({
     full_name: "",
+    father_name: "",
+    purpose_of_visit: "" as "" | VisitPurpose,
+    purpose_of_visit_detail: "",
     phone: "",
     email: "",
     cnic: "",
@@ -284,6 +283,20 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       setError("Permanent address is required.");
       return;
     }
+    if (show("father_name") && req("father_name") && !form.father_name.trim()) {
+      setError("Father name is required.");
+      return;
+    }
+    if (show("purpose_of_visit") && req("purpose_of_visit") && !form.purpose_of_visit) {
+      setError("Please select your purpose of visit.");
+      return;
+    }
+    // Enforced whenever "Other" is picked, required or not — an unlabelled
+    // "other" is the one value that carries no information at all.
+    if (show("purpose_of_visit") && form.purpose_of_visit === "other" && !form.purpose_of_visit_detail.trim()) {
+      setError("Please describe your purpose of visit.");
+      return;
+    }
     if (show("emergency_contact") && req("emergency_contact") &&
         (!form.emergency_contact.trim() || !form.emergency_phone.trim())) {
       setError("Emergency contact name and phone are required.");
@@ -318,6 +331,12 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       room_preference: showRoomPicker && selectedRoom ? selectedRoom.room_number : undefined,
       move_in_date: show("move_in_date") ? form.move_in_date || undefined : undefined,
       permanent_address: show("permanent_address") ? form.permanent_address || undefined : undefined,
+      father_name: show("father_name") ? form.father_name || undefined : undefined,
+      purpose_of_visit: show("purpose_of_visit") ? form.purpose_of_visit || undefined : undefined,
+      purpose_of_visit_detail:
+        show("purpose_of_visit") && form.purpose_of_visit === "other"
+          ? form.purpose_of_visit_detail || undefined
+          : undefined,
       emergency_contact: show("emergency_contact") ? form.emergency_contact || undefined : undefined,
       emergency_phone: show("emergency_contact") ? form.emergency_phone || undefined : undefined,
       emergency_relationship: show("emergency_contact") ? form.emergency_relationship || undefined : undefined,
@@ -432,6 +451,20 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
               />
             </div>
 
+            {show("father_name") && (
+              <div className="space-y-1.5">
+                <Label>
+                  Father Name {req("father_name") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                </Label>
+                <Input
+                  placeholder="Muhammad Khan"
+                  value={form.father_name}
+                  onChange={(e) => setForm({ ...form, father_name: e.target.value })}
+                  required={req("father_name")}
+                />
+              </div>
+            )}
+
             {/* Phone — always visible; Email — configurable */}
             <div className={`grid gap-4 ${show("email") ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
               <div className="space-y-1.5">
@@ -505,6 +538,47 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                     <SelectItem value="general">General</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+            )}
+
+            {/* Purpose of Visit — deliberately separate from Type above. Type is
+                what someone IS, this is why they are in the city: a professional
+                here for a two-week exam and one here for a permanent job are the
+                same Type and completely different residents. */}
+            {show("purpose_of_visit") && (
+              <div className="space-y-1.5">
+                <Label>
+                  Purpose of Visit {req("purpose_of_visit") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                </Label>
+                <Select
+                  value={form.purpose_of_visit}
+                  onValueChange={(v) =>
+                    setForm({
+                      ...form,
+                      purpose_of_visit: v as VisitPurpose,
+                      // The detail only belongs to "Other" — carrying it onto a
+                      // preset would store a description that contradicts the key.
+                      purpose_of_visit_detail: v === "other" ? form.purpose_of_visit_detail : "",
+                    })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select purpose" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {VISIT_PURPOSE_OPTIONS.map((p) => (
+                      <SelectItem key={p} value={p}>{VISIT_PURPOSE_LABELS[p]}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {form.purpose_of_visit === "other" && (
+                  <Input
+                    placeholder="Please describe"
+                    value={form.purpose_of_visit_detail}
+                    onChange={(e) => setForm({ ...form, purpose_of_visit_detail: e.target.value })}
+                    required
+                  />
+                )}
               </div>
             )}
 

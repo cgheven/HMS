@@ -696,6 +696,8 @@ export function SettingsClient() {
                 { key: "move_in_date",       label: "Preferred Move-in Date", description: "Requested check-in date" },
                 { key: "emergency_contact",  label: "Emergency Contact",    description: "Contact name, phone, and relationship" },
                 { key: "permanent_address",  label: "Permanent Address",    description: "Tenant's home address — where they return to, separate from the hostel" },
+                { key: "father_name",        label: "Father Name",          description: "Standard admission-register field" },
+                { key: "purpose_of_visit",   label: "Purpose of Visit",     description: "Why they're in the city — Education, Job, Exam, Medical, and so on. Separate from Type, which is what they are" },
                 { key: "notes",              label: "Message / Questions",  description: "Free text for special requests" },
                 { key: "institute_name",     label: "Institute Name",       description: "Shown only when Type is Student — college, university, or training institute" },
                 { key: "student_category",   label: "Student Category",     description: "Shown only when Type is Student — University/College, Exam Prep, Professional Course, or Skills Training" },

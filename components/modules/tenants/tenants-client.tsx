@@ -27,7 +27,9 @@ import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDe
 import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling } from "@/lib/ac-billing";
 import { formatCnic, isValidCnic, normalizeCnic } from "@/lib/cnic";
-import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, PaymentStatus, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory } from "@/types";
+import { VISIT_PURPOSE_OPTIONS, VISIT_PURPOSE_LABELS, visitPurposeLabel } from "@/lib/visit-purpose";
+import { RELATIONSHIP_OPTIONS } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, PaymentStatus, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory, VisitPurpose } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
@@ -247,6 +249,7 @@ const emptyForm = {
   vehicle_type: "", vehicle_number: "", vehicle_model: "",
   joining_meter_reading: "",
   emergency_contact: "", emergency_relationship: "", emergency_phone: "", permanent_address: "", notes: "",
+  father_name: "", purpose_of_visit: "" as "" | VisitPurpose, purpose_of_visit_detail: "",
   is_waiting: false,
   photo_url: "" as string,
   food_breakfast: false, food_lunch: false, food_dinner: false,
@@ -831,6 +834,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     emergency_phone: null,
     emergency_relationship: null,
     permanent_address: null,
+    father_name: null,
+    purpose_of_visit: null as VisitPurpose | null,
+    purpose_of_visit_detail: null,
     institute_name: null,
     student_category: null,
     student_specialization: null,
@@ -953,6 +959,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       emergency_phone: app.emergency_phone ?? null,
       emergency_relationship: app.emergency_relationship ?? null,
       permanent_address: app.permanent_address ?? null,
+      father_name: app.father_name ?? null,
+      purpose_of_visit: app.purpose_of_visit ?? null,
+      purpose_of_visit_detail: app.purpose_of_visit_detail ?? null,
       institute_name: app.institute_name ?? null,
       student_category: app.student_category ?? null,
       student_specialization: app.student_specialization ?? null,
@@ -1040,6 +1049,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setApproveSaving(true);
     const result = await convertToTenant(approvingApp.id, {
       ...approveForm,
+      // Empty string, not undefined, is what a cleared input produces — and
+      // convertToTenant falls back to the application's value with `??`, which
+      // only catches null/undefined. Without this, clearing a wrong emergency
+      // phone would store "" rather than actually clearing it.
+      father_name: approveForm.father_name?.trim() || null,
+      purpose_of_visit: approveForm.purpose_of_visit || null,
+      purpose_of_visit_detail:
+        approveForm.purpose_of_visit === "other" ? approveForm.purpose_of_visit_detail?.trim() || null : null,
+      emergency_contact: approveForm.emergency_contact?.trim() || null,
+      emergency_phone: approveForm.emergency_phone?.trim() || null,
+      emergency_relationship: approveForm.emergency_relationship?.trim() || null,
+      permanent_address: approveForm.permanent_address?.trim() || null,
       institute_name: approveForm.type === "student" ? (approveForm.institute_name || null) : null,
       student_category: approveForm.type === "student" ? (approveForm.student_category || null) : null,
       student_specialization: approveForm.type === "student" && studentCategoryHasSpecialization(approveCategory) ? (approveForm.student_specialization || null) : null,
@@ -1123,6 +1144,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       emergency_contact: t.emergency_contact ?? "",
       emergency_relationship: t.emergency_relationship ?? "",
       permanent_address: t.permanent_address ?? "",
+      father_name: t.father_name ?? "",
+      purpose_of_visit: t.purpose_of_visit ?? "",
+      purpose_of_visit_detail: t.purpose_of_visit_detail ?? "",
       emergency_phone: t.emergency_phone ?? "",
       notes: t.notes ?? "",
       is_waiting: forceActive ? false : t.is_waiting,
@@ -1286,6 +1310,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       emergency_contact: form.emergency_contact || null,
       emergency_relationship: form.emergency_relationship || null,
       permanent_address: form.permanent_address.trim() || null,
+      father_name: form.father_name.trim() || null,
+      purpose_of_visit: form.purpose_of_visit || null,
+      // Cleared unless "Other" is selected, so a preset never carries a stale
+      // description — same rule normalizeVisitPurpose applies server-side.
+      purpose_of_visit_detail:
+        form.purpose_of_visit === "other" ? form.purpose_of_visit_detail.trim() || null : null,
       emergency_phone: form.emergency_phone || null,
       notes: form.notes || null,
       is_waiting: form.is_waiting,
@@ -2103,6 +2133,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     get: (t: Tenant, room: Room | null) => string | number;
   }[] = [
     { key: "name",    label: "Name",           get: (t) => t.full_name },
+    { key: "father",  label: "Father Name",    get: (t) => t.father_name ?? "" },
+    { key: "purpose", label: "Purpose of Visit", get: (t) => visitPurposeLabel(t.purpose_of_visit, t.purpose_of_visit_detail) ?? "" },
     { key: "phone",   label: "Phone",          get: (t) => t.phone ?? "" },
     { key: "email",   label: "Email",          sensitive: true, get: (t) => t.email ?? "" },
     { key: "cnic",    label: "CNIC",           sensitive: true, get: (t) => t.cnic ?? "" },
@@ -2704,6 +2736,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                                 )}
                                 {app.email && <span className="text-xs text-muted-foreground">{app.email}</span>}
                                 {app.cnic && <span className="text-xs text-muted-foreground flex items-center gap-1"><CreditCard className="w-2.5 h-2.5" />{app.cnic}</span>}
+                                {app.father_name && <span className="text-xs text-muted-foreground">s/o {app.father_name}</span>}
+                                {/* Surfaced on the review row, not just stored: a
+                                    two-week exam candidate and a year-long student
+                                    are the same Type and a different decision. */}
+                                {visitPurposeLabel(app.purpose_of_visit, app.purpose_of_visit_detail) && (
+                                  <span className="text-xs text-muted-foreground">
+                                    {visitPurposeLabel(app.purpose_of_visit, app.purpose_of_visit_detail)}
+                                  </span>
+                                )}
                               </div>
                               {app.notes && <p className="text-xs text-muted-foreground mt-0.5 italic line-clamp-1">{app.notes}</p>}
                               {app.cnic_doc_path && (
@@ -2786,14 +2827,25 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               {/* Applicant summary */}
               <div className="rounded-xl bg-white/[0.03] border border-sidebar-border p-4 space-y-1.5">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Applicant</p>
-                <p className="text-sm font-semibold text-foreground">{approvingApp.full_name}</p>
+                <p className="text-sm font-semibold text-foreground">
+                  {approvingApp.full_name}
+                  {approvingApp.father_name && (
+                    <span className="font-normal text-muted-foreground"> s/o {approvingApp.father_name}</span>
+                  )}
+                </p>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                   {approvingApp.phone && <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{approvingApp.phone}</span>}
                   {approvingApp.email && <span className="flex items-center gap-1"><Mail className="w-3 h-3" />{approvingApp.email}</span>}
                   {approvingApp.cnic && <span className="flex items-center gap-1"><CreditCard className="w-3 h-3" />{approvingApp.cnic}</span>}
                 </div>
+                {approvingApp.move_in_date && (
+                  <p className="text-xs text-muted-foreground pt-1">
+                    Requested move-in: <span className="text-foreground">{formatDate(approvingApp.move_in_date)}</span>
+                    <span className="text-muted-foreground/70"> — set the actual date in Check-in below</span>
+                  </p>
+                )}
                 {approvingApp.notes && (
-                  <p className="text-xs text-muted-foreground italic mt-1">"{approvingApp.notes}"</p>
+                  <p className="text-xs text-muted-foreground italic mt-1">&quot;{approvingApp.notes}&quot;</p>
                 )}
               </div>
 
@@ -3214,6 +3266,97 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   value={approveForm.check_in}
                   onChange={(e) => setApproveForm({ ...approveForm, check_in: e.target.value })}
                 />
+              </div>
+
+              {/* Personal-record fields, deliberately last before Vehicle —
+                  same position as the Add Tenant dialog, so an owner giving an
+                  admission reaches room, package and rent first.
+
+                  Editable rather than read-only: they are prefilled from what
+                  the applicant submitted, but an approver is often correcting a
+                  typo or a wrong number, and this is the last point before the
+                  data becomes a tenant record. */}
+              <div className="space-y-1.5">
+                <Label>Permanent Address</Label>
+                <textarea
+                  rows={2}
+                  placeholder="House / street, area, city — the tenant's home address"
+                  value={approveForm.permanent_address ?? ""}
+                  onChange={(e) => setApproveForm({ ...approveForm, permanent_address: e.target.value })}
+                  className="w-full rounded-lg border border-sidebar-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50 resize-y"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Purpose of Visit</Label>
+                <Select
+                  value={approveForm.purpose_of_visit ?? ""}
+                  onValueChange={(v) =>
+                    setApproveForm({
+                      ...approveForm,
+                      purpose_of_visit: v,
+                      purpose_of_visit_detail: v === "other" ? approveForm.purpose_of_visit_detail : "",
+                    })
+                  }
+                >
+                  <SelectTrigger><SelectValue placeholder="Not specified" /></SelectTrigger>
+                  <SelectContent>
+                    {VISIT_PURPOSE_OPTIONS.map((pv) => (
+                      <SelectItem key={pv} value={pv}>{VISIT_PURPOSE_LABELS[pv]}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {approveForm.purpose_of_visit === "other" && (
+                  <Input
+                    placeholder="Please describe"
+                    value={approveForm.purpose_of_visit_detail ?? ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, purpose_of_visit_detail: e.target.value })}
+                  />
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Father Name</Label>
+                <Input
+                  placeholder="Muhammad Khan"
+                  value={approveForm.father_name ?? ""}
+                  onChange={(e) => setApproveForm({ ...approveForm, father_name: e.target.value })}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label>Emergency Contact</Label>
+                  <Input
+                    placeholder="Name"
+                    value={approveForm.emergency_contact ?? ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, emergency_contact: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Emergency Phone</Label>
+                  <Input
+                    placeholder="+92 300 0000000"
+                    value={approveForm.emergency_phone ?? ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, emergency_phone: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Emergency Relationship</Label>
+                <Select
+                  value={approveForm.emergency_relationship ?? ""}
+                  onValueChange={(v) => setApproveForm({ ...approveForm, emergency_relationship: v })}
+                >
+                  <SelectTrigger><SelectValue placeholder="Select relationship" /></SelectTrigger>
+                  <SelectContent>
+                    {RELATIONSHIP_OPTIONS.map((r) => (
+                      <SelectItem key={r} value={r}>{r}</SelectItem>
+                    ))}
+                    <SelectItem value="Other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
 
               {/* Vehicle — on-file record for safety verification and resolving
@@ -3970,6 +4113,75 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             )}
 
+            {/* Personal-record fields, deliberately last before Vehicle. An
+                owner giving an admission works top-down through room, package
+                and rent; these are details filled in afterwards, so putting
+                them up front pushed the commercial decisions below the fold.
+                Order matches the Approve Application dialog. */}
+            <div className="space-y-1.5">
+              <Label>Permanent Address</Label>
+              <textarea
+                rows={2}
+                placeholder="House / street, area, city — the tenant's home address"
+                value={form.permanent_address}
+                onChange={(e) => setForm({ ...form, permanent_address: e.target.value })}
+                className="w-full rounded-lg border border-sidebar-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50 resize-y"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Purpose of Visit</Label>
+              <Select
+                value={form.purpose_of_visit}
+                onValueChange={(v) =>
+                  setForm({
+                    ...form,
+                    purpose_of_visit: v as VisitPurpose,
+                    purpose_of_visit_detail: v === "other" ? form.purpose_of_visit_detail : "",
+                  })
+                }
+              >
+                <SelectTrigger><SelectValue placeholder="Not specified" /></SelectTrigger>
+                <SelectContent>
+                  {VISIT_PURPOSE_OPTIONS.map((pv) => (
+                    <SelectItem key={pv} value={pv}>{VISIT_PURPOSE_LABELS[pv]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {form.purpose_of_visit === "other" && (
+                <Input
+                  placeholder="Please describe"
+                  value={form.purpose_of_visit_detail}
+                  onChange={(e) => setForm({ ...form, purpose_of_visit_detail: e.target.value })}
+                />
+              )}
+            </div>
+
+            {/* Required when adding, not when editing: the 671 tenants who
+                predate this field have no father name on record, and blocking
+                Save would lock every one of them out of an unrelated edit. */}
+            <div className="space-y-1.5"><Label>Father Name{editing ? "" : " *"}</Label><Input placeholder="Muhammad Khan" value={form.father_name} onChange={(e) => setForm({ ...form, father_name: e.target.value })} /></div>
+
+            <div className="grid grid-cols-2 gap-4">
+              {/* Same add-vs-edit rule as Father Name: 467 of the 671 existing
+                  tenants have no emergency contact on record, so gating Save on
+                  edit would lock them out of unrelated changes. */}
+              <div className="space-y-1.5"><Label>Emergency Contact{editing ? "" : " *"}</Label><Input placeholder="Name" value={form.emergency_contact} onChange={(e) => setForm({ ...form, emergency_contact: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Emergency Phone{editing ? "" : " *"}</Label><Input placeholder="+92 300 0000000" value={form.emergency_phone} onChange={(e) => setForm({ ...form, emergency_phone: e.target.value })} /></div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Emergency Relationship</Label>
+              <Select value={form.emergency_relationship} onValueChange={(v) => setForm({ ...form, emergency_relationship: v })}>
+                <SelectTrigger><SelectValue placeholder="Select relationship" /></SelectTrigger>
+                <SelectContent>
+                  {RELATIONSHIP_OPTIONS.map((r) => (
+                    <SelectItem key={r} value={r}>{r}</SelectItem>
+                  ))}
+                  <SelectItem value="Other">Other</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             {/* Vehicle — on-file record for safety verification and resolving
                 parking disputes. Always optional, no hostel-level gate. */}
             <div className="grid grid-cols-3 gap-4">
@@ -3988,37 +4200,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
               <div className="space-y-1.5"><Label>Plate Number</Label><Input placeholder="e.g. ABC-123" value={form.vehicle_number} onChange={(e) => setForm({ ...form, vehicle_number: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Model</Label><Input placeholder="e.g. Honda CD 70" value={form.vehicle_model} onChange={(e) => setForm({ ...form, vehicle_model: e.target.value })} /></div>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label>Permanent Address</Label>
-              <textarea
-                rows={2}
-                placeholder="House / street, area, city — the tenant's home address"
-                value={form.permanent_address}
-                onChange={(e) => setForm({ ...form, permanent_address: e.target.value })}
-                className="w-full rounded-lg border border-sidebar-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50 resize-y"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5"><Label>Emergency Contact</Label><Input placeholder="Name" value={form.emergency_contact} onChange={(e) => setForm({ ...form, emergency_contact: e.target.value })} /></div>
-              <div className="space-y-1.5"><Label>Emergency Phone</Label><Input placeholder="+92 300 0000000" value={form.emergency_phone} onChange={(e) => setForm({ ...form, emergency_phone: e.target.value })} /></div>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Emergency Relationship</Label>
-              <Select value={form.emergency_relationship} onValueChange={(v) => setForm({ ...form, emergency_relationship: v })}>
-                <SelectTrigger><SelectValue placeholder="Select relationship" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Father">Father</SelectItem>
-                  <SelectItem value="Mother">Mother</SelectItem>
-                  <SelectItem value="Brother">Brother</SelectItem>
-                  <SelectItem value="Sister">Sister</SelectItem>
-                  <SelectItem value="Spouse">Spouse</SelectItem>
-                  <SelectItem value="Friend">Friend</SelectItem>
-                  <SelectItem value="Other">Other</SelectItem>
-                </SelectContent>
-              </Select>
             </div>
 
             <div className="space-y-1.5"><Label>Notes</Label><Input placeholder="Any additional notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
@@ -4053,7 +4234,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </span>
                 )}
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={saving || redflagChecking || !form.full_name || (!form.is_waiting && !form.check_in)}>
+                <Button onClick={handleSave} disabled={saving || redflagChecking || !form.full_name || (!editing && (!form.father_name.trim() || !form.emergency_contact.trim() || !form.emergency_phone.trim())) || (!form.is_waiting && !form.check_in)}>
                   {redflagChecking
                     ? "Checking…"
                     : saving

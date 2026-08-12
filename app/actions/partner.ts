@@ -10,6 +10,7 @@ import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tena
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { pktYearMonth } from "@/lib/pkt-time"
 import { isValidCnic, normalizeCnic } from "@/lib/cnic";
+import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 import type { CheckoutInput, CheckoutSettlement, Payment } from "@/types";
 
 // Partner write actions — the safe, admin-client mutation layer a partner's
@@ -58,6 +59,9 @@ export interface PartnerTenantPayload {
   emergency_contact: string | null;
   emergency_relationship: string | null;
   permanent_address: string | null;
+  father_name: string | null;
+  purpose_of_visit: string | null;
+  purpose_of_visit_detail: string | null;
   emergency_phone: string | null;
   notes: string | null;
   is_waiting: boolean;
@@ -135,6 +139,8 @@ export async function addTenantAsPartner(
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,
       permanent_address: payload.permanent_address?.trim() || null,
+      father_name: payload.father_name?.trim() || null,
+      ...normalizeVisitPurpose(payload.purpose_of_visit, payload.purpose_of_visit_detail),
       emergency_phone: payload.emergency_phone || null,
       notes: payload.notes || null,
       is_waiting: payload.is_waiting,
@@ -454,6 +460,8 @@ export async function editTenantAsPartner(
       emergency_contact: payload.emergency_contact || null,
       emergency_relationship: payload.emergency_relationship || null,
       permanent_address: payload.permanent_address?.trim() || null,
+      father_name: payload.father_name?.trim() || null,
+      ...normalizeVisitPurpose(payload.purpose_of_visit, payload.purpose_of_visit_detail),
       emergency_phone: payload.emergency_phone || null,
       notes: payload.notes || null,
       is_waiting: payload.is_waiting,

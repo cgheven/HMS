@@ -9,6 +9,7 @@ import { getAuthContext } from "@/lib/data";
 import { sendApplicationEmail } from "@/lib/email";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { checkTenantRedflagAction } from "@/app/actions/redflag";
+import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 import type { RedflagMatch } from "@/types";
 import type { ApplicationStatus, PackageTier, Profile } from "@/types";
 
@@ -91,6 +92,9 @@ interface ApplicationInput {
   emergency_phone?: string;
   emergency_relationship?: string;
   permanent_address?: string;
+  father_name?: string;
+  purpose_of_visit?: string;
+  purpose_of_visit_detail?: string;
   notes?: string;
   cnic_doc_path?: string;
   institute_name?: string;
@@ -166,6 +170,8 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     emergency_phone: data.emergency_phone?.trim() || null,
     emergency_relationship: data.emergency_relationship?.trim() || null,
     permanent_address: data.permanent_address?.trim() || null,
+    father_name: data.father_name?.trim() || null,
+    ...normalizeVisitPurpose(data.purpose_of_visit, data.purpose_of_visit_detail),
     notes: data.notes?.trim() || null,
     cnic_doc_path: data.cnic_doc_path || null,
     institute_name: data.institute_name?.trim() || null,
@@ -292,6 +298,9 @@ export interface ConvertFormData {
   emergency_phone?: string | null;
   emergency_relationship?: string | null;
   permanent_address?: string | null;
+  father_name?: string | null;
+  purpose_of_visit?: string | null;
+  purpose_of_visit_detail?: string | null;
   institute_name?: string | null;
   student_category?: string | null;
   student_specialization?: string | null;
@@ -398,6 +407,15 @@ export async function convertToTenant(
     // Carried over from the application so an approved applicant keeps the
     // address they submitted, unless the approver edited it in the dialog.
     permanent_address: extra.permanent_address ?? app.permanent_address ?? null,
+    father_name: extra.father_name ?? app.father_name ?? null,
+    purpose_of_visit: extra.purpose_of_visit ?? app.purpose_of_visit ?? null,
+    // Follows purpose_of_visit rather than resolving independently: if the
+    // approver changed the purpose to a preset, the applicant's old "other"
+    // description must not survive attached to it.
+    purpose_of_visit_detail:
+      (extra.purpose_of_visit ?? app.purpose_of_visit ?? null) === "other"
+        ? extra.purpose_of_visit_detail ?? app.purpose_of_visit_detail ?? null
+        : null,
     institute_name: extra.institute_name ?? app.institute_name ?? null,
     student_category: extra.student_category ?? app.student_category ?? null,
     student_specialization: extra.student_specialization ?? app.student_specialization ?? null,
