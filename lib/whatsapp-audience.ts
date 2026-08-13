@@ -10,7 +10,7 @@
 // or the filter and the badge can disagree. Same reasoning as
 // lib/feedback-options.ts.
 
-export type WhatsAppAudience = "tenant" | "client_invoice" | "client_account" | "unknown";
+export type WhatsAppAudience = "tenant" | "client_invoice" | "client_account" | "lead" | "unknown";
 
 export const AUDIENCE_LABELS: Record<WhatsAppAudience, string> = {
   tenant: "Tenant",
@@ -19,5 +19,9 @@ export const AUDIENCE_LABELS: Record<WhatsAppAudience, string> = {
   // messages about the client's own business.
   client_invoice: "Client — invoice",
   client_account: "Client — account",
+  // A prospect, not a customer. Kept separate because this is the only
+  // audience we message unasked, and it is the one that moves the number's
+  // quality rating — the same rating every tenant reminder depends on.
+  lead: "Lead — marketing",
   unknown: "Unattributed",
 };

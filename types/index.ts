@@ -859,9 +859,49 @@ export interface PlatformLead {
   next_follow_up_date: string | null;
   priority: LeadPriority;
   created_by: string | null;
+  marketing_opt_out: boolean;
   created_at: string;
   updated_at: string;
   sales_rep?: { id: string; name: string } | null;
+}
+
+/** Refuses the send outright. Not overridable from the UI — the send action
+ *  recomputes every one of these from the database before dispatching. */
+export type LeadAudienceBlock = "opted_out" | "already_sent" | "no_phone" | "no_name";
+
+/** Reason to think twice. Selectable, just never pre-selected. */
+export type LeadAudienceWarning = "converted" | "existing_client" | "rejected";
+
+export interface CampaignAudienceRow {
+  lead_id: string;
+  business_name: string;
+  owner_name: string;
+  phone: string;
+  city: string | null;
+  status: LeadStatus;
+  assigned_to: string | null;
+  assigned_to_name: string | null;
+  marketing_opt_out: boolean;
+  /** What {{1}} will render as. null means this lead cannot be greeted at all. */
+  greeting: string | null;
+  /** True when owner_name was a placeholder and the business name was used
+   *  instead — "Assalam o Alaikum Murad Hostel," rather than a person's name.
+   *  Flagged in the table because it is otherwise indistinguishable. */
+  greeting_from_business: boolean;
+  blocked: LeadAudienceBlock | null;
+  warnings: LeadAudienceWarning[];
+  /** Maintained by the Meta delivery webhook — queued/sent/delivered/read/
+   *  undelivered/failed. null until a first send exists. */
+  delivery: string | null;
+  sent_at: string | null;
+}
+
+export interface CampaignSendSummary {
+  requested: number;
+  sent: number;
+  skipped: number;
+  failed: number;
+  errors: { name: string; error: string }[];
 }
 
 export interface ClientBilling {

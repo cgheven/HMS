@@ -77,7 +77,7 @@ export async function listWhatsAppLog(days = 30): Promise<{
     const { data, error } = await admin
       .from("hms_whatsapp_messages")
       .select(
-        "id, hostel_id, tenant_id, owner_id, phone, message_type, template, status, error, error_code, created_at, hostel:hms_hostels(name), tenant:hms_tenants(full_name)"
+        "id, hostel_id, tenant_id, owner_id, lead_id, phone, message_type, template, status, error, error_code, created_at, hostel:hms_hostels(name), tenant:hms_tenants(full_name), lead:hms_platform_leads(owner_name, business_name)"
       )
       .gte("created_at", since)
       .order("created_at", { ascending: false })
@@ -87,8 +87,13 @@ export async function listWhatsAppLog(days = 30): Promise<{
     type Joined = WhatsAppLogRow & {
       tenant_id: string | null;
       owner_id: string | null;
+      lead_id: string | null;
       hostel: { name: string } | { name: string }[] | null;
       tenant: { full_name: string } | { full_name: string }[] | null;
+      lead:
+        | { owner_name: string; business_name: string }
+        | { owner_name: string; business_name: string }[]
+        | null;
     };
 
     const joined = (data ?? []) as unknown as Joined[];
@@ -112,7 +117,10 @@ export async function listWhatsAppLog(days = 30): Promise<{
     const rows: WhatsAppLogRow[] = joined.map((r) => {
       const h = Array.isArray(r.hostel) ? r.hostel[0] : r.hostel;
       const t = Array.isArray(r.tenant) ? r.tenant[0] : r.tenant;
+      const l = Array.isArray(r.lead) ? r.lead[0] : r.lead;
       const ownerName = r.owner_id ? ownerNames.get(r.owner_id) ?? null : null;
+      // Joined, not resolved by phone — a lead row already carries its own name.
+      const leadName = l ? l.owner_name || l.business_name || null : null;
 
       // Purpose split, so chasing our own money is never mixed in with service
       // messages about the client's business.
@@ -122,6 +130,8 @@ export async function listWhatsAppLog(days = 30): Promise<{
         ? r.template === "hms_client_billing_due"
           ? "client_invoice"
           : "client_account"
+        : r.lead_id
+        ? "lead"
         : "unknown";
 
       return {
@@ -130,7 +140,7 @@ export async function listWhatsAppLog(days = 30): Promise<{
         hostel_name: h?.name ?? null,
         tenant_name: t?.full_name ?? null,
         owner_name: ownerName,
-        recipient_name: t?.full_name ?? ownerName ?? null,
+        recipient_name: t?.full_name ?? ownerName ?? leadName ?? null,
         audience,
         phone: r.phone,
         message_type: r.message_type,

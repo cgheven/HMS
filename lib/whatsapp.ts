@@ -11,6 +11,10 @@ const META_API_VERSION = "v25.0";
 export interface SendWhatsAppResult {
   ok: boolean;
   error?: string;
+  /** Meta's message id. The delivery webhook arrives keyed on this and nothing
+   *  else, so a caller that wants to correlate its own record with a later
+   *  delivered/read status must keep it. */
+  wamid?: string | null;
 }
 
 export interface WhatsAppSendContext {
@@ -20,7 +24,11 @@ export interface WhatsAppSendContext {
    *  tenant — invoice reminders, provisioning, the owner's daily summary.
    *  Never set alongside tenantId; see migration 163. */
   ownerId?: string | null;
-  messageType: "reminder" | "announcement" | "welcome" | "leaving_reminder" | "test" | "receipt";
+  /** A CRM prospect, not a customer — marketing campaigns only. Mutually
+   *  exclusive with tenantId and ownerId, and the reason the monitoring page
+   *  can separate outreach from service messages. See migration 169. */
+  leadId?: string | null;
+  messageType: "reminder" | "announcement" | "welcome" | "leaving_reminder" | "test" | "receipt" | "marketing";
 }
 
 /**
@@ -49,6 +57,7 @@ async function logAttempt(args: {
       hostel_id: args.context.hostelId,
       tenant_id: args.context.tenantId,
       owner_id: args.context.ownerId ?? null,
+      lead_id: args.context.leadId ?? null,
       phone: args.phone,
       message_type: args.context.messageType,
       template: args.template,
@@ -137,7 +146,7 @@ async function postToMeta(
       // Accepted but unparseable — still worth logging the attempt.
     }
     await logAttempt({ phone: phoneDigits, context, template: templateName, wamid, status: "queued" });
-    return { ok: true };
+    return { ok: true, wamid };
   } catch (err) {
     const error = err instanceof Error ? err.message : "Unknown error";
     await logFailure(phoneDigits, error, context);
@@ -175,13 +184,43 @@ export async function sendWhatsAppMessage(
 // code shown next to the template name in WhatsApp Manager, don't assume).
 // `bodyVariables` are the {{1}}, {{2}}, ... values in order — Meta fills them
 // into the approved body positionally, it does not accept named substitution.
+export interface TemplateSendOptions {
+  /**
+   * Public HTTPS URL of the header image, for a template approved with an
+   * IMAGE header.
+   *
+   * REQUIRED for such a template — Meta does not fall back to the sample image
+   * uploaded at approval time, it rejects the send outright. The URL must be
+   * reachable without auth: Meta fetches it itself, carrying none of our
+   * cookies. Anything under public/ qualifies, because middleware.ts's matcher
+   * excludes image extensions.
+   */
+  headerImageUrl?: string;
+}
+
 export async function sendWhatsAppTemplateMessage(
   phoneDigits: string,
   templateName: string,
   languageCode: string,
   bodyVariables: string[],
-  context: WhatsAppSendContext
+  context: WhatsAppSendContext,
+  options: TemplateSendOptions = {}
 ): Promise<SendWhatsAppResult> {
+  // Order matters to Meta: header before body.
+  const components: Record<string, unknown>[] = [];
+  if (options.headerImageUrl) {
+    components.push({
+      type: "header",
+      parameters: [{ type: "image", image: { link: options.headerImageUrl } }],
+    });
+  }
+  if (bodyVariables.length > 0) {
+    components.push({
+      type: "body",
+      parameters: bodyVariables.map((text) => ({ type: "text", text })),
+    });
+  }
+
   return postToMeta(
     {
       messaging_product: "whatsapp",
@@ -190,9 +229,7 @@ export async function sendWhatsAppTemplateMessage(
       template: {
         name: templateName,
         language: { code: languageCode },
-        ...(bodyVariables.length > 0
-          ? { components: [{ type: "body", parameters: bodyVariables.map((text) => ({ type: "text", text })) }] }
-          : {}),
+        ...(components.length > 0 ? { components } : {}),
       },
     },
     phoneDigits,
