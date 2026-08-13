@@ -35,3 +35,15 @@ supabase/.temp/
 # rows of `<uuid>|<md5>` and one `git add -A` from being in history forever.
 control.txt
 *.dump.txt
+
+# database backups — belt and braces only. THIS REPO IS PUBLIC, and a pg_dump
+# is 664 tenants' CNICs, phone numbers and full financial history. A .gitignore
+# entry is not a security control: `git add -f` overrides it, and anything
+# committed to a public repo is permanently public even after a force-push.
+# Real backups therefore live OUTSIDE the working tree (~/HMS-backups), and
+# these patterns exist only to catch a stray file, never to make one safe.
+*.dump
+*.dump.gpg
+*.sql.gz
+*.backup
+backups/
