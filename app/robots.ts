@@ -49,6 +49,7 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
           "/redflag",
           "/s/",          // internal rewrite target; the branded host is canonical
           "/r/",          // one-time receipt links
+          "/ref/",        // tenant referral links — the path segment IS the credential
           "/invoice/",    // client invoices
           "/complaint/",
         ],

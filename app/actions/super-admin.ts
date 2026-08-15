@@ -86,6 +86,8 @@ export interface SuperHostelRow {
   total_capacity: number;
   tenant_count: number;
   whatsapp_enabled: boolean;
+  /** Per-branch grant for tenant referral links (/marketing). */
+  referral_enabled: boolean;
   /** false = excluded from the branch count on new platform invoices. Super Admin only; invisible to the client. */
   billing_active: boolean;
   created_at: string;
@@ -295,6 +297,7 @@ export async function listAllHostels(): Promise<{
       total_capacity: h.total_capacity,
       tenant_count: tenantCountMap.get(h.id) ?? 0,
       whatsapp_enabled: h.whatsapp_enabled ?? false,
+      referral_enabled: h.referral_enabled ?? false,
       billing_active: h.billing_active ?? true,
       created_at: h.created_at,
     }));
@@ -380,6 +383,42 @@ export async function setWhatsappEnabled(
     return { success: true };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to update WhatsApp access" };
+  }
+}
+
+// ── setReferralEnabled ────────────────────────────────────────────────────────
+// Same shape and same reasoning as setWhatsappEnabled above: a curated
+// per-branch grant, pinned against owner self-grant by a DB trigger (migration
+// 173) because RLS cannot express a column-level restriction. Off for every
+// branch until Super Admin flips it, which is what keeps this feature invisible
+// to all 16 clients until it is deliberately handed to one.
+
+export async function setReferralEnabled(
+  hostelId: string,
+  enabled: boolean
+): Promise<{ success?: boolean; error?: string }> {
+  try {
+    const caller = await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const { error } = await admin
+      .from("hms_hostels")
+      .update({ referral_enabled: enabled, updated_at: new Date().toISOString() })
+      .eq("id", hostelId);
+    if (error) throw error;
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: "super_admin.set_referral_enabled",
+      entity: "hostel",
+      entity_id: hostelId,
+      meta: { enabled },
+    });
+
+    return { success: true };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to update referral access" };
   }
 }
 

@@ -40,6 +40,7 @@ import { checkTenantRedflagAction } from "@/app/actions/redflag";
 import { MeterPhoto } from "@/components/modules/ac/meter-photo";
 import { uploadJoiningMeterPhoto, deleteJoiningMeterPhoto } from "@/app/actions/ac-meter-photos";
 import type { RedflagMatch } from "@/types";
+import { attributeReferralForTenant } from "@/app/actions/referrals";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
 import QRCode from "qrcode";
@@ -1411,6 +1412,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       return;
     }
     if (!editing) newTenantId = (mutData as { id: string } | null)?.id ?? null;
+
+    // Referral attribution — same fire-and-forget shape as the welcome message
+    // below, so it can never delay or fail an admission. The server re-reads the
+    // phone and branch from the tenant row; nothing is trusted from here.
+    if (!editing && newTenantId) {
+      void attributeReferralForTenant(newTenantId);
+    }
 
     // Fire-and-forget welcome WhatsApp — new active tenant, or a waiting-list
     // tenant getting activated (room finally assigned). Never awaited inline

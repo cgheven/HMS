@@ -1,0 +1,111 @@
+import "server-only";
+
+import { headers } from "next/headers";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { normalizeReferralCode, REFERRAL_VIEW_HOURLY_LIMIT } from "@/lib/referrals";
+
+// Deliberately NOT a "use server" module. Every export of a "use server" file is
+// a directly invocable POST endpoint, and code resolution has no business being
+// one: its only caller is the /ref/[code] server component, and as an action it
+// was an unmetered service-role query anyone holding a link could loop.
+
+/**
+ * Read the client IP the way the rest of the codebase does — rightmost entry,
+ * set by the trusted proxy, never the client-supplied left of the chain.
+ * `||` and not `??`: a proxy that sets x-real-ip to "" must fall through, and
+ * an empty string is exactly the value that has silently disabled a rate limit
+ * in this codebase before.
+ */
+export async function clientIp(): Promise<string | null> {
+  try {
+    const headersList = await headers();
+    return (
+      headersList.get("x-vercel-forwarded-for") ||
+      headersList.get("x-real-ip") ||
+      headersList.get("x-forwarded-for")?.split(",").at(-1)?.trim() ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
+export type ReferralTarget =
+  /**
+   * hostelName is the only thing about the branch the public page may name.
+   * referredPercent rides along because it IS the offer — a stranger has no
+   * reason to fill the form without it — and it costs no extra query: the
+   * branch row is already being read to check referral_enabled. 0 means the
+   * owner runs referrer-only mode, and the page then makes no promise.
+   */
+  | { kind: "ok"; hostelName: string; referredPercent: number }
+  /** Unknown, rotated, referrer gone, branch not entitled — one answer for all. */
+  | { kind: "dead" }
+  /** Infrastructure, not the code: safe to invite a retry, leaks nothing. */
+  | { kind: "unavailable" };
+
+/**
+ * Resolves a code for the public page.
+ *
+ * Every code-dependent failure collapses to "dead" because a distinguishable
+ * response is an oracle for which codes exist. A DB error is NOT code-dependent
+ * — answering it with "dead" tells a real prospect their friend's link is
+ * broken and loses the lead — so it gets its own retryable answer.
+ */
+export async function getReferralTarget(rawCode: string): Promise<ReferralTarget> {
+  const code = normalizeReferralCode(rawCode);
+  if (!code) return { kind: "dead" };
+
+  const admin = createAdminClient();
+  const ip = await clientIp();
+
+  const { data: allowed, error: rateErr } = await admin.rpc("hms_referral_rate_hit", {
+    p_bucket: `view:${ip ?? "unknown"}`,
+    p_limit: REFERRAL_VIEW_HOURLY_LIMIT,
+  });
+  // Fail closed on both: an unverifiable ceiling is no ceiling.
+  if (rateErr) {
+    console.error("[getReferralTarget] rate check failed:", rateErr.code ?? "unknown");
+    return { kind: "unavailable" };
+  }
+  if (allowed === false) return { kind: "unavailable" };
+
+  const { data, error } = await admin
+    .from("hms_referral_codes")
+    .select(
+      "id, is_active, tenant:hms_tenants(is_active, is_waiting), hostel:hms_hostels(name, referral_enabled, referral_referred_percent)"
+    )
+    .eq("code", code)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[getReferralTarget] DB error:", error.code ?? "unknown");
+    return { kind: "unavailable" };
+  }
+  if (!data) return { kind: "dead" };
+
+  type Row = {
+    id: string;
+    is_active: boolean;
+    tenant: { is_active: boolean; is_waiting: boolean } | { is_active: boolean; is_waiting: boolean }[] | null;
+    hostel:
+      | { name: string; referral_enabled: boolean; referral_referred_percent: number }
+      | { name: string; referral_enabled: boolean; referral_referred_percent: number }[]
+      | null;
+  };
+  const row = data as unknown as Row;
+  const tenant = Array.isArray(row.tenant) ? row.tenant[0] : row.tenant;
+  const hostel = Array.isArray(row.hostel) ? row.hostel[0] : row.hostel;
+
+  if (!row.is_active) return { kind: "dead" };
+  // is_active alone is not the house definition of an active tenant: a
+  // waiting-list row can be is_active with is_waiting true, and someone who has
+  // never moved in is not a resident handing out a link.
+  if (!tenant?.is_active || tenant.is_waiting) return { kind: "dead" };
+  if (!hostel?.referral_enabled) return { kind: "dead" };
+
+  // Clamped rather than trusted: the column is CHECK-constrained, but this
+  // value is rendered to the public as a promise the owner must honour.
+  const pct = Math.max(0, Math.min(100, Math.trunc(Number(hostel.referral_referred_percent ?? 0))));
+  return { kind: "ok", hostelName: hostel.name, referredPercent: pct };
+}

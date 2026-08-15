@@ -12,6 +12,7 @@ import { checkTenantRedflagAction } from "@/app/actions/redflag";
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 import type { RedflagMatch } from "@/types";
 import type { ApplicationStatus, PackageTier, Profile } from "@/types";
+import { linkReferralForNewTenant } from "@/lib/referral-attribution";
 
 /**
  * Who is acting on an application. Managers reach this module through the
@@ -470,6 +471,24 @@ export async function convertToTenant(
       reviewed_by: actorId(actor),
     })
     .eq("id", appId);
+
+
+  // Attribution runs LAST, after every write that makes an admission complete
+  // (room occupancy, deposit ledger, application status). try/catch bounds a
+  // THROW, not TIME: supabase-js sets no fetch timeout, so a stalled query is an
+  // unbounded await the catch never sees — the platform kills the invocation
+  // instead. Sitting mid-sequence, that left the tenant row committed with
+  // occupancy un-incremented and the application still pending, and the
+  // operator's natural retry created a SECOND tenant. Last means a stall can
+  // only ever cost the attribution.
+  if (newTenant?.id) {
+    await linkReferralForNewTenant(admin, {
+      tenantId: newTenant.id,
+      hostelId: app.hostel_id,
+      phone: app.phone,
+      checkIn: extra.check_in,
+    });
+  }
 
   return { success: true, redflagUnavailable };
 }

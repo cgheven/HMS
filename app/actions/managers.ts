@@ -18,6 +18,7 @@ import { pktYearMonth } from "@/lib/pkt-time"
 import { isValidCnic, normalizeCnic } from "@/lib/cnic"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
 import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission, CheckoutInput, CheckoutSettlement } from "@/types"
+import { linkReferralForNewTenant } from "@/lib/referral-attribution"
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 
 function firstOfNextMonth(forMonth: string): string {
@@ -798,6 +799,22 @@ export async function addTenantAsManager(
     revalidatePath("/portal/tenants")
     revalidatePath("/portal/payments")
     revalidatePath("/payments")
+
+    // Attribution runs LAST, after every write that makes an admission complete
+    // (room occupancy, deposit ledger, application status). try/catch bounds a
+    // THROW, not TIME: supabase-js sets no fetch timeout, so a stalled query is an
+    // unbounded await the catch never sees — the platform kills the invocation
+    // instead. Sitting mid-sequence, that left the tenant row committed with
+    // occupancy un-incremented and the application still pending, and the
+    // operator's natural retry created a SECOND tenant. Last means a stall can
+    // only ever cost the attribution.
+    await linkReferralForNewTenant(admin, {
+      tenantId,
+      hostelId,
+      phone: payload.phone,
+      checkIn: payload.check_in,
+    })
+
     return { error: null, tenantId }
   } catch (err: unknown) {
     unstable_rethrow(err)

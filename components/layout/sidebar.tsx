@@ -9,7 +9,7 @@ import {
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
   MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2, Globe,
   ClipboardList, ShieldCheck, Search, Wallet, Flag, MessageSquareHeart,
-  LayoutTemplate, Layers,
+  LayoutTemplate, Layers, Share2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
@@ -26,7 +26,11 @@ import { useHostelContext } from "@/contexts/hostel-context";
 // multiBranchOnly hides an item that has nothing to say with a single branch.
 // It is a UX decision, not a security control — /overview enforces owner-only
 // access with requireOwnerOrAbove() on the page AND inside its server action.
-interface NavItem { href: string; label: string; icon: typeof LayoutDashboard; ownerOnly?: boolean; multiBranchOnly?: boolean; newTab?: boolean }
+// referralOnly is the same kind of flag for the per-branch referral entitlement
+// (hms_hostels.referral_enabled, Super Admin only): /marketing renders its own
+// explanatory empty state and every action re-checks the flag server-side, so
+// hiding the item is about not advertising a feature the branch hasn't bought.
+interface NavItem { href: string; label: string; icon: typeof LayoutDashboard; ownerOnly?: boolean; multiBranchOnly?: boolean; referralOnly?: boolean; newTab?: boolean }
 
 
 
@@ -71,6 +75,9 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       // performance ratings in question 3.
       { href: "/feedback",      label: "Feedback",      icon: MessageSquareHeart },
       { href: "/announcements", label: "Announcements", icon: Megaphone },
+      // Owner-level like Billing: a referral link goes out under the account's
+      // name to people who are not customers yet.
+      { href: "/marketing", label: "Marketing", icon: Share2, ownerOnly: true, referralOnly: true },
     ],
   },
   {
@@ -143,12 +150,16 @@ export function Sidebar({ open, onClose }: SidebarProps) {
     hostel?.slug && hostel.listing_enabled ? `/find/${hostel.slug}` : "/find";
   const isPartner = profile?.role === "partner";
   const singleBranch = (hostels?.length ?? 0) < 2;
+  const referralEnabled = hostel?.referral_enabled === true;
 
   const visibleGroups = navGroups
     .map((group) => ({
       ...group,
       items: group.items.filter(
-        (item) => !(isPartner && item.ownerOnly) && !(singleBranch && item.multiBranchOnly)
+        (item) =>
+          !(isPartner && item.ownerOnly) &&
+          !(singleBranch && item.multiBranchOnly) &&
+          !(item.referralOnly && !referralEnabled)
       ).map((item) => (item.href === "/find" ? { ...item, href: publicPageHref } : item)),
     }))
     .filter((group) => group.items.length > 0);

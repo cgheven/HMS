@@ -5,11 +5,11 @@ import { Receipt,
   Building2, Plus, Search, RefreshCw, Users, Home,
   GitBranch, Trash2, Copy, Check, MessageCircle, AlertTriangle,
   Wallet, CheckCircle2, Clock, Zap, Download, Pencil, RotateCcw, Mail,
-  Globe, ExternalLink, Loader2,
+  Globe, ExternalLink, Loader2, Share2,
 } from "lucide-react";
 import {
   listAllHostels, createHostelForClient, addBranchToOwner,
-  deleteHostel, deleteClient, setWhatsappEnabled, setBranchBillingActive,
+  deleteHostel, deleteClient, setWhatsappEnabled, setReferralEnabled, setBranchBillingActive,
   getClientSubdomain, setClientSubdomain,
   setClientSubdomainEnabled, type SuperHostelRow,
 } from "@/app/actions/super-admin";
@@ -471,6 +471,19 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     setTogglingWhatsapp(null);
   }
 
+  const [togglingReferral, setTogglingReferral] = useState<string | null>(null);
+  async function toggleReferral(hostelId: string, current: boolean) {
+    setTogglingReferral(hostelId);
+    const res = await setReferralEnabled(hostelId, !current);
+    if (res.error) {
+      toast({ title: "Error", description: res.error, variant: "destructive" });
+    } else {
+      setHostels(prev => prev.map(h => h.id === hostelId ? { ...h, referral_enabled: !current } : h));
+      toast({ title: !current ? "Referrals enabled" : "Referrals disabled" });
+    }
+    setTogglingReferral(null);
+  }
+
   const [togglingBilling, setTogglingBilling] = useState<string | null>(null);
   async function toggleBilling(hostelId: string, current: boolean) {
     setTogglingBilling(hostelId);
@@ -721,6 +734,19 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                           title={h.whatsapp_enabled ? "WhatsApp (reminders + announcements): ON for this branch — click to disable" : "WhatsApp (reminders + announcements): OFF for this branch — click to enable"}
                         >
                           <MessageCircle className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => toggleReferral(h.id, h.referral_enabled)}
+                          disabled={togglingReferral === h.id}
+                          className={cn(
+                            "p-1 rounded transition-all shrink-0",
+                            h.referral_enabled
+                              ? "text-sky-400 hover:bg-sky-500/10"
+                              : "opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-sky-400 hover:bg-sky-500/10"
+                          )}
+                          title={h.referral_enabled ? "Referrals (tenant referral links + Marketing page): ON for this branch — click to disable" : "Referrals (tenant referral links + Marketing page): OFF for this branch — click to enable"}
+                        >
+                          <Share2 className="w-3 h-3" />
                         </button>
                         <button
                           onClick={() => setDeleteTarget({ type: "branch", id: h.id, name: h.name })}

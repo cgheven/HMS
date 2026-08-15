@@ -51,6 +51,10 @@ export async function updateSession(request: NextRequest) {
     // future sibling route, and the owner-facing /feedback page must stay
     // behind the auth gate.
     pathname.startsWith("/fb/") ||
+    // Tenant referral links. Trailing slash for the same reason as "/fb/"
+    // above — a bare "/ref" would hand public access to any future sibling
+    // route, and the owner-facing /marketing page must stay behind the gate.
+    pathname.startsWith("/ref/") ||
     pathname.startsWith("/r/") ||
     pathname.startsWith("/invoice/") ||
     pathname.startsWith("/partner/login") ||

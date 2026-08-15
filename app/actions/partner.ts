@@ -11,6 +11,7 @@ import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { pktYearMonth } from "@/lib/pkt-time"
 import { isValidCnic, normalizeCnic } from "@/lib/cnic";
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
+import { linkReferralForNewTenant } from "@/lib/referral-attribution";
 import type { CheckoutInput, CheckoutSettlement, Payment } from "@/types";
 
 // Partner write actions — the safe, admin-client mutation layer a partner's
@@ -208,6 +209,22 @@ export async function addTenantAsPartner(
     // cached RSC payload is stale the moment this returns.
     revalidatePath("/tenants");
     revalidatePath("/payments");
+
+    // Attribution runs LAST, after every write that makes an admission complete
+    // (room occupancy, deposit ledger, application status). try/catch bounds a
+    // THROW, not TIME: supabase-js sets no fetch timeout, so a stalled query is an
+    // unbounded await the catch never sees — the platform kills the invocation
+    // instead. Sitting mid-sequence, that left the tenant row committed with
+    // occupancy un-incremented and the application still pending, and the
+    // operator's natural retry created a SECOND tenant. Last means a stall can
+    // only ever cost the attribution.
+    await linkReferralForNewTenant(admin, {
+      tenantId,
+      hostelId,
+      phone: payload.phone,
+      checkIn: payload.check_in,
+    });
+
     return { error: null, tenantId };
   } catch (err: unknown) {
     unstable_rethrow(err);

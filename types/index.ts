@@ -216,6 +216,9 @@ export interface Hostel {
   payment_methods: PaymentMethodAccount[];
   reminder_template: string | null;
   whatsapp_enabled: boolean;
+  /** Per-branch entitlement for tenant referral links. Super Admin only — a DB
+   *  trigger rejects any write to this column that carries a user session. */
+  referral_enabled: boolean;
   wifi_networks: WifiNetwork[];
   welcome_message_template: string | null;
   meal_times: MealTimes;
@@ -1340,4 +1343,100 @@ export interface PortfolioSummary {
   windowFrom: string
   windowTo: string
   currentMonthKey: string
+}
+
+// ── Referrals (/marketing) ──────────────────────────────────────────────────
+
+export type ReferralStatus = "pending" | "joined" | "rejected" | "expired"
+
+/** One shareable link. At most one row per tenant is ever is_active. */
+export interface ReferralCode {
+  id: string
+  tenant_id: string
+  hostel_id: string
+  code: string
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+/** A submission from the public /ref/{code} form.
+ *  `ip_address` is deliberately absent: it is abuse forensics, written by the
+ *  public action and read by nobody, so it must never cross to a client. */
+export interface Referral {
+  id: string
+  code_id: string
+  referrer_tenant_id: string
+  hostel_id: string
+  owner_id: string
+  name: string
+  /** Raw as typed, for display and for the owner to dial. */
+  phone: string
+  /** normalizePhoneDigits() output — the only column matching reads. */
+  phone_digits: string
+  status: ReferralStatus
+  matched_tenant_id: string | null
+  matched_at: string | null
+  rejected_at: string | null
+  rejected_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** One active tenant and their link, as the Marketing page renders it. */
+export interface ReferrerRow {
+  tenantId: string
+  tenantName: string
+  roomNumber: string | null
+  /** null until a code has been minted for this tenant. */
+  code: string | null
+  /** Powers the one-tap wa.me hand-off — the owner's own WhatsApp, not the
+   *  platform's business number, so it needs no template and costs nothing. */
+  phone: string | null
+  pending: number
+  joined: number
+}
+
+/** One submission, flattened for the table. */
+export interface ReferralRow {
+  id: string
+  name: string
+  phone: string
+  status: ReferralStatus
+  createdAt: string
+  referrerTenantId: string
+  /** Null only if the referring tenant's row has since been deleted. */
+  referrerName: string | null
+  matchedTenantName: string | null
+  matchedAt: string | null
+  rejectedAt: string | null
+  rejectedByName: string | null
+}
+
+/** A submission the "first submission wins" index turned away, kept so the
+ *  owner can see that a second person claimed a number someone else had
+ *  already submitted. */
+export interface ReferralDuplicateRow {
+  id: string
+  name: string
+  phone: string
+  createdAt: string
+  referrerName: string | null
+}
+
+
+export interface ReferralOverview {
+  hostelId: string | null
+  hostelName: string | null
+  /** False when Super Admin has not granted this branch the feature — the page
+   *  renders an explanatory empty state rather than a table. */
+  enabled: boolean
+  /** Per-branch, owner-set. referredPercent is what the PUBLIC page promises a
+   *  visitor, so it must be the same number the owner sees here. 0 on either
+   *  side switches that side off. */
+  referrerPercent: number
+  referredPercent: number
+  referrers: ReferrerRow[]
+  referrals: ReferralRow[]
+  duplicateClaims: ReferralDuplicateRow[]
 }
