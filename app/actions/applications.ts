@@ -481,7 +481,12 @@ export async function convertToTenant(
   // occupancy un-incremented and the application still pending, and the
   // operator's natural retry created a SECOND tenant. Last means a stall can
   // only ever cost the attribution.
-  if (newTenant?.id) {
+  // Skipped for a waiting-list row on purpose, mirroring the welcome message
+  // above. A waiting tenant has not moved in, has no bill and no deadline to
+  // measure against — attributing here would CONSUME the referral at 'joined'
+  // and leave nothing to pay out when they actually activate. Firing on the
+  // activation transition is Phase 2 Step 0.
+  if (newTenant?.id && !extra.is_waiting) {
     await linkReferralForNewTenant(admin, {
       tenantId: newTenant.id,
       hostelId: app.hostel_id,

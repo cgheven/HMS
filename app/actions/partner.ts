@@ -218,7 +218,12 @@ export async function addTenantAsPartner(
     // occupancy un-incremented and the application still pending, and the
     // operator's natural retry created a SECOND tenant. Last means a stall can
     // only ever cost the attribution.
-    await linkReferralForNewTenant(admin, {
+  // Skipped for a waiting-list row on purpose, mirroring the welcome message
+    // above. A waiting tenant has not moved in, has no bill and no deadline to
+    // measure against — attributing here would CONSUME the referral at 'joined'
+    // and leave nothing to pay out when they actually activate. Firing on the
+    // activation transition is Phase 2 Step 0.
+    if (!payload.is_waiting) await linkReferralForNewTenant(admin, {
       tenantId,
       hostelId,
       phone: payload.phone,

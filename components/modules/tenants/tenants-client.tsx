@@ -1416,7 +1416,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // Referral attribution — same fire-and-forget shape as the welcome message
     // below, so it can never delay or fail an admission. The server re-reads the
     // phone and branch from the tenant row; nothing is trusted from here.
-    if (!editing && newTenantId) {
+    if (!editing && newTenantId && !form.is_waiting) {
       void attributeReferralForTenant(newTenantId);
     }
 
