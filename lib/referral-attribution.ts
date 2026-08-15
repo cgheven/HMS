@@ -33,7 +33,7 @@ export async function linkReferralForNewTenant(
     tenantId: string;
     hostelId: string;
     phone: string | null | undefined;
-    /** The tenant's check_in. Falls back to today when a path leaves it unset. */
+    /** The tenant's check_in. Null falls back to today, at PKT, inside the RPC. */
     checkIn?: string | null;
   }
 ): Promise<void> {
@@ -41,48 +41,33 @@ export async function linkReferralForNewTenant(
     const digits = normalizePhoneDigits(args.phone);
     if (!digits) return;
 
-    // Entitlement is per branch and Super Admin controlled. Checked first so a
-    // branch without the feature does no further work on its admission path.
-    const { data: hostel } = await admin
-      .from("hms_hostels")
-      .select("referral_enabled, owner_id")
-      .eq("id", args.hostelId)
-      .maybeSingle();
-    if (!hostel?.referral_enabled) return;
+    // ONE round trip. Entitlement, the deadline and the write all happen inside
+    // hms_attribute_referral (migration 178), so this costs a single hop on the
+    // busiest write path in the product rather than three, and the decision is
+    // atomic — two concurrent admissions of the same number cannot both claim
+    // one referral.
+    //
+    // The deadline lives in SQL rather than here on purpose: check_in is a DATE
+    // and created_at a timestamptz, the business runs at UTC+5, and doing that
+    // arithmetic in JS shifted the window by a day for anything submitted before
+    // 05:00 PKT.
+    const { data, error } = await admin.rpc("hms_attribute_referral", {
+      p_tenant_id: args.tenantId,
+      p_hostel_id: args.hostelId,
+      p_phone_digits: digits,
+      p_check_in: args.checkIn ?? null,
+      p_ttl_days: REFERRAL_PENDING_TTL_DAYS,
+    });
 
-    // Owner-scoped, not branch-scoped: a referral pays out when the person joins
-    // ANY branch that owner owns, which is how the owner reads it — they filled
-    // a seat either way.
-    const { data: referral } = await admin
-      .from("hms_referrals")
-      .select("id, created_at")
-      .eq("owner_id", hostel.owner_id)
-      .eq("phone_digits", digits)
-      .eq("status", "pending")
-      .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-    if (!referral) return;
-
-    // The deadline, evaluated against the admission rather than "now". Dates
-    // only: check_in is a DATE column while created_at is a timestamp, and
-    // comparing them raw would drop a same-day admission.
-    const submitted = new Date(String(referral.created_at).slice(0, 10) + "T00:00:00Z");
-    const admitted = new Date((args.checkIn ?? new Date().toISOString()).slice(0, 10) + "T00:00:00Z");
-    const days = Math.floor((admitted.getTime() - submitted.getTime()) / 86_400_000);
-    if (!Number.isFinite(days) || days < 0 || days > REFERRAL_PENDING_TTL_DAYS) return;
-
-    // .eq("status","pending") makes this idempotent and stops a referral the
-    // owner already rejected being revived by a later admission.
-    await admin
-      .from("hms_referrals")
-      .update({
-        status: "joined",
-        matched_tenant_id: args.tenantId,
-        matched_at: args.checkIn ?? new Date().toISOString().slice(0, 10),
-      })
-      .eq("id", referral.id)
-      .eq("status", "pending");
+    // Logged, never thrown. Every caller is a live admission path: a referral is
+    // a marketing nicety, admitting a tenant is the business.
+    if (error) {
+      console.error("[linkReferralForNewTenant] attribution failed:", error.code ?? "unknown");
+      return;
+    }
+    if (data === true) {
+      console.info("[linkReferralForNewTenant] referral attributed to tenant", args.tenantId);
+    }
   } catch (err) {
     console.error(
       "[linkReferralForNewTenant] attribution skipped:",
