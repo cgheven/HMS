@@ -283,6 +283,8 @@ export interface ConvertFormData {
   daily_rate: number;
   security_deposit: number;
   registration_fee?: number;
+  /** Null/undefined = inherit the branch rate. 0 = waived for this tenant. */
+  ac_maintenance?: number | null;
   vehicle_type?: string | null;
   vehicle_number?: string | null;
   vehicle_model?: string | null;
@@ -390,6 +392,7 @@ export async function convertToTenant(
     daily_rate: extra.billing_type === "daily" ? extra.daily_rate : 0,
     security_deposit: extra.security_deposit,
     registration_fee: extra.registration_fee ?? 0,
+    ac_maintenance: extra.ac_maintenance ?? null,
     vehicle_type: extra.vehicle_type?.trim() || null,
     vehicle_number: extra.vehicle_number?.trim() || null,
     vehicle_model: extra.vehicle_model?.trim() || null,

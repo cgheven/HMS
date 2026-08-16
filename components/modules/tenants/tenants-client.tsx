@@ -247,6 +247,7 @@ const emptyForm = {
   billing_type: "monthly" as "monthly" | "daily",
   monthly_rent: "", daily_rate: "", check_out: "", security_deposit: "0",
   registration_fee: "",
+  ac_maintenance: "",
   vehicle_type: "", vehicle_number: "", vehicle_model: "",
   joining_meter_reading: "",
   emergency_contact: "", emergency_relationship: "", emergency_phone: "", permanent_address: "", notes: "",
@@ -737,6 +738,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [customPackages, setCustomPackages] = useState<CustomPackage[]>([]);
   const [configSecurityDeposit, setConfigSecurityDeposit] = useState<number>(0);
   const [configRegistrationFee, setConfigRegistrationFee] = useState<number>(0);
+  const [configAcMaintenance, setConfigAcMaintenance] = useState<number>(0);
   const [seaterPrices, setSeaterPrices] = useState<SeaterPrices>({});
   const [washroomPremium, setWashroomPremium] = useState<number>(0);
   const [foodAddonRates, setFoodAddonRates] = useState<FoodAddonRates>(
@@ -768,6 +770,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     }
     if (data.security_deposit) setConfigSecurityDeposit(Number(data.security_deposit));
     if (data.registration_fee) setConfigRegistrationFee(Number(data.registration_fee));
+    if (data.ac_maintenance_rate) setConfigAcMaintenance(Number(data.ac_maintenance_rate));
     if (data.seater_prices) setSeaterPrices(data.seater_prices as SeaterPrices);
     setWashroomPremium(Number(data.washroom_premium ?? 0));
     setFoodAddonRates({
@@ -794,7 +797,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
     const supabase = createClient();
     supabase.from("hms_package_configs")
-      .select("package_prices, security_deposit, registration_fee, seater_prices, washroom_premium, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, food_monthly_rate")
+      .select("package_prices, security_deposit, registration_fee, ac_maintenance_rate, seater_prices, washroom_premium, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, food_monthly_rate")
       .eq("hostel_id", hostelId)
       .maybeSingle()
       .then(({ data }) => {
@@ -1138,6 +1141,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       check_out: t.check_out ?? "",
       security_deposit: t.security_deposit?.toString() ?? "0",
       registration_fee: t.registration_fee?.toString() ?? "",
+      ac_maintenance: t.ac_maintenance?.toString() ?? "",
       vehicle_type: t.vehicle_type ?? "",
       vehicle_number: t.vehicle_number ?? "",
       vehicle_model: t.vehicle_model ?? "",
@@ -1304,6 +1308,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       daily_rate: form.billing_type === "daily" ? parseFloat(form.daily_rate) || 0 : 0,
       security_deposit: parseFloat(form.security_deposit) || 0,
       registration_fee: parseFloat(form.registration_fee) || 0,
+      ac_maintenance: form.ac_maintenance.trim() === "" ? null : (parseFloat(form.ac_maintenance) || 0),
       vehicle_type: form.vehicle_type.trim() || null,
       vehicle_number: form.vehicle_number.trim() || null,
       vehicle_model: form.vehicle_model.trim() || null,
@@ -3253,6 +3258,20 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     onChange={(e) => setApproveForm({ ...approveForm, security_deposit: parseFloat(e.target.value) || 0 })}
                   />
                 </div>
+                {configAcMaintenance > 0 && (
+                  <div className="space-y-1.5">
+                    <Label>AC Maintenance (PKR / month)</Label>
+                    <Input
+                      type="number" min="0"
+                      placeholder={`Default ${configAcMaintenance}`}
+                      value={approveForm.ac_maintenance ?? ""}
+                      onChange={(e) => setApproveForm({ ...approveForm, ac_maintenance: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Leave blank for the branch rate of {configAcMaintenance}. Enter 0 to waive it.
+                    </p>
+                  </div>
+                )}
                 {configRegistrationFee > 0 && (
                   <div className="space-y-1.5">
                     <Label>Registration Fee (PKR) — one-time, non-refundable</Label>
@@ -4069,6 +4088,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   })()}
                 </div>
                 <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
+                {configAcMaintenance > 0 && (
+                  <div className="space-y-1.5">
+                    <Label>AC Maintenance (PKR / month)</Label>
+                    <Input
+                      type="number" min="0"
+                      placeholder={`Default ${configAcMaintenance}`}
+                      value={form.ac_maintenance}
+                      onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Leave blank for the branch rate of {configAcMaintenance}. Enter 0 to waive it for
+                      this tenant. Only applies to AC rooms.
+                    </p>
+                  </div>
+                )}
                 {configRegistrationFee > 0 && (
                   <div className="space-y-1.5"><Label>Registration Fee (PKR) — one-time, non-refundable</Label><Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} /></div>
                 )}
@@ -4079,6 +4113,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   <div className="space-y-1.5"><Label>Daily Rate (PKR)</Label><Input type="number" placeholder="0" value={form.daily_rate} onChange={(e) => setForm({ ...form, daily_rate: e.target.value })} /></div>
                   <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
                 </div>
+                {configAcMaintenance > 0 && (
+                  <div className="space-y-1.5">
+                    <Label>AC Maintenance (PKR / month)</Label>
+                    <Input
+                      type="number" min="0"
+                      placeholder={`Default ${configAcMaintenance}`}
+                      value={form.ac_maintenance}
+                      onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Leave blank for the branch rate of {configAcMaintenance}. Enter 0 to waive it for
+                      this tenant. Only applies to AC rooms.
+                    </p>
+                  </div>
+                )}
                 {configRegistrationFee > 0 && (
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5"><Label>Registration Fee (PKR) — one-time, non-refundable</Label><Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} /></div>

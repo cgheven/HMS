@@ -87,9 +87,18 @@ export function computeRegistrationFeeCharge(
 // the trigger's outcome ahead of the round trip.
 export function computeAcMaintenanceCharge(
   roomHasAc: boolean | null | undefined,
-  rate: number | null | undefined
+  rate: number | null | undefined,
+  /** hms_tenants.ac_maintenance. NULL = no override, use the branch rate; a
+   *  number = this tenant's own rate; 0 = opted out. Must mirror the CASE in
+   *  hms_recalculate_payment_amount exactly — for daily-billed tenants the
+   *  trigger derives base rent by SUBTRACTING this from the app's amount, so a
+   *  disagreement between the two would silently mis-price the rent. */
+  tenantOverride?: number | null
 ): number {
-  return roomHasAc ? Number(rate ?? 0) : 0;
+  if (!roomHasAc) return 0;
+  return tenantOverride !== null && tenantOverride !== undefined
+    ? Number(tenantOverride)
+    : Number(rate ?? 0);
 }
 
 // A tenant's personal "rent due" day-of-month is just the day they checked

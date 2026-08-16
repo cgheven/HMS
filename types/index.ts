@@ -367,6 +367,10 @@ export interface Tenant {
   food_breakfast: boolean;
   food_lunch: boolean;
   food_dinner: boolean;
+  /** Per-tenant AC maintenance. Null = charge this branch's configured rate
+   *  (every tenant today); a number = this tenant's own monthly amount; 0 =
+   *  opted out. Only ever applies to tenants in an AC room. */
+  ac_maintenance: number | null;
   is_active: boolean;
   is_waiting: boolean;
   bed_number: string | null;
@@ -417,7 +421,7 @@ export interface Payment {
   security_deposit_charge?: number;
   /** One-time, populated only in the tenant's check-in month. Trusted from the app by the recalculation trigger. */
   registration_fee_charge?: number;
-  /** Recurring monthly, re-derived fresh by the recalculation trigger from room.has_ac + the hostel's ac_maintenance_rate — independent of package tier. */
+  /** Recurring monthly, re-derived fresh by the recalculation trigger from room.has_ac plus either the tenant's own hms_tenants.ac_maintenance override or, when that is null, the hostel's ac_maintenance_rate — independent of package tier. */
   ac_maintenance_charge?: number;
   payment_package_tier?: PackageTier | null;
   /** Nights billed for a daily-rate tenant. null/undefined = not a daily row, or billed before migration 099. */

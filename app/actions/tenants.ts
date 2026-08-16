@@ -10,7 +10,7 @@ import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
-import { computeDepositCharge, computeRegistrationFeeCharge } from "@/lib/payment-calc";
+import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge } from "@/lib/payment-calc";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
@@ -977,7 +977,7 @@ export async function backfillTenantPaymentsAction(
     // Fetch tenant — verify it belongs to this hostel
     const { data: tenant, error: tenantErr } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, room_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, deposit_collected_amount, registration_fee, package_tier, billing_type, food_breakfast, food_lunch, food_dinner")
+      .select("id, full_name, hostel_id, room_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, deposit_collected_amount, registration_fee, package_tier, billing_type, food_breakfast, food_lunch, food_dinner, ac_maintenance")
       .eq("id", tenantId)
       .eq("hostel_id", hostelId)
       .single();
@@ -1011,7 +1011,11 @@ export async function backfillTenantPaymentsAction(
     const tierFoodCharge = FOOD_TIERS.has(tenant.package_tier ?? "") ? foodRate : 0;
     const addonFoodCharge = pkgConfig ? calcFoodAddonCharge(tenant, pkgConfig) : 0;
     const foodCharge = tierFoodCharge + addonFoodCharge;
-    const acMaintenanceCharge = roomData?.has_ac ? Number(pkgConfig?.ac_maintenance_rate ?? 0) : 0;
+    const acMaintenanceCharge = computeAcMaintenanceCharge(
+      roomData?.has_ac,
+      pkgConfig?.ac_maintenance_rate,
+      tenant.ac_maintenance
+    );
     const isDaily = tenant.billing_type === "daily";
     const checkIn = tenant.check_in.slice(0, 10);
     const checkOut = (tenant.check_out as string | null)?.slice(0, 10) ?? null;

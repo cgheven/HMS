@@ -116,7 +116,7 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("hms_tenants")
-    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner")
+    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner, ac_maintenance")
     .eq("id", tenantId)
     .eq("hostel_id", hostelId) // ensures the tenant belongs to the owner's hostel
     .single();
@@ -144,6 +144,7 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
     food_breakfast: boolean;
     food_lunch: boolean;
     food_dinner: boolean;
+    ac_maintenance: number | null;
   };
 }
 
@@ -415,7 +416,7 @@ export async function markPaymentPaidAction(
     const foodCharge = tierFoodCharge + addonFoodCharge;
     const depositCharge = computeDepositCharge(tenantData, forMonth);
     const registrationFeeCharge = computeRegistrationFeeCharge(tenantData, forMonth);
-    const acMaintenanceCharge = computeAcMaintenanceCharge(roomHasAc, foodConfigData?.ac_maintenance_rate);
+    const acMaintenanceCharge = computeAcMaintenanceCharge(roomHasAc, foodConfigData?.ac_maintenance_rate, tenantData.ac_maintenance);
 
     const newTotalAmount = baseRent + foodCharge + newAcCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge;
 
@@ -711,7 +712,7 @@ export async function applyRoomACUnitsAction(
       // month would split it across tenants who had not moved in yet. Applying
       // July for Room 5 billed two August arrivals Rs 3,239 each.
       supabase.from("hms_tenants")
-        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
+        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading, ac_maintenance")
         .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
         .eq("is_active", true)
@@ -730,9 +731,10 @@ export async function applyRoomACUnitsAction(
     if (perUnitRate <= 0) throw new Error("AC per-unit rate is not configured. Set it in Settings → Packages.");
     const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
     // This function only ever runs against a room already verified has_ac = true
-    // (line above), so AC maintenance applies unconditionally here — no per-tenant
-    // room lookup needed, unlike the general sync paths.
-    const acMaintenanceCharge = Number(pkgConfig?.ac_maintenance_rate ?? 0);
+    // (line above), so the ROOM half of the test is settled for everyone here.
+    // The AMOUNT is not: each tenant may carry their own ac_maintenance override,
+    // so it is computed per tenant inside the loop below rather than hoisted.
+    const acMaintenanceRate = Number(pkgConfig?.ac_maintenance_rate ?? 0);
 
     // ── Find all active tenants in this room ─────────────────────
     const eligible = allTenants ?? [];
@@ -827,6 +829,11 @@ export async function applyRoomACUnitsAction(
         const registrationFeeCharge = computeRegistrationFeeCharge(
           { check_in: t.check_in, registration_fee: (t as { registration_fee?: number | null }).registration_fee },
           forMonth
+        );
+        const acMaintenanceCharge = computeAcMaintenanceCharge(
+          true,
+          acMaintenanceRate,
+          (t as { ac_maintenance?: number | null }).ac_maintenance
         );
         return {
           hostel_id: hostelId,

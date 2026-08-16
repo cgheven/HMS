@@ -37,6 +37,8 @@ export function expectedChargesFor(
     deposit_collected_amount: number | null;
     registration_fee: number | null; room_id: string | null;
     food_breakfast: boolean; food_lunch: boolean; food_dinner: boolean;
+    // Per-tenant AC maintenance override. Null = use the branch rate.
+    ac_maintenance: number | null;
   },
   month: string,
   ctx: {
@@ -60,7 +62,7 @@ export function expectedChargesFor(
     foodCharge: tierFoodCharge + addonFoodCharge,
     depositCharge: computeDepositCharge(t, month),
     registrationFeeCharge: computeRegistrationFeeCharge(t, month),
-    acMaintenanceCharge: computeAcMaintenanceCharge(roomHasAc, acMaintenanceRate),
+    acMaintenanceCharge: computeAcMaintenanceCharge(roomHasAc, acMaintenanceRate, t.ac_maintenance),
   };
 }
 
@@ -73,7 +75,7 @@ export async function ensureMonthlyPaymentRows(
   const [{ data: tenants, error: tenantsErr }, { data: configData }, { data: rooms }] = await Promise.all([
     admin
       .from("hms_tenants")
-      .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner")
+      .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner, ac_maintenance")
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
       .eq("is_waiting", false),
