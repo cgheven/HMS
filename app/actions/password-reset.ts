@@ -80,7 +80,14 @@ async function clientIp(): Promise<string> {
 export async function requestPasswordReset(
   email: string
 ): Promise<{ message: string }> {
-  const address = (email ?? "").trim().toLowerCase();
+  // Guarded because this line sits OUTSIDE the try below: a non-string argument
+  // (trivial to send by calling the action endpoint directly) threw a TypeError
+  // before any handler ran, making a 500 the one answer that differed from the
+  // other nine.
+  if (typeof email !== "string") {
+    return { message: UNIFORM_RESPONSE };
+  }
+  const address = email.trim().toLowerCase();
 
   // Shape only. An invalid address is not worth a database round trip, and
   // answering identically means this branch leaks nothing either.
