@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { RECOVERY_COOKIE } from "../route";
+import { RECOVERY_COOKIE } from "@/lib/auth-recovery";
 
 /**
  * Burns the recovery marker once the password has actually been changed.

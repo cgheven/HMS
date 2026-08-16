@@ -2,12 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { clientIpFrom } from "@/lib/client-ip";
-
-/** Proof that THIS session came from a recovery link, not from a normal login.
- *  httpOnly so a browser cannot forge it, and short-lived so a stale one cannot
- *  be reused hours later. */
-export const RECOVERY_COOKIE = "hms_pw_recovery";
-const RECOVERY_COOKIE_MAX_AGE = 15 * 60;
+import { RECOVERY_COOKIE, RECOVERY_COOKIE_MAX_AGE } from "@/lib/auth-recovery";
 
 /**
  * Verifies a recovery link and turns it into a session, server-side.

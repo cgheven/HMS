@@ -30,6 +30,13 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // Lets a verification build run while `next dev` is holding .next:
+  //   HMS_DIST_DIR=.next-verify npx next build
+  // Two deployments failed on a route-export error that `tsc --noEmit` cannot
+  // detect — Next validates route exports only during `next build` — and the
+  // reason it went unverified locally was that the dev server owned .next.
+  // Unset in CI and on Vercel, so production builds are unaffected.
+  distDir: process.env.HMS_DIST_DIR || ".next",
   compress: true,
   poweredByHeader: false,
   images: {

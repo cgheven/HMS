@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 import { TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { RECOVERY_COOKIE } from "@/app/auth/confirm/route";
+import { RECOVERY_COOKIE } from "@/lib/auth-recovery";
 import { ResetPasswordClient } from "./reset-password-client";
 
 export const metadata: Metadata = { title: "Set a new password", robots: { index: false, follow: false } };
