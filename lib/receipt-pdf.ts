@@ -53,6 +53,10 @@ interface ReceiptHostel {
   name: string;
   address?: string | null;
   phone?: string | null;
+  /** Renames the metered AC line for branches that bill it as one electricity
+   *  charge covering the whole room. Null/blank prints "AC Charges", so a branch
+   *  that never sets it produces a byte-identical receipt to before. */
+  acChargeLabel?: string | null;
 }
 
 function encodePdfString(str: string): string {
@@ -265,7 +269,7 @@ export function generateReceiptPDF(
       nl(2);
     }
     if ((payment.ac_charge ?? 0) > 0) {
-      addKv("AC Charges", pk(payment.ac_charge!)); nl(11);
+      addKv(hostel.acChargeLabel?.trim() || "AC Charges", pk(payment.ac_charge!)); nl(11);
       const realRate = payment.ac_per_unit_rate && payment.ac_per_unit_rate > 0 ? payment.ac_per_unit_rate : 0;
       const storedUnits = Number(payment.ac_units_consumed ?? 0);
       if (realRate > 0) {

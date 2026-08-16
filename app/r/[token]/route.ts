@@ -155,7 +155,7 @@ export async function GET(
       .single(),
     supabase
       .from("hms_package_configs")
-      .select("ac_per_unit_rate")
+      .select("ac_per_unit_rate, ac_charge_label")
       .eq("hostel_id", link.hostel_id)
       .maybeSingle(),
   ]);
@@ -286,6 +286,7 @@ export async function GET(
     },
     {
       name: hostel.name,
+      acChargeLabel: pkgConfig?.ac_charge_label ?? null,
       address: hostel.address,
       phone: hostel.phone,
     },

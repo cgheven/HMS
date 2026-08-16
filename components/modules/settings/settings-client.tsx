@@ -100,8 +100,8 @@ export function SettingsClient() {
   const [savingHostel, setSavingHostel] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
 
-  const [packageForm, setPackageForm] = useState<{ ac_per_unit_rate: string; security_deposit: string; registration_fee: string; ac_maintenance_rate: string; notice_period_days: string; washroom_premium: string; prices: PkgPriceForm }>({
-    ac_per_unit_rate: "", security_deposit: "", registration_fee: "", ac_maintenance_rate: "", notice_period_days: "30", washroom_premium: "", prices: emptyPriceForm(),
+  const [packageForm, setPackageForm] = useState<{ ac_charge_label: string; ac_per_unit_rate: string; security_deposit: string; registration_fee: string; ac_maintenance_rate: string; notice_period_days: string; washroom_premium: string; prices: PkgPriceForm }>({
+    ac_charge_label: "", ac_per_unit_rate: "", security_deposit: "", registration_fee: "", ac_maintenance_rate: "", notice_period_days: "30", washroom_premium: "", prices: emptyPriceForm(),
   });
   const [foodAddonForm, setFoodAddonForm] = useState<{ breakfast: string; lunch: string; dinner: string; allMeals: string }>({
     breakfast: "", lunch: "", dinner: "", allMeals: "",
@@ -223,7 +223,7 @@ export function SettingsClient() {
     const supabase = createClient();
     const { data } = await supabase
       .from("hms_package_configs")
-      .select("ac_per_unit_rate, security_deposit, registration_fee, ac_maintenance_rate, notice_period_days, package_prices, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, seater_prices, washroom_premium")
+      .select("ac_charge_label, ac_per_unit_rate, security_deposit, registration_fee, ac_maintenance_rate, notice_period_days, package_prices, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, seater_prices, washroom_premium")
       .eq("hostel_id", id)
       .maybeSingle();
     if (data) {
@@ -241,6 +241,7 @@ export function SettingsClient() {
         }
       }
       setPackageForm({
+        ac_charge_label: data.ac_charge_label ?? "",
         ac_per_unit_rate: data.ac_per_unit_rate?.toString() ?? "0",
         security_deposit: data.security_deposit > 0 ? String(data.security_deposit) : "",
         registration_fee: (data.registration_fee ?? 0) > 0 ? String(data.registration_fee) : "",
@@ -541,6 +542,7 @@ export function SettingsClient() {
       .upsert(
         {
           hostel_id:            hostelId,
+          ac_charge_label:      packageForm.ac_charge_label.trim() || null,
           ac_per_unit_rate:     parseFloat(packageForm.ac_per_unit_rate) || 0,
           security_deposit:     parseFloat(packageForm.security_deposit) || 0,
           registration_fee:     parseFloat(packageForm.registration_fee) || 0,
@@ -1024,6 +1026,20 @@ export function SettingsClient() {
                   className="max-w-[180px]"
                 />
                 <p className="text-xs text-muted-foreground">Billed on top of the monthly rate for AC rooms.</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Receipt Label for AC Charges</Label>
+                <Input
+                  type="text" maxLength={24} placeholder="AC Charges"
+                  value={packageForm.ac_charge_label}
+                  onChange={(e) => setPackageForm({ ...packageForm, ac_charge_label: e.target.value })}
+                  disabled={!packageLoaded}
+                  className="max-w-[220px]"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Wording only — billing is unchanged. Leave blank to print &quot;AC Charges&quot;. Set it to
+                  &quot;Electricity Charges&quot; if this branch bills one electricity charge covering the AC.
+                </p>
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Attached Washroom Premium (Rs. / month)</Label>

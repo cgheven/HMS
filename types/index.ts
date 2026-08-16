@@ -801,6 +801,9 @@ export interface PackageConfig {
   food_dinner_rate: number;
   food_all_meals_rate: number;
   ac_per_unit_rate: number;
+  // Renames the metered AC line on this branch's receipts. Null = "AC Charges".
+  // Wording only; billing is untouched.
+  ac_charge_label: string | null;
   security_deposit: number;
   // Hostel-wide default one-time registration fee. 0 = not configured — the
   // Tenants page hides the per-tenant override field entirely until set.
