@@ -168,6 +168,26 @@ export async function updateSalesRep(
       })
       return { error: `Saved, but syncing the login email failed: ${authError.message}` }
     }
+
+    // hms_profiles carries its own copy of the address, and password reset
+    // resolves an address against THAT table. Left unmirrored, a rep whose
+    // login email was changed here would keep the old address in their
+    // profile and silently lose self-service recovery — no error, nothing to
+    // see, and no way for support to explain it.
+    const { error: profileErr } = await admin
+      .from("hms_profiles")
+      .update({ email: newEmail })
+      .eq("id", rep.supabase_user_id)
+    if (profileErr) {
+      await writeAuditLog({
+        actor_id: caller.id,
+        actor_email: "",
+        action: "sales_rep.profile_email_sync_failure",
+        entity: "sales_rep",
+        entity_id: repId,
+        meta: { supabase_user_id: rep.supabase_user_id, attempted_email: newEmail, error: profileErr.message },
+      })
+    }
   }
 
   revalidatePath("/super-admin/sales-team")

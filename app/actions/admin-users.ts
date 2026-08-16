@@ -182,9 +182,15 @@ export async function updateAdminUser(data: {
       if (error) throw error;
     }
 
-    // Update profile (full_name, is_admin)
-    const profileUpdates: { full_name?: string; is_admin?: boolean } = {};
+    // Update profile (full_name, is_admin, email)
+    const profileUpdates: { full_name?: string; is_admin?: boolean; email?: string } = {};
     if (data.full_name !== undefined) profileUpdates.full_name = data.full_name;
+    // Mirrored from auth.users on purpose. These two stores were allowed to
+    // drift, and password reset resolves an address against hms_profiles: an
+    // admin whose email was changed here kept the OLD address in their profile,
+    // so a reset request for their real address silently matched nothing and
+    // they lost self-service recovery permanently, with no error anywhere.
+    if (data.email) profileUpdates.email = data.email;
     // Prevent revoking own admin
     if (data.is_admin !== undefined && data.userId !== caller.id) {
       profileUpdates.is_admin = data.is_admin;

@@ -1,7 +1,7 @@
 "use server";
 
 import { headers } from "next/headers";
-import { createClient } from "@/lib/supabase/server";
+import { createClient as createStatelessClient } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { EMAIL_RE } from "@/lib/validation";
 
@@ -17,13 +17,12 @@ import { EMAIL_RE } from "@/lib/validation";
  * What Supabase does NOT give us, and what this file is for:
  *   - a response that cannot be used to learn which addresses are registered
  *   - rate limiting that fails CLOSED
- *   - refusing deactivated accounts
  *   - refusing the synthetic manager identities, which have no real inbox
  */
 
 /** Per hour, per address. Generous for a real person who mistypes; useless as a
  *  mail cannon aimed at one inbox. */
-const EMAIL_HOURLY_LIMIT = 5;
+const EMAIL_HOURLY_LIMIT = 10;
 /** Per hour, per IP. Higher because a hostel office is one NAT for many staff,
  *  but low enough that enumeration across many addresses is not free. */
 const IP_HOURLY_LIMIT = 20;
@@ -88,15 +87,15 @@ export async function requestPasswordReset(
     const admin = createAdminClient();
     const ip = await clientIp();
 
-    // Both ceilings are charged before any decision, and BOTH fail closed: an
-    // unverifiable limit is no limit. Per-IP first so probing many addresses
-    // from one host is bounded even when each address is under its own ceiling.
-    const [{ data: ipOk, error: ipErr }, { data: emailOk, error: emailErr }] = await Promise.all([
-      admin.rpc("hms_auth_rate_hit", { p_bucket: `pwreset:ip:${ip}`, p_limit: IP_HOURLY_LIMIT }),
-      admin.rpc("hms_auth_rate_hit", { p_bucket: `pwreset:email:${address}`, p_limit: EMAIL_HOURLY_LIMIT }),
-    ]);
-    if (ipErr || emailErr || ipOk === false || emailOk === false) {
-      console.warn("[requestPasswordReset] refused:", ipErr || emailErr ? "rate check failed" : "over limit");
+    // The per-IP ceiling is charged FIRST and unconditionally: every caller pays
+    // for every attempt, whatever the address turns out to be. Fails closed,
+    // because an unverifiable limit is no limit.
+    const { data: ipOk, error: ipErr } = await admin.rpc("hms_auth_rate_hit", {
+      p_bucket: `pwreset:ip:${ip}`,
+      p_limit: IP_HOURLY_LIMIT,
+    });
+    if (ipErr || ipOk === false) {
+      console.warn("[requestPasswordReset] refused:", ipErr ? "rate check failed" : "ip over limit");
       return { message: UNIFORM_RESPONSE };
     }
 
@@ -107,24 +106,87 @@ export async function requestPasswordReset(
       return { message: UNIFORM_RESPONSE };
     }
 
-    const { data: profile } = await admin
+    // .limit(2), not .maybeSingle(). maybeSingle() ERRORS when more than one row
+    // matches, and the previous version discarded that error — so planting a
+    // second profile row carrying a victim's address permanently and silently
+    // disabled their recovery, with nothing logged. Public signup is open on this
+    // project and hms_profiles has no unique index on email, so that is a
+    // reachable state, not a hypothetical one. Two rows now means "match" and a
+    // loud log, never "no account".
+    const { data: profiles, error: lookupErr } = await admin
       .from("hms_profiles")
-      .select("id, is_active")
+      .select("id")
       .eq("email", address)
-      .maybeSingle();
+      .limit(2);
 
-    if (!profile || profile.is_active === false) {
-      console.info("[requestPasswordReset] skipped:", profile ? "deactivated account" : "no account");
+    if (lookupErr) {
+      // Distinguished from "no account" on purpose: a failing lookup is our
+      // problem and must be visible, not silently swallowed as a missing user.
+      console.error("[requestPasswordReset] profile lookup failed:", lookupErr.code ?? "unknown");
+      return { message: UNIFORM_RESPONSE };
+    }
+    if (profiles && profiles.length > 1) {
+      console.error("[requestPasswordReset] DUPLICATE PROFILE for this address — investigate");
+    }
+    const profile = profiles?.[0] ?? null;
+
+    // NOTE: there is deliberately no is_active check here.
+    //
+    // An earlier version had one, and it was worse than useless. hms_profiles
+    // .is_active is writable by the account it belongs to — an authenticated
+    // user can set their own false and true again — so it could never keep
+    // anyone out. Nothing in this codebase ever sets it false either; real
+    // deactivation lives in hms_sales_reps.is_active and
+    // hms_partnerships.is_active, which are role-specific and not consulted by
+    // any login path. is_active is not checked at sign-in at all, so gating
+    // reset on it would have been stricter than the front door anyway.
+    //
+    // Removed rather than repaired: dead security code is worse than none,
+    // because the next reader believes the protection exists. If account
+    // suspension is wanted, it belongs at LOGIN first, on a column the user
+    // cannot write.
+    if (!profile) {
+      console.info("[requestPasswordReset] skipped: no account");
       return { message: UNIFORM_RESPONSE };
     }
 
-    // Sent through the SESSION client, not the admin one. generateLink() on the
-    // admin client would hand this server the raw recovery token, which would
-    // then exist in memory and in any log that captured it. resetPasswordForEmail
-    // keeps the token strictly between Supabase and the user's inbox.
-    const supabase = await createClient();
+    // Charged only now, immediately before a mail actually goes out. Charging it
+    // up front let anyone deny a named owner their only self-service recovery
+    // path by burning the ceiling with requests that were never going to send.
+    const { data: emailOk, error: emailErr } = await admin.rpc("hms_auth_rate_hit", {
+      p_bucket: `pwreset:email:${address}`,
+      p_limit: EMAIL_HOURLY_LIMIT,
+    });
+    if (emailErr || emailOk === false) {
+      console.warn("[requestPasswordReset] refused:", emailErr ? "rate check failed" : "address over limit");
+      return { message: UNIFORM_RESPONSE };
+    }
+
+    // A STATELESS client, deliberately, and neither of the two clients this
+    // codebase normally uses.
+    //
+    // NOT lib/supabase/server.ts: @supabase/ssr hard-codes flowType "pkce"
+    // AFTER spreading caller options (createServerClient.js:24-33), so it cannot
+    // be overridden. Under PKCE the code_verifier is minted here and stored as a
+    // cookie in whichever browser submitted this form, so the emailed link only
+    // works in that same browser — open it on a phone, or after clearing
+    // cookies, and it fails. A reset that cannot be completed on another device
+    // is a broken reset.
+    //
+    // NOT the admin client with generateLink(): that hands this server the raw
+    // recovery token, which then exists in memory and in anything that logs it.
+    //
+    // Implicit flow sends no code_challenge, so GoTrue emails a link carrying the
+    // token in the URL FRAGMENT. Fragments are never sent to a server and never
+    // appear in a Referer header, and the reset page strips it from history as
+    // soon as it is consumed.
     const origin = (process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io").replace(/\/+$/, "");
-    const { error } = await supabase.auth.resetPasswordForEmail(address, {
+    const mailer = createStatelessClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      { auth: { flowType: "implicit", persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } }
+    );
+    const { error } = await mailer.auth.resetPasswordForEmail(address, {
       redirectTo: `${origin}/reset-password`,
     });
     if (error) {
