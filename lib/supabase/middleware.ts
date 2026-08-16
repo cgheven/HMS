@@ -54,6 +54,14 @@ export async function updateSession(request: NextRequest) {
     // Tenant referral links. Trailing slash for the same reason as "/fb/"
     // above — a bare "/ref" would hand public access to any future sibling
     // route, and the owner-facing /marketing page must stay behind the gate.
+    // Password reset. Someone who cannot sign in must be able to reach both of
+    // these, so they cannot sit behind the auth gate. Exact-match plus the
+    // trailing-slash form, per the segment-boundary note above — a bare
+    // startsWith would hand public access to any future sibling route.
+    pathname === "/forgot-password" ||
+    pathname.startsWith("/forgot-password/") ||
+    pathname === "/reset-password" ||
+    pathname.startsWith("/reset-password/") ||
     pathname.startsWith("/ref/") ||
     pathname.startsWith("/r/") ||
     pathname.startsWith("/invoice/") ||

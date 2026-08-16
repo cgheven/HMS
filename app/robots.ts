@@ -52,7 +52,9 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
           "/ref/",        // tenant referral links — the path segment IS the credential
           "/invoice/",    // client invoices
           "/complaint/",
-        ],
+        "/forgot-password",
+        "/reset-password",
+      ],
       },
     ],
     sitemap: `${MAIN_SITE_URL}/sitemap.xml`,

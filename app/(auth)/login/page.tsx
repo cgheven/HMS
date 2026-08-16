@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Eye, EyeOff, Loader2, Home } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -131,9 +132,17 @@ export default function LoginPage() {
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="password" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Password
-                </Label>
+                <div className="flex items-baseline justify-between gap-2">
+                  <Label htmlFor="password" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Password
+                  </Label>
+                  {/* Owner tab only. Managers sign in by mobile and their account
+                      carries a synthetic @hms-portal.internal address that receives
+                      no mail, so offering them a reset link would silently fail. */}
+                  <Link href="/forgot-password" className="text-xs text-amber hover:underline">
+                    Forgot password?
+                  </Link>
+                </div>
                 <div className="relative">
                   <Input
                     id="password"
