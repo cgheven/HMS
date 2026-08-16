@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { Eye, EyeOff, Loader2, ShieldCheck, TriangleAlert } from "lucide-react";
+import { Eye, EyeOff, Loader2, ShieldCheck } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,60 +13,19 @@ import { toast } from "@/hooks/use-toast";
  *  Length beats character-class rules, which mostly produce "Password1!". */
 const MIN_LENGTH = 10;
 
-type Phase = "checking" | "ready" | "invalid" | "done";
+type Phase = "ready" | "done";
 
 export function ResetPasswordClient() {
   const router = useRouter();
-  const [phase, setPhase] = useState<Phase>("checking");
+  // The server component already proved this visitor arrived via a verified
+  // recovery link, so there is nothing left to check on mount.
+  const [phase, setPhase] = useState<Phase>("ready");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [show, setShow] = useState(false);
   const [saving, setSaving] = useState(false);
   // Whether other sessions were actually revoked — never assumed.
   const [revoked, setRevoked] = useState(false);
-
-  useEffect(() => {
-    const supabase = createClient();
-    let settled = false;
-
-    // Gate on the PASSWORD_RECOVERY EVENT, never on "a session exists".
-    //
-    // The previous version accepted any session at all, which made this page a
-    // password-change form for whoever was already signed in — no recovery link
-    // and no re-authentication required. Combined with lib/supabase/middleware.ts
-    // treating only /login as an auth route, a signed-in visitor was never
-    // redirected away, so any borrowed or hijacked session was a complete
-    // account-takeover primitive.
-    //
-    // This event fires only when the browser has just consumed a recovery token,
-    // so it is proof of the link rather than proof of a login.
-    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "PASSWORD_RECOVERY") {
-        settled = true;
-        setPhase("ready");
-
-        // The token arrived in the fragment (#access_token=...) and has now been
-        // consumed. Strip it: a fragment persists in browser history and is the
-        // classic way a reset link leaks from a shared or borrowed machine.
-        if (typeof window !== "undefined" && window.location.hash) {
-          window.history.replaceState(null, "", window.location.pathname);
-        }
-      }
-    });
-
-    // The event fires during the client's initial URL parse. If it has not
-    // fired shortly after mount, this visitor arrived without a valid link —
-    // expired, already used, or guessed — and an ordinary logged-in session
-    // must NOT be mistaken for one.
-    const timer = setTimeout(() => {
-      if (!settled) setPhase("invalid");
-    }, 2500);
-
-    return () => {
-      clearTimeout(timer);
-      sub.subscription.unsubscribe();
-    };
-  }, []);
 
   const tooShort = password.length > 0 && password.length < MIN_LENGTH;
   const mismatch = confirm.length > 0 && password !== confirm;
@@ -91,6 +49,9 @@ export function ResetPasswordClient() {
     // defeats the point. The result is CHECKED rather than discarded: the
     // previous version asserted "signed out everywhere" unconditionally, so a
     // failure here told the user they were safe when they were not.
+    // Clears the recovery marker as well as every session, so this page cannot
+    // be revisited to change the password a second time on one link.
+    await fetch("/auth/confirm/end", { method: "POST" }).catch(() => {});
     const { error: signOutErr } = await supabase.auth.signOut({ scope: "global" });
     setRevoked(!signOutErr);
     if (signOutErr) {
@@ -98,35 +59,6 @@ export function ResetPasswordClient() {
     }
     setPhase("done");
     setSaving(false);
-  }
-
-  if (phase === "checking") {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  if (phase === "invalid") {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <div className="w-full max-w-sm text-center space-y-5">
-          <div className="flex items-center justify-center w-14 h-14 rounded-full bg-amber/10 border border-amber/20 mx-auto">
-            <TriangleAlert className="w-7 h-7 text-amber" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-serif tracking-tight">This link is no longer valid</h1>
-            <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-              Reset links expire quickly and can only be used once. Request a new one.
-            </p>
-          </div>
-          <Link href="/forgot-password">
-            <Button className="w-full">Request a new link</Button>
-          </Link>
-        </div>
-      </div>
-    );
   }
 
   if (phase === "done") {

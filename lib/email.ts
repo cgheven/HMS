@@ -831,3 +831,63 @@ export async function sendClientCredentialsEmail(data: ClientCredentialsEmailDat
 
   if (error) throw new Error(`Resend: ${error.message}`);
 }
+
+// ─── Password reset ──────────────────────────────────────────────────────────
+
+interface PasswordResetEmailData {
+  to: string;
+  /** The one-time recovery URL. Never logged, never stored, never echoed back
+   *  to the browser that requested it. */
+  actionLink: string;
+  /** Whatever we can show the person to reassure them this is really them. */
+  name?: string | null;
+  /** Minutes until the link stops working — stated so nobody sits on it. */
+  expiresInMinutes: number;
+}
+
+/**
+ * Sent from OUR domain through Resend, alongside every other email this product
+ * sends, rather than through Supabase's default sender.
+ *
+ * That is not only branding. Supabase's template lives in a web form: it cannot
+ * be reviewed, it has no history, and nobody can tell what the email says
+ * without logging into a dashboard. This one sits in the repo with the rest.
+ *
+ * No CTA text beyond the button and the raw URL: a password-reset mail is the
+ * single most-phished message any product sends, so the fewer links and the
+ * plainer the language, the easier it is for someone to tell a real one from a
+ * forgery.
+ */
+export async function sendPasswordResetEmail(data: PasswordResetEmailData): Promise<void> {
+  const greeting = data.name?.trim() ? `Hi ${esc(data.name.trim().split(/\s+/)[0])},` : "Hi,";
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Reset your password</h2>
+    <p style="margin:0 0 8px;font-size:14px;color:#a1a1aa;">${greeting}</p>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
+      Someone asked to reset the password for this Pulse HMS account. Click the button below to choose a new one.
+    </p>
+    <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
+      <tr><td style="border-radius:8px;background:#f59e0b;">
+        <a href="${data.actionLink}" style="display:inline-block;padding:12px 24px;font-size:14px;font-weight:600;color:#0d1117;text-decoration:none;">Set a new password</a>
+      </td></tr>
+    </table>
+    <p style="margin:0 0 24px;font-size:13px;color:#71717a;">
+      This link works once and expires in ${data.expiresInMinutes} minutes.
+    </p>
+    <p style="margin:0 0 8px;font-size:13px;color:#71717a;">If the button does not work, paste this into your browser:</p>
+    <p style="margin:0 0 24px;font-size:12px;color:#52525b;word-break:break-all;">${data.actionLink}</p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      <tr><td style="padding-top:16px;font-size:13px;color:#71717a;">
+        <strong style="color:#a1a1aa;">Did not request this?</strong> Ignore this email — your password stays as it is.
+        Nobody can change it without the link above. If you get these repeatedly, reply and tell us.
+      </td></tr>
+    </table>
+  `;
+
+  await resend.emails.send({
+    from: FROM,
+    to: data.to,
+    subject: "Reset your Pulse HMS password",
+    html: baseHtml("Reset your password", body),
+  });
+}

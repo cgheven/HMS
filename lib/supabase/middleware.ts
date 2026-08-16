@@ -58,6 +58,9 @@ export async function updateSession(request: NextRequest) {
     // these, so they cannot sit behind the auth gate. Exact-match plus the
     // trailing-slash form, per the segment-boundary note above — a bare
     // startsWith would hand public access to any future sibling route.
+    // Consumes the recovery token_hash and sets the session. Must be reachable
+    // by someone who cannot sign in — that is the entire point of it.
+    pathname === "/auth/confirm" ||
     pathname === "/forgot-password" ||
     pathname.startsWith("/forgot-password/") ||
     pathname === "/reset-password" ||

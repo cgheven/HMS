@@ -1,8 +1,8 @@
 "use server";
 
 import { headers } from "next/headers";
-import { createClient as createStatelessClient } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { sendPasswordResetEmail } from "@/lib/email";
 import { EMAIL_RE } from "@/lib/validation";
 
 /**
@@ -36,6 +36,11 @@ const IP_HOURLY_LIMIT = 20;
  * offer.
  */
 const SYNTHETIC_EMAIL_DOMAIN = "@hms-portal.internal";
+
+/** Stated in the email so nobody sits on a link. Must match the Supabase
+ *  project's own recovery expiry — the code cannot enforce it, so if that
+ *  setting is changed this constant has to move with it. */
+const RECOVERY_LINK_MINUTES = 60;
 
 /** One sentence, used for every outcome. See the non-enumeration note below. */
 const UNIFORM_RESPONSE =
@@ -115,7 +120,7 @@ export async function requestPasswordReset(
     // loud log, never "no account".
     const { data: profiles, error: lookupErr } = await admin
       .from("hms_profiles")
-      .select("id")
+      .select("id, full_name")
       .eq("email", address)
       .limit(2);
 
@@ -162,36 +167,51 @@ export async function requestPasswordReset(
       return { message: UNIFORM_RESPONSE };
     }
 
-    // A STATELESS client, deliberately, and neither of the two clients this
-    // codebase normally uses.
+    // generateLink, then OUR OWN email through Resend — the same sender and the
+    // same template file as every invoice and receipt this product sends.
     //
-    // NOT lib/supabase/server.ts: @supabase/ssr hard-codes flowType "pkce"
-    // AFTER spreading caller options (createServerClient.js:24-33), so it cannot
-    // be overridden. Under PKCE the code_verifier is minted here and stored as a
-    // cookie in whichever browser submitted this form, so the emailed link only
-    // works in that same browser — open it on a phone, or after clearing
-    // cookies, and it fails. A reset that cannot be completed on another device
-    // is a broken reset.
+    // This deliberately reverses an earlier decision. resetPasswordForEmail was
+    // chosen so the raw token never touched this server, but @supabase/ssr
+    // hard-codes flowType "pkce", so the code_verifier was minted in whichever
+    // browser submitted the form and the emailed link died on any other device.
+    // A token_hash link carries no per-browser state and is verified server-side
+    // at /auth/confirm, so it works anywhere AND the token never reaches a
+    // browser at all — not the address bar, not history, not a Referer header.
     //
-    // NOT the admin client with generateLink(): that hands this server the raw
-    // recovery token, which then exists in memory and in anything that logs it.
-    //
-    // Implicit flow sends no code_challenge, so GoTrue emails a link carrying the
-    // token in the URL FRAGMENT. Fragments are never sent to a server and never
-    // appear in a Referer header, and the reset page strips it from history as
-    // soon as it is consumed.
+    // The cost, stated plainly: the recovery token exists in this function's
+    // memory for the duration of one call. It is never logged, never returned to
+    // the caller, and never written anywhere. Nothing below may print it.
     const origin = (process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io").replace(/\/+$/, "");
-    const mailer = createStatelessClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { auth: { flowType: "implicit", persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } }
-    );
-    const { error } = await mailer.auth.resetPasswordForEmail(address, {
-      redirectTo: `${origin}/reset-password`,
+    const { data: link, error: linkErr } = await admin.auth.admin.generateLink({
+      type: "recovery",
+      email: address,
+      options: { redirectTo: `${origin}/reset-password` },
     });
-    if (error) {
-      // Logged by code only. The message can name the address.
-      console.error("[requestPasswordReset] send failed:", error.status ?? "unknown");
+
+    if (linkErr || !link?.properties?.hashed_token) {
+      // Code only. The message can carry the address.
+      console.error("[requestPasswordReset] link generation failed:", linkErr?.status ?? "unknown");
+      return { message: UNIFORM_RESPONSE };
+    }
+
+    // Built here rather than using properties.action_link, which points at
+    // Supabase's own verify endpoint. Ours goes through /auth/confirm so the
+    // token is consumed server-side.
+    const actionLink =
+      `${origin}/auth/confirm?token_hash=${encodeURIComponent(link.properties.hashed_token)}&type=recovery`;
+
+    try {
+      await sendPasswordResetEmail({
+        to: address,
+        actionLink,
+        name: profile.full_name,
+        expiresInMinutes: RECOVERY_LINK_MINUTES,
+      });
+    } catch (mailErr) {
+      console.error(
+        "[requestPasswordReset] send failed:",
+        mailErr instanceof Error ? mailErr.message : "unknown"
+      );
     }
 
     return { message: UNIFORM_RESPONSE };
