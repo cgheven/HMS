@@ -12,6 +12,7 @@ import { pktYearMonth } from "@/lib/pkt-time"
 import { isValidCnic, normalizeCnic } from "@/lib/cnic";
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
+import { detachReferralRewards } from "@/lib/referral-rewards";
 import type { CheckoutInput, CheckoutSettlement, Payment } from "@/types";
 
 // Partner write actions — the safe, admin-client mutation layer a partner's
@@ -273,7 +274,7 @@ export async function recordPaymentAsPartner(
     // against it, mirroring the manager/owner recording flows exactly.
     const { data: existingPayment } = await admin
       .from("hms_payments")
-      .select("id, amount, amount_paid, late_fee, ac_charge, status")
+      .select("id, amount, amount_paid, late_fee, ac_charge, status, referral_percent")
       .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
@@ -337,10 +338,18 @@ export async function recordPaymentAsPartner(
       .update(updatePayload)
       .eq("id", existingPayment.id)
       .eq("hostel_id", hostelId)
+      // Optimistic concurrency. A referral reward landing on (or leaving) this
+      // bill re-prices it between the read above and this write, and amount is
+      // stored NET of the discount — so an unguarded update would settle the
+      // tenant against a total that no longer exists.
+      .eq("referral_percent", existingPayment.referral_percent ?? 0)
       .select("*, tenant:hms_tenants(full_name, room_id, phone)")
-      .single();
+      .maybeSingle();
 
     if (error) return { error: error.message };
+    if (!updated) {
+      return { error: "This bill was re-priced while you were recording the payment. Please reopen and try again." };
+    }
 
     // Record this transaction as its own immutable snapshot, same as the
     // owner/manager payment flows — so a partner-collected installment shows up
@@ -512,6 +521,24 @@ export async function editTenantAsPartner(
     // transition, not on every routine edit of an already-active tenant.
     if (existing.is_waiting && !payload.is_waiting) {
       void sendTenantWelcomeMessageAction(tenantId);
+
+      // Attribution happens HERE for a waiting-list row, not at creation: until
+      // now the tenant had no bill and no deadline to measure against, so
+      // addTenantAsPartner deliberately skipped them and the referral was
+      // silently lost.
+      //
+      // checkIn is null on purpose. The RPC coalesces null to today at PKT, so
+      // the 14-day referral deadline is measured submission -> ACTIVATION rather
+      // than submission -> the original check-in date, which for a waiting-list
+      // row is the day they were queued and would already be blown.
+      //
+      // Fail-open, and after the tenant update above has committed.
+      await linkReferralForNewTenant(admin, {
+        tenantId,
+        hostelId,
+        phone: payload.phone,
+        checkIn: null,
+      });
     }
 
     // Moving an already-active tenant back to the waiting list leaves behind
@@ -526,6 +553,12 @@ export async function editTenantAsPartner(
         .eq("hostel_id", hostelId)
         .gte("for_month", currentMonth)
         .in("status", ["pending", "overdue"]);
+
+      // DETACH, never void. Attribution is a one-shot pending->joined transition
+      // that can never re-grant, so voiding a reward here would destroy it
+      // permanently. Detaching parks it unplaced so it can be re-placed if this
+      // tenant is activated again.
+      await detachReferralRewards(admin, tenantId, currentMonth, "reverted_to_waiting");
     }
 
     // Ledger events — best-effort, mirrors the owner flow exactly.

@@ -24,6 +24,13 @@ interface ReceiptPayment {
   registration_fee_charge?: number;
   /** Recurring monthly, applied automatically for tenants in an AC room. */
   ac_maintenance_charge?: number;
+  /** Rent reduction earned by referring someone. `amount` is already net of it,
+   *  so it is printed as a negative line against the GROSS rent above. The
+   *  referred person is deliberately not identified — this document is served
+   *  from a public token URL, and naming them would leak their tenancy. */
+  referral_discount?: number;
+  /** Percent the discount was computed at — label only, printed when known. */
+  referral_percent?: number;
   is_checkout?: boolean;
   /** Seat-reservation deposit taken before move-in — no rent/food/AC on this receipt. */
   is_reservation?: boolean;
@@ -240,7 +247,16 @@ export function generateReceiptPDF(
   add(ML, isReservation ? "Details:" : "Breakdown:", 8, true); nl(12);
   // Food-inclusive package tiers bundle food into monthly_rent with no separate
   // food_charge (0), so this only itemizes food when it was billed as an add-on.
-  const { rent: baseRent } = splitPaymentCharges(payment);
+  const { rent: baseRent, referralDiscount } = splitPaymentCharges(payment);
+  // The rent line above is GROSS while `payment.amount` is stored net, so this
+  // negative line is exactly what makes the itemisation add back up to the total.
+  // Deliberately anonymous: this PDF is served from a public token URL, and the
+  // reader does not need to know who they referred.
+  function addReferralDiscount(): void {
+    if (referralDiscount <= 0) return;
+    const pct = Number(payment.referral_percent ?? 0);
+    addKv(pct > 0 ? `Referral Discount (${pct}%)` : "Referral Discount", `-${pk(referralDiscount)}`); nl(12);
+  }
   if (isReservation) {
     addKv("Seat Reservation Deposit", pk(payment.security_deposit_charge ?? payment.amount)); nl(12);
     add(ML, "(refundable, held against your booking)", 6, false); nl(10);
@@ -248,6 +264,7 @@ export function generateReceiptPDF(
       addKv("Registration Fee", pk(payment.registration_fee_charge!)); nl(12);
       add(ML, "(one-time, non-refundable)", 6, false); nl(10);
     }
+    addReferralDiscount();
     add(ML, "This is not a monthly bill. Rent begins", 6, false); nl(8);
     add(ML, "from the date of joining.", 6, false); nl(10);
   }
@@ -261,6 +278,11 @@ export function generateReceiptPDF(
       ? `${payment.billed_days} ${payment.billed_days === 1 ? "day" : "days"} x ${pk(payment.daily_rate_billed!)}`
       : "Monthly Rent";
     addKv(rentLabel, pk(Math.max(0, baseRent))); nl(12);
+    // Immediately under the rent, because it is a percentage OF the rent. Placed
+    // after the deposit and registration fee it read as a discount on the whole
+    // bill, which is both wrong and harder to check: a tenant should be able to
+    // see their agreed rent, the amount taken off it, and the total, in that order.
+    addReferralDiscount();
     if ((payment.food_charge ?? 0) > 0) {
       addKv("Food Charges", pk(payment.food_charge!)); nl(11);
       const mealsLabel = [tenant.food_breakfast && "Breakfast", tenant.food_lunch && "Lunch", tenant.food_dinner && "Dinner"]

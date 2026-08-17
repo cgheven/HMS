@@ -19,6 +19,7 @@ import { isValidCnic, normalizeCnic } from "@/lib/cnic"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
 import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission, CheckoutInput, CheckoutSettlement } from "@/types"
 import { linkReferralForNewTenant } from "@/lib/referral-attribution"
+import { detachReferralRewards } from "@/lib/referral-rewards"
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 
 function firstOfNextMonth(forMonth: string): string {
@@ -923,6 +924,24 @@ export async function editTenantAsManager(
     // transition, not on every routine edit of an already-active tenant.
     if (existing.is_waiting && !payload.is_waiting) {
       void sendTenantWelcomeMessageAction(tenantId)
+
+      // Attribution happens HERE for a waiting-list row, not at creation: until
+      // now the tenant had no bill and no deadline to measure against, so
+      // addTenantAsManager deliberately skipped them and the referral was
+      // silently lost.
+      //
+      // checkIn is null on purpose. The RPC coalesces null to today at PKT, so
+      // the 14-day referral deadline is measured submission -> ACTIVATION rather
+      // than submission -> the original check-in date, which for a waiting-list
+      // row is the day they were queued and would already be blown.
+      //
+      // Fail-open, and after the tenant update above has committed.
+      await linkReferralForNewTenant(admin, {
+        tenantId,
+        hostelId,
+        phone: payload.phone,
+        checkIn: null,
+      })
     }
 
     // Moving an already-active tenant back to the waiting list leaves behind
@@ -937,6 +956,12 @@ export async function editTenantAsManager(
         .eq("hostel_id", hostelId)
         .gte("for_month", currentMonth)
         .in("status", ["pending", "overdue"])
+
+      // DETACH, never void. Attribution is a one-shot pending->joined transition
+      // that can never re-grant, so voiding a reward here would destroy it
+      // permanently. Detaching parks it unplaced so it can be re-placed if this
+      // tenant is activated again.
+      await detachReferralRewards(admin, tenantId, currentMonth, "reverted_to_waiting")
     }
 
     // Ledger events — best-effort, mirrors the owner/partner flow exactly.
@@ -1135,7 +1160,7 @@ export async function recordPaymentAsManager(
     // have it silently accepted as "paid in full" regardless of the real total.
     const { data: existingPayment } = await admin
       .from("hms_payments")
-      .select("id, amount, amount_paid, late_fee, ac_charge, status")
+      .select("id, amount, amount_paid, late_fee, ac_charge, status, referral_percent")
       .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
@@ -1196,12 +1221,20 @@ export async function recordPaymentAsManager(
       .update(updatePayload)
       .eq("id", existingPayment.id)
       .eq("hostel_id", hostelId)
+      // Optimistic concurrency. A referral reward landing on (or leaving) this
+      // bill re-prices it between the read above and this write, and amount is
+      // stored NET of the discount — so an unguarded update would settle the
+      // tenant against a total that no longer exists.
+      .eq("referral_percent", existingPayment.referral_percent ?? 0)
       // Return the updated row so the caller can drive the post-payment receipt
       // dialog, matching recordPaymentAsPartner.
       .select("*, tenant:hms_tenants(full_name, room_id, phone)")
-      .single()
+      .maybeSingle()
 
     if (error) return { error: error.message }
+    if (!updated) {
+      return { error: "This bill was re-priced while you were recording the payment. Please reopen and try again." }
+    }
 
     // Record this transaction as its own immutable snapshot, same as the
     // owner-facing payment flow — so a manager-collected installment shows up

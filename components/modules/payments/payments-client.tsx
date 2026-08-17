@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   CreditCard, CheckCircle2, Clock, AlertTriangle, Wallet,
-  Banknote, Zap, Loader2, FileText, ChevronLeft, ChevronRight, Search,
+  Banknote, Zap, Loader2, FileText, ChevronLeft, ChevronRight, Search, Gift,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -128,6 +128,11 @@ function genReceipt(tenantName: string, month: string) {
 
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
+
+/** Substring shared by the owner, manager and partner record-payment actions,
+ *  whose full sentences differ. Matched on the stable middle so all three
+ *  optimistic-concurrency refusals take the reopen path, not a dead-end toast. */
+const REPRICED_ERROR = "re-priced while you were recording";
 
 // One definition of "unpaid", shared by the Monthly View chips and the All History
 // chips. Waived is deliberately neither: the money was forgiven, so it is not owed
@@ -459,6 +464,26 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     });
   }
 
+  // The referral reconciler is a background writer: it runs on every payments
+  // page load and can attach or move a reward while this dialog is open, at
+  // which point the server refuses to settle against a total that no longer
+  // exists. Toasting alone would leave the operator staring at the stale figure
+  // they just failed to collect, so re-read the month and put the dialog back up
+  // against the row that actually exists now.
+  async function reopenAfterReprice(paymentId: string) {
+    const fresh = await syncMonth(selectedMonth);
+    const row = fresh?.find((r) => r.id === paymentId) ?? null;
+    setMarkDialog(null);
+    toast({
+      title: "Bill was re-priced",
+      description: row
+        ? "The total changed while you were recording this. Reopened with the new amount — check it and confirm again."
+        : "The total changed while you were recording this. Reopen the payment and try again.",
+      variant: "destructive",
+    });
+    if (row) openMarkPaid(row);
+  }
+
   async function handleMarkPaid() {
     if (!markDialog) return;
 
@@ -515,8 +540,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         isAcTier ? parseFloat(markForm.ac_units_consumed) : undefined,
       );
       if (result.error) {
-        toast({ title: "Error", description: result.error, variant: "destructive" });
         setSaving(false);
+        if (result.error.includes(REPRICED_ERROR)) { await reopenAfterReprice(markDialog.id); return; }
+        toast({ title: "Error", description: result.error, variant: "destructive" });
         return;
       }
       const remainingBefore = Math.max(0, Number(markDialog.amount) + Number(markDialog.late_fee ?? 0) - Number(markDialog.amount_paid ?? 0));
@@ -544,8 +570,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         markForm.notes,
       );
       if (result.error) {
-        toast({ title: "Error", description: result.error, variant: "destructive" });
         setSaving(false);
+        if (result.error.includes(REPRICED_ERROR)) { await reopenAfterReprice(markDialog.id); return; }
+        toast({ title: "Error", description: result.error, variant: "destructive" });
         return;
       }
       const isPartial = result.payment?.status === "partially_paid";
@@ -574,8 +601,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     });
 
     if (result.error) {
-      toast({ title: "Error", description: result.error, variant: "destructive" });
       setSaving(false);
+      if (result.error.includes(REPRICED_ERROR)) { await reopenAfterReprice(markDialog.id); return; }
+      toast({ title: "Error", description: result.error, variant: "destructive" });
       return;
     } else {
       const isPartial = result.payment?.status === "partially_paid";
@@ -711,6 +739,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       security_deposit: tenantDeposit > 0 ? tenantDeposit : undefined,
       ac_maintenance_charge: (p.ac_maintenance_charge ?? 0) > 0 ? Number(p.ac_maintenance_charge) : undefined,
       registration_fee_charge: (p.registration_fee_charge ?? 0) > 0 ? Number(p.registration_fee_charge) : undefined,
+      referral_discount: (p.referral_discount ?? 0) > 0 ? Number(p.referral_discount) : undefined,
     });
     const waUrl = `https://wa.me/${digits}?text=${encodeURIComponent(message)}`;
     window.open(waUrl, "_blank", "noopener,noreferrer");
@@ -1163,6 +1192,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               {charges.food > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.food)} food</p>}
               {!isReservation && charges.deposit > 0 && <p className="text-xs text-violet-400 whitespace-nowrap">incl. {formatCurrency(charges.deposit)} deposit</p>}
               {charges.registrationFee > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.registrationFee)} reg.</p>}
+              {charges.referralDiscount > 0 && (
+                <p className="text-xs text-emerald-400 whitespace-nowrap flex items-center justify-end gap-1">
+                  <Gift className="w-3 h-3 shrink-0" />Referral −{formatCurrency(charges.referralDiscount)}
+                </p>
+              )}
               {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
               {p.status === "partially_paid" && (
                 <p className="text-xs text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
@@ -1251,6 +1285,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             )}
             {charges.acMaintenance > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {formatCurrency(charges.acMaintenance)} AC mnt</p>}
             {charges.registrationFee > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {formatCurrency(charges.registrationFee)} reg.</p>}
+            {/* Rent above stays GROSS (splitPaymentCharges adds the discount back),
+                so this line is what reconciles Rent + AC + extras with Total. */}
+            {charges.referralDiscount > 0 && (
+              <p className="text-[10px] leading-tight text-emerald-400 flex items-center justify-end gap-1">
+                <Gift className="w-2.5 h-2.5 shrink-0" />Referral −{formatCurrency(charges.referralDiscount)}
+              </p>
+            )}
             {Number(p.late_fee) > 0 && <p className="text-[10px] leading-tight text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
             {p.status === "partially_paid" && (
               <p className="text-[10px] leading-tight text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
@@ -2005,6 +2046,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   deposit: depositCharge,
                   registrationFee: registrationFeeCharge,
                   acMaintenance: acMaintenanceCharge,
+                  referralDiscount,
                 } = splitPaymentCharges(markDialog);
                 const tenant = tenants.find(t => t.id === markDialog.tenant_id);
                 const deposit = tenant?.security_deposit ?? 0;
@@ -2043,6 +2085,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         <span>AC Maintenance</span><span>{formatCurrency(acMaintenanceCharge)}</span>
                       </div>
                     )}
+                    {/* Rent above is gross, so the discount has to appear as its own
+                        deduction for the lines to sum to the stored (net) Total. */}
+                    {referralDiscount > 0 && (
+                      <div className="flex justify-between gap-2 text-xs text-emerald-400">
+                        <span className="flex items-center gap-1 min-w-0">
+                          <Gift className="w-3 h-3 shrink-0" /><span className="truncate">Referral Discount</span>
+                        </span>
+                        <span className="shrink-0 tabular-nums">−{formatCurrency(referralDiscount)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-xs font-medium text-foreground">
                       <span>Total</span><span>{formatCurrency(markDialog.amount ?? 0)}</span>
                     </div>
@@ -2077,8 +2129,17 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             {markDialog && (() => {
               const alreadyPaid = Number(markDialog.amount_paid ?? 0);
               const remaining = Math.max(0, Number(markDialog.amount) - alreadyPaid);
+              const { referralDiscount } = splitPaymentCharges(markDialog);
               return (
                 <div className="space-y-1.5">
+                  {/* Above the input, not below it: the number they are about to
+                      type is smaller than the rent they agreed, and they need to
+                      know why before they type it, not after. */}
+                  {referralDiscount > 0 && (
+                    <p className="text-xs text-emerald-400">
+                      {formatCurrency(referralDiscount)} referral discount already applied.
+                    </p>
+                  )}
                   <Label>Amount Received (PKR)</Label>
                   <Input
                     type="number"

@@ -144,7 +144,7 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, payment_method, payment_date, receipt_number, payment_package_tier, status, is_reservation, billed_days, daily_rate_billed, updated_at, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, is_active, billing_type, daily_rate, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
+        "id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, referral_percent, payment_method, payment_date, receipt_number, payment_package_tier, status, is_reservation, billed_days, daily_rate_billed, updated_at, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, is_active, billing_type, daily_rate, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
       )
       .eq("id", paymentId)
       .single(),
@@ -249,6 +249,8 @@ export async function GET(
       security_deposit_charge: Number(payment.security_deposit_charge ?? 0),
       registration_fee_charge: Number(payment.registration_fee_charge ?? 0),
       ac_maintenance_charge: Number(payment.ac_maintenance_charge ?? 0),
+      referral_discount: Number(payment.referral_discount ?? 0),
+      referral_percent: Number(payment.referral_percent ?? 0),
       security_deposit: securityDepositRefund,
       is_checkout: isCheckout,
       is_reservation: isReservation,

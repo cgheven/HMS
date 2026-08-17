@@ -67,7 +67,7 @@ export function ReferralFormClient({ code, hostelName, referredPercent }: Props)
             <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
               {offersDiscount ? (
                 <>
-                  Your discount is valid for{" "}
+                  Your discount comes off your first bill and is valid for{" "}
                   <span className="font-semibold text-foreground">
                     {REFERRAL_PENDING_TTL_DAYS} days
                   </span>{" "}
@@ -108,14 +108,22 @@ export function ReferralFormClient({ code, hostelName, referredPercent }: Props)
       <div className="max-w-lg mx-auto px-4 py-10">
         <div className="mb-8">
           <h1 className="text-3xl font-serif font-normal tracking-tight text-foreground">
+            {/* "first bill", never "first month's rent": a daily-billed tenant
+                has no month, and the discount lands on whatever their first
+                bill turns out to be. */}
             {offersDiscount
-              ? `Get ${referredPercent}% off your first month's rent`
+              ? `Get ${referredPercent}% off your first bill`
               : `Looking for a room at ${hostelName}?`}
           </h1>
           <p className="text-muted-foreground text-sm mt-1.5 leading-relaxed">
             Leave your name and number, then visit {hostelName}. Give this number when you arrive
-            {offersDiscount ? " and your discount is applied to your first month." : "."}
+            {offersDiscount ? " and your discount is applied to your first bill." : "."}
           </p>
+          {offersDiscount && (
+            <p className="text-muted-foreground/80 text-xs mt-2 leading-relaxed">
+              Valid at <span className="font-medium text-foreground">{hostelName}</span> only.
+            </p>
+          )}
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">

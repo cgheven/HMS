@@ -2,7 +2,7 @@ import type { PaymentMethodAccount } from "@/types";
 
 export const DEFAULT_REMINDER_TEMPLATE = `Assalam o Alaikum {name},
 
-Friendly reminder - your rent of {amount} for {month} is still pending.{ac}{ac_maintenance}{registration_fee}{deposit}
+Friendly reminder - your rent of {amount} for {month} is still pending.{ac}{ac_maintenance}{registration_fee}{referral_discount}{deposit}
 
 {accounts}
 
@@ -37,6 +37,13 @@ function formatAcMaintenanceLine(charge?: number): string {
   return `🔧 AC Maintenance: *Rs ${new Intl.NumberFormat("en-PK").format(Math.round(charge))}*`;
 }
 
+// Shown so a tenant whose bill dropped can see WHY. Deliberately does not name
+// the person who referred them — this message can be forwarded to anyone.
+function formatReferralDiscountLine(charge?: number): string {
+  if (!charge || charge <= 0) return "";
+  return `\u{1F381} Referral Discount: *-Rs ${new Intl.NumberFormat("en-PK").format(Math.round(charge))}* (already applied)`;
+}
+
 function formatRegistrationFeeLine(charge?: number): string {
   if (!charge || charge <= 0) return "";
   return `📝 Registration Fee: *Rs ${new Intl.NumberFormat("en-PK").format(Math.round(charge))}* (one-time)`;
@@ -55,6 +62,7 @@ interface BuildArgs {
   security_deposit?: number;
   ac_maintenance_charge?: number;
   registration_fee_charge?: number;
+  referral_discount?: number;
 }
 
 export function buildReminderMessage(args: BuildArgs): string {
@@ -68,6 +76,8 @@ export function buildReminderMessage(args: BuildArgs): string {
   const acMaintenanceBlock = acMaintenanceLine ? "\n" + acMaintenanceLine : "";
   const registrationFeeLine = formatRegistrationFeeLine(args.registration_fee_charge);
   const registrationFeeBlock = registrationFeeLine ? "\n" + registrationFeeLine : "";
+  const referralDiscountLine = formatReferralDiscountLine(args.referral_discount);
+  const referralDiscountBlock = referralDiscountLine ? "\n" + referralDiscountLine : "";
   const depositBlock = (args.security_deposit && args.security_deposit > 0)
     ? `\n🔒 Security Deposit: *Rs ${new Intl.NumberFormat("en-PK").format(Math.round(args.security_deposit))}* (held)`
     : "";
@@ -77,6 +87,7 @@ export function buildReminderMessage(args: BuildArgs): string {
     .replace(/\{month\}/g,    args.month)
     .replace(/\{hostel\}/g,   args.hostelName)
     .replace(/\{accounts\}/g, accountsBlock)
+    .replace(/\{referral_discount\}/g, referralDiscountBlock)
     .replace(/\{ac\}/g,       acBlock)
     .replace(/\{ac_maintenance\}/g,   acMaintenanceBlock)
     .replace(/\{registration_fee\}/g, registrationFeeBlock)
