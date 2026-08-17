@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useTransition } from "react";
 import {
-  AlertTriangle, Ban, Check, ChevronLeft, ChevronRight, Copy, Link2, Megaphone, RefreshCw,
+  AlertTriangle, Ban, Check, ChevronLeft, ChevronRight, Copy, Link2, Megaphone, Pause, RefreshCw,
   RotateCcw, Search, Sparkles, Undo2, Users, X, MessageCircle, Percent,
 } from "lucide-react";
 import {
@@ -853,6 +853,22 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
     });
   }
 
+  // Pausing is instant and reversible, so it gets no confirm step — unlike Start,
+  // which spends money per message and does.
+  function handlePause() {
+    setBusyId("campaign");
+    startTransition(async () => {
+      const res = await setReferralCampaign("paused");
+      setBusyId(null);
+      if (res.error) {
+        toast({ title: "Failed", description: res.error, variant: "destructive" });
+        return;
+      }
+      toast({ title: "Campaign paused", description: "No new tenant will be messaged. Referrals already submitted still pay out." });
+      window.location.reload();
+    });
+  }
+
   function handleReject(referralId: string) {
     setBusyId(referralId);
     startTransition(async () => {
@@ -1156,21 +1172,64 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
               <TabsTrigger value="links">Tenant links ({referrers.length})</TabsTrigger>
             </TabsList>
           </div>
-          {missingCodes > 0 && (
-            /* Outline on a phone, solid amber from sm up. Minting missing links
-               is maintenance, and as a full-bleed amber block it was the loudest
-               thing on the screen — louder than the money the page is about. */
-            <Button
-              onClick={handleEnsureAll}
-              disabled={isPending}
-              size="sm"
-              variant="outline"
-              className="gap-2 shrink-0 sm:bg-amber sm:text-background sm:border-amber sm:hover:bg-amber/90 sm:font-semibold"
-            >
-              <Sparkles className="w-4 h-4" />
-              Create {missingCodes} missing link{missingCodes === 1 ? "" : "s"}
-            </Button>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* The campaign switch. Off is the only state that spends money on
+                click, so it is the only one styled as a primary action; live and
+                paused are status first, control second. */}
+            {ov.campaign === "active" ? (
+              <div className="flex items-center gap-2">
+                <span className="hidden sm:inline-flex items-center gap-1.5 text-xs text-emerald-400">
+                  <span className="relative flex w-2 h-2">
+                    <span className="absolute inline-flex w-full h-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
+                    <span className="relative inline-flex w-2 h-2 rounded-full bg-emerald-400" />
+                  </span>
+                  Campaign live
+                </span>
+                <Button
+                  onClick={handlePause}
+                  disabled={isPending}
+                  size="sm"
+                  variant="outline"
+                  className="gap-2"
+                >
+                  <Pause className="w-4 h-4" />
+                  Pause
+                </Button>
+              </div>
+            ) : (
+              <Button
+                onClick={() => setConfirmStart(true)}
+                disabled={isPending || !ov.whatsappEnabled}
+                title={
+                  ov.whatsappEnabled
+                    ? undefined
+                    : "WhatsApp is not enabled for this branch — contact support to turn it on."
+                }
+                size="sm"
+                className="gap-2 bg-amber text-background border-amber hover:bg-amber/90 font-semibold"
+              >
+                <Megaphone className="w-4 h-4" />
+                {ov.campaign === "paused" ? "Resume campaign" : "Start campaign"}
+              </Button>
+            )}
+            {missingCodes > 0 && (
+              /* Outline on a phone, solid amber from sm up. Minting missing links
+                 is maintenance, and as a full-bleed amber block it was the loudest
+                 thing on the screen — louder than the money the page is about.
+                 Now that Start sits beside it, it stays outline at every width —
+                 two solid amber buttons side by side have no primary. */
+              <Button
+                onClick={handleEnsureAll}
+                disabled={isPending}
+                size="sm"
+                variant="outline"
+                className="gap-2 shrink-0"
+              >
+                <Sparkles className="w-4 h-4" />
+                Create {missingCodes} missing link{missingCodes === 1 ? "" : "s"}
+              </Button>
+            )}
+          </div>
         </div>
 
         <TabsContent value="submissions" className="space-y-4">

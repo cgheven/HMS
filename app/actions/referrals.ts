@@ -1821,17 +1821,43 @@ export async function setReferralCampaign(
  */
 export async function sendReferralLinkForTenant(tenantId: string): Promise<void> {
   try {
-    const { hostelId, admin } = await resolveBranch();
-    const { data: code } = await admin
+    const { hostelId, admin, enabled, campaign } = await resolveBranch();
+    // Minting is gated on the campaign the same way sending is, so an admission
+    // on a branch that never opted in does not quietly accumulate codes.
+    if (!enabled || campaign !== "active") return;
+
+    // link_sent_at is deliberately NOT part of this lookup. Filtering on it
+    // makes an already-messaged tenant look like a tenant with no code at all,
+    // and the mint below would then issue a second link — silently retiring the
+    // one already in their WhatsApp. Fetch the code first, decide second.
+    const { data: existing } = await admin
       .from("hms_referral_codes")
-      .select("id")
+      .select("id, link_sent_at")
       .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
-      .is("link_sent_at", null)
       .maybeSingle();
-    if (!code) return;
-    await sendReferralInvite(admin, code.id as string);
+
+    if (existing?.link_sent_at) return;
+
+    // A tenant admitted mid-campaign has no code yet — codes are otherwise only
+    // created by ensureCodesForAllActiveTenants(), which runs on campaign start.
+    // Without this, every new admission found nothing to send and returned here.
+    let codeId = existing?.id as string | undefined;
+    if (!codeId) {
+      // mintCode returns the code STRING, not the row, and sendReferralInvite is
+      // keyed on the row id — so the freshly inserted row is read back by code.
+      const minted = await mintCode(admin, hostelId, tenantId);
+      const { data: row } = await admin
+        .from("hms_referral_codes")
+        .select("id")
+        .eq("hostel_id", hostelId)
+        .eq("code", minted)
+        .maybeSingle();
+      codeId = row?.id as string | undefined;
+    }
+    if (!codeId) return;
+    await sendReferralInvite(admin, codeId);
   } catch {
     // Swallowed by design.
   }
