@@ -66,6 +66,10 @@ export async function updateSession(request: NextRequest) {
     pathname === "/reset-password" ||
     pathname.startsWith("/reset-password/") ||
     pathname.startsWith("/ref/") ||
+    // The tenant's own referral status page. Reachable without a session by
+    // design — the token in the path plus the phone typed on the page are the
+    // credentials, and the person holding them has no account to sign in to.
+    pathname.startsWith("/rs/") ||
     pathname.startsWith("/r/") ||
     pathname.startsWith("/invoice/") ||
     pathname.startsWith("/partner/login") ||

@@ -40,7 +40,7 @@ import { checkTenantRedflagAction } from "@/app/actions/redflag";
 import { MeterPhoto } from "@/components/modules/ac/meter-photo";
 import { uploadJoiningMeterPhoto, deleteJoiningMeterPhoto } from "@/app/actions/ac-meter-photos";
 import type { RedflagMatch } from "@/types";
-import { attributeReferralForTenant, detachReferralRewardsForTenant } from "@/app/actions/referrals";
+import { attributeReferralForTenant, detachReferralRewardsForTenant, sendReferralLinkForTenant } from "@/app/actions/referrals";
 import { ReferralAdmissionBanner } from "@/components/modules/referrals/referral-admission-banner";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
@@ -1440,6 +1440,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const attributeIfNewAdmission = async () => {
       if (!editing && newTenantId && !form.is_waiting) {
         await attributeReferralForTenant(newTenantId);
+        // Their own link, so the owner never hands one out by hand again.
+        // Fire-and-forget: a marketing message must not delay this dialog, and
+        // every gate is re-checked server-side at the moment of sending.
+        void sendReferralLinkForTenant(newTenantId);
       }
     };
 
@@ -1455,6 +1459,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       // referral was simply lost. The server measures the 14-day deadline from
       // today, not from the date they were queued.
       await attributeReferralForTenant(editing.id);
+      void sendReferralLinkForTenant(editing.id);
     }
 
     // Moving an already-active tenant back to the waiting list leaves behind

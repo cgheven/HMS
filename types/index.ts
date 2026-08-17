@@ -1566,4 +1566,9 @@ export interface ReferralOverview {
    *  switching the feature off can never hide a live liability. */
   openRewardCount: number
   openRewardValue: number
+  /** 'off' | 'active' | 'paused'. */
+  campaign: string
+  /** Residents who have not yet been sent their link — what Start will send. */
+  unsentCount: number
+  whatsappEnabled: boolean
 }

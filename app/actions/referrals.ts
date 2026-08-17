@@ -15,6 +15,7 @@ import {
   REFERRAL_PENDING_TTL_DAYS,
 } from "@/lib/referrals";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
+import { sendReferralInvite } from "@/lib/whatsapp-referral-invite";
 import {
   detachReferralRewards,
   grantReferralRewards,
@@ -72,6 +73,8 @@ async function resolveBranch(): Promise<{
    *  and a partner acting on the branch must resolve to the owner who pays. */
   ownerId: string | null;
   enabled: boolean;
+  campaign: string;
+  whatsappEnabled: boolean;
   ownerHostels: { id: string; name: string }[];
   referrerPercent: number;
   referredPercent: number;
@@ -86,7 +89,7 @@ async function resolveBranch(): Promise<{
   const { data: hostel, error } = await admin
     .from("hms_hostels")
     .select(
-      "id, name, owner_id, referral_enabled, referral_referrer_percent, referral_referred_percent"
+      "id, name, owner_id, referral_enabled, referral_referrer_percent, referral_referred_percent, referral_campaign, whatsapp_enabled"
     )
     .eq("id", hostelId)
     .single();
@@ -97,6 +100,8 @@ async function resolveBranch(): Promise<{
     hostelName: hostel?.name ?? "",
     ownerId: (hostel?.owner_id as string | null) ?? null,
     enabled: hostel?.referral_enabled === true,
+    campaign: (hostel?.referral_campaign as string) ?? "off",
+    whatsappEnabled: hostel?.whatsapp_enabled === true,
     referrerPercent: clampPercent(hostel?.referral_referrer_percent),
     referredPercent: clampPercent(hostel?.referral_referred_percent),
     ownerHostels: (ctx?.hostels ?? []).map((h) => ({ id: h.id, name: h.name })),
@@ -504,6 +509,9 @@ export async function getReferralOverview(month?: string): Promise<{
           revenueFromReferralsTotal: 0,
           openRewardCount: ledger.openRewardCount,
           openRewardValue: ledger.openRewardValue,
+          campaign: branch.campaign,
+          unsentCount: 0,
+          whatsappEnabled: branch.whatsappEnabled,
         },
       };
     }
@@ -530,7 +538,7 @@ export async function getReferralOverview(month?: string): Promise<{
           .order("created_at", { ascending: false }),
         admin
           .from("hms_referral_codes")
-          .select("tenant_id, code")
+          .select("tenant_id, code, link_sent_at")
           .eq("hostel_id", hostelId)
           .eq("is_active", true),
         admin
@@ -867,6 +875,13 @@ export async function getReferralOverview(month?: string): Promise<{
         revenueFromReferralsTotal: Array.from(revenueByTenant.values()).reduce((a, b) => a + b, 0),
         openRewardCount: ledger.openRewardCount,
         openRewardValue: ledger.openRewardValue,
+        campaign: branch.campaign,
+        // What pressing Start would actually send — the owner should never have
+        // to guess how many messages a click is about to cost.
+        unsentCount: (codesRes.data ?? []).filter(
+          (c) => !(c as { link_sent_at?: string | null }).link_sent_at
+        ).length,
+        whatsappEnabled: branch.whatsappEnabled,
       },
     };
   } catch (err) {
@@ -1676,5 +1691,148 @@ export async function grantReferralRewardManually(
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Could not grant that reward" };
+  }
+}
+
+
+// ── Campaign ──────────────────────────────────────────────────────────────────
+
+/**
+ * Starts the campaign and sends every resident who has not had one their link.
+ *
+ * Idempotent by construction: the send itself skips any code row that already
+ * carries a link_sent_at, so pressing Start twice — or re-running after a
+ * partial failure — fills only the gaps. Meta bills per message, so this
+ * property is money, not tidiness.
+ *
+ * Codes are minted first for anyone missing one, because a tenant with no code
+ * has nothing to be sent.
+ */
+export async function startReferralCampaign(): Promise<{
+  sent?: number;
+  skipped?: number;
+  error?: string;
+}> {
+  try {
+    const { hostelId, admin, profile, enabled, referrerPercent, referredPercent } =
+      await resolveBranch();
+
+    if (!enabled) return { error: NOT_ENABLED };
+    // "You get 0% off" is not an offer worth messaging 56 people about. Better to
+    // tell the owner than to send it.
+    if (referrerPercent < 1 || referredPercent < 1) {
+      return {
+        error:
+          "Set both discount percentages above before starting the campaign — one of them is currently 0.",
+      };
+    }
+
+    const { data: hostel } = await admin
+      .from("hms_hostels")
+      .select("whatsapp_enabled")
+      .eq("id", hostelId)
+      .maybeSingle();
+    if (!hostel?.whatsapp_enabled) {
+      return { error: "WhatsApp is not enabled for this branch. Contact support to have it turned on." };
+    }
+
+    await admin
+      .from("hms_hostels")
+      .update({ referral_campaign: "active" })
+      .eq("id", hostelId);
+
+    // Everyone who should have a link but does not.
+    await ensureCodesForAllActiveTenants();
+
+    const { data: codes } = await admin
+      .from("hms_referral_codes")
+      .select("id")
+      .eq("hostel_id", hostelId)
+      .eq("is_active", true)
+      .is("link_sent_at", null);
+
+    let sent = 0;
+    let skipped = 0;
+    // Sequential on purpose: Meta paces marketing sends, and a burst of 56 is
+    // exactly what trips a pacing pause on a number that also carries payment
+    // reminders.
+    for (const c of codes ?? []) {
+      const res = await sendReferralInvite(admin, c.id as string);
+      if (res.sent) sent += 1;
+      else skipped += 1;
+    }
+
+    await logActivity({
+      hostel_id: hostelId,
+      actor_id: profile.id,
+      action: "referral_campaign.start",
+      entity: "hostel",
+      entity_id: hostelId,
+      meta: { sent, skipped },
+    });
+
+    revalidatePath("/marketing");
+    return { sent, skipped };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to start the campaign" };
+  }
+}
+
+/**
+ * Pause stops OUTBOUND only.
+ *
+ * No new tenant is messaged, and both public pages say so — but referrals
+ * already submitted are untouched and still pay out. Pausing your own marketing
+ * is not the same as breaking a promise somebody already acted on.
+ */
+export async function setReferralCampaign(
+  state: "active" | "paused"
+): Promise<{ success?: boolean; error?: string }> {
+  try {
+    const { hostelId, admin, profile } = await resolveBranch();
+    if (state !== "active" && state !== "paused") return { error: "Invalid state" };
+
+    await admin.from("hms_hostels").update({ referral_campaign: state }).eq("id", hostelId);
+
+    await logActivity({
+      hostel_id: hostelId,
+      actor_id: profile.id,
+      action: state === "paused" ? "referral_campaign.pause" : "referral_campaign.resume",
+      entity: "hostel",
+      entity_id: hostelId,
+    });
+
+    revalidatePath("/marketing");
+    return { success: true };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Failed to update the campaign" };
+  }
+}
+
+/**
+ * Fires after a tenant is admitted, from the same place attribution does.
+ *
+ * Fail-open and never awaited for correctness: a marketing message must never be
+ * able to fail an admission. Every gate — campaign active, WhatsApp granted,
+ * resident not waiting — is re-checked inside sendReferralInvite at the moment
+ * of sending.
+ */
+export async function sendReferralLinkForTenant(tenantId: string): Promise<void> {
+  try {
+    const { hostelId, admin } = await resolveBranch();
+    const { data: code } = await admin
+      .from("hms_referral_codes")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .eq("hostel_id", hostelId)
+      .eq("is_active", true)
+      .is("link_sent_at", null)
+      .maybeSingle();
+    if (!code) return;
+    await sendReferralInvite(admin, code.id as string);
+  } catch {
+    // Swallowed by design.
   }
 }

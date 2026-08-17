@@ -72,6 +72,15 @@ const nextConfig: NextConfig = {
       //   no-store     — a shared or proxy cache must never be able to serve one
       //                  tenant's rendered state to the next visitor.
       {
+        // Identical reasoning to /fb below: the path segment is a credential.
+        source: "/rs/:path*",
+        headers: [
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+          { key: "Cache-Control", value: "no-store, max-age=0" },
+        ],
+      },
+      {
         source: "/fb/:path*",
         headers: [
           { key: "Referrer-Policy", value: "no-referrer" },

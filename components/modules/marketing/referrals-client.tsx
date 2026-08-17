@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import {
   ensureCodesForAllActiveTenants, ensureReferralCode, getReferralOverview, grantReferralRewardManually, rejectReferral,
+  setReferralCampaign, startReferralCampaign,
   revokeReferralReward, rotateReferralCode, stopAllReferralRewards, undoRejectReferral,
   updateReferralPercentages,
 } from "@/app/actions/referrals";
@@ -588,6 +589,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ReferralRewardRow | null>(null);
   const [confirmStopAll, setConfirmStopAll] = useState(false);
+  const [confirmStart, setConfirmStart] = useState(false);
   const [isPending, startTransition] = useTransition();
   // Which pending row has its "attribute by hand" picker open. A phone match is
   // only ever a suggestion, and the person may well have been admitted on a
@@ -982,6 +984,40 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
         onConfirm={() => revokeTarget && handleRevoke(revokeTarget)}
         onCancel={() => setRevokeTarget(null)}
       />
+      {/* Named count, because this spends real money — Meta bills per message —
+          and because 56 WhatsApps is not something to discover after clicking. */}
+      <ConfirmDialog
+        open={confirmStart}
+        onCancel={() => setConfirmStart(false)}
+        title={ov.campaign === "paused" ? "Resume the campaign?" : "Start the referral campaign?"}
+        description={
+          ov.campaign === "paused"
+            ? "New tenants will start receiving their referral link again."
+            : `${ov.unsentCount} tenant${ov.unsentCount === 1 ? "" : "s"} will receive their own referral link by WhatsApp, and every tenant admitted from now on will get one automatically. Nobody is ever messaged twice for the same link.`
+        }
+        confirmLabel={ov.campaign === "paused" ? "Resume" : "Start and send"}
+        onConfirm={() =>
+          startTransition(async () => {
+            const res =
+              ov.campaign === "paused"
+                ? await setReferralCampaign("active")
+                : await startReferralCampaign();
+            if ("error" in res && res.error) {
+              toast({ title: "Failed", description: res.error, variant: "destructive" });
+              return;
+            }
+            if ("sent" in res) {
+              toast({
+                title: `${res.sent ?? 0} link${res.sent === 1 ? "" : "s"} sent`,
+                description: (res.skipped ?? 0) > 0 ? `${res.skipped} skipped (already sent, no number, or not a resident).` : undefined,
+              });
+            }
+            setConfirmStart(false);
+            setTimeout(() => window.location.reload(), 1200);
+          })
+        }
+      />
+
       <ConfirmDialog
         open={confirmStopAll}
         title="Stop every queued reward?"

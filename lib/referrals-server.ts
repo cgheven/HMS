@@ -39,6 +39,10 @@ export type ReferralTarget =
    * owner runs referrer-only mode, and the page then makes no promise.
    */
   | { kind: "ok"; hostelName: string; referredPercent: number }
+  /** The branch has paused its campaign. Distinct from "dead": the link is
+   *  genuinely theirs and will work again, so telling a stranger it is dead
+   *  would be both wrong and a lost referral once it resumes. */
+  | { kind: "paused"; hostelName: string }
   /** Unknown, rotated, referrer gone, branch not entitled — one answer for all. */
   | { kind: "dead" }
   /** Infrastructure, not the code: safe to invite a retry, leaks nothing. */
@@ -73,7 +77,7 @@ export async function getReferralTarget(rawCode: string): Promise<ReferralTarget
   const { data, error } = await admin
     .from("hms_referral_codes")
     .select(
-      "id, is_active, tenant:hms_tenants(is_active, is_waiting), hostel:hms_hostels(name, referral_enabled, referral_referred_percent)"
+      "id, is_active, tenant:hms_tenants(is_active, is_waiting), hostel:hms_hostels(name, referral_enabled, referral_referred_percent, referral_campaign)"
     )
     .eq("code", code)
     .maybeSingle();
@@ -89,8 +93,8 @@ export async function getReferralTarget(rawCode: string): Promise<ReferralTarget
     is_active: boolean;
     tenant: { is_active: boolean; is_waiting: boolean } | { is_active: boolean; is_waiting: boolean }[] | null;
     hostel:
-      | { name: string; referral_enabled: boolean; referral_referred_percent: number }
-      | { name: string; referral_enabled: boolean; referral_referred_percent: number }[]
+      | { name: string; referral_enabled: boolean; referral_referred_percent: number; referral_campaign: string }
+      | { name: string; referral_enabled: boolean; referral_referred_percent: number; referral_campaign: string }[]
       | null;
   };
   const row = data as unknown as Row;
@@ -103,6 +107,12 @@ export async function getReferralTarget(rawCode: string): Promise<ReferralTarget
   // never moved in is not a resident handing out a link.
   if (!tenant?.is_active || tenant.is_waiting) return { kind: "dead" };
   if (!hostel?.referral_enabled) return { kind: "dead" };
+  // Paused, not dead. The link is genuinely this tenant's and works again the
+  // moment the owner resumes, so a stranger is told to come back rather than
+  // told the link is broken.
+  if (hostel.referral_campaign === "paused") {
+    return { kind: "paused", hostelName: hostel.name };
+  }
 
   // Clamped rather than trusted: the column is CHECK-constrained, but this
   // value is rendered to the public as a promise the owner must honour.
