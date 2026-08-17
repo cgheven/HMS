@@ -5,6 +5,8 @@ node_modules/
 
 # next.js
 .next/
+# Alternate build dirs used by HMS_DIST_DIR (dev:stage, verification builds)
+.next-*/
 out/
 
 # env files — NEVER commit these
