@@ -40,7 +40,8 @@ import { checkTenantRedflagAction } from "@/app/actions/redflag";
 import { MeterPhoto } from "@/components/modules/ac/meter-photo";
 import { uploadJoiningMeterPhoto, deleteJoiningMeterPhoto } from "@/app/actions/ac-meter-photos";
 import type { RedflagMatch } from "@/types";
-import { attributeReferralForTenant } from "@/app/actions/referrals";
+import { attributeReferralForTenant, detachReferralRewardsForTenant, sendReferralLinkForTenant } from "@/app/actions/referrals";
+import { ReferralAdmissionBanner } from "@/components/modules/referrals/referral-admission-banner";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
 import QRCode from "qrcode";
@@ -708,6 +709,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [formQrGenerating, setFormQrGenerating] = useState(false);
   const [formQrDownloading, setFormQrDownloading] = useState(false);
   const [form, setForm] = useState(emptyForm);
+  // Prefills the name the referral was submitted under. Only when the field is
+  // still empty — the operator's own typing always wins, and a person may well
+  // introduce themselves differently to how their friend wrote them down.
+  const prefillReferredName = useCallback((name: string) => {
+    setForm((f) => (f.full_name.trim() ? f : { ...f, full_name: name }));
+  }, []);
   const [saving, setSaving] = useState(false);
   // Held until the tenant row exists: on Add there is no id to attach a photo
   // to until the insert returns, so the file waits here and uploads after.
@@ -1418,12 +1425,27 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     }
     if (!editing) newTenantId = (mutData as { id: string } | null)?.id ?? null;
 
-    // Referral attribution — same fire-and-forget shape as the welcome message
-    // below, so it can never delay or fail an admission. The server re-reads the
-    // phone and branch from the tenant row; nothing is trusted from here.
-    if (!editing && newTenantId && !form.is_waiting) {
-      void attributeReferralForTenant(newTenantId);
-    }
+    // Referral attribution deliberately does NOT run here.
+    //
+    // It has to happen AFTER the historical back-fill further down, which writes
+    // past months as `paid`. Attributing first grants the welcome discount, the
+    // back-fill then settles a month it is sitting on, and the settlement trigger
+    // retires the reward against a bill the tenant never actually paid — the
+    // discount is spent before they see a real one. managers.ts and partner.ts
+    // already run in the correct order; this path was the odd one out.
+    //
+    // It is also awaited rather than fire-and-forget, so the reward exists before
+    // the dialog closes and the list reloads — otherwise the row can render
+    // without its discount and look like the feature failed.
+    const attributeIfNewAdmission = async () => {
+      if (!editing && newTenantId && !form.is_waiting) {
+        await attributeReferralForTenant(newTenantId);
+        // Their own link, so the owner never hands one out by hand again.
+        // Fire-and-forget: a marketing message must not delay this dialog, and
+        // every gate is re-checked server-side at the moment of sending.
+        void sendReferralLinkForTenant(newTenantId);
+      }
+    };
 
     // Fire-and-forget welcome WhatsApp — new active tenant, or a waiting-list
     // tenant getting activated (room finally assigned). Never awaited inline
@@ -1432,6 +1454,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       void sendTenantWelcomeMessageAction(newTenantId);
     } else if (editing && editing.is_waiting && !form.is_waiting) {
       void sendTenantWelcomeMessageAction(editing.id);
+      // Activation is this person's real admission — until now they had no room
+      // and no bill, so the add-tenant path deliberately skipped them and the
+      // referral was simply lost. The server measures the 14-day deadline from
+      // today, not from the date they were queued.
+      await attributeReferralForTenant(editing.id);
+      void sendReferralLinkForTenant(editing.id);
     }
 
     // Moving an already-active tenant back to the waiting list leaves behind
@@ -1452,6 +1480,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         // collected cash and must survive any future widening of this filter.
         .eq("is_reservation", false)
         .in("status", ["pending", "overdue"]);
+
+      // DETACH, never void. Attribution is a one-shot pending->joined transition
+      // that can never re-grant, so voiding here would destroy the reward for
+      // good; detaching parks it unplaced and the reconciler re-places it if this
+      // tenant is activated again. Goes through a server action because this file
+      // runs in the browser and hms_referral_rewards has no `authenticated` grant.
+      await detachReferralRewardsForTenant(editing.id, currentMonth);
     }
 
     // Log room/plan changes and deposit collection to the Member Ledger — best-effort,
@@ -1523,6 +1558,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       if (checkInMonth < currentMonth) {
         const backfill = await backfillTenantPaymentsAction(newTenantId);
         if (backfill.success && (backfill.monthsCreated ?? 0) > 0) {
+          // Inside the early-return branch too, or a tenant with back-filled
+          // history silently loses their referral.
+          await attributeIfNewAdmission();
           toast({
             title: "Tenant added",
             description: `${backfill.monthsCreated} past month${backfill.monthsCreated === 1 ? "" : "s"} recorded as Paid (Cash).`,
@@ -1534,6 +1572,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         }
       }
     }
+
+    await attributeIfNewAdmission();
 
     toast({
       title: editing
@@ -2862,6 +2902,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 )}
               </div>
 
+              <ReferralAdmissionBanner
+                phone={approvingApp.phone ?? ""}
+                rent={approveForm.billing_type === "monthly" ? approveForm.monthly_rent : approveForm.daily_rate}
+              />
+
               {/* Active vs Waiting toggle */}
               <div>
                 <Label className="text-xs text-muted-foreground mb-2 block">Add as</Label>
@@ -3268,19 +3313,20 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       onChange={(e) => setApproveForm({ ...approveForm, ac_maintenance: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Leave blank for the branch rate of {configAcMaintenance}. Enter 0 to waive it.
+                      Enter 0 to waive it for this tenant.
                     </p>
                   </div>
                 )}
                 {configRegistrationFee > 0 && (
                   <div className="space-y-1.5">
-                    <Label>Registration Fee (PKR) — one-time, non-refundable</Label>
+                    <Label>Registration Fee</Label>
                     <Input
                       type="number"
                       placeholder="0"
                       value={approveForm.registration_fee || ""}
                       onChange={(e) => setApproveForm({ ...approveForm, registration_fee: parseFloat(e.target.value) || 0 })}
                     />
+                    <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
                   </div>
                 )}
               </div>
@@ -3597,6 +3643,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   <p className="text-xs text-rose-400">Format: XXXXX-XXXXXXX-X</p>
                 )}
               </div>
+              {/* Spans both columns, so it must sit between two COMPLETE rows or
+                  it splits a pair. The grid runs Phone|CNIC then Email|Type —
+                  this is the boundary between them, directly under the phone
+                  number that triggered it. */}
+              <ReferralAdmissionBanner
+                className="sm:col-span-2"
+                phone={form.phone}
+                rent={form.billing_type === "monthly" ? form.monthly_rent : form.daily_rate}
+                onReferralFound={prefillReferredName}
+              />
               <div className="space-y-1.5"><Label>Email</Label><Input type="email" placeholder="tenant@email.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Type</Label>
                 <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v as SpaceType })}>
@@ -4098,13 +4154,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Leave blank for the branch rate of {configAcMaintenance}. Enter 0 to waive it for
-                      this tenant. Only applies to AC rooms.
+                      Enter 0 to waive it for this tenant.
                     </p>
                   </div>
                 )}
                 {configRegistrationFee > 0 && (
-                  <div className="space-y-1.5"><Label>Registration Fee (PKR) — one-time, non-refundable</Label><Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} /></div>
+                  <div className="space-y-1.5">
+                    <Label>Registration Fee</Label>
+                    <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
+                    <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
+                  </div>
                 )}
               </div>
             ) : (
@@ -4123,14 +4182,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Leave blank for the branch rate of {configAcMaintenance}. Enter 0 to waive it for
-                      this tenant. Only applies to AC rooms.
+                      Enter 0 to waive it for this tenant.
                     </p>
                   </div>
                 )}
                 {configRegistrationFee > 0 && (
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5"><Label>Registration Fee (PKR) — one-time, non-refundable</Label><Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} /></div>
+                    <div className="space-y-1.5">
+                    <Label>Registration Fee</Label>
+                    <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
+                    <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
+                  </div>
                   </div>
                 )}
                 <div className="grid grid-cols-2 gap-4">

@@ -90,6 +90,11 @@ export interface SuperHostelRow {
   referral_enabled: boolean;
   /** false = excluded from the branch count on new platform invoices. Super Admin only; invisible to the client. */
   billing_active: boolean;
+  /**
+   * Pulse's cut of a converted referral, per branch. NULL = inherit the platform
+   * default; 0 = this branch is charged nothing. Never collapse the two.
+   */
+  pulse_commission_percent: number | null;
   created_at: string;
 }
 
@@ -299,6 +304,7 @@ export async function listAllHostels(): Promise<{
       whatsapp_enabled: h.whatsapp_enabled ?? false,
       referral_enabled: h.referral_enabled ?? false,
       billing_active: h.billing_active ?? true,
+      pulse_commission_percent: h.pulse_commission_percent ?? null,
       created_at: h.created_at,
     }));
 
@@ -419,6 +425,118 @@ export async function setReferralEnabled(
     return { success: true };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to update referral access" };
+  }
+}
+
+// ── Pulse referral commission ─────────────────────────────────────────────────
+// Pulse charges a ONE-TIME fee of N% of the referred tenant's first month rent
+// when a referral converts (migration 187). N is the platform default, optionally
+// overridden per branch. Writes go through createAdminClient() because a DB
+// trigger rejects any change to these columns made with auth.uid() set — an owner
+// must never be able to price Pulse's own revenue.
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Arguments to a "use server" module are attacker-controlled: a float, NaN, or a
+// numeric string would otherwise reach the DB and either round oddly or trip the
+// CHECK constraint with an unreadable Postgres error.
+function assertCommissionPercent(percent: unknown): number {
+  if (typeof percent !== "number" || !Number.isInteger(percent) || percent < 0 || percent > 100) {
+    throw new Error("Commission must be a whole number between 0 and 100");
+  }
+  return percent;
+}
+
+function assertHostelId(hostelId: unknown): string {
+  if (typeof hostelId !== "string" || !UUID_RE.test(hostelId)) throw new Error("Invalid branch");
+  return hostelId;
+}
+
+export async function getPlatformCommissionPercent(): Promise<{
+  percent?: number;
+  error?: string;
+}> {
+  try {
+    await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const { data, error } = await admin
+      .from("hms_platform_settings")
+      .select("referral_commission_percent")
+      .eq("id", true)
+      .maybeSingle();
+    if (error) throw error;
+
+    // Mirrors hms_pulse_commission_percent()'s final coalesce: with no settings
+    // row nothing is charged, so reporting 15 here would be a lie about billing.
+    return { percent: data?.referral_commission_percent ?? 0 };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to load commission rate" };
+  }
+}
+
+/**
+ * Changes what EVERY branch without its own override is charged.
+ * Upserted rather than updated so the single row is created if it is ever missing;
+ * `id` is a boolean CHECKed to true, so there can only ever be one.
+ */
+export async function setPlatformCommissionPercent(
+  percent: number
+): Promise<{ success?: boolean; error?: string }> {
+  try {
+    const caller = await requireSuperAdmin();
+    const pct = assertCommissionPercent(percent);
+    const admin = createAdminClient();
+
+    // updated_at is owned by the hms_platform_settings_updated_at trigger.
+    const { error } = await admin
+      .from("hms_platform_settings")
+      .upsert({ id: true, referral_commission_percent: pct }, { onConflict: "id" });
+    if (error) throw error;
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: "super_admin.set_platform_commission_percent",
+      entity: "platform_settings",
+      meta: { percent: pct },
+    });
+
+    return { success: true };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to update platform commission" };
+  }
+}
+
+/** `null` clears the override so the branch inherits the platform default again. */
+export async function setHostelCommissionPercent(
+  hostelId: string,
+  percent: number | null
+): Promise<{ success?: boolean; error?: string }> {
+  try {
+    const caller = await requireSuperAdmin();
+    const id = assertHostelId(hostelId);
+    const pct = percent === null ? null : assertCommissionPercent(percent);
+    const admin = createAdminClient();
+
+    const { error } = await admin
+      .from("hms_hostels")
+      .update({ pulse_commission_percent: pct, updated_at: new Date().toISOString() })
+      .eq("id", id);
+    if (error) throw error;
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: "super_admin.set_hostel_commission_percent",
+      entity: "hostel",
+      entity_id: id,
+      meta: { percent: pct, inherits_default: pct === null },
+    });
+
+    return { success: true };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to update branch commission" };
   }
 }
 

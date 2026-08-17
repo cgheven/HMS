@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { linkReferralForNewTenant } from "@/lib/referral-attribution";
 import { requireOwnerOrAbove, requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
@@ -1163,7 +1164,7 @@ export async function recordReservationDepositAction(
     const [{ data: tenant, error: tenantErr }, { data: existingReservations, error: existingErr }] = await Promise.all([
       adminDb
         .from("hms_tenants")
-        .select("id, full_name, check_in, is_waiting, security_deposit, deposit_collected_on, deposit_collected_amount")
+        .select("id, full_name, phone, check_in, is_waiting, security_deposit, deposit_collected_on, deposit_collected_amount")
         .eq("id", input.tenantId)
         .eq("hostel_id", hostelId)
         .maybeSingle(),
@@ -1326,6 +1327,29 @@ export async function recordReservationDepositAction(
     if (!logResult.success) {
       console.error("[recordReservationDepositAction] Failed to log deposit_collected:", logResult.error);
     }
+
+    // PAYING A DEPOSIT LOCKS IN THE REFERRAL.
+    //
+    // A reservation is the moment a referred person actually turns up and commits
+    // money, so it is the moment their referral should be claimed — but a
+    // reservation requires is_waiting, and every admission path deliberately
+    // skips waiting-list rows. The result was that someone who submitted the form,
+    // walked in on day 5 and paid a deposit lost their discount anyway if the room
+    // was not ready until day 15: the 14-day window is measured from submission,
+    // and nothing else claimed the referral in the meantime. Both sides got
+    // nothing and nobody was told.
+    //
+    // Attributing here is safe with the reward engine as built: the reservation
+    // month counts as occupied (hms_referral_month_occupied), so the welcome
+    // discount skips it and lands on the first REAL rent bill — a refundable
+    // deposit is never discounted. The referrer's payout stays 'held', because
+    // Job B ignores is_reservation rows, until the referred person pays real rent.
+    await linkReferralForNewTenant(adminDb, {
+      tenantId: input.tenantId,
+      hostelId,
+      phone: (tenant as { phone?: string | null }).phone,
+      checkIn: input.collectedOn,
+    });
 
     // One-time by construction: this action throws above if the deposit was
     // already collected, so its success path runs at most once per tenant.

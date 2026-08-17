@@ -5,13 +5,14 @@ import { Receipt,
   Building2, Plus, Search, RefreshCw, Users, Home,
   GitBranch, Trash2, Copy, Check, MessageCircle, AlertTriangle,
   Wallet, CheckCircle2, Clock, Zap, Download, Pencil, RotateCcw, Mail,
-  Globe, ExternalLink, Loader2, Share2,
+  Globe, ExternalLink, Loader2, Share2, Percent,
 } from "lucide-react";
 import {
   listAllHostels, createHostelForClient, addBranchToOwner,
   deleteHostel, deleteClient, setWhatsappEnabled, setReferralEnabled, setBranchBillingActive,
   getClientSubdomain, setClientSubdomain,
-  setClientSubdomainEnabled, type SuperHostelRow,
+  setClientSubdomainEnabled,
+  setPlatformCommissionPercent, setHostelCommissionPercent, type SuperHostelRow,
 } from "@/app/actions/super-admin";
 import {
   getClientBilling, setClientBilling, generateInvoiceNow, markInvoiceStatus, updateInvoiceAmount, sendInvoiceEmail,
@@ -42,10 +43,18 @@ function toWhatsAppPhone(raw: string): string {
   return digits.startsWith("0") ? `92${digits.slice(1)}` : digits;
 }
 
-interface Credentials { name: string; email: string; password: string; phone: string; branches: number }
-interface Props { initialHostels: SuperHostelRow[] }
+/** null = not a whole number in 0–100, i.e. nothing that may be sent to the server. */
+function parsePercent(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!/^\d{1,3}$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  return n >= 0 && n <= 100 ? n : null;
+}
 
-export function SuperAdminHostelsClient({ initialHostels }: Props) {
+interface Credentials { name: string; email: string; password: string; phone: string; branches: number }
+interface Props { initialHostels: SuperHostelRow[]; initialPlatformCommission: number }
+
+export function SuperAdminHostelsClient({ initialHostels, initialPlatformCommission }: Props) {
   const [hostels, setHostels] = useState<SuperHostelRow[]>(initialHostels);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
@@ -484,6 +493,80 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
     setTogglingReferral(null);
   }
 
+  // ── Pulse referral commission ──────────────────────────────────────────────
+  // Three distinct states per branch, and the UI must never blur them:
+  //   null → inherits the platform default   ·   0 → charged nothing   ·   n → n%
+  const [platformCommission, setPlatformCommission] = useState(initialPlatformCommission);
+  const [platOpen, setPlatOpen] = useState(false);
+  const [platValue, setPlatValue] = useState(String(initialPlatformCommission));
+  const [platConfirm, setPlatConfirm] = useState(false);
+  const [platSaving, setPlatSaving] = useState(false);
+
+  const platParsed = parsePercent(platValue);
+
+  function openPlatform() {
+    setPlatValue(String(platformCommission));
+    setPlatConfirm(false);
+    setPlatOpen(true);
+  }
+
+  async function handleSavePlatform() {
+    if (platParsed === null) return;
+    setPlatSaving(true);
+    const res = await setPlatformCommissionPercent(platParsed);
+    setPlatSaving(false);
+    if (res.error) {
+      toast({ title: "Could not save", description: res.error, variant: "destructive" });
+      return;
+    }
+    setPlatformCommission(platParsed);
+    setPlatOpen(false);
+    setPlatConfirm(false);
+    toast({
+      title: `Default commission is now ${platParsed}%`,
+      description: "Applies to every branch that has no rate of its own.",
+    });
+  }
+
+  const [commTarget, setCommTarget] = useState<SuperHostelRow | null>(null);
+  const [commValue, setCommValue] = useState("");
+  const [commSaving, setCommSaving] = useState(false);
+
+  const commParsed = parsePercent(commValue);
+
+  function openCommission(h: SuperHostelRow) {
+    setCommTarget(h);
+    setCommValue(h.pulse_commission_percent === null ? "" : String(h.pulse_commission_percent));
+  }
+
+  /**
+   * `override` lets "Use platform default" pass null directly instead of clearing
+   * the input first — a setState is not visible to this closure until the next
+   * render, so reading state back would re-save the value it was asked to drop.
+   */
+  async function handleSaveCommission(override?: null) {
+    if (!commTarget) return;
+    if (override !== null && commParsed === null) return;
+    const next = override === null ? null : commParsed;
+    setCommSaving(true);
+    const res = await setHostelCommissionPercent(commTarget.id, next);
+    setCommSaving(false);
+    if (res.error) {
+      toast({ title: "Could not save", description: res.error, variant: "destructive" });
+      return;
+    }
+    setHostels(prev => prev.map(h => h.id === commTarget.id ? { ...h, pulse_commission_percent: next } : h));
+    setCommTarget(null);
+    toast({
+      title: next === null
+        ? "Back to the platform default"
+        : next === 0
+          ? "This branch is charged no commission"
+          : `Commission set to ${next}%`,
+      description: next === null ? `Now charged ${platformCommission}%.` : undefined,
+    });
+  }
+
   const [togglingBilling, setTogglingBilling] = useState<string | null>(null);
   async function toggleBilling(hostelId: string, current: boolean) {
     setTogglingBilling(hostelId);
@@ -613,6 +696,30 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
           ))}
         </div>
 
+        {/* Platform-wide default — deliberately outside the per-client grid, and
+            labelled "All clients", because editing it re-prices every branch that
+            has no rate of its own. */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-xl border border-sidebar-border bg-white/[0.02] p-3">
+          <div className="p-2 rounded-lg bg-sky-500/10 border border-sky-500/20 shrink-0 self-start">
+            <Percent className="w-4 h-4 text-sky-400" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">
+              Pulse referral commission
+              <span className="ml-2 text-[10px] font-semibold uppercase tracking-wider text-sky-400 bg-sky-500/10 border border-sky-500/25 rounded px-1.5 py-0.5">
+                All clients
+              </span>
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              <strong className="text-foreground">{platformCommission}%</strong> of the referred tenant&apos;s
+              first month rent, charged once per converted referral. Branches with their own rate are unaffected.
+            </p>
+          </div>
+          <Button variant="outline" size="sm" className="gap-1.5 shrink-0 self-start sm:self-auto" onClick={openPlatform}>
+            <Pencil className="w-3 h-3" /> Edit default
+          </Button>
+        </div>
+
         {/* Search */}
         <div className="relative max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -694,7 +801,37 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
                         <Building2 className="w-3.5 h-3.5 text-amber shrink-0" />
                         <div className="flex-1 min-w-0">
                           <p className="text-xs font-medium truncate">{h.name}</p>
-                          {h.city && <p className="text-[11px] text-muted-foreground truncate">{h.city}</p>}
+                          <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                            {h.city && <span className="text-[11px] text-muted-foreground truncate max-w-[7rem]">{h.city}</span>}
+                            {/* Inherited, overridden and zero must read differently at a
+                                glance: "0%" is a granted exemption that survives a change
+                                to the platform rate, "(default)" is one that would not. */}
+                            <button
+                              onClick={() => openCommission(h)}
+                              className={cn(
+                                "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap border transition-colors",
+                                h.pulse_commission_percent === null
+                                  ? "border-dashed border-sidebar-border text-muted-foreground hover:text-foreground hover:border-sky-500/40"
+                                  : h.pulse_commission_percent === 0
+                                    ? "border-amber/25 bg-amber/10 text-amber hover:bg-amber/15"
+                                    : "border-sky-500/25 bg-sky-500/10 text-sky-400 hover:bg-sky-500/15"
+                              )}
+                              title={
+                                h.pulse_commission_percent === null
+                                  ? `Pulse commission: inheriting the platform default (${platformCommission}%) — click to set a rate for this branch`
+                                  : h.pulse_commission_percent === 0
+                                    ? "Pulse commission: exempt — this branch is charged nothing, even if the platform default changes"
+                                    : `Pulse commission: ${h.pulse_commission_percent}% for this branch, overriding the ${platformCommission}% default`
+                              }
+                            >
+                              <Percent className="w-2.5 h-2.5 shrink-0" />
+                              {h.pulse_commission_percent === null
+                                ? `${platformCommission}% (default)`
+                                : h.pulse_commission_percent === 0
+                                  ? "0% — no commission"
+                                  : `${h.pulse_commission_percent}%`}
+                            </button>
+                          </div>
                         </div>
                         <span className="text-[11px] text-muted-foreground shrink-0">{h.tenant_count} ten.</span>
                         {/* Always visible when paused, hover-only when normal —
@@ -963,6 +1100,140 @@ export function SuperAdminHostelsClient({ initialHostels }: Props) {
             <Button variant="outline" onClick={() => setResetConfirmOpen(false)}>Cancel</Button>
             <Button variant="destructive" onClick={handleResetInvoices} disabled={isPending} className="gap-2">
               <RotateCcw className="w-4 h-4" />{isPending ? "Resetting…" : "Reset Invoices"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Platform Commission Dialog ── */}
+      <Dialog open={platOpen} onOpenChange={o => { if (!o) { setPlatOpen(false); setPlatConfirm(false); } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Percent className="w-4 h-4 text-sky-400" /> Default Referral Commission</DialogTitle>
+            <DialogDescription>
+              What Pulse charges when a referral converts: this % of the referred tenant&apos;s first month rent, once.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-1">
+            <div className="space-y-1.5">
+              <Label>Platform default</Label>
+              <div className="flex items-stretch max-w-[10rem]">
+                <Input
+                  value={platValue}
+                  onChange={e => { setPlatValue(e.target.value); setPlatConfirm(false); }}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  className={cn("rounded-r-none font-mono", platParsed === null && "border-rose-500/50")}
+                />
+                <span className="inline-flex items-center px-3 rounded-r-md border border-l-0 border-sidebar-border bg-white/[0.03] text-xs text-muted-foreground">
+                  %
+                </span>
+              </div>
+              <p className={cn("text-xs", platParsed === null ? "text-rose-400" : "text-muted-foreground")}>
+                {platParsed === null ? "Enter a whole number between 0 and 100." : "Whole number, 0–100. Already-charged commissions are never recalculated."}
+              </p>
+            </div>
+
+            {platConfirm && (
+              <div className="rounded-xl border border-amber/25 bg-amber/10 p-3">
+                <p className="text-xs font-semibold text-amber flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5" /> This changes what every client is charged
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {hostels.filter(h => h.pulse_commission_percent === null).length} of {hostels.length} branch
+                  {hostels.length !== 1 ? "es" : ""} inherit the default and will move from {platformCommission}% to {platParsed}%.
+                  Branches with their own rate — including any set to 0% — are untouched.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setPlatOpen(false); setPlatConfirm(false); }}>Cancel</Button>
+            {platConfirm ? (
+              <Button onClick={handleSavePlatform} disabled={platSaving} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold">
+                {platSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                {platSaving ? "Saving…" : `Confirm ${platParsed}%`}
+              </Button>
+            ) : (
+              <Button
+                onClick={() => setPlatConfirm(true)}
+                disabled={platParsed === null || platParsed === platformCommission}
+              >
+                Save
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Branch Commission Dialog ── */}
+      <Dialog open={!!commTarget} onOpenChange={o => { if (!o) setCommTarget(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Percent className="w-4 h-4 text-sky-400" /> Referral Commission</DialogTitle>
+            <DialogDescription>{commTarget?.name}</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-1">
+            <div className="rounded-xl border border-sidebar-border bg-white/[0.02] p-3">
+              <p className="text-xs text-muted-foreground">Currently</p>
+              <p className="text-sm font-medium mt-0.5">
+                {commTarget?.pulse_commission_percent === null
+                  ? `${platformCommission}% — inherited from the platform default`
+                  : commTarget?.pulse_commission_percent === 0
+                    ? "0% — no commission is charged for this branch"
+                    : `${commTarget?.pulse_commission_percent}% — set for this branch only`}
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Rate for this branch</Label>
+              <div className="flex items-stretch max-w-[10rem]">
+                <Input
+                  value={commValue}
+                  onChange={e => setCommValue(e.target.value)}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder={String(platformCommission)}
+                  className={cn("rounded-r-none font-mono", commValue.trim() !== "" && commParsed === null && "border-rose-500/50")}
+                />
+                <span className="inline-flex items-center px-3 rounded-r-md border border-l-0 border-sidebar-border bg-white/[0.03] text-xs text-muted-foreground">
+                  %
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                <strong className="text-foreground">0%</strong> permanently exempts this branch and is not the same as
+                using the default — a later change to the {platformCommission}% default would start billing it again.
+              </p>
+            </div>
+
+            <button
+              onClick={() => handleSaveCommission(null)}
+              disabled={commSaving || commTarget?.pulse_commission_percent === null}
+              className="w-full text-left rounded-xl border border-dashed border-sidebar-border p-3 hover:border-sky-500/40 hover:bg-white/[0.02] transition-colors disabled:opacity-40 disabled:hover:border-sidebar-border disabled:hover:bg-transparent"
+            >
+              <p className="text-sm font-medium flex items-center gap-1.5">
+                <RotateCcw className="w-3.5 h-3.5" /> Use the platform default
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {commTarget?.pulse_commission_percent === null
+                  ? "Already inheriting."
+                  : `Clears this branch's own rate — it follows the ${platformCommission}% default from then on.`}
+              </p>
+            </button>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCommTarget(null)}>Cancel</Button>
+            <Button
+              onClick={() => handleSaveCommission()}
+              disabled={commSaving || commParsed === null || commParsed === commTarget?.pulse_commission_percent}
+              className="gap-2"
+            >
+              {commSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+              {commSaving ? "Saving…" : "Save override"}
             </Button>
           </DialogFooter>
         </DialogContent>

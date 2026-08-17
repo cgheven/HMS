@@ -8,6 +8,8 @@ export default async function MarketingPage() {
   // guard inside every action in app/actions/referrals.ts.
   await requireOwnerOrAbove();
 
+  // Current month by default; the client swaps months in place through the same
+  // action, matching how Payments and Expenses already work.
   const { data, error } = await getReferralOverview();
 
   if (!data) {

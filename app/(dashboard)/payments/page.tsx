@@ -5,6 +5,8 @@ import { expectedChargesFor } from "@/lib/monthly-payment-sync";
 import { splitPaymentCharges } from "@/lib/payment-calc";
 import { PaymentsClient } from "@/components/modules/payments/payments-client";
 import { pktYearMonth } from "@/lib/pkt-time";
+import { settleReferralRewards } from "@/lib/referral-rewards";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export default async function PaymentsPage() {
   // Pakistan-anchored, not the server process's own OS timezone — Vercel's
@@ -14,6 +16,14 @@ export default async function PaymentsPage() {
   const defaultMonth = `${year}-${String(month).padStart(2, "0")}`;
 
   const [data, ctx] = await Promise.all([getPaymentsPageData(defaultMonth), getAuthContext()]);
+
+  // Referral rewards reconcile on EVERY load, unconditionally — not inside
+  // ensureMonthlyPaymentRows below, which only does work when a row is already
+  // stale. A reward granted after its bill was written leaves the bill at full
+  // price until something re-prices it, and staleness never notices because no
+  // charge the sync knows about has changed. One indexed probe; returns 0 for
+  // every branch that has not enabled referrals.
+  await settleReferralRewards(createAdminClient(), data.hostelId, defaultMonth);
 
   // If any active tenant is missing a payment row for this month, generate them
   // server-side now. Handles new months, new tenants added mid-month, and hostels

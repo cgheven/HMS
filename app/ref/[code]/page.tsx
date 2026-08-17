@@ -62,6 +62,19 @@ export default async function ReferralPage({ params }: Props) {
     );
   }
 
+  // Paused: the offer is genuinely this tenant's and returns when the owner
+  // resumes, so a stranger is invited back rather than turned away. Submitting
+  // now would create a referral the branch has decided not to honour yet.
+  if (target.kind === "paused") {
+    return (
+      <Notice
+        icon={<RefreshCw className="w-8 h-8 text-muted-foreground" />}
+        title={`${target.hostelName} isn't taking new referrals right now`}
+        body="Please check back soon, or contact the hostel directly if you're looking for a room."
+      />
+    );
+  }
+
   return <ReferralFormClient
       code={code}
       hostelName={target.hostelName}

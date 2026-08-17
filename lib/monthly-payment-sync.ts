@@ -132,6 +132,15 @@ export async function ensureMonthlyPaymentRows(
         security_deposit_charge: depositCharge,
         registration_fee_charge: registrationFeeCharge,
         ac_maintenance_charge: acMaintenanceCharge,
+        // LOAD-BEARING, not decorative. `amount` above is GROSS, and the trigger
+        // stores it net, so this declares "no discount is baked into that number".
+        // It matters most on the upsert below: PostgreSQL reflects the effects of
+        // per-row BEFORE INSERT triggers in EXCLUDED, so without this marker the
+        // conflict pass would read back the first pass's already-discounted
+        // output, subtract the discount a second time, and compound it on every
+        // sync — and hasStaleDailyRow compares only billed_days, so nothing would
+        // ever heal it.
+        referral_discount: 0,
         ...daySnapshot,
       });
     } else if (existing.status === "pending") {
@@ -148,6 +157,8 @@ export async function ensureMonthlyPaymentRows(
         security_deposit_charge: depositCharge,
         registration_fee_charge: registrationFeeCharge,
         ac_maintenance_charge: acMaintenanceCharge,
+        // Same reason as the newRows branch above: `amount` is gross here too.
+        referral_discount: 0,
         ...daySnapshot,
       });
     }

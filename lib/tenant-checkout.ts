@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { calcDailyRent, countBillableNights, daysInMonth, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling, deriveOpeningReading, round2 } from "@/lib/ac-billing";
+import { clampGrossToCollected } from "@/lib/payment-calc";
+import { voidReferralRewardsForTenant } from "@/lib/referral-rewards";
 import { mintFeedbackToken } from "@/lib/tenant-feedback";
 import { sendCheckoutMessage } from "@/lib/whatsapp-checkout";
 import type { PaymentMethod, PaymentStatus, CheckoutInput, CheckoutSettlement } from "@/types";
@@ -13,6 +15,13 @@ import type { PaymentMethod, PaymentStatus, CheckoutInput, CheckoutSettlement } 
 // module. It takes hostelId as a caller-verified argument; both the owner action
 // (checkoutTenantAction) and the partner action (checkoutTenantAsPartner) resolve
 // hostelId themselves via their own guard before calling in.
+
+/** "2026-08" -> "2026-09". String arithmetic on purpose: Date would drag the
+ *  server's timezone into a value that is already a plain Pakistan-local month. */
+function nextMonthAfter(month: string): string {
+  const [y, m] = month.split("-").map(Number);
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
+}
 
 export function genReceiptNumber(tenantName: string, month: string): string {
   const initials = tenantName.split(" ").map((w: string) => w[0] ?? "").join("").toUpperCase().slice(0, 2);
@@ -111,7 +120,7 @@ export async function performTenantCheckout(
 
       const { data: monthRow } = await adminDb
         .from("hms_payments")
-        .select("id, status, amount, amount_paid, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge")
+        .select("id, status, amount, amount_paid, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, referral_percent")
         .eq("tenant_id", input.tenantId)
         .eq("hostel_id", hostelId)
         .eq("for_month", rentMonth)
@@ -187,18 +196,32 @@ export async function performTenantCheckout(
           Number(monthRow.security_deposit_charge ?? 0) +
           Number(monthRow.registration_fee_charge ?? 0) +
           Number(monthRow.ac_maintenance_charge ?? 0);
+        // Solved in NET space. amount_paid is what was actually collected, and a
+        // discounted row stores amount net of the discount, so comparing a gross
+        // total against amount_paid clears the check while the stored net still
+        // lands under it. The percent (not the rupees) is what the trigger pins
+        // on a collected row, so the discount scales with the pro-rated rent
+        // instead of handing back a full month's discount on a four-night stay.
+        const referralPercent = Number(monthRow.referral_percent ?? 0);
         const proposedTotal = newBaseRent + extras;
-        const clampedTotal = Math.max(proposedTotal, alreadyPaid);
-        if (clampedTotal !== proposedTotal) {
-          repriceWarning =
-            `The final month re-prices to ${clampedTotal.toLocaleString()} but ` +
-            `${alreadyPaid.toLocaleString()} has already been collected. The bill was held at ` +
-            `the amount already paid — refund the difference manually if one is due.`;
+        const { gross: clampedTotal, clamped, satisfiable } = clampGrossToCollected(
+          newBaseRent, extras, referralPercent, alreadyPaid
+        );
+        if (clamped) {
+          repriceWarning = satisfiable
+            ? `The final month re-prices to ${proposedTotal.toLocaleString()} but ` +
+              `${alreadyPaid.toLocaleString()} has already been collected. The bill was held at ` +
+              `the amount already paid — refund the difference manually if one is due.`
+            : `The final month cannot be re-priced above the ${alreadyPaid.toLocaleString()} ` +
+              `already collected while a ${referralPercent}% referral discount applies. ` +
+              `Refund the difference manually.`;
         }
 
         const repriceFields = isDaily
-          ? { amount: clampedTotal }
-          : { base_rent_override: Math.max(newBaseRent, alreadyPaid - extras) };
+          // referral_discount: 0 marks clampedTotal as GROSS — the trigger stores
+          // amount net of the discount it re-derives.
+          ? { amount: clampedTotal, referral_discount: 0 }
+          : { base_rent_override: clampedTotal - extras };
 
         const { data: repriced, error: repriceErr } = await adminDb
           .from("hms_payments")
@@ -210,7 +233,7 @@ export async function performTenantCheckout(
           })
           .eq("id", monthRow.id)
           .eq("hostel_id", hostelId)
-          .select("amount")
+          .select("amount, referral_discount")
           .single();
 
         if (repriceErr || !repriced) {
@@ -628,6 +651,20 @@ export async function performTenantCheckout(
       .eq("hostel_id", hostelId)
       .gt("for_month", input.checkoutDate.substring(0, 7))
       .in("status", ["pending", "overdue"]);
+
+    // Same reasoning for referral rewards: a reward parked on a month this
+    // tenant will never be billed for has nowhere to land. Scoped to months
+    // AFTER the final billed one, so the checkout month's own reward survives
+    // and scales down with the pro-rated rent rather than vanishing. Voids
+    // unplaced 'held' payouts too — a referrer who leaves before the person they
+    // referred pays has no future bill to credit. Fail-open: checkout has
+    // already committed above.
+    await voidReferralRewardsForTenant(
+      adminDb,
+      input.tenantId,
+      nextMonthAfter(input.checkoutDate.substring(0, 7)),
+      "checked_out"
+    );
 
     // Step 4a: Log the deposit's fate to the Member Ledger — best-effort, non-fatal
     // (checkout itself already succeeded above). Three ways it can go, and every rupee

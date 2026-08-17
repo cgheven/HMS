@@ -375,6 +375,10 @@ export interface Tenant {
    *  (every tenant today); a number = this tenant's own monthly amount; 0 =
    *  opted out. Only ever applies to tenants in an AC room. */
   ac_maintenance: number | null;
+  /** Generated column (migration 184) — hms_normalize_phone_digits(phone), the
+   *  same canonical form lib/phone.ts produces. Read-only: a write is rejected
+   *  by Postgres. Present on any `select *`. */
+  phone_digits?: string | null;
   is_active: boolean;
   is_waiting: boolean;
   bed_number: string | null;
@@ -427,6 +431,17 @@ export interface Payment {
   registration_fee_charge?: number;
   /** Recurring monthly, re-derived fresh by the recalculation trigger from room.has_ac plus either the tenant's own hms_tenants.ac_maintenance override or, when that is null, the hostel's ac_maintenance_rate — independent of package tier. */
   ac_maintenance_charge?: number;
+  /**
+   * TRIGGER-OWNED. Derived from hms_referral_rewards on every write; any value a
+   * caller sends is discarded. `amount` is stored NET of this, so the row's gross
+   * is always `amount + referral_discount` — use grossAmountOf() rather than
+   * re-deriving it. A writer that computes `amount` from gross components must
+   * send `referral_discount: 0` alongside it; a writer that derives `amount` from
+   * a value read out of the row must send no referral_discount key at all.
+   */
+  referral_discount?: number;
+  /** TRIGGER-OWNED. The percent the discount was computed from, pinned on a collected bill so it can be re-derived off a rent that later moved. */
+  referral_percent?: number;
   payment_package_tier?: PackageTier | null;
   /** Nights billed for a daily-rate tenant. null/undefined = not a daily row, or billed before migration 099. */
   billed_days?: number | null;
@@ -1406,6 +1421,23 @@ export interface ReferrerRow {
   phone: string | null
   pending: number
   joined: number
+  /** Every submission made through this person's link, whatever became of it —
+   *  the denominator for "10 referred, 5 joined". */
+  totalReferred: number
+  /** Rupees this person has actually had taken off their own bills for referring
+   *  people. Only 'applied' counts: queued and held rewards are a promise, and
+   *  showing them as earnings makes the page disagree with the tenant's bill. */
+  discountEarned: number
+  /** Still coming to them — 'scheduled' plus 'held', estimated. */
+  discountPending: number
+  /** Most recent submission through their link. Null if they have never been
+   *  used. Drives the sort: the person who sent someone yesterday matters more
+   *  than the person who has held a link since March. */
+  lastReferralAt: string | null
+  /** Everything the people THIS person brought in have paid, combined. Set
+   *  against discountEarned + the welcome discounts those tenants received, it
+   *  is the whole business case for one advocate. */
+  revenueFromReferred: number
 }
 
 /** One submission, flattened for the table. */
@@ -1418,10 +1450,61 @@ export interface ReferralRow {
   referrerTenantId: string
   /** Null only if the referring tenant's row has since been deleted. */
   referrerName: string | null
+  /** The referrer's room. Two tenants genuinely share a name often enough that
+   *  the name alone does not identify who earned the reward — the room is what
+   *  the owner uses to confirm it. Null if they have no room assigned. */
+  referrerRoom: string | null
   matchedTenantName: string | null
   matchedAt: string | null
   rejectedAt: string | null
   rejectedByName: string | null
+  /** One-line plain-English state of the money this referral produced, e.g.
+   *  "Applied Rs 1,500 · Aug" or "Held — waiting for first payment". Null when
+   *  the referral never reached 'joined'. */
+  rewardSummary: string | null
+  /** The reward as a bare figure, so the column can be a column of numbers
+   *  instead of a column of sentences. Null when the referral produced none. */
+  rewardAmount: number | null
+  /** Where that money has got to: Applied (off a bill), Queued (placed, not yet
+   *  collected), Held (earned, waiting on the referred person's first payment),
+   *  Expired, or None. Separate from the referral's own Joined/Pending status —
+   *  a referral can convert and still pay nobody. */
+  rewardState: "Applied" | "Queued" | "Held" | "Expired" | "None" | null
+  /** What this tenant has actually PAID since joining — money kept, not money
+   *  held. Refundable deposits are excluded, because a deposit sitting in the
+   *  owner's account is a liability, not revenue. Null until the referral
+   *  reaches 'joined' and there is a tenant to measure. */
+  revenueCollected: number | null
+}
+
+/** Which side of the referral this reward pays. */
+export type ReferralRewardRole = "referred" | "referrer"
+
+/** scheduled = placed on a specific bill, not yet collected.
+ *  held      = earned but unplaced (the referred person has not paid yet).
+ *  applied   = the bill it sat on was settled; this is money actually given.
+ *  expired   = ran out of open months, or the beneficiary checked out.
+ *  void      = cancelled (referral rejected, branch disabled, tenant deleted). */
+export type ReferralRewardStatus = "scheduled" | "held" | "applied" | "expired" | "void"
+
+export interface ReferralRewardRow {
+  id: string
+  role: ReferralRewardRole
+  status: ReferralRewardStatus
+  /** Beneficiary — the tenant whose bill this comes off. */
+  tenantId: string
+  tenantName: string | null
+  /** The other side of the referral, snapshotted so an orphaned reward still renders. */
+  counterpartyName: string | null
+  percent: number
+  /** Null while 'held', 'expired' or 'void' — those carry no bill. */
+  forMonth: string | null
+  /** Populated only once status is 'applied'. */
+  appliedAmount: number | null
+  /** Branch name, because rewards are listed owner-wide, not per-branch. */
+  hostelName: string | null
+  expiresOn: string
+  createdAt: string
 }
 
 /** A submission the "first submission wins" index turned away, kept so the
@@ -1450,4 +1533,46 @@ export interface ReferralOverview {
   referrers: ReferrerRow[]
   referrals: ReferralRow[]
   duplicateClaims: ReferralDuplicateRow[]
+  /** Owner-wide, not branch-scoped: a link shared at one branch is legitimately
+   *  answered by an admission at another under the same owner, and the owner must
+   *  be able to see and undo that from wherever they happen to be standing. */
+  rewards: ReferralRewardRow[]
+  /** The month every scoped figure below refers to, 'YYYY-MM'. */
+  month: string
+  /** Referrals SUBMITTED in `month`. The lists on the page show these; the
+   *  lifetime totals below deliberately do not move with the picker. */
+  joinedInMonth: number
+  /** Of those, the ones who have actually PAID something. A referral that moved
+   *  in and never settled a bill has cost the branch a discount and returned
+   *  nothing, so it does not belong in an impact figure. */
+  joinedPaidInMonth: number
+  submittedInMonth: number
+  /** Rupees given away on bills for `month` — the cost side of the ROI readout. */
+  discountGivenThisMonth: number
+  /** Discounts billed by THIS branch in `month`. discountGivenThisMonth is
+   *  owner-wide, which is right for the liability copy and wrong for a
+   *  per-branch subtraction — use this one in any P&L arithmetic. */
+  discountGivenThisMonthBranch: number
+  /** Pulse's one-time commission on referrals that converted in `month`, from
+   *  hms_referrals.pulse_commission_amount — the amount ACTUALLY charged and
+   *  snapshotted at conversion, never re-derived from today's rate. */
+  pulseCommissionInMonth: number
+  /** Rupees given away since the feature was switched on, both sides combined.
+   *  Paired with joined count, this is the whole business case: what the branch
+   *  paid, against how many tenants it bought. */
+  discountGivenTotal: number
+  /** Everything every referred tenant has paid, combined. The revenue side of
+   *  the same equation — discountGivenTotal is what it cost to earn it. */
+  revenueFromReferralsTotal: number
+  /** The same, but only what landed on bills for `month`. */
+  revenueInMonth: number
+  /** Still owed: 'scheduled' + 'held'. Rendered even when enabled is false, so
+   *  switching the feature off can never hide a live liability. */
+  openRewardCount: number
+  openRewardValue: number
+  /** 'off' | 'active' | 'paused'. */
+  campaign: string
+  /** Residents who have not yet been sent their link — what Start will send. */
+  unsentCount: number
+  whatsappEnabled: boolean
 }

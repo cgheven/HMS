@@ -26,7 +26,7 @@ import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
 import {
   VALID_TIERS, calcBaseRentServer, dailySnapshot, computeDepositCharge,
-  computeRegistrationFeeCharge, computeAcMaintenanceCharge,
+  computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeReferralDiscount,
 } from "@/lib/payment-calc";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 import { logActivity } from "@/lib/audit";
@@ -329,7 +329,7 @@ export async function markPaymentPaidAction(
     // --- Fetch the existing payment row (ownership verified via hostel_id) ---
     const { data: existingPayment, error: fetchErr } = await supabase
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, amount_paid, food_charge, ac_charge, payment_package_tier, hostel_id")
+      .select("id, tenant_id, for_month, amount, amount_paid, food_charge, ac_charge, payment_package_tier, hostel_id, status, referral_discount, referral_percent")
       .eq("id", input.paymentId)
       .eq("hostel_id", hostelId) // RLS + explicit owner check
       .single();
@@ -378,12 +378,29 @@ export async function markPaymentPaidAction(
 
     // --- Re-derive base_rent and total from DB-canonical values (F-001) ---
     // Fanned out — independent reads, no need to serialize.
-    const [tenantData, { data: foodConfigData }] = await Promise.all([
+    const [tenantData, { data: foodConfigData }, { data: rewardRow }] = await Promise.all([
       fetchTenantData(existingPayment.tenant_id, hostelId),
       supabase
         .from("hms_package_configs")
         .select("food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate")
         .eq("hostel_id", hostelId)
+        .maybeSingle(),
+      // The ledger, not the stored column. On an uncollected bill the reward may
+      // have been granted after the row was written, in which case the column is
+      // still 0 and only hms_referral_rewards knows the truth. Reading the column
+      // here would mis-price exactly the window the reconciler exists to close.
+      //
+      // MUST be the admin client. hms_referral_rewards has RLS on with zero
+      // policies and no grant to `authenticated`, so the session-scoped client
+      // returns an empty result rather than an error — the discount silently
+      // reads as 0, the tenant is billed the gross amount, and paying in full
+      // records them as partially_paid with a phantom balance.
+      createAdminClient()
+        .from("hms_referral_rewards")
+        .select("percent")
+        .eq("tenant_id", existingPayment.tenant_id)
+        .eq("for_month", existingPayment.for_month)
+        .in("status", ["scheduled", "applied"])
         .maybeSingle(),
     ]);
     const forMonth = existingPayment.for_month;
@@ -425,12 +442,27 @@ export async function markPaymentPaidAction(
       throw new Error(`Computed total amount is negative: ${newTotalAmount}`);
     }
 
+    // A COLLECTED BILL KEEPS THE PERCENT IT WAS BILLED AT. The trigger freezes a
+    // paid/partially_paid row's discount, so recomputing from the live ledger
+    // here would produce a total the database refuses to write — the bill would
+    // read as short-paid forever and could never be settled. On an uncollected
+    // bill the ledger is authoritative, for the reason given at the query above.
+    const wasCollected =
+      existingPayment.status === "paid" || existingPayment.status === "partially_paid";
+    const referralPercent = wasCollected
+      ? Number(existingPayment.referral_percent ?? 0)
+      : Number(rewardRow?.percent ?? 0);
+    const referralDiscount = computeReferralDiscount(baseRent, referralPercent);
+
     // --- Partial payment handling ---
     // amount_paid accumulates across however many installments it takes to settle
     // this month's bill. Omitting amountReceived (or entering the full remaining
     // balance) behaves exactly like before — a single full payment.
     const previousAmountPaid = Number(existingPayment.amount_paid ?? 0);
-    const fullAmountDue = newTotalAmount + lateFee;
+    // newTotalAmount is GROSS; what the tenant actually owes is net of the
+    // discount. Without this subtraction every discounted bill would be recorded
+    // as short-paid and sit at partially_paid forever.
+    const fullAmountDue = newTotalAmount - referralDiscount + lateFee;
     const remainingBefore = Math.max(0, fullAmountDue - previousAmountPaid);
 
     let amountReceivedNow: number;
@@ -441,6 +473,15 @@ export async function markPaymentPaidAction(
       }
       assertNonNegativeFinite(amountReceivedNow, "amount_received", 9_999_999.99);
       if (amountReceivedNow > remainingBefore + 0.01) {
+        // A tenant handing over the pre-discount figure is the single most likely
+        // way to trip this, and the generic message never mentions the referral —
+        // leaving the person at the desk with a rejected payment and no
+        // explanation. Name the discount and say what to do with the difference.
+        if (referralDiscount > 0 && amountReceivedNow <= remainingBefore + referralDiscount + 0.01) {
+          throw new Error(
+            `A Rs. ${referralDiscount.toLocaleString()} referral discount was applied to this bill. Collect Rs. ${remainingBefore.toLocaleString()} and return Rs. ${(amountReceivedNow - remainingBefore).toLocaleString()} to the tenant.`
+          );
+        }
         throw new Error(
           `Amount received (Rs. ${amountReceivedNow.toLocaleString()}) exceeds the remaining balance (Rs. ${remainingBefore.toLocaleString()}). Enter the exact remaining amount instead.`
         );
@@ -460,8 +501,11 @@ export async function markPaymentPaidAction(
       late_fee: lateFee,
       notes: input.notes || null,
       receipt_number: input.receiptNumber,
-      // Always write the recalculated total (trigger will re-verify)
+      // Always write the recalculated total (trigger will re-verify).
+      // newTotalAmount is GROSS, and referral_discount: 0 is what declares that —
+      // the trigger re-derives the discount and stores amount net of it.
       amount: newTotalAmount,
+      referral_discount: 0,
       amount_paid: newAmountPaid,
       // Write back canonical food_charge/security_deposit_charge so any
       // previously corrupted row is corrected
@@ -479,15 +523,27 @@ export async function markPaymentPaidAction(
       updatePayload.ac_charge = newAcCharge;
     }
 
+    // Optimistic concurrency on the discount. There are several round trips
+    // between reading the row and writing it, and Phase 2 adds a BACKGROUND
+    // writer — the reconciler runs on every payments-page load and can attach or
+    // move a reward mid-dialog. Settling against a total that no longer exists
+    // would leave the tenant recorded as short-paid or overpaid, so refuse and
+    // let the operator re-read instead.
     const { data, error } = await supabase
       .from("hms_payments")
       .update(updatePayload)
       .eq("id", input.paymentId)
       .eq("hostel_id", hostelId) // double-check ownership
+      .eq("referral_percent", existingPayment.referral_percent ?? 0)
       .select("*, tenant:hms_tenants(full_name, room_id, phone)")
-      .single();
+      .maybeSingle();
 
     if (error) throw new Error(error.message);
+    if (!data) {
+      throw new Error(
+        "This bill was re-priced while you were recording the payment. Reopen the dialog and try again."
+      );
+    }
 
     // Record this specific transaction as its own immutable snapshot — amount_paid
     // on hms_payments is a running cumulative total, so without this, a second
@@ -863,6 +919,10 @@ export async function applyRoomACUnitsAction(
           security_deposit_charge: depositCharge,
           registration_fee_charge: registrationFeeCharge,
           ac_maintenance_charge: acMaintenanceCharge,
+          // `amount` above is GROSS. The update loop below deliberately does NOT
+          // carry this marker: it is a passthrough writer that touches only the
+          // AC columns, so the stored net amount must pass through untouched.
+          referral_discount: 0,
           ...daySnapshot,
         };
       });

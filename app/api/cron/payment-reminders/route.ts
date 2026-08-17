@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
+import { settleReferralRewards } from "@/lib/referral-rewards";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 
 // Vercel default (10s Hobby / 60s Pro) isn't enough once more branches are
@@ -38,10 +39,19 @@ export async function GET(request: NextRequest) {
 
   const { data: grantedHostels } = await admin
     .from("hms_hostels")
-    .select("id")
-    .eq("whatsapp_enabled", true);
+    .select("id, whatsapp_enabled, referral_enabled")
+    .or("whatsapp_enabled.eq.true,referral_enabled.eq.true");
 
-  const hostelIds = (grantedHostels ?? []).map((h) => h.id);
+  const hostelIds = (grantedHostels ?? []).filter((h) => h.whatsapp_enabled).map((h) => h.id);
+
+  // Reward reconciliation runs over the REFERRAL-enabled set, which is not the
+  // WhatsApp-enabled set. Hanging it off hostelIds would strand rewards on any
+  // branch that runs referrals without WhatsApp: nothing else re-prices a bill
+  // once a reward is granted after the bill was written, so the discount would
+  // simply never appear. Failures are swallowed inside settleReferralRewards —
+  // reminders are the job here, rewards are the passenger.
+  const referralHostelIds = (grantedHostels ?? []).filter((h) => h.referral_enabled).map((h) => h.id);
+  await Promise.all(referralHostelIds.map((id) => settleReferralRewards(admin, id, forMonth)));
 
   // A tenant's rent row for this month only exists once someone opens Monthly
   // View for it — guarantee it exists for every granted branch (only those;

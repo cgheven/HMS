@@ -16,6 +16,9 @@ import type { PaymentMethodAccount } from "@/types";
  */
 export const TEMPLATES = {
   reminderFull: { name: "hms_payment_reminder_full", language: "en" },
+  /** Approved 2026-08-18. Six body variables, in order: first name, hostel name,
+   *  share link, referrer %, referred %, private status-page link. */
+  referralInvitation: { name: "hms_referral_invitation", language: "en" },
   reminderPartial: { name: "hms_payment_reminder_partial", language: "en" },
   paymentConfirmed: { name: "hms_payment_confirmed", language: "en" },
   seatReserved: { name: "hms_seat_reserved", language: "en" },

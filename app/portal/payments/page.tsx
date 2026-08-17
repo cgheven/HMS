@@ -6,6 +6,8 @@ import { expectedChargesFor } from "@/lib/monthly-payment-sync"
 import { splitPaymentCharges } from "@/lib/payment-calc"
 import { PaymentsClient } from "@/components/modules/payments/payments-client"
 import { pktYearMonth } from "@/lib/pkt-time"
+import { settleReferralRewards } from "@/lib/referral-rewards"
+import { createAdminClient } from "@/lib/supabase/admin"
 
 export default async function PortalPaymentsPage() {
   // Pakistan-anchored, not the server process's own OS timezone — see
@@ -17,6 +19,11 @@ export default async function PortalPaymentsPage() {
     requireManagerPermission("collect_payments"),
     getManagerPaymentsPageData(defaultMonth),
   ])
+
+  // Unconditional, same as the owner page — a manager may well be the only
+  // person who ever opens Payments for a branch, and a reward granted after its
+  // bill was written stays invisible until something re-prices that bill.
+  await settleReferralRewards(createAdminClient(), data.hostelId, defaultMonth)
 
   // Same one-shot server-side sync as the owner page: if any active tenant has
   // no payment row for this month, generate the missing pending rows now.

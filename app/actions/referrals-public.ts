@@ -133,6 +133,15 @@ export async function submitReferral(
       // bot it hit a limit tells it there is one, and the duplicate really is a
       // success for whoever is standing at the form — the number is already
       // referred. The owner sees the collision on the Marketing page.
+      //
+      // already_resident is in this group and MUST STAY HERE. A distinct message
+      // would answer "does this number live at this hostel?" for anyone holding a
+      // referral code — that is tenant location data, and this product runs girls'
+      // hostels. The person it refuses is either committing fraud or has made a
+      // mistake, and neither is worth telling an anonymous caller who lives where.
+      // They were never getting a discount regardless: migration 185 refuses it
+      // before a row is written.
+      case "already_resident":
       case "ip_link_limit":
       case "ip_limit":
       case "hostel_limit":

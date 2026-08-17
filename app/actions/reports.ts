@@ -151,6 +151,10 @@ export interface ReportData {
     acRevenue: number;
     registrationFeeRevenue: number;
     acMaintenanceRevenue: number;
+    /** Rent given away as referral rewards. NOT a revenue line — `amount` is
+     *  stored net of it, so the other lines already exclude it. This is the
+     *  cost of the referral programme, reported so it isn't invisible. */
+    referralDiscountGiven: number;
     total: number;
     collected: number;
     pending: number;
@@ -344,7 +348,7 @@ export async function getReportData(
   ] = await Promise.all([
     admin
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
+      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
@@ -412,6 +416,7 @@ export async function getReportData(
     security_deposit_charge?: unknown;
     registration_fee_charge?: unknown;
     ac_maintenance_charge?: unknown;
+    referral_discount?: unknown;
     ac_units_consumed?: unknown;
     payment_package_tier: unknown;
     payment_method: string | null;
@@ -481,6 +486,7 @@ export async function getReportData(
       acRevenue: mPaid.reduce((s, p) => s + Number(p.ac_charge || 0), 0),
       registrationFeeRevenue: mPaid.reduce((s, p) => s + Number(p.registration_fee_charge || 0), 0),
       acMaintenanceRevenue: mPaid.reduce((s, p) => s + Number(p.ac_maintenance_charge || 0), 0),
+      referralDiscountGiven: mPaid.reduce((s, p) => s + Number(p.referral_discount || 0), 0),
       // total = collected + pending (a clean invariant) rather than re-deriving
       // from status, which gets ambiguous once a row can be partially settled.
       collected,

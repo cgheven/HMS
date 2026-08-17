@@ -67,12 +67,13 @@ export async function exportReportPDF(data: ReportData, label: string): Promise<
 
   autoTable(doc, {
     startY: y,
-    head: [["Month", "Rent", "Food", "AC", "Total", "Collected", "Pending"]],
+    head: [["Month", "Rent", "Food", "AC", "Referral Discount", "Total", "Collected", "Pending"]],
     body: data.revenueByMonth.map((m) => [
       m.month,
       pk(m.rentRevenue),
       pk(m.foodRevenue),
       pk(m.acRevenue),
+      pk(m.referralDiscountGiven),
       pk(m.total),
       pk(m.collected),
       pk(m.pending),
@@ -207,12 +208,13 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
 
   // Sheet 2 — Revenue
   const revenueRows = [
-    ["Month", "Rent Revenue", "Food Revenue", "AC Revenue", "Total", "Collected", "Pending"],
+    ["Month", "Rent Revenue", "Food Revenue", "AC Revenue", "Referral Discount", "Total", "Collected", "Pending"],
     ...data.revenueByMonth.map((m) => [
       m.month,
       m.rentRevenue,
       m.foodRevenue,
       m.acRevenue,
+      m.referralDiscountGiven,
       m.total,
       m.collected,
       m.pending,
@@ -224,6 +226,7 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
       data.revenueByMonth.reduce((s, m) => s + m.rentRevenue, 0),
       data.revenueByMonth.reduce((s, m) => s + m.foodRevenue, 0),
       data.revenueByMonth.reduce((s, m) => s + m.acRevenue, 0),
+      data.revenueByMonth.reduce((s, m) => s + m.referralDiscountGiven, 0),
       data.revenueByMonth.reduce((s, m) => s + m.total, 0),
       data.revenueByMonth.reduce((s, m) => s + m.collected, 0),
       data.revenueByMonth.reduce((s, m) => s + m.pending, 0),
