@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useState, useTransition } from "react";
 import {
-  AlertTriangle, Ban, Check, Copy, Link2, Megaphone, RefreshCw, RotateCcw, Search, Sparkles,
-  Undo2, Users, X, MessageCircle, Percent,
+  AlertTriangle, Ban, Check, ChevronLeft, ChevronRight, Copy, Link2, Megaphone, RefreshCw,
+  RotateCcw, Search, Sparkles, Undo2, Users, X, MessageCircle, Percent,
 } from "lucide-react";
 import {
-  ensureCodesForAllActiveTenants, ensureReferralCode, grantReferralRewardManually, rejectReferral,
+  ensureCodesForAllActiveTenants, ensureReferralCode, getReferralOverview, grantReferralRewardManually, rejectReferral,
   revokeReferralReward, rotateReferralCode, stopAllReferralRewards, undoRejectReferral,
   updateReferralPercentages,
 } from "@/app/actions/referrals";
@@ -18,7 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatPhoneDisplay, normalizePhoneDigits } from "@/lib/phone";
 import { REFERRAL_PENDING_TTL_DAYS, REFERRAL_STATUS_CONFIG, referralLinkFor } from "@/lib/referrals";
-import { formatDate, formatMonthLong } from "@/lib/utils";
+import { cn, formatDate, formatMonthLong } from "@/lib/utils";
 import type {
   ReferralOverview, ReferralRewardRole, ReferralRewardRow, ReferralRewardStatus, ReferralRow,
   ReferralStatus, ReferrerRow,
@@ -100,7 +100,10 @@ function CopyLinkButton({ link }: { link: string }) {
       // `link` is empty until the origin effect has run — copying then would
       // put a relative path on the clipboard.
       disabled={!link}
-      className="gap-1.5 h-8 text-xs shrink-0"
+      // Icon only: four controls plus the money have to fit one phone row, and
+      // the label is the first thing that can go without losing an action.
+      className="gap-1.5 h-7 text-[11px] px-2 shrink-0"
+      title={copied ? "Copied" : "Copy this tenant's referral link"}
       onClick={async () => {
         await navigator.clipboard.writeText(link);
         setCopied(true);
@@ -108,7 +111,6 @@ function CopyLinkButton({ link }: { link: string }) {
       }}
     >
       {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-      {copied ? "Copied" : "Copy link"}
     </Button>
   );
 }
@@ -200,7 +202,7 @@ function ShareOnWhatsAppButton({
       asChild
       variant="outline"
       size="sm"
-      className="gap-1.5 h-8 text-xs"
+      className="gap-1.5 h-7 text-[11px] px-2"
       title={`Send ${first || "this tenant"} their link on WhatsApp`}
     >
       <a
@@ -420,68 +422,143 @@ function RewardsPanel({
           }
         />
       ) : (
-        <div className="grid gap-3">
+        /* A LEDGER, NOT A STACK OF CARDS — the same shape as Submissions, so the
+         * two tabs are read the same way: down a column of money, not across a
+         * paragraph per record. One bordered container with hairline rows rather
+         * than N bordered cards, or the columns stop lining up. */
+        <div className="rounded-xl border border-sidebar-border overflow-hidden">
+          {/* EVERY track is a fixed width or an fr — deliberately no `auto`. The
+               header and the rows are two separate grids, and an `auto` track
+               sizes to its own content, so the header's short words and a row's
+               badges resolve differently and every label drifts a column away
+               from its data. */}
+          <div className="hidden md:grid grid-cols-[minmax(0,1.3fr)_minmax(0,1.3fr)_6.5rem_7rem_7rem_6.5rem] gap-3 px-4 py-2 bg-white/[0.02] border-b border-sidebar-border text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            <span>Beneficiary</span>
+            <span>For</span>
+            <span>Month</span>
+            {/* pl-4 on Status, not a wider gap: the gap is uniform across the
+                whole grid, and widening it to fix one seam loosens five others.
+                A right-aligned figure ending flush against a left-aligned chip
+                is the one place that needs the extra air. */}
+            <span className="text-right">Amount</span>
+            <span className="pl-4">Status</span>
+            <span className="text-right">Actions</span>
+          </div>
+
           {visible.map((r) => {
+            /* Built once and rendered into both layouts. A second copy of the
+               button is how the phone and the desktop quietly drift into
+               offering different actions. */
             const cancellable = r.status === "scheduled" || r.status === "held";
+            const actions = cancellable ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 h-7 text-[11px] px-2 text-muted-foreground hover:text-rose-400"
+                disabled={busyId === r.id}
+                onClick={() => onRevoke(r)}
+                title="Cancel this discount — the bill is re-priced immediately"
+              >
+                {busyId === r.id ? (
+                  <RefreshCw className="w-3 h-3 animate-spin" />
+                ) : (
+                  <X className="w-3 h-3" />
+                )}
+                Cancel
+              </Button>
+            ) : null;
+
+            // Money only exists once a reward has been applied — every other
+            // status carries a percentage and no rupees.
+            const givenAmount = r.status === "applied" ? r.appliedAmount : null;
+
             return (
               <div
                 key={r.id}
-                className="rounded-xl border border-sidebar-border bg-card/50 p-4 hover:border-white/10 transition-colors"
+                className="md:grid md:grid-cols-[minmax(0,1.3fr)_minmax(0,1.3fr)_6.5rem_7rem_7rem_6.5rem] md:items-center md:gap-x-3 md:px-4 md:py-3 border-b border-sidebar-border/60 last:border-b-0 hover:bg-white/[0.02] transition-colors"
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
+                {/* ── PHONE ────────────────────────────────────────────────────
+                    Not the table stacked — a different layout for a different
+                    shape of screen. Who it pays reads down the left, the figure
+                    and its state sit bottom-left with the action opposite, the
+                    way a bank statement does. */}
+                <div className="md:hidden px-4 py-3.5 space-y-2.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
                       <p className="text-sm font-medium text-foreground truncate">
                         {r.tenantName ?? "Former tenant"}
                       </p>
-                      <RoleBadge role={r.role} />
-                      <RewardBadge status={r.status} />
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {r.percent}% off ·{" "}
-                      {r.status === "applied" && r.appliedAmount !== null ? (
-                        <span className="text-emerald-400">{rs(r.appliedAmount)} given</span>
-                      ) : r.forMonth ? (
-                        `lands on ${formatMonthLong(r.forMonth)}`
-                      ) : r.status === "held" ? (
-                        "not on a bill yet"
-                      ) : (
-                        "never landed on a bill"
-                      )}
-                      {r.status === "applied" && r.appliedAmount !== null && r.forMonth
-                        ? ` · ${formatMonthLong(r.forMonth)}`
-                        : ""}
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-1">
+                      <p className="text-xs text-muted-foreground truncate">
+                        {r.role === "referrer" ? "for referring " : "referred by "}
+                        {r.counterpartyName ?? "a former tenant"}
+                      </p>
                       {/* Branch, always: a link shared at one branch is legitimately
                           answered by an admission at another, so a reward the owner
                           does not recognise is otherwise unexplainable. */}
-                      <span className="text-foreground">{r.hostelName ?? "another branch"}</span>
-                      {" · "}
-                      {r.role === "referrer" ? "for referring " : "referred by "}
-                      <span className="text-foreground">{r.counterpartyName ?? "a former tenant"}</span>
-                    </p>
+                      <p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">
+                        {r.hostelName ?? "another branch"}
+                        {r.forMonth ? ` · ${formatMonthLong(r.forMonth)}` : ""}
+                      </p>
+                    </div>
+                    <RoleBadge role={r.role} />
                   </div>
 
-                  {cancellable && (
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="gap-1.5 h-8 text-xs text-muted-foreground hover:text-rose-400"
-                        disabled={busyId === r.id}
-                        onClick={() => onRevoke(r)}
-                        title="Cancel this discount — the bill is re-priced immediately"
-                      >
-                        {busyId === r.id ? (
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        ) : (
-                          <X className="w-3.5 h-3.5" />
-                        )}
-                        Cancel
-                      </Button>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm font-semibold text-foreground tabular-nums">
+                        {givenAmount !== null ? rs(givenAmount) : `${r.percent}%`}
+                      </span>
+                      <RewardBadge status={r.status} />
                     </div>
+                    {actions && <div className="flex items-center gap-1.5 shrink-0">{actions}</div>}
+                  </div>
+                </div>
+
+                {/* ── DESKTOP CELLS ───────────────────────────────────────────
+                    display:none on a phone, so they take no grid slot. */}
+                <div className="hidden md:block min-w-0">
+                  <p className="text-sm font-medium text-foreground truncate">
+                    {r.tenantName ?? "Former tenant"}
+                  </p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {r.hostelName ?? "another branch"}
+                  </p>
+                </div>
+
+                <div className="hidden md:block min-w-0">
+                  <p className="text-xs text-foreground truncate">
+                    {r.counterpartyName ?? "a former tenant"}
+                  </p>
+                  <div className="mt-1">
+                    <RoleBadge role={r.role} />
+                  </div>
+                </div>
+
+                <div className="hidden md:block min-w-0">
+                  {r.forMonth ? (
+                    <p className="text-xs text-foreground truncate">{formatMonthLong(r.forMonth)}</p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground/40">—</p>
                   )}
+                </div>
+
+                <div className="hidden md:block text-right min-w-0">
+                  {givenAmount !== null ? (
+                    <p className="text-xs text-foreground tabular-nums">{rs(givenAmount)}</p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground/40">—</p>
+                  )}
+                  {/* The rate stays beside the rupees: until a reward is applied
+                      the percentage is the only figure that exists for it. */}
+                  <p className="text-[11px] text-muted-foreground/70 tabular-nums">{r.percent}% off</p>
+                </div>
+
+                <div className="hidden md:flex min-w-0 pl-4">
+                  <RewardBadge status={r.status} />
+                </div>
+
+                <div className="hidden md:flex items-center gap-1.5 justify-end min-w-0">
+                  {actions ?? <span className="text-xs text-muted-foreground/40">—</span>}
                 </div>
               </div>
             );
@@ -493,7 +570,11 @@ function RewardsPanel({
 }
 
 export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
-  const { referrerPercent, referredPercent, hostelName } = overview;
+  // The whole payload is state, not just the lists: every tile, total and label
+  // on this page is scoped to one month, so a month change has to swap all of
+  // them together or the page shows two months at once.
+  const [ov, setOv] = useState<ReferralOverview>(overview);
+  const { referrerPercent, referredPercent, hostelName } = ov;
   const [referrers, setReferrers] = useState<ReferrerRow[]>(overview.referrers);
   const [referrals, setReferrals] = useState<ReferralRow[]>(overview.referrals);
   const [rewards, setRewards] = useState<ReferralRewardRow[]>(overview.rewards);
@@ -518,6 +599,49 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
   const [origin, setOrigin] = useState("");
   useEffect(() => setOrigin(window.location.origin), []);
 
+  const [monthLoading, setMonthLoading] = useState(false);
+
+  /** The current month at PKT, so stepping forward stops at a month that can
+   *  actually have data rather than walking into an empty 2027. */
+  const thisMonth = useMemo(() => {
+    const now = new Date();
+    const pkt = new Date(now.getTime() + (now.getTimezoneOffset() + 300) * 60000);
+    return `${pkt.getFullYear()}-${String(pkt.getMonth() + 1).padStart(2, "0")}`;
+  }, []);
+
+  async function loadMonth(next: string) {
+    if (next > thisMonth) return;
+    setMonthLoading(true);
+    const res = await getReferralOverview(next);
+    if (res.data) {
+      setOv(res.data);
+      setReferrers(res.data.referrers);
+      setReferrals(res.data.referrals);
+      setRewards(res.data.rewards);
+      // A referrer picked in another month may have nothing here, which would
+      // read as "the page broke" rather than "that person referred nobody in
+      // June". Status resets for the same reason.
+      setReferrerFilter(null);
+      setStatus("all");
+    } else {
+      toast({ title: "Failed to load", description: res.error, variant: "destructive" });
+    }
+    setMonthLoading(false);
+  }
+
+  function stepMonth(dir: -1 | 1) {
+    const [y, m] = ov.month.split("-").map(Number);
+    const d = new Date(y, m - 1 + dir, 1);
+    void loadMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+
+  const atCurrentMonth = ov.month >= thisMonth;
+
+  /** "August" — for the places that need to NAME the month in a sentence. The
+   *  cards deliberately do not: the stepper sits directly above them, so
+   *  repeating it four times is noise, not clarity. */
+  const monthShort = useMemo(() => formatMonthLong(ov.month).split(" ")[0], [ov.month]);
+
   const header = (
     <div>
       <h1 className="text-3xl font-serif font-normal tracking-tight">Marketing</h1>
@@ -527,9 +651,53 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
     </div>
   );
 
+  /* self-start, not a stretched flex child: the mobile header is flex-col, so
+     without it this sizes to the full 340px of the screen and pushes the two
+     chevrons to opposite edges — a thumb cannot reach both, and a control that
+     wide reads as a banner rather than something you press.
+     Aligned to the RIGHT edge on a phone (self-end) so it sits under the
+     thumb rather than across the screen from it, and back to self-start from
+     sm up, where the header is a row and the cross axis is vertical.
+     Tap targets are 40px on a phone and tighten from sm up, where a mouse is
+     doing the pointing. */
+  const monthStepper = (
+    <div className="flex items-center self-end sm:self-start shrink-0 w-fit rounded-lg border border-sidebar-border bg-sidebar-accent/30">
+      <button
+        onClick={() => stepMonth(-1)}
+        disabled={monthLoading}
+        className="px-3 py-2.5 sm:px-2 sm:py-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+        aria-label="Previous month"
+      >
+        <ChevronLeft className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+      </button>
+      <span className="text-xs font-medium px-1 min-w-[6.5rem] text-center inline-flex items-center justify-center gap-1.5 tabular-nums">
+        {monthLoading && <RefreshCw className="w-3 h-3 animate-spin" />}
+        {formatMonthLong(ov.month)}
+      </span>
+      <button
+        onClick={() => stepMonth(1)}
+        disabled={monthLoading || atCurrentMonth}
+        className="px-3 py-2.5 sm:px-2 sm:py-1.5 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+        aria-label="Next month"
+      >
+        <ChevronRight className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+      </button>
+    </div>
+  );
+
   const missingCodes = referrers.filter((r) => !r.code).length;
-  const joined = referrals.filter((r) => r.status === "joined").length;
   const pending = referrals.filter((r) => r.status === "pending").length;
+
+  // The bottom line the owner is being sold on: what the referred tenants paid,
+  // less what the branch gave away in discounts, less Pulse's commission. Amber
+  // when negative — a month where those two costs outran the revenue is worth
+  // looking at, not celebrating.
+  // discountGivenThisMonthBranch, NOT discountGivenThisMonth: revenue and
+  // commission are both branch-scoped, and subtracting the owner-WIDE discount
+  // total from them double-counts across a multi-branch owner's two Marketing
+  // pages — enough to render a profitable branch as an amber loss.
+  const earningAfterDiscounts =
+    ov.revenueInMonth - ov.discountGivenThisMonthBranch - ov.pulseCommissionInMonth;
 
   const openRewardCount = rewards.filter(
     (r) => r.status === "scheduled" || r.status === "held"
@@ -789,9 +957,9 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
 
   const liabilityCard = (
     <OpenRewardsCard
-      enabled={overview.enabled}
+      enabled={ov.enabled}
       count={openRewardCount}
-      value={overview.openRewardValue}
+      value={ov.openRewardValue}
       valueKnown={openValueKnown}
       busy={isPending}
       onStopAll={() => setConfirmStopAll(true)}
@@ -818,7 +986,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
         open={confirmStopAll}
         title="Stop every queued reward?"
         description={`${openRewardCount} reward${openRewardCount === 1 ? "" : "s"} still owed${
-          openValueKnown ? ` (${rs(overview.openRewardValue)})` : ""
+          openValueKnown ? ` (${rs(ov.openRewardValue)})` : ""
         } will be cancelled across every branch you own, permanently. Discounts already collected are not touched.`}
         confirmLabel="Stop all rewards"
         onConfirm={handleStopAll}
@@ -829,7 +997,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
 
   // After every hook, never before — an early return above them would make the
   // hook order depend on the entitlement.
-  if (!overview.enabled) {
+  if (!ov.enabled) {
     return (
       <div className="space-y-6 animate-fade-in">
         {header}
@@ -841,7 +1009,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
           referrerPercent={referrerPercent}
           referredPercent={referredPercent}
           openRewardCount={openRewardCount}
-          openRewardValue={overview.openRewardValue}
+          openRewardValue={ov.openRewardValue}
         />
         {rewards.length > 0 && (
           <RewardsPanel
@@ -864,44 +1032,58 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
     <div className="space-y-6 animate-fade-in">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         {header}
-        {missingCodes > 0 && (
-          <Button
-            onClick={handleEnsureAll}
-            disabled={isPending}
-            className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold shrink-0"
-          >
-            <Sparkles className="w-4 h-4" />
-            Create {missingCodes} missing link{missingCodes === 1 ? "" : "s"}
-          </Button>
-        )}
+        {monthStepper}
       </div>
 
-      {liabilityCard}
+      {/* No liability bar here. Everything it said is already on this page —
+          the tiles carry the money and the Rewards tab carries the queue — so on
+          an enabled branch it was a third copy of the same fact. It survives on
+          the DISABLED branch below, where the tiles and tabs do not render and it
+          is the only thing reporting that rewards are still landing on bills.
+          "Stop all rewards" moves to the Rewards tab so it stays reachable. */}
 
-      {/* Six tiles, so the column counts have to divide six exactly or the last
-          tile is orphaned alone on a half-empty row: 2 / 3 / 6. The two money
-          tiles are the last pair and carry no col-span, which puts them side by
-          side at every breakpoint — this month against all time is a comparison,
-          and stacking them full-width would break the pairing. */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+      {/* Four tiles, all scoped to the picked month, reading left to right as
+          ONE equation rather than four unrelated facts: paying tenants won,
+          what they paid, what that cost, what is left. The count is PAYING
+          tenants only — somebody who moved in and never settled a bill took a
+          discount and returned nothing, and counting them would flatter the
+          very figure this card set exists to make honest. Two per row on a
+          phone, four on a laptop; four divides both, so no tile is orphaned on
+          a half row. Money sits a size below the count because "Rs 1,240,000"
+          in text-2xl truncates in a half-width tile on a phone. */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         {[
-          { label: "Active tenants", value: `${referrers.length}`, color: "text-foreground", size: "text-2xl" },
-          { label: "Links created", value: `${referrers.length - missingCodes}`, color: "text-foreground", size: "text-2xl" },
-          { label: "Waiting to be called", value: `${pending}`, color: "text-amber", size: "text-2xl" },
-          { label: "Joined", value: `${joined}`, color: "text-emerald-400", size: "text-2xl" },
-          // Immediately after Joined: tenants gained is only readable against
-          // what they cost.
+          // Reads left to right as ONE equation: how many paying tenants
+          // referrals won, what they paid, what Pulse charged, what is left.
+          // The owner's own discounts are inside the final figure rather than
+          // on a card of their own — they are already itemised per referral in
+          // the list below, and a fifth card would break the equation.
           {
-            label: "Discounts given (this month)",
-            value: rs(overview.discountGivenThisMonth),
-            color: "text-amber",
-            size: "text-xl",
+            label: "Tenants joined",
+            value: `${ov.joinedPaidInMonth}`,
+            color: "text-emerald-400",
+            size: "text-2xl",
           },
           {
-            label: "Discounts given (all time)",
-            value: rs(overview.discountGivenTotal),
+            label: "Revenue from referrals",
+            value: rs(ov.revenueInMonth),
+            color: "text-emerald-400",
+            size: "text-base sm:text-lg lg:text-xl",
+          },
+          {
+            label: "Pulse commission",
+            value: rs(ov.pulseCommissionInMonth),
             color: "text-amber",
-            size: "text-xl",
+            size: "text-base sm:text-lg lg:text-xl",
+          },
+          {
+            // Not "after discounts": it is now net of the owner's discounts AND
+            // Pulse's commission, and a label naming only one of them
+            // understates what was taken off.
+            label: "Net earning",
+            value: `${earningAfterDiscounts < 0 ? "−" : ""}${rs(Math.abs(earningAfterDiscounts))}`,
+            color: earningAfterDiscounts < 0 ? "text-amber" : "text-emerald-400",
+            size: "text-base sm:text-lg lg:text-xl",
           },
         ].map(({ label, value, color, size }) => (
           <div
@@ -927,11 +1109,33 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
       {/* Controlled: "View referrals" on a link card has to move the owner to
           the Submissions tab, not just set a filter they cannot see. */}
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList>
-          <TabsTrigger value="submissions">Submissions ({referrals.length})</TabsTrigger>
-          <TabsTrigger value="rewards">Rewards ({rewards.length})</TabsTrigger>
-          <TabsTrigger value="links">Tenant links ({referrers.length})</TabsTrigger>
-        </TabsList>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {/* Scrolls rather than clips: at 390px the three triggers do not fit,
+              and a clipped third tab reads as a broken page rather than a
+              scrollable one. */}
+          <div className="-mx-1 px-1 max-w-full overflow-x-auto">
+            <TabsList>
+              <TabsTrigger value="submissions">Submissions ({referrals.length})</TabsTrigger>
+              <TabsTrigger value="rewards">Rewards ({rewards.length})</TabsTrigger>
+              <TabsTrigger value="links">Tenant links ({referrers.length})</TabsTrigger>
+            </TabsList>
+          </div>
+          {missingCodes > 0 && (
+            /* Outline on a phone, solid amber from sm up. Minting missing links
+               is maintenance, and as a full-bleed amber block it was the loudest
+               thing on the screen — louder than the money the page is about. */
+            <Button
+              onClick={handleEnsureAll}
+              disabled={isPending}
+              size="sm"
+              variant="outline"
+              className="gap-2 shrink-0 sm:bg-amber sm:text-background sm:border-amber sm:hover:bg-amber/90 sm:font-semibold"
+            >
+              <Sparkles className="w-4 h-4" />
+              Create {missingCodes} missing link{missingCodes === 1 ? "" : "s"}
+            </Button>
+          )}
+        </div>
 
         <TabsContent value="submissions" className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
@@ -974,6 +1178,10 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
             )}
           </div>
 
+          <p className="text-xs text-muted-foreground">
+            Showing referrals submitted in {formatMonthLong(ov.month)}.
+          </p>
+
           {/* Always rendered while the filter is on, including over an empty
               list — the owner must never be left wondering where the other rows
               went, so the thing hiding them is also the thing that clears it. */}
@@ -990,134 +1198,243 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
 
           {filteredReferrals.length === 0 ? (
             <EmptyBlock
-              line1={referrals.length === 0 ? "No submissions yet" : "Nothing matches this filter."}
+              // Names the month rather than reusing the generic empty state: a
+              // quiet June is not the same fact as "this has never been used",
+              // and the generic copy reads as the latter.
+              line1={
+                referrals.length === 0
+                  ? `No referrals were submitted in ${monthShort}`
+                  : "Nothing matches this filter."
+              }
               line2={
                 referrals.length === 0
-                  ? "When someone opens a tenant's link and leaves their number, they show up here."
+                  ? "Step back a month, or share a tenant's link to start getting them."
                   : undefined
               }
             />
           ) : (
-            <div className="grid gap-3">
-              {filteredReferrals.map((r) => (
-                <div
-                  key={r.id}
-                  className="rounded-xl border border-sidebar-border bg-card/50 p-4 hover:border-white/10 transition-colors"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-medium text-foreground truncate">{r.name}</p>
-                        <StatusBadge status={r.status} />
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {formatPhoneDisplay(r.phone)} · {formatDate(r.createdAt)}
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Referred by{" "}
-                        <span className="text-foreground">{r.referrerName ?? "a former tenant"}</span>
-                        {r.status === "joined" && r.matchedTenantName && (
-                          <>
-                            {" · joined as "}
-                            <span className="text-emerald-400">{r.matchedTenantName}</span>
-                            {r.matchedAt ? ` on ${formatDate(r.matchedAt)}` : ""}
-                          </>
-                        )}
-                      </p>
-                      {r.status === "rejected" && r.rejectedAt && (
-                        <p className="text-xs text-muted-foreground/80 mt-1">
-                          Rejected on {formatDate(r.rejectedAt)}
-                          {r.rejectedByName ? ` by ${r.rejectedByName}` : ""}
-                        </p>
-                      )}
-                      {r.rewardSummary && (
-                        <p className="text-xs text-muted-foreground mt-1">
-                          <span className="text-foreground/80">{r.rewardSummary}</span>
-                        </p>
-                      )}
-                    </div>
+            /* A LEDGER, NOT A STACK OF CARDS.
+             *
+             * This list exists to be COMPARED down, not read across: which
+             * referrals converted, what each cost, what each returned. The old
+             * shape restated its own labels on every row — "Referred by X",
+             * "Applied Rs 1,500", "Paid Rs 18,500 so far" — which is the same
+             * three words repeated once per record and a reader who has to
+             * re-parse every line to find one figure. Column headers say each
+             * label once and the eye runs straight down.
+             *
+             * One bordered container with hairline rows rather than N bordered
+             * cards: a border around every row plus internal columns is two
+             * grids fighting, and the money stops lining up.
+             */
+            <div className="rounded-xl border border-sidebar-border overflow-hidden">
+              {/* Desktop only — on a phone the labels move inline, below. */}
+              {/* EVERY track is a fixed width or an fr — deliberately no `auto`.
+                   The header and the rows are two separate grids, and an `auto`
+                   track sizes to its own content: the header's short words and a
+                   row's badges and buttons resolve to different widths, so the
+                   labels drift a whole column away from the data they name. */}
+              <div className="hidden md:grid grid-cols-[minmax(0,1.5fr)_minmax(0,1.5fr)_6.5rem_11rem_8rem_10.5rem] gap-3 px-4 py-2 bg-white/[0.02] border-b border-sidebar-border text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                <span>Person</span>
+                <span>Referred by</span>
+                <span>Referral</span>
+                <span className="text-right">Reward</span>
+                <span className="pl-4">Status</span>
+                <span className="text-right">Actions</span>
+              </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      {/* A joined referral that produced no reward row at all —
-                          referrer had left, percentage was 0, cap hit. The reward
-                          list cannot offer this: the row was never created. */}
-                      {r.status === "joined" &&
-                        (!r.rewardSummary || r.rewardSummary.startsWith("No reward")) && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="gap-1.5 h-8 text-xs"
-                            disabled={busyId === r.id}
-                            onClick={() => handleGrant(r)}
-                            title="Grant the discount this referral did not produce"
-                          >
-                            {busyId === r.id ? (
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <Sparkles className="w-3.5 h-3.5" />
-                            )}
-                            Grant
-                          </Button>
-                        )}
-                      {r.status === "rejected" ? (
+              {filteredReferrals.map((r) => {
+                /* Built once and rendered in both layouts. A second copy of the
+                   button logic is how the phone and the desktop quietly drift
+                   into offering different actions. */
+                const actions = (
+                  <>
+                    {r.status === "joined" &&
+                      (r.rewardState === null || r.rewardState === "None") && (
                         <Button
                           variant="outline"
                           size="sm"
-                          className="gap-1.5 h-8 text-xs"
+                          className="gap-1.5 h-7 text-[11px] px-2"
                           disabled={busyId === r.id}
-                          onClick={() => handleUndoReject(r)}
+                          onClick={() => handleGrant(r)}
+                          title="Grant the discount this referral did not produce"
                         >
-                          <Undo2 className="w-3.5 h-3.5" /> Undo
+                          {busyId === r.id ? (
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-3 h-3" />
+                          )}
+                          Grant
                         </Button>
-                      ) : (
-                        <>
-                          {/* Joining is automatic on a phone match, so the only
-                              judgement left is the exception. The WORDING has to
-                              change with the status: on a pending submission this
-                              dismisses a claim, but once the person has actually
-                              moved in "Reject" reads as rejecting the tenant,
-                              which is alarming and not what it does — it cancels
-                              the money that is still queued. */}
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="gap-1.5 h-8 text-xs text-muted-foreground hover:text-rose-400"
-                            disabled={busyId === r.id}
-                            onClick={() => handleReject(r.id)}
-                            title={
-                              r.status === "joined"
-                                ? "Cancels any referral reward still queued. Discounts already collected are not clawed back."
-                                : "Dismiss this referral claim."
-                            }
-                          >
-                            <X className="w-3.5 h-3.5" />
-                            {r.status === "joined" ? "Cancel reward" : "Reject"}
-                          </Button>
-                        </>
+                      )}
+                    {r.status === "rejected" ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5 h-7 text-[11px] px-2"
+                        disabled={busyId === r.id}
+                        onClick={() => handleUndoReject(r)}
+                      >
+                        <Undo2 className="w-3 h-3" /> Undo
+                      </Button>
+                    ) : (
+                      /* The wording changes with the status: on a pending
+                         submission this dismisses a claim, but once the person
+                         has moved in "Reject" reads as rejecting the tenant,
+                         which is alarming and not what it does — it cancels the
+                         money still queued. */
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-1.5 h-7 text-[11px] px-2 text-muted-foreground hover:text-rose-400"
+                        disabled={busyId === r.id}
+                        onClick={() => handleReject(r.id)}
+                        title={
+                          r.status === "joined"
+                            ? "Cancels any referral reward still queued. Discounts already collected are not clawed back."
+                            : "Dismiss this referral claim."
+                        }
+                      >
+                        <X className="w-3 h-3" />
+                        {r.status === "joined" ? "Cancel reward" : "Reject"}
+                      </Button>
+                    )}
+                  </>
+                );
+
+                const rewardChip =
+                  r.rewardState && r.rewardState !== "None" ? (
+                    <span
+                      className={cn(
+                        "inline-flex text-[11px] font-medium px-2 py-0.5 rounded-full border whitespace-nowrap",
+                        r.rewardState === "Applied" && "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+                        r.rewardState === "Queued" && "bg-sky-500/10 text-sky-400 border-sky-500/20",
+                        r.rewardState === "Held" && "bg-amber/10 text-amber border-amber/25",
+                        r.rewardState === "Expired" && "bg-white/5 text-muted-foreground border-white/10"
+                      )}
+                      title={
+                        r.rewardState === "Applied"
+                          ? "Taken off a bill — money actually given"
+                          : r.rewardState === "Queued"
+                            ? "Placed on an upcoming bill, not collected yet"
+                            : r.rewardState === "Held"
+                              ? "Earned, waiting for the referred tenant's first payment"
+                              : "Ran out before it could be used"
+                      }
+                    >
+                      {r.rewardState}
+                    </span>
+                  ) : null;
+
+                return (
+                  <div
+                    key={r.id}
+                    className="md:grid md:grid-cols-[minmax(0,1.5fr)_minmax(0,1.5fr)_6.5rem_11rem_8rem_10.5rem] md:items-center md:gap-x-3 md:px-4 md:py-3 border-b border-sidebar-border/60 last:border-b-0 hover:bg-white/[0.02] transition-colors"
+                  >
+                    {/* ── PHONE ────────────────────────────────────────────────
+                        Not the table stacked — a different layout for a different
+                        shape of screen. Identity reads down the left, money sits
+                        on the right, the way a bank statement does, so the eye
+                        finds the figure without reading the line. Three lines
+                        instead of eight, and no repeated "Reward:" / "Paid:"
+                        labels, which on a phone are most of the width. */}
+                    <div className="md:hidden px-4 py-3.5 space-y-2.5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-foreground truncate">{r.name}</p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            via {r.referrerName ?? "a former tenant"}
+                            {r.referrerRoom ? ` · Rm ${r.referrerRoom}` : ""}
+                          </p>
+                          <p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">
+                            {formatPhoneDisplay(r.phone)} · {formatDate(r.createdAt)}
+                          </p>
+                        </div>
+                        <StatusBadge status={r.status} />
+                      </div>
+
+                      {(r.rewardAmount || rewardChip || r.status !== "expired") && (
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            {r.rewardAmount !== null && r.rewardAmount > 0 && (
+                              <span className="text-sm font-semibold text-foreground tabular-nums">
+                                {rs(r.rewardAmount)}
+                              </span>
+                            )}
+                            {rewardChip}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">{actions}</div>
+                        </div>
+                      )}
+
+                      {r.status === "rejected" && r.rejectedAt && (
+                        <p className="text-[11px] text-muted-foreground/70">
+                          rejected {formatDate(r.rejectedAt)}
+                          {r.rejectedByName ? ` by ${r.rejectedByName}` : ""}
+                        </p>
                       )}
                     </div>
-                  </div>
 
-                </div>
-              ))}
+                    {/* ── DESKTOP CELLS ───────────────────────────────────────
+                        display:none on a phone, so they take no grid slot. */}
+                    <div className="hidden md:block min-w-0">
+                      <p className="text-sm font-medium text-foreground truncate">{r.name}</p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {formatPhoneDisplay(r.phone)} · {formatDate(r.createdAt)}
+                      </p>
+                    </div>
+
+                    <div className="hidden md:block min-w-0">
+                      <p className="text-xs text-foreground truncate">
+                        {r.referrerName ?? "a former tenant"}
+                      </p>
+                      {r.referrerRoom && (
+                        <p className="text-xs text-muted-foreground truncate">Rm {r.referrerRoom}</p>
+                      )}
+                      {r.status === "rejected" && r.rejectedAt && (
+                        <p className="text-xs text-muted-foreground/80 truncate">
+                          rejected {formatDate(r.rejectedAt)}
+                          {r.rejectedByName ? ` by ${r.rejectedByName}` : ""}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="hidden md:flex">
+                      <StatusBadge status={r.status} />
+                    </div>
+
+                    <div className="hidden md:block text-right min-w-0">
+                      {r.rewardAmount !== null && r.rewardAmount > 0 ? (
+                        <p className="text-xs text-foreground tabular-nums">{rs(r.rewardAmount)}</p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground/40">—</p>
+                      )}
+                    </div>
+
+                    <div className="hidden md:block min-w-0 pl-4">
+                      {rewardChip ?? <span className="text-xs text-muted-foreground/40">—</span>}
+                    </div>
+
+                    <div className="hidden md:flex items-center gap-1.5 justify-end min-w-0">
+                      {actions}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
 
-          {/* The DB enforces "first submission wins" per owner, and the loser
-              used to vanish with no trace — which is both how a real referrer's
-              submission disappeared and how someone could quietly claim numbers
-              they do not know. Shown so the owner can adjudicate. */}
-          {overview.duplicateClaims.length > 0 && (
+          {ov.duplicateClaims.length > 0 && (
             <div className="rounded-xl border border-sidebar-border bg-card/30 p-4 space-y-2">
               <p className="text-xs font-medium text-foreground">
-                Already referred by someone else ({overview.duplicateClaims.length})
+                Already referred by someone else ({ov.duplicateClaims.length})
               </p>
               <p className="text-xs text-muted-foreground">
                 These numbers were sent again after another tenant had already submitted them. Only
                 the first submission counts.
               </p>
               <div className="space-y-1 pt-1">
-                {overview.duplicateClaims.map((d) => (
+                {ov.duplicateClaims.map((d) => (
                   <p key={d.id} className="text-xs text-muted-foreground">
                     <span className="text-foreground">{d.name}</span> ·{" "}
                     {formatPhoneDisplay(d.phone)} · sent by {d.referrerName ?? "a former tenant"} on{" "}
@@ -1130,6 +1447,24 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
         </TabsContent>
 
         <TabsContent value="rewards" className="space-y-4">
+          {openRewardCount > 0 && (
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-xs text-muted-foreground min-w-0">
+                {openRewardCount} reward{openRewardCount === 1 ? "" : "s"} still queued
+                {openValueKnown ? ` (${rs(ov.openRewardValue)})` : ""} — these come off
+                tenants&apos; bills as they fall due, across every branch you own.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 h-8 text-xs text-muted-foreground hover:text-rose-400 shrink-0"
+                disabled={isPending}
+                onClick={() => setConfirmStopAll(true)}
+              >
+                <Ban className="w-3.5 h-3.5" /> Stop all rewards
+              </Button>
+            </div>
+          )}
           <RewardsPanel
             rewards={filteredRewards}
             totalRewards={rewards.length}
@@ -1143,7 +1478,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
             referrerPercent={referrerPercent}
             referredPercent={referredPercent}
             openRewardCount={openRewardCount}
-            openRewardValue={overview.openRewardValue}
+            openRewardValue={ov.openRewardValue}
           />
           {filteredReferrers.length === 0 ? (
             <EmptyBlock
@@ -1155,115 +1490,201 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
               }
             />
           ) : (
-            <div className="grid gap-3">
-              {filteredReferrers.map((r) => (
-                <div
-                  key={r.tenantId}
-                  className="rounded-xl border border-sidebar-border bg-card/50 p-4 hover:border-white/10 transition-colors"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
-                    <div className="min-w-0">
+            /* A LEDGER, NOT A STACK OF CARDS. This list is scanned down for one
+             * thing — which advocate is worth cultivating — and that is a
+             * comparison of two money columns, which a stack of cards cannot
+             * make. One bordered container with hairline rows, so the figures
+             * line up instead of each row drawing its own grid. */
+            <div className="rounded-xl border border-sidebar-border overflow-hidden">
+              {/* Every track is a fixed width or an fr — never `auto`, or the
+                   header and the rows (two separate grids) size their tracks to
+                   different content and the labels drift off their data. */}
+              <div className="hidden md:grid grid-cols-[minmax(0,1.6fr)_7rem_8rem_8rem_11rem] gap-3 px-4 py-2 bg-white/[0.02] border-b border-sidebar-border text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                <span>Tenant</span>
+                <span>Referrals</span>
+                <span className="text-right">Earned</span>
+                <span className="text-right">Revenue</span>
+                <span className="text-right">Actions</span>
+              </div>
+
+              {filteredReferrers.map((r) => {
+                const link = r.code && origin ? referralLinkFor(origin, r.code) : "";
+
+                /* Built once and rendered into both layouts, so the phone and
+                   the desktop cannot drift into offering different actions. */
+                /* TWO controls, not four.
+                 *
+                 * Every row carried Copy, WhatsApp, Rotate and View referrals —
+                 * four bordered buttons per row, forty on a screen of ten
+                 * tenants, and the two that matter drowned in the two that
+                 * rarely do. What an owner does here is hand a link to a tenant,
+                 * so Copy and WhatsApp stay.
+                 *
+                 * Rotate moved out: it invalidates a link people may already be
+                 * holding, it is used once in a blue moon, and a destructive
+                 * action sitting one pixel from Copy is a misclick waiting to
+                 * happen. It now lives on the tenant's own row — see the Rm line.
+                 *
+                 * "View referrals" moved onto the joined count itself, which is
+                 * the thing you actually want to click when you want to see them. */
+                const actions = r.code ? (
+                  <>
+                    <CopyLinkButton link={link} />
+                    <ShareOnWhatsAppButton
+                      tenantName={r.tenantName}
+                      phone={r.phone}
+                      link={link}
+                      hostelName={hostelName}
+                      referrerPercent={referrerPercent}
+                      referredPercent={referredPercent}
+                    />
+                  </>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 h-7 text-[11px] px-2"
+                    disabled={busyId === r.tenantId}
+                    onClick={() => handleEnsureCode(r.tenantId)}
+                  >
+                    {busyId === r.tenantId ? (
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Link2 className="w-3 h-3" />
+                    )}
+                    Create link
+                  </Button>
+                );
+
+                // referred and joined stay adjacent and unseparated by anything
+                // else: the ratio between them is the number the owner is
+                // actually reading, not either figure alone.
+                // Joined only. "3 referred · 2 joined · 1 waiting" was three
+                // figures where the owner reads one — who actually moved in.
+                // The breakdown is still one click away in Submissions, and the
+                // full ratio is on the referrer dropdown there.
+                const counts =
+                  r.totalReferred === 0 ? null : (
+                    <span className="text-emerald-400">
+                      {r.joined} joined
+                    </span>
+                  );
+
+                return (
+                  <div
+                    key={r.tenantId}
+                    className="md:grid md:grid-cols-[minmax(0,1.6fr)_7rem_8rem_8rem_11rem] md:items-center md:gap-x-3 md:px-4 md:py-3 border-b border-sidebar-border/60 last:border-b-0 hover:bg-white/[0.02] transition-colors"
+                  >
+                    {/* ── PHONE ────────────────────────────────────────────────
+                        Not the table stacked. Identity and what the link has done
+                        read down the left; the money the tenant has actually been
+                        given sits bottom-left in bold with the buttons opposite. */}
+                    <div className="md:hidden px-4 py-3.5 space-y-2.5">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-foreground truncate">{r.tenantName}</p>
+                        <p className="text-xs text-muted-foreground truncate mt-0.5">
+                          {r.roomNumber ? `Room ${r.roomNumber} · ` : ""}
+                          {counts ?? "No referrals yet"}
+                        </p>
+                        {!r.code && (
+                          <p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">
+                            No link yet
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-baseline gap-1.5">
+                            <span className="text-sm font-semibold text-foreground tabular-nums">
+                              {r.discountEarned > 0 ? rs(r.discountEarned) : "—"}
+                            </span>
+                            <span className="text-[11px] text-muted-foreground">earned</span>
+                          </div>
+                          {/* Muted, and never a badge: what is already off their
+                              bill and what is merely promised must not read as
+                              the same kind of number. */}
+                          {r.discountPending > 0 && (
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              {rs(r.discountPending)} coming
+                            </p>
+                          )}
+                          {/* Kept apart from Earned rather than stacked with it:
+                              both are realised money, but one is what this person
+                              cost and one is what they returned, and matching
+                              styles would read as one running total. */}
+                          {r.revenueFromReferred > 0 && (
+                            <p className="text-[11px] text-emerald-400 truncate">
+                              {rs(r.revenueFromReferred)} revenue
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">{actions}</div>
+                      </div>
+                    </div>
+
+                    {/* ── DESKTOP CELLS ───────────────────────────────────────
+                        display:none on a phone, so they take no grid slot. */}
+                    <div className="hidden md:block min-w-0">
                       <p className="text-sm font-medium text-foreground truncate">{r.tenantName}</p>
-                      {/* referred and joined stay adjacent and unseparated by
-                          anything else: the ratio between them is the number the
-                          owner is actually reading, not either figure alone. */}
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {r.roomNumber ? `Room ${r.roomNumber} · ` : ""}
-                        {r.totalReferred === 0 ? (
-                          "No referrals yet"
-                        ) : (
-                          <>
-                            <span className="text-foreground">{r.totalReferred} referred</span>
-                            {" · "}
-                            <span className="text-emerald-400">{r.joined} joined</span>
-                            {r.pending > 0 && (
-                              <span className="text-amber"> · {r.pending} waiting</span>
-                            )}
-                          </>
+                      <p className="text-xs text-muted-foreground truncate flex items-center gap-2">
+                        {r.roomNumber ? `Room ${r.roomNumber}` : <span className="text-muted-foreground/40">—</span>}
+                        {r.code && (
+                          <button
+                            onClick={() => handleRotate(r.tenantId)}
+                            disabled={busyId === r.tenantId}
+                            className="text-muted-foreground/50 hover:text-amber transition-colors disabled:opacity-40"
+                            title="Replace this link with a new one — the old link stops working"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                          </button>
                         )}
                       </p>
-                      {r.totalReferred > 0 && (
-                        <div className="flex flex-wrap items-center gap-2 mt-1.5">
-                          <span
-                            className={
-                              "text-[11px] font-medium px-2 py-0.5 rounded-full border shrink-0 " +
-                              (r.discountEarned > 0
-                                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-                                : "bg-white/5 text-muted-foreground border-white/10")
-                            }
-                          >
-                            Earned {rs(r.discountEarned)}
-                          </span>
-                          {/* Plain muted text, never a second badge: what is
-                              already off their bill and what is merely promised
-                              must not read as the same kind of number. */}
-                          {r.discountPending > 0 && (
-                            <span className="text-[11px] text-muted-foreground">
-                              {rs(r.discountPending)} coming
-                            </span>
-                          )}
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="gap-1.5 h-7 px-2 text-[11px]"
-                            onClick={() => viewReferralsOf(r.tenantId)}
-                            title={`Show every submission that came through ${r.tenantName}'s link`}
-                          >
-                            <Users className="w-3 h-3" />
-                            View referrals
-                          </Button>
-                        </div>
+                    </div>
+
+                    <div className="hidden md:block min-w-0 text-xs text-muted-foreground">
+                      {r.totalReferred > 0 ? (
+                        <button
+                          onClick={() => viewReferralsOf(r.tenantId)}
+                          className="hover:underline underline-offset-2"
+                          title={`Show every submission that came through ${r.tenantName}'s link`}
+                        >
+                          {counts}
+                        </button>
+                      ) : (
+                        <span className="text-muted-foreground/40">None yet</span>
                       )}
-                      {r.code && origin && (
-                        <p className="text-xs text-muted-foreground/80 mt-1.5 font-mono truncate">
-                          {referralLinkFor(origin, r.code)}
+                    </div>
+
+                    <div className="hidden md:block text-right min-w-0">
+                      {r.discountEarned > 0 ? (
+                        <p className="text-xs text-foreground tabular-nums">{rs(r.discountEarned)}</p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground/40">—</p>
+                      )}
+                      {r.discountPending > 0 && (
+                        <p className="text-[11px] text-muted-foreground tabular-nums">
+                          {rs(r.discountPending)} coming
                         </p>
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      {r.code ? (
-                        <>
-                          <CopyLinkButton link={origin ? referralLinkFor(origin, r.code) : ""} />
-                          <ShareOnWhatsAppButton
-                            tenantName={r.tenantName}
-                            phone={r.phone}
-                            link={origin ? referralLinkFor(origin, r.code) : ""}
-                            hostelName={hostelName}
-                            referrerPercent={referrerPercent}
-                            referredPercent={referredPercent}
-                          />
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="gap-1.5 h-8 text-xs"
-                            disabled={busyId === r.tenantId}
-                            onClick={() => handleRotate(r.tenantId)}
-                            title="Replace this link with a new one — the old link stops working"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                          </Button>
-                        </>
+                    <div className="hidden md:block text-right min-w-0">
+                      {r.revenueFromReferred > 0 ? (
+                        <p className="text-xs text-emerald-400 tabular-nums">
+                          {rs(r.revenueFromReferred)}
+                        </p>
                       ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="gap-1.5 h-8 text-xs"
-                          disabled={busyId === r.tenantId}
-                          onClick={() => handleEnsureCode(r.tenantId)}
-                        >
-                          {busyId === r.tenantId ? (
-                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Link2 className="w-3.5 h-3.5" />
-                          )}
-                          Create link
-                        </Button>
+                        <p className="text-xs text-muted-foreground/40">—</p>
                       )}
                     </div>
+
+                    <div className="hidden md:flex items-center gap-1.5 justify-end min-w-0">
+                      {actions}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </TabsContent>

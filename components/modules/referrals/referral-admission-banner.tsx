@@ -178,14 +178,17 @@ export function ReferralAdmissionBanner({
           {anonymous ? "Referred by a resident at another branch." : `Referral — ${who} sent this person.`}
         </p>
         {dates}
+        {/* One line, not three. The only thing the operator has to KNOW is that
+            the discount happens without them — the old copy said that three
+            different ways and buried it. "Enter the full rent" is gone because
+            the field is right there and already labelled; what stops them doing
+            the maths by hand is "applied automatically", not an instruction. */}
         <p className="text-foreground/80">
-          Enter the full rent below. A {percent}% welcome discount{" "}
-          {rentNum > 0 ? (
-            <span className="text-emerald-400 font-medium">(≈ {formatCurrency(estimate)})</span>
-          ) : (
-            <span className="text-emerald-400 font-medium">({percent}% of the rent you enter below)</span>
-          )}{" "}
-          is applied automatically on their first bill. Nothing else to do.
+          {percent}% off their first bill
+          {rentNum > 0 && (
+            <span className="text-emerald-400 font-medium"> (≈ {formatCurrency(estimate)})</span>
+          )}
+          {" — applied automatically."}
         </p>
       </Box>
     </div>

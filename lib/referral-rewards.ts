@@ -130,3 +130,19 @@ async function notifyPendingReferrers(admin: Admin, hostelId: string): Promise<v
     console.error("[referral-rewards] notify stamp failed:", stampError.code ?? "unknown");
   }
 }
+
+/** Unwinds Pulse's fee when the owner rejects a referral. Returns the amount
+ *  reversed, so the toast can name it. */
+export async function reversePulseCommission(
+  admin: Admin, referralId: string, reason: string
+): Promise<number> {
+  return callRpc(admin, "hms_reverse_pulse_commission", {
+    p_referral_id: referralId, p_reason: reason,
+  });
+}
+
+/** Un-rejecting restores the owner's discounts, so it restores the fee too.
+ *  Idempotent on the DB side — this can never charge twice. */
+export async function unreversePulseCommission(admin: Admin, referralId: string): Promise<number> {
+  return callRpc(admin, "hms_unreverse_pulse_commission", { p_referral_id: referralId });
+}

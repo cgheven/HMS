@@ -278,11 +278,6 @@ export function generateReceiptPDF(
       ? `${payment.billed_days} ${payment.billed_days === 1 ? "day" : "days"} x ${pk(payment.daily_rate_billed!)}`
       : "Monthly Rent";
     addKv(rentLabel, pk(Math.max(0, baseRent))); nl(12);
-    // Immediately under the rent, because it is a percentage OF the rent. Placed
-    // after the deposit and registration fee it read as a discount on the whole
-    // bill, which is both wrong and harder to check: a tenant should be able to
-    // see their agreed rent, the amount taken off it, and the total, in that order.
-    addReferralDiscount();
     if ((payment.food_charge ?? 0) > 0) {
       addKv("Food Charges", pk(payment.food_charge!)); nl(11);
       const mealsLabel = [tenant.food_breakfast && "Breakfast", tenant.food_lunch && "Lunch", tenant.food_dinner && "Dinner"]
@@ -330,6 +325,11 @@ export function generateReceiptPDF(
       addKv("Security Deposit Refund", pk(payment.security_deposit!)); nl(12);
       add(ML, "(to be returned to tenant)", 6, false); nl(10);
     }
+    // LAST, immediately above the total. Everything above it is added; this is
+    // the only line that is taken off, so putting it anywhere in the middle
+    // makes the column impossible to add down — the reader hits a subtraction,
+    // then more additions, and has to backtrack to check the total.
+    addReferralDiscount();
   }
   nl(2); addDash(); nl(10);
 

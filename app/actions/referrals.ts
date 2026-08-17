@@ -18,6 +18,8 @@ import { linkReferralForNewTenant } from "@/lib/referral-attribution";
 import {
   detachReferralRewards,
   grantReferralRewards,
+  reversePulseCommission,
+  unreversePulseCommission,
   voidReferralRewardsForReferral,
   voidReferralRewardsForTenant,
 } from "@/lib/referral-rewards";
@@ -252,6 +254,40 @@ function rupees(amount: number): string {
  * explained from hms_referrals.rewards_skipped_reason — otherwise "joined, and
  * nothing happened" is unanswerable at the support desk.
  */
+/**
+ * The same facts rewardSummaryFor renders as a sentence, split into the two
+ * parts a table wants: a figure it can right-align into a column, and a state it
+ * can render as a chip. Kept beside the summary builder so the two cannot
+ * disagree about what a set of reward rows means.
+ */
+function rewardFactsFor(
+  rows: RewardDbRow[] | undefined
+): { amount: number | null; state: "Applied" | "Queued" | "Held" | "Expired" | "None" } {
+  if (!rows || rows.length === 0) return { amount: null, state: "None" };
+
+  const applied = rows.filter((r) => r.status === "applied");
+  if (applied.length > 0) {
+    return {
+      amount: applied.reduce((sum, r) => sum + Number(r.applied_amount ?? 0), 0),
+      state: "Applied",
+    };
+  }
+
+  // Not yet collected, so the figure is the engine's own estimate off the
+  // tenant's rent — the same number estimateRewardValue feeds the liability
+  // total, so the two never disagree on screen.
+  const scheduled = rows.filter((r) => r.status === "scheduled");
+  if (scheduled.length > 0) {
+    return { amount: scheduled.reduce((s, r) => s + estimateRewardValue(r), 0), state: "Queued" };
+  }
+  const held = rows.filter((r) => r.status === "held");
+  if (held.length > 0) {
+    return { amount: held.reduce((s, r) => s + estimateRewardValue(r), 0), state: "Held" };
+  }
+  if (rows.some((r) => r.status === "expired")) return { amount: null, state: "Expired" };
+  return { amount: null, state: "None" };
+}
+
 function rewardSummaryFor(rows: RewardDbRow[] | undefined, skippedReason: string | null): string | null {
   if (!rows || rows.length === 0) {
     const reason = skippedReason ?? "";
@@ -262,13 +298,15 @@ function rewardSummaryFor(rows: RewardDbRow[] | undefined, skippedReason: string
   }
 
   const applied = rows.filter((r) => r.status === "applied");
-  const open = rows.filter((r) => r.status === "scheduled" || r.status === "held");
-
   if (applied.length > 0) {
     const total = applied.reduce((sum, r) => sum + Number(r.applied_amount ?? 0), 0);
     const month = shortMonth(applied[0].for_month);
-    const base = `Applied ${rupees(total)}${month ? ` · ${month}` : ""}`;
-    return open.length > 0 ? `${base} · ${open.length} more queued` : base;
+    // Deliberately says nothing about the rewards still open on this referral.
+    // `rows` covers BOTH sides, so on the referred person's row a trailing
+    // "1 more queued" is the REFERRER's money — a different person, unnamed,
+    // reported on someone else's line. The Rewards tab shows both sides with
+    // names, which is where that belongs.
+    return `Applied ${rupees(total)}${month ? ` · ${month}` : ""}`;
   }
 
   const scheduled = rows
@@ -290,6 +328,11 @@ function rewardSummaryFor(rows: RewardDbRow[] | undefined, skippedReason: string
 type RewardLedger = {
   rewards: ReferralRewardRow[];
   discountGivenThisMonth: number;
+  /** The same figure, but only rewards billed by the branch being VIEWED.
+   *  Owner-wide is right for the liability copy and the Rewards tab, and wrong
+   *  for a per-branch P&L subtraction — mixing them double-counts a
+   *  multi-branch owner across their own two Marketing pages. */
+  discountGivenThisMonthBranch: number;
   discountGivenTotal: number;
   /** tenant_id -> what that referrer has earned and is still owed. */
   byReferrer: Map<string, { earned: number; pendingValue: number }>;
@@ -303,11 +346,14 @@ type RewardLedger = {
 function buildRewardLedger(
   rows: RewardDbRow[],
   branchNameById: Map<string, string>,
-  currentMonthKey: string
+  currentMonthKey: string,
+  /** The branch whose Marketing page this is — see discountGivenThisMonthBranch. */
+  viewedHostelId: string
 ): RewardLedger {
   const rewards: ReferralRewardRow[] = [];
   const byReferral = new Map<string, RewardDbRow[]>();
   let discountGivenThisMonth = 0;
+  let discountGivenThisMonthBranch = 0;
   let discountGivenTotal = 0;
   // Per referrer: what they have actually had taken off a bill, and what is
   // still coming. Built here rather than from the mapped rows because only the
@@ -337,7 +383,10 @@ function buildRewardLedger(
 
     if (r.status === "applied") {
       discountGivenTotal += appliedAmount ?? 0;
-      if (r.for_month === currentMonthKey) discountGivenThisMonth += appliedAmount ?? 0;
+      if (r.for_month === currentMonthKey) {
+        discountGivenThisMonth += appliedAmount ?? 0;
+        if (r.hostel_id === viewedHostelId) discountGivenThisMonthBranch += appliedAmount ?? 0;
+      }
     }
     if (r.role === "referrer") {
       const m = byReferrer.get(r.tenant_id) ?? { earned: 0, pendingValue: 0 };
@@ -357,7 +406,7 @@ function buildRewardLedger(
   }
 
   return {
-    rewards, discountGivenThisMonth, discountGivenTotal,
+    rewards, discountGivenThisMonth, discountGivenThisMonthBranch, discountGivenTotal,
     openRewardCount, openRewardValue, byReferral, byReferrer,
   };
 }
@@ -396,17 +445,21 @@ function currentMonthKey(): string {
  * entitlement: the page has an explanatory empty state for that, and an
  * exception there would render a broken page instead.
  */
-export async function getReferralOverview(): Promise<{
+export async function getReferralOverview(month?: string): Promise<{
   data?: ReferralOverview;
   error?: string;
 }> {
   try {
+    // The month scopes what the page REPORTS, never what it reads: the queries
+    // below are already bounded by branch and by real admissions, and filtering
+    // in SQL would mean a round trip per month change for a set this small.
+    const scopeMonth = MONTH_KEY.test(month ?? "") ? (month as string) : currentMonthKey();
     const branch = await resolveBranch();
     const { hostelId, hostelName, enabled, ownerHostels, admin, referrerPercent, referredPercent } =
       branch;
 
     const scopeIds = rewardScopeIds(branch);
-    const monthKey = currentMonthKey();
+    const monthKey = scopeMonth;
     const branchNameById = new Map<string, string>([
       [hostelId, hostelName],
       ...ownerHostels.map((h) => [h.id, h.name] as [string, string]),
@@ -422,7 +475,8 @@ export async function getReferralOverview(): Promise<{
       const ledger = buildRewardLedger(
         (data ?? []) as unknown as RewardDbRow[],
         branchNameById,
-        monthKey
+        monthKey,
+        hostelId
       );
       return {
         data: {
@@ -435,8 +489,19 @@ export async function getReferralOverview(): Promise<{
           referrals: [],
           duplicateClaims: [],
           rewards: ledger.rewards,
+          month: monthKey,
+          joinedInMonth: 0,
+          joinedPaidInMonth: 0,
+          pulseCommissionInMonth: 0,
+          submittedInMonth: 0,
+          revenueInMonth: 0,
           discountGivenThisMonth: ledger.discountGivenThisMonth,
+          discountGivenThisMonthBranch: ledger.discountGivenThisMonthBranch,
           discountGivenTotal: ledger.discountGivenTotal,
+          // The referral rows are not read on this path, so there is nothing to
+          // total. Reported as 0 rather than omitted: the liability numbers above
+          // are the point of rendering a disabled branch at all.
+          revenueFromReferralsTotal: 0,
           openRewardCount: ledger.openRewardCount,
           openRewardValue: ledger.openRewardValue,
         },
@@ -471,7 +536,7 @@ export async function getReferralOverview(): Promise<{
         admin
           .from("hms_referrals")
           .select(
-            "id, name, phone, phone_digits, status, created_at, referrer_tenant_id, matched_tenant_id, matched_at, rejected_at, rejected_by, rewards_skipped_reason"
+            "id, name, phone, phone_digits, status, created_at, referrer_tenant_id, matched_tenant_id, matched_at, rejected_at, rejected_by, rewards_skipped_reason, pulse_commission_amount, pulse_commission_charged_at, pulse_commission_reversed_at"
           )
           .eq("hostel_id", hostelId)
           .order("created_at", { ascending: false }),
@@ -522,6 +587,9 @@ export async function getReferralOverview(): Promise<{
       created_at: string;
       referrer_tenant_id: string;
       matched_tenant_id: string | null;
+      pulse_commission_amount: number | string | null;
+      pulse_commission_charged_at: string | null;
+      pulse_commission_reversed_at: string | null;
       matched_at: string | null;
       rejected_at: string | null;
       rejected_by: string | null;
@@ -532,7 +600,8 @@ export async function getReferralOverview(): Promise<{
     const ledger = buildRewardLedger(
       (rewardsRes.data ?? []) as unknown as RewardDbRow[],
       branchNameById,
-      monthKey
+      monthKey,
+      hostelId
     );
 
     const tenantById = new Map(tenants.map((t) => [t.id, t]));
@@ -601,6 +670,45 @@ export async function getReferralOverview(): Promise<{
       );
     }
 
+    // ── Revenue from referred tenants ────────────────────────────────────────
+    // What each person a referral brought in has ACTUALLY PAID. Scoped to the
+    // matched tenants only, so this is a handful of rows even on a large branch.
+    //
+    // The definition is money KEPT, not money received: amount_paid less the
+    // refundable security deposit, floored at zero. A deposit sitting in the
+    // owner's account is a liability they owe back at checkout, and counting it
+    // as revenue would flatter every referral by the deposit amount and make the
+    // ROI readout say something untrue. Reservation rows are deposits in their
+    // entirety and drop out for the same reason.
+    const matchedIds = Array.from(
+      new Set(referrals.map((r) => r.matched_tenant_id).filter((id): id is string => !!id))
+    );
+    const revenueByTenant = new Map<string, number>();
+    let revenueInMonth = 0;
+    if (matchedIds.length > 0) {
+      const { data: paidRows, error: revenueErr } = await admin
+        .from("hms_payments")
+        .select("tenant_id, for_month, amount_paid, security_deposit_charge, is_reservation")
+        .in("tenant_id", matchedIds);
+      if (revenueErr) {
+        // Tolerated, like duplicate claims: a missing revenue column is a worse
+        // reason to 500 the whole page than to render it without the figure.
+        console.warn("[getReferralOverview] revenue unavailable:", revenueErr.code);
+      } else {
+        for (const row of paidRows ?? []) {
+          if (row.is_reservation) continue;
+          const kept =
+            Number(row.amount_paid ?? 0) - Number(row.security_deposit_charge ?? 0);
+          if (kept <= 0) continue;
+          revenueByTenant.set(
+            row.tenant_id as string,
+            (revenueByTenant.get(row.tenant_id as string) ?? 0) + kept
+          );
+          if (row.for_month === monthKey) revenueInMonth += kept;
+        }
+      }
+    }
+
     const referralRows: ReferralRow[] = referrals.map((r) => {
       // These rows were read BEFORE the auto-link above ran, so a freshly linked
       // referral would otherwise render as pending until the next load.
@@ -616,11 +724,19 @@ export async function getReferralOverview(): Promise<{
         createdAt: r.created_at,
         referrerTenantId: r.referrer_tenant_id,
         referrerName: tenantById.get(r.referrer_tenant_id)?.full_name ?? null,
+        referrerRoom: (() => {
+          const rt = tenantById.get(r.referrer_tenant_id);
+          const room = Array.isArray(rt?.room) ? rt?.room[0] : rt?.room;
+          return room?.room_number ?? null;
+        })(),
         matchedTenantName:
           matched?.name ?? (r.matched_tenant_id ? tenantById.get(r.matched_tenant_id)?.full_name ?? null : null),
         matchedAt: r.matched_at,
         rejectedAt: r.rejected_at,
         rejectedByName: r.rejected_by ? rejecterNames.get(r.rejected_by) ?? null : null,
+        revenueCollected: r.matched_tenant_id
+          ? revenueByTenant.get(r.matched_tenant_id) ?? 0
+          : null,
         // Only a referral that actually reached 'joined' can have produced money;
         // anything else is a lead, and labelling it with a reward state would
         // read as a promise the branch never made.
@@ -628,21 +744,32 @@ export async function getReferralOverview(): Promise<{
           r.status === "joined"
             ? rewardSummaryFor(ledger.byReferral.get(r.id), r.rewards_skipped_reason)
             : null,
+        rewardAmount:
+          r.status === "joined" ? rewardFactsFor(ledger.byReferral.get(r.id)).amount : null,
+        rewardState:
+          r.status === "joined" ? rewardFactsFor(ledger.byReferral.get(r.id)).state : null,
       };
     });
 
     type ReferrerTally = {
-      pending: number; joined: number; total: number; lastAt: string | null;
+      pending: number; joined: number; total: number; revenue: number; lastAt: string | null;
     };
+    // What the page SHOWS is the picked month; what it TOTALS is all time.
+    // Submission date, not join date: the owner picked "August" to ask what came
+    // in during August, and a referral that arrived in July and moved in during
+    // August belongs to July's effort.
+    const monthRows = referralRows.filter((r) => r.createdAt.slice(0, 7) === monthKey);
+
     const countsByReferrer = new Map<string, ReferrerTally>();
     // referralRows arrives newest-first, so the FIRST row seen for a referrer is
     // their most recent — no date comparison needed.
-    for (const row of referralRows) {
+    for (const row of monthRows) {
       const counts = countsByReferrer.get(row.referrerTenantId)
-        ?? { pending: 0, joined: 0, total: 0, lastAt: null };
+        ?? { pending: 0, joined: 0, total: 0, revenue: 0, lastAt: null };
       if (row.status === "pending") counts.pending += 1;
       if (row.status === "joined") counts.joined += 1;
       counts.total += 1;
+      counts.revenue += row.revenueCollected ?? 0;
       counts.lastAt ??= row.createdAt;
       countsByReferrer.set(row.referrerTenantId, counts);
     }
@@ -665,6 +792,7 @@ export async function getReferralOverview(): Promise<{
           discountEarned: money?.earned ?? 0,
           discountPending: money?.pendingValue ?? 0,
           lastReferralAt: counts?.lastAt ?? null,
+          revenueFromReferred: counts?.revenue ?? 0,
         };
       })
       // Most recent referral activity first — a link handed out in March that
@@ -710,11 +838,33 @@ export async function getReferralOverview(): Promise<{
         referrerPercent,
         referredPercent,
         referrers,
-        referrals: referralRows,
+        referrals: monthRows,
         duplicateClaims,
         rewards: ledger.rewards,
+        month: monthKey,
+        joinedInMonth: monthRows.filter((r) => r.status === "joined").length,
+        // Bucketed on when the fee was CHARGED, not when the referral was
+        // submitted: a link shared in July that converts in August is August's
+        // charge, and filing it under July would drop a fee into a month that
+        // has already been reported on. Reversed fees are excluded — a rejected
+        // referral costs the owner nothing.
+        pulseCommissionInMonth: referrals
+          .filter(
+            (r) =>
+              r.status === "joined" &&
+              !r.pulse_commission_reversed_at &&
+              (r.pulse_commission_charged_at ?? "").slice(0, 7) === monthKey
+          )
+          .reduce((sum, r) => sum + Number(r.pulse_commission_amount ?? 0), 0),
+        joinedPaidInMonth: monthRows.filter(
+          (r) => r.status === "joined" && (r.revenueCollected ?? 0) > 0
+        ).length,
+        submittedInMonth: monthRows.length,
+        revenueInMonth,
         discountGivenThisMonth: ledger.discountGivenThisMonth,
+        discountGivenThisMonthBranch: ledger.discountGivenThisMonthBranch,
         discountGivenTotal: ledger.discountGivenTotal,
+        revenueFromReferralsTotal: Array.from(revenueByTenant.values()).reduce((a, b) => a + b, 0),
         openRewardCount: ledger.openRewardCount,
         openRewardValue: ledger.openRewardValue,
       },
@@ -850,7 +1000,7 @@ export async function rotateReferralCode(
  */
 export async function rejectReferral(
   referralId: string
-): Promise<{ success?: boolean; voided?: number; error?: string }> {
+): Promise<{ success?: boolean; voided?: number; commissionReversed?: number; error?: string }> {
   try {
     const { hostelId, admin, profile } = await resolveBranch();
 
@@ -874,18 +1024,26 @@ export async function rejectReferral(
     // above is the owner's decision and must stand even if the ledger call fails.
     const voided = await voidReferralRewardsForReferral(admin, referralId, "referral_rejected");
 
+    // Pulse's fee unwinds with the owner's discounts. Without this the platform
+    // keeps 15% of a conversion the owner has just declared invalid — and note
+    // the asymmetry that would create: fraud the DATABASE catches costs the
+    // client nothing, while fraud a HUMAN catches would cost them 15%.
+    const commissionReversed = await reversePulseCommission(admin, referralId, "referral_rejected");
+
     await logActivity({
       hostel_id: hostelId,
       actor_id: profile.id,
       action: "referral.reject",
       entity: "referral",
       entity_id: referralId,
-      meta: { rewards_voided: voided },
+      // The reversed fee is in the audit trail beside the voided rewards: it is
+      // Pulse revenue being given back, and it must be reconstructable later.
+      meta: { rewards_voided: voided, commission_reversed: commissionReversed },
     });
 
     revalidatePath("/marketing");
     revalidatePath("/payments");
-    return { success: true, voided };
+    return { success: true, voided, commissionReversed };
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to reject referral" };
@@ -934,6 +1092,10 @@ export async function undoRejectReferral(
     // A no-op when the restored status is 'pending' — nothing to pay yet.
     const granted =
       restored === "joined" ? await grantReferralRewards(admin, referralId) : 0;
+    // The discounts come back, so the fee does too. Idempotent on the DB side:
+    // a referral whose amount survived the reversal becomes chargeable again
+    // rather than being charged a second time.
+    if (restored === "joined") await unreversePulseCommission(admin, referralId);
 
     await logActivity({
       hostel_id: hostelId,

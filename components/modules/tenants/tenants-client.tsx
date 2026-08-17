@@ -3308,19 +3308,20 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       onChange={(e) => setApproveForm({ ...approveForm, ac_maintenance: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Leave blank for the branch rate of {configAcMaintenance}. Enter 0 to waive it.
+                      Enter 0 to waive it for this tenant.
                     </p>
                   </div>
                 )}
                 {configRegistrationFee > 0 && (
                   <div className="space-y-1.5">
-                    <Label>Registration Fee (PKR) — one-time, non-refundable</Label>
+                    <Label>Registration Fee</Label>
                     <Input
                       type="number"
                       placeholder="0"
                       value={approveForm.registration_fee || ""}
                       onChange={(e) => setApproveForm({ ...approveForm, registration_fee: parseFloat(e.target.value) || 0 })}
                     />
+                    <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
                   </div>
                 )}
               </div>
@@ -3625,14 +3626,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5 sm:col-span-2"><Label>Full Name *</Label><Input placeholder="Ahmed Khan" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Phone *</Label><Input placeholder="+92 300 0000000" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
-              {/* Full width even though Phone is a half-width cell — the copy is a
-                  paragraph, and squeezed into one column it stacks 8 lines deep. */}
-              <ReferralAdmissionBanner
-                className="sm:col-span-2"
-                phone={form.phone}
-                rent={form.billing_type === "monthly" ? form.monthly_rent : form.daily_rate}
-                onReferralFound={prefillReferredName}
-              />
               <div className="space-y-1.5">
                 <Label>CNIC</Label>
                 <Input
@@ -3645,6 +3638,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   <p className="text-xs text-rose-400">Format: XXXXX-XXXXXXX-X</p>
                 )}
               </div>
+              {/* Spans both columns, so it must sit between two COMPLETE rows or
+                  it splits a pair. The grid runs Phone|CNIC then Email|Type —
+                  this is the boundary between them, directly under the phone
+                  number that triggered it. */}
+              <ReferralAdmissionBanner
+                className="sm:col-span-2"
+                phone={form.phone}
+                rent={form.billing_type === "monthly" ? form.monthly_rent : form.daily_rate}
+                onReferralFound={prefillReferredName}
+              />
               <div className="space-y-1.5"><Label>Email</Label><Input type="email" placeholder="tenant@email.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Type</Label>
                 <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v as SpaceType })}>
@@ -4146,13 +4149,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Leave blank for the branch rate of {configAcMaintenance}. Enter 0 to waive it for
-                      this tenant. Only applies to AC rooms.
+                      Enter 0 to waive it for this tenant.
                     </p>
                   </div>
                 )}
                 {configRegistrationFee > 0 && (
-                  <div className="space-y-1.5"><Label>Registration Fee (PKR) — one-time, non-refundable</Label><Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} /></div>
+                  <div className="space-y-1.5">
+                    <Label>Registration Fee</Label>
+                    <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
+                    <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
+                  </div>
                 )}
               </div>
             ) : (
@@ -4171,14 +4177,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Leave blank for the branch rate of {configAcMaintenance}. Enter 0 to waive it for
-                      this tenant. Only applies to AC rooms.
+                      Enter 0 to waive it for this tenant.
                     </p>
                   </div>
                 )}
                 {configRegistrationFee > 0 && (
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5"><Label>Registration Fee (PKR) — one-time, non-refundable</Label><Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} /></div>
+                    <div className="space-y-1.5">
+                    <Label>Registration Fee</Label>
+                    <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
+                    <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
+                  </div>
                   </div>
                 )}
                 <div className="grid grid-cols-2 gap-4">
