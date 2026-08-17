@@ -84,6 +84,9 @@ interface Props {
   // Super-Admin-curated flag — the "Send Reminders Now" bulk button only
   // renders when this branch has been granted the automated feature.
   autoReminderEnabled?: boolean;
+  /** Branches that bill electricity per room meter EVERY room, not only the ones
+   *  with an air conditioner. */
+  meterAllRooms?: boolean;
   /** Every month's room readings, not just the one on screen — the AC tab derives
    *  the selected month and the preceding one from this, so stepping months needs
    *  no round trip. */
@@ -261,7 +264,7 @@ function waTick(m: { status: string; error_code: number | null } | undefined):
 
 const NO_AC_READINGS: NonNullable<Props["acReadings"]> = [];
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, acReadings: allAcReadings = NO_AC_READINGS, acJoinReadings = [], lastWhatsApp = {}, partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, meterAllRooms = false, acReadings: allAcReadings = NO_AC_READINGS, acJoinReadings = [], lastWhatsApp = {}, partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
   const isPartner = !!partnerTier;
   const isManager = !!managerPermissions;
   const canCollect = managerPermissions?.includes("collect_payments") ?? false;
@@ -887,9 +890,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const acRooms = useMemo(() => {
     const activeRoomIds = new Set(tenants.map(t => t.room_id).filter(Boolean));
     return rooms
-      .filter(r => r.has_ac && activeRoomIds.has(r.id))
+      // has_ac is the physical fact; meterAllRooms is the billing rule. A branch
+      // billing electricity per room offers every occupied room here, so the
+      // opening/closing readings and unit entry are available for all of them.
+      .filter(r => (r.has_ac || meterAllRooms) && activeRoomIds.has(r.id))
       .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
-  }, [rooms, tenants]);
+  }, [rooms, tenants, meterAllRooms]);
 
   // Only include payments for currently active tenants. Checked-out tenants have
   // is_active=false so they're absent from the `tenants` prop — their payment rows

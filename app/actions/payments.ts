@@ -759,7 +759,13 @@ export async function applyRoomACUnitsAction(
 
     // ── Verify room + fetch package config + prev month reading + tenants in parallel ──
     const prevMonthStr = getPrevMonth(forMonth);
-    const [{ data: room }, { data: pkgConfig }, { data: prevRecord }, { data: allTenants, error: allTenantsErr }] = await Promise.all([
+    const [
+      { data: room },
+      { data: pkgConfig },
+      { data: prevRecord },
+      { data: allTenants, error: allTenantsErr },
+      { data: branch },
+    ] = await Promise.all([
       supabase.from("hms_rooms").select("id, hostel_id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).single(),
       supabase.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
@@ -773,6 +779,10 @@ export async function applyRoomACUnitsAction(
         .eq("room_id", roomId)
         .eq("is_active", true)
         .lt("check_in", firstOfNextMonth(forMonth)),
+      // Branches that bill electricity per room meter EVERY room, not only the
+      // ones with an air conditioner. Joined to the existing fan-out, so this
+      // costs no extra round trip.
+      supabase.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).single(),
     ]);
 
     // A failed tenant query returns null, which falls through to "No active
@@ -781,7 +791,12 @@ export async function applyRoomACUnitsAction(
     if (allTenantsErr) throw new Error(`Could not read this room's tenants: ${allTenantsErr.message}`);
 
     if (!room) throw new Error("Room not found or access denied");
-    if (!room.has_ac) throw new Error("This room does not have AC");
+    // has_ac is the PHYSICAL fact (listing, seater pricing); meter_all_rooms is
+    // the BILLING rule. A branch that bills electricity per room passes the
+    // second without having to lie about the first.
+    if (!room.has_ac && !branch?.meter_all_rooms) {
+      throw new Error("This room is not metered. Turn on \"Bill electricity to every room\" in Settings, or mark the room as having AC.");
+    }
 
     const perUnitRate = Number(pkgConfig?.ac_per_unit_rate ?? 0);
     if (perUnitRate <= 0) throw new Error("AC per-unit rate is not configured. Set it in Settings → Packages.");

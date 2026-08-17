@@ -121,7 +121,7 @@ export async function getManagerTenants() {
 export async function getManagerPaymentsPageData(forMonth: string) {
   const scope = await resolveManagerHostel();
   if (!scope) {
-    return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, acReadings: [], acJoinReadings: [], waitingTenantIds: [] };
+    return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, meterAllRooms: false, acReadings: [], acJoinReadings: [], waitingTenantIds: [] };
   }
 
   const { hostelId } = scope;
@@ -152,7 +152,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
       .eq("hostel_id", hostelId),
     getManagerPackageConfig(hostelId),
     admin.from("hms_hostels")
-      .select("id, name, phone, whatsapp, payment_methods, reminder_template")
+      .select("id, name, phone, whatsapp, payment_methods, reminder_template, meter_all_rooms")
       .eq("id", hostelId)
       .maybeSingle(),
     // All months — see getPaymentsPageData() for why this is not month-scoped.
@@ -180,7 +180,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     throw new Error(`Payments page could not load for ${forMonth}: ${readErr.message}`);
   }
 
-  const h = hostel as Pick<Hostel, "id" | "name" | "phone" | "whatsapp" | "payment_methods" | "reminder_template"> | null;
+  const h = hostel as Pick<Hostel, "id" | "name" | "phone" | "whatsapp" | "payment_methods" | "reminder_template" | "meter_all_rooms"> | null;
 
   return {
     hostelId,
@@ -192,6 +192,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     hostelPhone: h?.whatsapp ?? h?.phone ?? null,
     paymentMethods: h?.payment_methods ?? [],
     reminderTemplate: h?.reminder_template ?? null,
+    meterAllRooms: h?.meter_all_rooms ?? false,
     acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     waitingTenantIds: (waitingTenants ?? []).map((t) => t.id as string),
