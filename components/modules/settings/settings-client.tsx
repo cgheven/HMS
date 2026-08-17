@@ -100,6 +100,10 @@ export function SettingsClient() {
   const [savingHostel, setSavingHostel] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
 
+  /** Lives on hms_hostels, not hms_package_configs, but belongs beside the
+   *  receipt label in the UI — both answer "how does this branch bill
+   *  electricity?". Saved by savePackageConfig in the same click. */
+  const [meterAllRooms, setMeterAllRooms] = useState(false);
   const [packageForm, setPackageForm] = useState<{ ac_charge_label: string; ac_per_unit_rate: string; security_deposit: string; registration_fee: string; ac_maintenance_rate: string; notice_period_days: string; washroom_premium: string; prices: PkgPriceForm }>({
     ac_charge_label: "", ac_per_unit_rate: "", security_deposit: "", registration_fee: "", ac_maintenance_rate: "", notice_period_days: "30", washroom_premium: "", prices: emptyPriceForm(),
   });
@@ -432,6 +436,7 @@ export function SettingsClient() {
 
   useEffect(() => {
     if (hostel) {
+      setMeterAllRooms(!!(hostel as { meter_all_rooms?: boolean }).meter_all_rooms);
       setHostelForm({
         name: hostel.name ?? "",
         address: hostel.address ?? "",
@@ -535,6 +540,19 @@ export function SettingsClient() {
       if (no_ac > 0 || ac > 0 || deposit_no_ac > 0 || deposit_ac > 0) {
         seaterPayload[c] = { no_ac, ac, deposit_no_ac, deposit_ac };
       }
+    }
+
+    // Written first and separately: it is a hms_hostels column, not part of the
+    // package config. Failing here must not silently save the rest, so its error
+    // aborts before the upsert rather than after.
+    const { error: meterErr } = await supabase
+      .from("hms_hostels")
+      .update({ meter_all_rooms: meterAllRooms })
+      .eq("id", hostelId);
+    if (meterErr) {
+      setSavingPackage(false);
+      toast({ title: "Error", description: meterErr.message, variant: "destructive" });
+      return;
     }
 
     const { data, error } = await supabase
@@ -1040,6 +1058,23 @@ export function SettingsClient() {
                   Wording only — billing is unchanged. Leave blank to print &quot;AC Charges&quot;. Set it to
                   &quot;Electricity Charges&quot; if this branch bills one electricity charge covering the AC.
                 </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Bill electricity to every room</Label>
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={meterAllRooms}
+                    onChange={(e) => setMeterAllRooms(e.target.checked)}
+                    disabled={!packageLoaded}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-amber cursor-pointer"
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    Lets you record meter readings and units for <strong className="text-foreground">every</strong> room,
+                    not only rooms marked as having AC. Turn this on if the whole building is metered for
+                    electricity. Which rooms show &quot;AC&quot; on your public listing is unaffected.
+                  </span>
+                </label>
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Attached Washroom Premium (Rs. / month)</Label>
