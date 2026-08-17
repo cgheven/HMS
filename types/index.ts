@@ -219,6 +219,10 @@ export interface Hostel {
   /** Per-branch entitlement for tenant referral links. Super Admin only — a DB
    *  trigger rejects any write to this column that carries a user session. */
   referral_enabled: boolean;
+  /** Bills every room for metered units, not only rooms with an air conditioner.
+   *  For branches that charge electricity per room — has_ac stays the physical
+   *  fact used by the public listing and by seater pricing. */
+  meter_all_rooms?: boolean;
   wifi_networks: WifiNetwork[];
   welcome_message_template: string | null;
   meal_times: MealTimes;
