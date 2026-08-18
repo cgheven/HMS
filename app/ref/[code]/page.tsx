@@ -5,8 +5,32 @@ import { ReferralFormClient } from "./referral-form-client";
 
 // The code in the path is a live credential — an indexed copy of this URL is a
 // working referral link in a search result.
+//
+// The OpenGraph block is what a messenger renders when a tenant pastes their
+// link into a chat. Without it the page inherited the root metadata, whose copy
+// sells the product to hostel OWNERS — "manage your hostel, expenses, kitchen
+// and bills" — shown to a prospective tenant being offered a discount.
+//
+// Deliberately STATIC: resolving the code here would mean getReferralTarget()
+// runs twice per request, double-counting both the per-IP rate limiter and the
+// link-open counter. It also keeps the branch name out of the card, which a
+// forwarded screenshot would otherwise carry.
 export const metadata: Metadata = {
   robots: { index: false, follow: false, nocache: true },
+  title: "You have been invited",
+  description: "A friend has invited you. Open to see your discount and reserve your place.",
+  openGraph: {
+    title: "You have been invited",
+    description: "A friend has invited you. Open to see your discount and reserve your place.",
+    images: ["/opengraph-image.jpg"],
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "You have been invited",
+    description: "A friend has invited you. Open to see your discount and reserve your place.",
+    images: ["/opengraph-image.jpg"],
+  },
 };
 
 export const dynamic = "force-dynamic";
