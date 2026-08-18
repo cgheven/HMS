@@ -1008,6 +1008,14 @@ export async function getPaymentsPageData(forMonth: string) {
       .select("tenant_id, status, error_code, created_at")
       .eq("hostel_id", hostelId)
       .not("tenant_id", "is", null)
+      // Rent messages only. This badge sits on the Payments row, where an owner
+      // reads it as "did their reminder arrive" — but it took each tenant's
+      // last WhatsApp of ANY type, so a referral blast that WhatsApp rejected
+      // marked 45 fully-paid tenants "Failed" on the rent screen. A marketing
+      // send says nothing about whether they were chased for money, and its
+      // delivery state now lives on Marketing -> Tenant links, which is the
+      // page about link distribution.
+      .neq("message_type", "marketing")
       .or("error_code.is.null,error_code.neq.131047")
       .gte("created_at", new Date(Date.now() - 45 * 86_400_000).toISOString())
       .order("created_at", { ascending: false }),

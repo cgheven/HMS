@@ -530,7 +530,7 @@ export async function getReferralOverview(month?: string): Promise<{
       hostel_id: string;
     };
 
-    const [tenantsRes, codesRes, referralsRes, otherTenantsRes, duplicatesRes, rewardsRes] =
+    const [tenantsRes, codesRes, referralsRes, otherTenantsRes, duplicatesRes, rewardsRes, invitesRes] =
       await Promise.all([
         admin
           .from("hms_tenants")
@@ -569,6 +569,27 @@ export async function getReferralOverview(month?: string): Promise<{
           .order("created_at", { ascending: false })
           .limit(200),
         ownerRewardsQuery(admin, scopeIds),
+        // Delivery state of the referral invite itself.
+        //
+        // Whether a tenant was TOLD about their link is a fact about this page,
+        // not about their rent — and until now the only place it surfaced was
+        // the Payments screen, which shows each tenant's last WhatsApp of any
+        // type. A failed marketing blast therefore badged 45 fully-paid tenants
+        // as "Failed" on the rent page, where an owner reads it as a broken
+        // reminder.
+        //
+        // Matched on the template prefix rather than message_type: 'marketing'
+        // also carries hms_lead_feature_update, which goes to sales leads and
+        // has nothing to do with a tenant's referral link. The prefix keeps v1
+        // and v2 together, so today's rejected v2 sends still show as failures.
+        admin
+          .from("hms_whatsapp_messages")
+          .select("tenant_id, status, error_code, created_at")
+          .eq("hostel_id", hostelId)
+          .not("tenant_id", "is", null)
+          .like("template", "hms_referral_invitation%")
+          .order("created_at", { ascending: false })
+          .limit(1000),
       ]);
 
     if (tenantsRes.error) throw tenantsRes.error;
@@ -617,6 +638,20 @@ export async function getReferralOverview(month?: string): Promise<{
 
     const tenantById = new Map(tenants.map((t) => [t.id, t]));
     const codeByTenant = new Map((codesRes.data ?? []).map((c) => [c.tenant_id, c.code]));
+    // First row wins: the query is ordered newest-first, so this keeps the most
+    // recent attempt per tenant and ignores earlier ones. A tenant whose invite
+    // failed and was later re-sent successfully should read as delivered, not
+    // carry the old failure forever.
+    const inviteByTenant = new Map<string, { status: string; at: string }>();
+    for (const m of invitesRes.data ?? []) {
+      const id = m.tenant_id as string;
+      if (!id || inviteByTenant.has(id)) continue;
+      inviteByTenant.set(id, {
+        status: String(m.status ?? ""),
+        at: String(m.created_at ?? ""),
+      });
+    }
+
     const linkStatsByTenant = new Map(
       (codesRes.data ?? []).map((c) => [
         c.tenant_id as string,
@@ -815,6 +850,20 @@ export async function getReferralOverview(month?: string): Promise<{
           revenueFromReferred: counts?.revenue ?? 0,
           linkOpens: linkStatsByTenant.get(t.id)?.opens ?? 0,
           linkShares: linkStatsByTenant.get(t.id)?.shares ?? 0,
+          // read is kept SEPARATE from delivered on purpose. Collapsing them
+          // answered "did it arrive", when the question an owner actually has
+          // is "did they look at it" — a tenant who never opened the message is
+          // someone to nudge, and one who read it and still did not tap the
+          // link is a different problem entirely. queued and sent remain merged
+          // as "on its way"; failed and undelivered both mean "did not arrive".
+          inviteStatus: (() => {
+            const m = inviteByTenant.get(t.id);
+            if (!m) return "none" as const;
+            if (m.status === "read") return "read" as const;
+            if (m.status === "delivered") return "delivered" as const;
+            if (m.status === "failed" || m.status === "undelivered") return "failed" as const;
+            return "sending" as const;
+          })(),
         };
       })
       // Most recent referral activity first — a link handed out in March that

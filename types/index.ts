@@ -1437,6 +1437,11 @@ export interface ReferrerRow {
   /** All-time link-preview fetches: the closest observable proxy for this person
    *  pasting their link into a chat. Forwarding itself is invisible to us. */
   linkShares: number
+  /** Did the invite telling them about their link actually arrive?
+   *  'none' = never attempted. Belongs here rather than on Payments, where a
+   *  failed marketing blast was badging paid tenants as "Failed" on the rent
+   *  screen. */
+  inviteStatus: "none" | "sending" | "delivered" | "read" | "failed"
   /** Most recent submission through their link. Null if they have never been
    *  used. Drives the sort: the person who sent someone yesterday matters more
    *  than the person who has held a link since March. */

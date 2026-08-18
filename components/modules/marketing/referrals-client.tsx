@@ -1799,6 +1799,65 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                 // exactly how the header drifted off its data last time.
                 // All-time by nature, so it carries its own explanation rather
                 // than being silently read as the selected month's.
+                // Did the invite reach them? Shown here because this tab is
+                // about link distribution — and because its only previous home
+                // was the Payments page, which badges each tenant with their
+                // last WhatsApp of ANY type, so a failed referral blast marked
+                // 45 fully-paid tenants "Failed" on the rent screen.
+                //
+                // Delivered is deliberately quiet, not a green badge: it is the
+                // expected state on most rows, and colouring it would drown the
+                // one row that needs attention. Only trouble is loud.
+                const invite =
+                  r.inviteStatus === "failed" ? (
+                    <span
+                      className="text-rose-400"
+                      title="WhatsApp did not deliver their referral link. They have not been told about it."
+                    >
+                      Not delivered
+                    </span>
+                  ) : r.inviteStatus === "sending" ? (
+                    <span className="text-muted-foreground/70">Sending…</span>
+                  ) : r.inviteStatus === "read" ? (
+                    <span
+                      className="text-emerald-400/80"
+                      title="They opened the WhatsApp message containing their referral link."
+                    >
+                      Read
+                    </span>
+                  ) : r.inviteStatus === "delivered" ? (
+                    <span
+                      className="text-muted-foreground/60"
+                      title="Delivered to their phone, but not opened yet. WhatsApp only reports this if the tenant has read receipts switched on, so some people stay on Delivered permanently."
+                    >
+                      Delivered
+                    </span>
+                  ) : r.code ? (
+                    <span
+                      className="text-amber/80"
+                      title="This tenant has a referral link but has never been sent it."
+                    >
+                      Not sent
+                    </span>
+                  ) : null;
+
+                // Whether they went on to OPEN the link, which is a separate
+                // question from whether they read the message — and the one an
+                // owner can act on.
+                //
+                // Rendered as "0 opens" rather than a sentence: it matches the
+                // "3 opens · 1 share" form used the moment there is any
+                // activity, so the column reads as one consistent measure
+                // instead of prose that changes shape at 1. Only shown once the
+                // message has landed — a zero beside an undelivered invite
+                // would blame the tenant for something that never reached them.
+                const linkActivity =
+                  r.linkOpens > 0 || r.linkShares > 0
+                    ? null
+                    : r.inviteStatus === "read" || r.inviteStatus === "delivered"
+                      ? <span className="text-muted-foreground/50">0 opens</span>
+                      : null;
+
                 const reach =
                   r.linkOpens > 0 || r.linkShares > 0 ? (
                     <span
@@ -1826,8 +1885,12 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                           {r.roomNumber ? `Room ${r.roomNumber} · ` : ""}
                           {counts ?? "No referrals yet"}
                         </p>
-                        {reach && (
-                          <p className="text-[11px] truncate mt-0.5">{reach}</p>
+                        {(invite || reach || linkActivity) && (
+                          <p className="text-[11px] truncate mt-0.5">
+                            {invite}
+                            {invite && (reach || linkActivity) ? " · " : ""}
+                            {reach ?? linkActivity}
+                          </p>
                         )}
                         {!r.code && (
                           <p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">
@@ -1897,7 +1960,13 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                       ) : (
                         <span className="text-muted-foreground/40">None yet</span>
                       )}
-                      {reach && <p className="text-[11px] truncate mt-0.5">{reach}</p>}
+                      {(invite || reach || linkActivity) && (
+                        <p className="text-[11px] truncate mt-0.5">
+                          {invite}
+                          {invite && (reach || linkActivity) ? " · " : ""}
+                          {reach ?? linkActivity}
+                        </p>
+                      )}
                     </div>
 
                     <div className="hidden md:block text-right min-w-0">
