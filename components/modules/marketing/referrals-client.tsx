@@ -27,6 +27,29 @@ import type {
 
 type StatusFilter = "all" | ReferralStatus;
 
+/**
+ * Why a referral link did not go out, in words an owner can act on.
+ *
+ * Keyed on the reason strings sendReferralInvite returns. Anything unmapped
+ * falls back to a message that says to contact support rather than inventing a
+ * cause — the previous copy asserted three specific reasons unconditionally,
+ * and stated them confidently while the real fault was a rejected template.
+ */
+const REASON_COPY: Record<string, string> = {
+  send_failed:
+    "WhatsApp rejected the messages. Nobody was charged and nobody was marked as sent — please contact support before trying again.",
+  no_phone: "no mobile number on file.",
+  not_resident: "they are on the waiting list or have checked out.",
+  already_sent: "they already have their link.",
+  campaign_not_active: "the campaign is not running.",
+  whatsapp_off: "WhatsApp is not enabled for this branch.",
+  referrals_off: "referrals are not enabled for this branch.",
+  no_offer: "both discount percentages are set to 0.",
+  no_code: "no active referral link.",
+  token_failed: "their private status link could not be created.",
+  unknown: "please contact support.",
+};
+
 const STATUS_FILTERS: StatusFilter[] = ["all", "pending", "joined", "rejected"];
 
 /** 'void' is filtered out server-side — a cancelled reward is not a line item. */
@@ -1019,13 +1042,30 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
       <ConfirmDialog
         open={confirmStart}
         onCancel={() => setConfirmStart(false)}
-        title={ov.campaign === "paused" ? "Resume the campaign?" : "Start the referral campaign?"}
+        title={
+          ov.campaign === "paused"
+            ? "Resume the campaign?"
+            : ov.campaign === "active"
+              ? `Send ${ov.unsentCount} pending link${ov.unsentCount === 1 ? "" : "s"}?`
+              : "Start the referral campaign?"
+        }
         description={
           ov.campaign === "paused"
             ? "New tenants will start receiving their referral link again."
-            : `${ov.unsentCount} tenant${ov.unsentCount === 1 ? "" : "s"} will receive their own referral link by WhatsApp, and every tenant admitted from now on will get one automatically. Nobody is ever messaged twice for the same link.`
+            : ov.campaign === "active"
+              ? // Named separately from the first-run copy: "start the campaign"
+                // is the wrong sentence for a campaign already running, and an
+                // owner reaching this dialog has usually just had a blast fail.
+                `${ov.unsentCount} tenant${ov.unsentCount === 1 ? " has" : "s have"} a referral link but ${ov.unsentCount === 1 ? "has" : "have"} never been sent it. This messages only them — anyone already sent their link is skipped.`
+              : `${ov.unsentCount} tenant${ov.unsentCount === 1 ? "" : "s"} will receive their own referral link by WhatsApp, and every tenant admitted from now on will get one automatically. Nobody is ever messaged twice for the same link.`
         }
-        confirmLabel={ov.campaign === "paused" ? "Resume" : "Start and send"}
+        confirmLabel={
+          ov.campaign === "paused"
+            ? "Resume"
+            : ov.campaign === "active"
+              ? "Send now"
+              : "Start and send"
+        }
         onConfirm={() =>
           startTransition(async () => {
             const res =
@@ -1037,9 +1077,23 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
               return;
             }
             if ("sent" in res) {
+              const sent = res.sent ?? 0;
+              const skipped = res.skipped ?? 0;
+              // A blast where NOTHING sent is a fault, not a result, and must
+              // not be reported in the same calm voice as a partial one. The
+              // old copy guessed at the reason and guessed wrong, which is how
+              // a template error read as "already sent" to a client.
+              const failedOutright = sent === 0 && skipped > 0;
               toast({
-                title: `${res.sent ?? 0} link${res.sent === 1 ? "" : "s"} sent`,
-                description: (res.skipped ?? 0) > 0 ? `${res.skipped} skipped (already sent, no number, or not a resident).` : undefined,
+                variant: failedOutright ? "destructive" : undefined,
+                title: failedOutright
+                  ? `Could not send — 0 of ${res.queued ?? skipped} went out`
+                  : `${sent} link${sent === 1 ? "" : "s"} sent`,
+                description: failedOutright
+                  ? REASON_COPY[res.reason ?? "unknown"] ?? REASON_COPY.unknown
+                  : skipped > 0
+                    ? `${skipped} skipped — ${REASON_COPY[res.reason ?? "unknown"] ?? REASON_COPY.unknown}`
+                    : undefined,
               });
             }
             setConfirmStart(false);
@@ -1222,12 +1276,40 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                   </span>
                   Campaign live
                 </span>
+                {/* The escape hatch from a campaign that started but did not
+                    send.
+                    
+                    Start only ever ran on the off -> active transition, and
+                    nothing in the app can set 'off' again — so a branch whose
+                    blast failed had its flag flipped to active with nobody
+                    messaged and no button left that could reach them. It
+                    happened to a live client: 52 codes minted, 52 sends
+                    rejected by Meta, campaign showing as running, and the only
+                    control on screen was Pause.
+                    
+                    Reuses startReferralCampaign unchanged, which is already
+                    idempotent — it re-sets a flag that is already active, mints
+                    only missing codes, and sends only where link_sent_at is
+                    null. So this can be pressed twice with no duplicate
+                    message. Deliberately not shown while paused: paused means
+                    stop outbound, and a send button there would contradict it. */}
+                {ov.unsentCount > 0 && (
+                  <Button
+                    onClick={() => setConfirmStart(true)}
+                    disabled={isPending || !ov.whatsappEnabled}
+                    size="sm"
+                    className="gap-2 ml-auto sm:ml-0 bg-amber text-background border-amber hover:bg-amber/90 font-semibold"
+                  >
+                    <Megaphone className="w-4 h-4" />
+                    Send {ov.unsentCount} pending
+                  </Button>
+                )}
                 <Button
                   onClick={handlePause}
                   disabled={isPending}
                   size="sm"
                   variant="outline"
-                  className="gap-2 ml-auto sm:ml-0"
+                  className={cn("gap-2", ov.unsentCount > 0 ? "" : "ml-auto sm:ml-0")}
                 >
                   <Pause className="w-4 h-4" />
                   Pause

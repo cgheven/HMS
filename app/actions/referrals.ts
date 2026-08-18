@@ -1754,6 +1754,12 @@ export async function grantReferralRewardManually(
 export async function startReferralCampaign(): Promise<{
   sent?: number;
   skipped?: number;
+  /** True when the circuit breaker stopped the blast — see the loop below. */
+  aborted?: boolean;
+  /** Dominant skip reason, for a message that says what actually happened. */
+  reason?: string;
+  /** How many were in the queue before any of it ran. */
+  queued?: number;
   error?: string;
 }> {
   try {
@@ -1796,13 +1802,38 @@ export async function startReferralCampaign(): Promise<{
 
     let sent = 0;
     let skipped = 0;
+    // Why each one was skipped, so the toast can say something true. The old
+    // message guessed — "already sent, no number, or not a resident" — and when
+    // 52 sends were rejected by Meta for a template error it reported exactly
+    // that, none of which was the case. The owner pressed Start again.
+    const reasons = new Map<string, number>();
+    let aborted = false;
     // Sequential on purpose: Meta paces marketing sends, and a burst of 56 is
     // exactly what trips a pacing pause on a number that also carries payment
     // reminders.
-    for (const c of codes ?? []) {
+    const queue = codes ?? [];
+    for (const c of queue) {
       const res = await sendReferralInvite(admin, c.id as string);
-      if (res.sent) sent += 1;
-      else skipped += 1;
+      if (res.sent) {
+        sent += 1;
+      } else {
+        skipped += 1;
+        const why = res.reason ?? "unknown";
+        reasons.set(why, (reasons.get(why) ?? 0) + 1);
+        // Circuit breaker. A rejected template, a revoked token, an unverified
+        // number — these fail identically for every recipient, and the loop
+        // used to discover that 52 times in a row. Five failures with nothing
+        // delivered is not bad luck with phone numbers, it is a configuration
+        // problem, and continuing only fills a client's message log with noise.
+        //
+        // Only ever trips on send_failed (Meta refused). The local skips —
+        // already_sent, no_phone, not_resident — are per-tenant and expected in
+        // any healthy blast, so they must never stop it.
+        if (why === "send_failed" && sent === 0 && skipped >= 5) {
+          aborted = true;
+          break;
+        }
+      }
     }
 
     await logActivity({
@@ -1811,11 +1842,14 @@ export async function startReferralCampaign(): Promise<{
       action: "referral_campaign.start",
       entity: "hostel",
       entity_id: hostelId,
-      meta: { sent, skipped },
+      meta: { sent, skipped, aborted, reasons: Object.fromEntries(reasons) },
     });
 
     revalidatePath("/marketing");
-    return { sent, skipped };
+    // The single most common reason, which is the one worth putting in front of
+    // somebody: a mixed blast is normal, a uniform failure is a fault.
+    const topReason = [...reasons.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    return { sent, skipped, aborted, reason: topReason, queued: queue.length };
   } catch (err) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Failed to start the campaign" };
