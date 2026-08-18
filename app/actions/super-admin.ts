@@ -8,6 +8,7 @@ import { writeAuditLog } from "@/lib/audit";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import { isTestOwner } from "@/lib/test-accounts";
 import { normalizeSubdomain, subdomainError } from "@/lib/subdomain";
+import type { GrowthBranchRow, GrowthTotals } from "@/types";
 
 // ── Guard ─────────────────────────────────────────────────────────────────────
 
@@ -892,5 +893,174 @@ export async function setClientSubdomain(
     return { subdomain: value };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to save subdomain" };
+  }
+}
+
+// ── getGrowthAnalytics ────────────────────────────────────────────────────────
+// Sales-enablement view: where the empty beds are, and what referrals have
+// actually returned on the branches running them. The two halves are only
+// useful together — empty seats are the problem a prospect already has, and the
+// referral figures are the evidence that this product fills them.
+
+export async function getGrowthAnalytics(): Promise<{
+  branches?: GrowthBranchRow[];
+  totals?: GrowthTotals;
+  error?: string;
+}> {
+  try {
+    await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const [hostelsRes, roomsRes, tenantsRes, referralsRes, rewardsRes] = await Promise.all([
+      admin
+        .from("hms_hostels")
+        .select("id, owner_id, name, city, referral_enabled, referral_campaign")
+        .order("name"),
+      admin.from("hms_rooms").select("hostel_id, capacity"),
+      // room_id decides whether a bed is taken; is_waiting excludes the queue,
+      // who have been promised nothing yet.
+      admin
+        .from("hms_tenants")
+        .select("id, hostel_id, room_id, is_active, is_waiting")
+        .eq("is_active", true),
+      admin
+        .from("hms_referrals")
+        .select("hostel_id, status, matched_tenant_id, pulse_commission_amount, pulse_commission_reversed_at"),
+      admin.from("hms_referral_rewards").select("hostel_id, status, applied_amount"),
+    ]);
+
+    if (hostelsRes.error) throw hostelsRes.error;
+
+    const hostels = hostelsRes.data ?? [];
+    const realHostels = hostels.filter((h) => !isTestOwner(h.owner_id));
+
+    const capacityByHostel = new Map<string, number>();
+    for (const r of roomsRes.data ?? []) {
+      capacityByHostel.set(
+        r.hostel_id as string,
+        (capacityByHostel.get(r.hostel_id as string) ?? 0) + Number(r.capacity ?? 0)
+      );
+    }
+
+    // Derived from tenants, never from hms_rooms.occupied.
+    //
+    // That counter is maintained by application code and has drifted: on
+    // production it reads 60 for a branch with 52 tenants actually in rooms,
+    // and 49 for one with 50. Publishing "8 empty beds that are not empty" to a
+    // sales team is worse than publishing nothing.
+    const filledByHostel = new Map<string, number>();
+    const unroomedByHostel = new Map<string, number>();
+    const waitingByHostel = new Map<string, number>();
+    for (const t of tenantsRes.data ?? []) {
+      const h = t.hostel_id as string;
+      if (t.is_waiting) {
+        waitingByHostel.set(h, (waitingByHostel.get(h) ?? 0) + 1);
+        continue;
+      }
+      if (t.room_id) filledByHostel.set(h, (filledByHostel.get(h) ?? 0) + 1);
+      else unroomedByHostel.set(h, (unroomedByHostel.get(h) ?? 0) + 1);
+    }
+
+    // Every referred tenant, so their payments can be summed in one pass rather
+    // than one query per branch.
+    const referredTenantIds = (referralsRes.data ?? [])
+      .filter((r) => r.status === "joined" && r.matched_tenant_id)
+      .map((r) => r.matched_tenant_id as string);
+
+    const revenueByTenant = new Map<string, number>();
+    if (referredTenantIds.length > 0) {
+      const { data: paidRows } = await admin
+        .from("hms_payments")
+        .select("tenant_id, amount_paid, security_deposit_charge, is_reservation")
+        .in("tenant_id", referredTenantIds);
+      for (const p of paidRows ?? []) {
+        if (p.is_reservation) continue;
+        // A refundable deposit is the tenant's money being held, not revenue.
+        const kept = Number(p.amount_paid ?? 0) - Number(p.security_deposit_charge ?? 0);
+        if (kept <= 0) continue;
+        revenueByTenant.set(
+          p.tenant_id as string,
+          (revenueByTenant.get(p.tenant_id as string) ?? 0) + kept
+        );
+      }
+    }
+
+    const refByHostel = new Map<
+      string,
+      { submitted: number; joined: number; revenue: number; commission: number }
+    >();
+    for (const r of referralsRes.data ?? []) {
+      const h = r.hostel_id as string;
+      const acc = refByHostel.get(h) ?? { submitted: 0, joined: 0, revenue: 0, commission: 0 };
+      acc.submitted += 1;
+      if (r.status === "joined") {
+        acc.joined += 1;
+        if (r.matched_tenant_id) acc.revenue += revenueByTenant.get(r.matched_tenant_id) ?? 0;
+      }
+      // A reversed fee was charged and unwound; counting it would overstate what
+      // the platform actually earned.
+      if (!r.pulse_commission_reversed_at) {
+        acc.commission += Number(r.pulse_commission_amount ?? 0);
+      }
+      refByHostel.set(h, acc);
+    }
+
+    const discountByHostel = new Map<string, number>();
+    for (const w of rewardsRes.data ?? []) {
+      if (w.status !== "applied") continue;
+      discountByHostel.set(
+        w.hostel_id as string,
+        (discountByHostel.get(w.hostel_id as string) ?? 0) + Number(w.applied_amount ?? 0)
+      );
+    }
+
+    const branches: GrowthBranchRow[] = realHostels.map((h) => {
+      const capacity = capacityByHostel.get(h.id) ?? 0;
+      const filled = filledByHostel.get(h.id) ?? 0;
+      const ref = refByHostel.get(h.id);
+      return {
+        hostelId: h.id,
+        name: h.name,
+        city: h.city ?? null,
+        capacity,
+        filled,
+        // Clamped: a branch can legitimately hold more tenants than beds while
+        // rooms are still being entered, and a negative "empty seats" is not a
+        // number anybody can act on.
+        emptySeats: Math.max(0, capacity - filled),
+        occupancyPercent: capacity > 0 ? Math.round((filled / capacity) * 100) : 0,
+        unroomedTenants: unroomedByHostel.get(h.id) ?? 0,
+        waitingTenants: waitingByHostel.get(h.id) ?? 0,
+        referralEnabled: h.referral_enabled === true,
+        campaign: (h.referral_campaign as string) ?? "off",
+        referralsSubmitted: ref?.submitted ?? 0,
+        referralsJoined: ref?.joined ?? 0,
+        referralRevenue: ref?.revenue ?? 0,
+        referralDiscounts: discountByHostel.get(h.id) ?? 0,
+        pulseCommission: ref?.commission ?? 0,
+      };
+    });
+
+    const sum = (pick: (b: GrowthBranchRow) => number) => branches.reduce((s, b) => s + pick(b), 0);
+    const totalCapacity = sum((b) => b.capacity);
+    const totalFilled = sum((b) => b.filled);
+
+    return {
+      branches,
+      totals: {
+        branches: branches.length,
+        capacity: totalCapacity,
+        filled: totalFilled,
+        emptySeats: sum((b) => b.emptySeats),
+        occupancyPercent: totalCapacity > 0 ? Math.round((totalFilled / totalCapacity) * 100) : 0,
+        referralsJoined: sum((b) => b.referralsJoined),
+        referralRevenue: sum((b) => b.referralRevenue),
+        referralDiscounts: sum((b) => b.referralDiscounts),
+        pulseCommission: sum((b) => b.pulseCommission),
+        branchesRunningReferrals: branches.filter((b) => b.referralEnabled).length,
+      },
+    };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to load analytics" };
   }
 }

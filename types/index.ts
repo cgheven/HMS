@@ -1593,3 +1593,47 @@ export interface ReferralOverview {
   unsentCount: number
   whatsappEnabled: boolean
 }
+
+/** One branch on the Super Admin growth page. Occupancy and referral performance
+ *  side by side: empty seats are the problem a prospect already has, the
+ *  referral figures are the evidence this product solves it. */
+export interface GrowthBranchRow {
+  hostelId: string
+  name: string
+  city: string | null
+  /** Sum of hms_rooms.capacity for the branch. 0 means rooms were never set up,
+   *  which is a data-entry state, not a full hostel. */
+  capacity: number
+  /** Active, non-waiting tenants who hold a room. Derived from hms_tenants —
+   *  NOT hms_rooms.occupied, which has drifted from reality in production. */
+  filled: number
+  /** capacity - filled, clamped at 0. The pitch number. */
+  emptySeats: number
+  occupancyPercent: number
+  /** Active tenants with no room assigned. They pay, but occupy no bed, so they
+   *  are outside the occupancy ratio and would otherwise silently vanish. */
+  unroomedTenants: number
+  waitingTenants: number
+  referralEnabled: boolean
+  campaign: string
+  referralsSubmitted: number
+  referralsJoined: number
+  /** Everything referred tenants have paid, net of refundable deposits. */
+  referralRevenue: number
+  /** Rupees actually taken off bills — 'applied' only, never promised. */
+  referralDiscounts: number
+  pulseCommission: number
+}
+
+export interface GrowthTotals {
+  branches: number
+  capacity: number
+  filled: number
+  emptySeats: number
+  occupancyPercent: number
+  referralsJoined: number
+  referralRevenue: number
+  referralDiscounts: number
+  pulseCommission: number
+  branchesRunningReferrals: number
+}
