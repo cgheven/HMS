@@ -64,27 +64,26 @@ export function ReferralFormClient({ code, hostelName, referredPercent }: Props)
             <h2 className="text-2xl font-serif font-normal tracking-tight text-foreground">
               You&apos;re on the list
             </h2>
+            {/* The reward first and as a figure, then one instruction.
+              
+                The previous copy was a single 200-character paragraph that
+                opened with "your discount" without ever saying how much,
+                stated the 14-day limit twice — once as a promise and again as
+                a threat — and buried the only thing the reader has to DO at
+                the very end. Someone reading this on a phone, seconds after
+                submitting, needs the number and the next step, not a clause
+                about what stops applying. */}
+            {offersDiscount && (
+              <p className="text-xl font-semibold text-emerald-400 mt-2">
+                {referredPercent}% off your first month
+              </p>
+            )}
             <p className="text-muted-foreground mt-2 text-sm leading-relaxed">
-              {offersDiscount ? (
-                <>
-                  Your discount comes off your first bill and is valid for{" "}
-                  <span className="font-semibold text-foreground">
-                    {REFERRAL_PENDING_TTL_DAYS} days
-                  </span>{" "}
-                  from today. Visit{" "}
-                  <span className="font-semibold text-foreground">{hostelName}</span> and give this
-                  mobile number when you arrive — after {REFERRAL_PENDING_TTL_DAYS} days the
-                  discount no longer applies.
-                </>
-              ) : (
-                <>
-                  Visit <span className="font-semibold text-foreground">{hostelName}</span> within{" "}
-                  <span className="font-semibold text-foreground">
-                    {REFERRAL_PENDING_TTL_DAYS} days
-                  </span>{" "}
-                  and give this mobile number when you arrive.
-                </>
-              )}
+              Visit <span className="font-semibold text-foreground">{hostelName}</span> within{" "}
+              <span className="font-semibold text-foreground">
+                {REFERRAL_PENDING_TTL_DAYS} days
+              </span>{" "}
+              and give this number when you arrive.
             </p>
           </div>
         </div>
