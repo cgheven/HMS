@@ -31,6 +31,52 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
   return {
     rules: [
       {
+        // Link-preview crawlers, allowed onto /ref/ only.
+        //
+        // facebookexternalhit HONOURS robots.txt, so the blanket Disallow below
+        // meant WhatsApp refused to scrape a referral link and rendered a bare
+        // "hostel.yourpulse.io" card with no logo — the tenant shares their link
+        // and it looks broken.
+        //
+        // Safe, because these agents do not publish to a search index: they
+        // build a preview card for the person who pasted the link, who already
+        // holds it. Nothing is exposed that the recipient could not already see
+        // by opening it. /rs/ stays disallowed even here — it renders somebody's
+        // name and earnings, and a preview of that is a leak in any context.
+        userAgent: [
+          "facebookexternalhit",
+          "facebookcatalog",
+          "WhatsApp",
+          "Twitterbot",
+          "LinkedInBot",
+          "Slackbot-LinkExpanding",
+          "TelegramBot",
+        ],
+        allow: ["/", "/pricing", "/guide", "/ref/"],
+        disallow: [
+          "/api/",
+          "/dashboard",
+          "/overview",
+          "/settings",
+          "/website",
+          "/tenants",
+          "/payments",
+          "/reports",
+          "/super-admin",
+          "/admin",
+          "/sales",
+          "/portal",
+          "/redflag",
+          "/s/",
+          "/r/",
+          "/rs/",
+          "/invoice/",
+          "/complaint/",
+          "/forgot-password",
+          "/reset-password",
+        ],
+      },
+      {
         userAgent: "*",
         // No "/find": the bare index 404s for anonymous visitors by design.
         allow: ["/", "/pricing", "/guide"],
