@@ -1,9 +1,10 @@
 import type { MetadataRoute } from "next";
 import { headers } from "next/headers";
 import { brandedLabelFromHost } from "@/lib/subdomain";
+import { siteUrl } from "@/lib/site-url";
 
 /** Pinned for the same reason as in app/sitemap.ts. */
-const MAIN_SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+const MAIN_SITE_URL = siteUrl();
 
 export const dynamic = "force-dynamic";
 

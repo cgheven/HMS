@@ -2,8 +2,9 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { TEMPLATES, clientBillingDueParams, clientFirstInvoiceParams, clientPaymentReceivedParams } from "@/lib/whatsapp-templates";
+import { siteUrl } from "@/lib/site-url";
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+const SITE_URL = siteUrl();
 
 export interface InvoiceWhatsAppResult {
   sent: boolean;

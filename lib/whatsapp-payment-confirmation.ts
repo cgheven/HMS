@@ -5,8 +5,9 @@ import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { TEMPLATES, paymentConfirmedParams } from "@/lib/whatsapp-templates";
 import { sendPaymentReceiptEmail } from "@/lib/email";
 import { formatMonthLong } from "@/lib/utils";
+import { siteUrl } from "@/lib/site-url";
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+const SITE_URL = siteUrl();
 
 /**
  * Sends the approved hms_payment_confirmed template after a payment is

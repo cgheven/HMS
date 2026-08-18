@@ -5,11 +5,12 @@ import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { TEMPLATES } from "@/lib/whatsapp-templates";
 import { normalizePhoneDigits } from "@/lib/phone";
 import { mintStatusToken, referralStatusUrl } from "@/lib/referral-status";
+import { siteUrl } from "@/lib/site-url";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Admin = SupabaseClient<any, any, any>;
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+const SITE_URL = siteUrl();
 
 /**
  * Sends one tenant their referral link.

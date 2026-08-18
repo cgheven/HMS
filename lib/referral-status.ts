@@ -3,6 +3,7 @@ import "server-only";
 import { createHash, randomBytes } from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizePhoneDigits } from "@/lib/phone";
+import { siteUrl } from "@/lib/site-url";
 
 // Server-side core for the tenant's own referral status page.
 //
@@ -16,7 +17,7 @@ import { normalizePhoneDigits } from "@/lib/phone";
 // The two shapes are mutually exclusive, so the CHECK on status_token_hash
 // genuinely rejects a raw token written into the hash column by mistake.
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+const SITE_URL = siteUrl();
 
 function hashToken(raw: string): string {
   return createHash("sha256").update(raw, "utf8").digest("hex");

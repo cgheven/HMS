@@ -2,11 +2,12 @@ import type { MetadataRoute } from "next";
 import { headers } from "next/headers";
 import { getPublicHostelsBySubdomain } from "@/app/actions/public";
 import { brandedLabelFromHost } from "@/lib/subdomain";
+import { siteUrl } from "@/lib/site-url";
 
 /** Pinned, not Host-derived: on the main deployment every alias that resolves
  *  here (preview URLs, hms.yourpulse.io) would otherwise publish its own copy
  *  of the same sitemap under a different hostname. */
-const MAIN_SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+const MAIN_SITE_URL = siteUrl();
 
 export const dynamic = "force-dynamic";
 

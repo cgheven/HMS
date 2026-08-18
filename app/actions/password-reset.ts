@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendPasswordResetEmail } from "@/lib/email";
 import { EMAIL_RE } from "@/lib/validation";
+import { siteUrl } from "@/lib/site-url";
 
 /**
  * Password reset — request step.
@@ -188,7 +189,7 @@ export async function requestPasswordReset(
     // The cost, stated plainly: the recovery token exists in this function's
     // memory for the duration of one call. It is never logged, never returned to
     // the caller, and never written anywhere. Nothing below may print it.
-    const origin = (process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io").replace(/\/+$/, "");
+    const origin = siteUrl();
     const { data: link, error: linkErr } = await admin.auth.admin.generateLink({
       type: "recovery",
       email: address,

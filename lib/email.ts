@@ -1,12 +1,13 @@
 import "server-only";
 import { Resend } from "resend";
 import { pktTodayDateString } from "@/lib/pkt-time";
+import { siteUrl } from "@/lib/site-url";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Verified sender — configure RESEND_FROM_EMAIL in env (must match a verified Resend domain)
 const FROM = process.env.RESEND_FROM_EMAIL ?? "Pulse HMS <noreply@yourpulse.io>";
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+const SITE_URL = siteUrl();
 
 // Escape user-supplied content before embedding in HTML to prevent injection.
 // The apostrophe is escaped too: without it this is safe in a double-quoted

@@ -3,8 +3,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendClientInvoiceEmail } from "@/lib/email";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import { ONBOARDING_FEE, listSubtotalFromDiscount } from "@/lib/pricing";
+import { siteUrl } from "@/lib/site-url";
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+const SITE_URL = siteUrl();
 
 /** Days between reminders once an invoice has been sent — email and
  *  WhatsApp go out together on the same cadence. */

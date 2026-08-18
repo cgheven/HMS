@@ -52,3 +52,4 @@ control.txt
 *.sql.gz
 *.backup
 backups/
+.vercel

@@ -8,6 +8,7 @@ import type {
   FeedbackRecommend,
   FeedbackRoommate,
 } from "@/types";
+import { siteUrl } from "@/lib/site-url";
 
 // Server-side core for tenant checkout feedback.
 //
@@ -16,7 +17,7 @@ import type {
 // browser may ask for. The one function the public form needs is exported from
 // app/actions/feedback.ts instead.
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+const SITE_URL = siteUrl();
 
 // 32 bytes = 256 bits, base64url = 43 characters, no padding.
 //

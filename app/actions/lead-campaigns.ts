@@ -10,6 +10,7 @@ import { normalizePhoneDigits } from "@/lib/phone";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { parseMetaTemplate, campaignGreeting, type CampaignTemplate, type MetaTemplate } from "@/lib/lead-campaigns";
 import type { CampaignAudienceRow, CampaignSendSummary, LeadStatus } from "@/types";
+import { siteUrl } from "@/lib/site-url";
 
 /** Throws rather than redirects — these are server actions whose callers catch
  *  and surface the message, and a redirect() thrown inside those catch blocks
@@ -41,7 +42,7 @@ async function fetchApprovedTemplates(): Promise<CampaignTemplate[]> {
   const waba = process.env.WABA_ID;
   if (!token || !waba) throw new Error("WHATSAPP_TOKEN or WABA_ID is not configured");
 
-  const origin = (process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io").replace(/\/+$/, "");
+  const origin = siteUrl();
   const res = await fetch(
     `https://graph.facebook.com/${META_API_VERSION}/${waba}/message_templates` +
       `?fields=name,language,status,category,components&limit=200`,

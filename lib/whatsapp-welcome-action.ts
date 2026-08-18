@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { buildWelcomeMessage } from "@/lib/whatsapp-welcome";
+import { siteUrl } from "@/lib/site-url";
 
 export interface WelcomeSendResult {
   ok: boolean;
@@ -39,7 +40,7 @@ interface BuiltWelcome {
 async function getSiteOrigin(): Promise<string> {
   const h = await headers();
   const host = h.get("host");
-  if (!host) return process.env.NEXT_PUBLIC_SITE_URL ?? "https://hostel.yourpulse.io";
+  if (!host) return siteUrl();
   const protocol = host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https";
   return `${protocol}://${host}`;
 }
