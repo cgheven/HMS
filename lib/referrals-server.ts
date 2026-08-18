@@ -10,13 +10,6 @@ import { normalizeReferralCode, REFERRAL_VIEW_HOURLY_LIMIT } from "@/lib/referra
 // one: its only caller is the /ref/[code] server component, and as an action it
 // was an unmetered service-role query anyone holding a link could loop.
 
-/**
- * Read the client IP the way the rest of the codebase does — rightmost entry,
- * set by the trusted proxy, never the client-supplied left of the chain.
- * `||` and not `??`: a proxy that sets x-real-ip to "" must fall through, and
- * an empty string is exactly the value that has silently disabled a rate limit
- * in this codebase before.
- */
 // A link pasted into a chat is fetched by the messenger to build its preview
 // card, and that arrives here as a normal request with a bot user-agent. It is
 // the only observable trace of a share — forwarding itself is invisible to us —
@@ -33,27 +26,49 @@ const PREVIEW_BOT_RE =
 /**
  * Records one hit against a referral link, split into open vs share.
  *
- * FIRE AND FORGET, via after(): this is analytics on a public page, and a
- * counter that cannot be written is never a reason to fail somebody's referral
- * link. after() also keeps the UPDATE off the response path, so the page does
- * not wait on it.
+ * The RPC write is deferred with after() so it stays off the response path, but
+ * the request state it depends on is read during the render — see below. Every
+ * failure is swallowed: analytics is never a reason to fail somebody's link.
  */
-function trackLinkHit(admin: ReturnType<typeof createAdminClient>, codeId: string): void {
+async function trackLinkHit(
+  admin: ReturnType<typeof createAdminClient>,
+  codeId: string
+): Promise<void> {
+  // The user-agent is read HERE, inside the render, not inside after().
+  // Request APIs are not reliably reachable from an after() callback — the
+  // headers() call threw there, was swallowed by the inner catch, and the
+  // feature silently counted nothing at all. Capture request state while the
+  // request still exists; leave only the write for afterwards.
+  let ua = "";
   try {
-    after(async () => {
-      try {
-        const ua = (await headers()).get("user-agent") ?? "";
-        const kind = PREVIEW_BOT_RE.test(ua) ? "share" : "view";
-        await admin.rpc("hms_referral_link_hit", { p_code_id: codeId, p_kind: kind });
-      } catch {
-        // Swallowed by design.
-      }
-    });
+    ua = (await headers()).get("user-agent") ?? "";
   } catch {
-    // after() throws outside a request scope. Nothing to do and nothing to say.
+    return;
+  }
+  const kind = PREVIEW_BOT_RE.test(ua) ? "share" : "view";
+  const write = async () => {
+    try {
+      await admin.rpc("hms_referral_link_hit", { p_code_id: codeId, p_kind: kind });
+    } catch {
+      // Swallowed by design: a counter is never a reason to fail a referral link.
+    }
+  };
+  try {
+    after(write);
+  } catch {
+    // No after() scope (a non-request caller). Writing inline is slower than
+    // deferring but silently losing every count is worse.
+    await write();
   }
 }
 
+/**
+ * Read the client IP the way the rest of the codebase does — rightmost entry,
+ * set by the trusted proxy, never the client-supplied left of the chain.
+ * `||` and not `??`: a proxy that sets x-real-ip to "" must fall through, and
+ * an empty string is exactly the value that has silently disabled a rate limit
+ * in this codebase before.
+ */
 export async function clientIp(): Promise<string | null> {
   try {
     const headersList = await headers();
@@ -151,7 +166,7 @@ export async function getReferralTarget(rawCode: string): Promise<ReferralTarget
   // letting it increment anything would make the funnel countable by strangers.
   // Deliberately above the paused check — a paused campaign still tells the
   // owner their tenants are circulating the link.
-  trackLinkHit(admin, row.id);
+  await trackLinkHit(admin, row.id);
   // Paused, not dead. The link is genuinely this tenant's and works again the
   // moment the owner resumes, so a stranger is told to come back rather than
   // told the link is broken.
