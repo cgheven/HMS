@@ -186,6 +186,21 @@ export async function sendWhatsAppMessage(
 // into the approved body positionally, it does not accept named substitution.
 export interface TemplateSendOptions {
   /**
+   * Values for dynamic URL buttons, in button order.
+   *
+   * A template's URL button is approved as a fixed base plus one {{1}} suffix —
+   * e.g. https://hostel.yourpulse.io/ref/{{1}} — so the value sent here is the
+   * SUFFIX ONLY (the code, the token), never the whole URL. Meta rejects a
+   * parameter that would change the approved origin.
+   *
+   * Why buttons at all: text in the body counts toward the length at which
+   * WhatsApp collapses a message behind "Read more", and a body containing a
+   * URL also makes WhatsApp render a link-preview card. A link moved into a
+   * button costs neither.
+   */
+  buttonUrlSuffixes?: string[];
+
+  /**
    * Public HTTPS URL of the header image, for a template approved with an
    * IMAGE header.
    *
@@ -220,6 +235,18 @@ export async function sendWhatsAppTemplateMessage(
       parameters: bodyVariables.map((text) => ({ type: "text", text })),
     });
   }
+  // One component per dynamic URL button, each carrying its own index. Meta
+  // matches them by `index`, not by array position, so a template whose first
+  // button is static and second is dynamic still needs index 1 here — hence an
+  // explicit index rather than relying on order.
+  (options.buttonUrlSuffixes ?? []).forEach((suffix, index) => {
+    components.push({
+      type: "button",
+      sub_type: "url",
+      index: String(index),
+      parameters: [{ type: "text", text: suffix }],
+    });
+  });
 
   return postToMeta(
     {
