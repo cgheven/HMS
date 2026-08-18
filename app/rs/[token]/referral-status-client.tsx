@@ -83,9 +83,27 @@ export function ReferralStatusClient({ token }: { token: string }) {
           <Tile label="Earned" value={rs(data.earned)} accent />
           <Tile
             label="On the way"
-            value={data.pending > 0 ? `${data.pending} pending` : "—"}
+            value={
+              data.pendingAmount > 0
+                ? rs(data.pendingAmount)
+                : data.pending > 0
+                  ? `${data.pending} pending`
+                  : "—"
+            }
           />
         </div>
+
+        {/* Without this, somebody who has just referred a friend who joined AND
+            paid reads "Earned Rs 0" and concludes the programme did nothing.
+            Worded to hold in both cases: the discount may already be sitting on
+            an unpaid bill, or be waiting for the next one to be raised. Earned
+            counts only what has been settled, which is the part nobody guesses. */}
+        {data.pendingAmount > 0 && (
+          <p className="text-xs text-muted-foreground text-center">
+            {rs(data.pendingAmount)} is lined up for you — it moves to Earned once
+            the rent bill it lands on is paid.
+          </p>
+        )}
 
         {data.campaign !== "paused" && (
           <div className="rounded-xl border p-4 space-y-2">

@@ -46,9 +46,15 @@ export type ReferralStatus = {
   joined: number;
   /** Money already taken off their bills. */
   earned: number;
-  /** Earned but not yet applied — a promise, shown separately so it never reads
-   *  as money they already have. */
+  /** How many rewards are earned but not yet applied. */
   pending: number;
+  /** What those pending rewards are worth, in rupees.
+   *
+   *  A scheduled reward stores only `percent` — applied_amount is filled at
+   *  settlement — so this is rent x percent, the same estimate the Marketing
+   *  page shows the owner. 0 when the rent is unknown (a daily-billed tenant),
+   *  in which case the count is the only honest thing to show. */
+  pendingAmount: number;
   /** First names only. Never a phone, a CNIC, a room, or a full name — this
    *  page is reachable by anyone holding the URL. */
   people: { name: string; joined: boolean }[];
@@ -77,7 +83,7 @@ export async function getReferralStatus(
     .from("hms_referral_codes")
     .select(
       "id, code, tenant_id, hostel_id, is_active, " +
-        "tenant:hms_tenants(full_name, phone_digits, is_active), " +
+        "tenant:hms_tenants(full_name, phone_digits, is_active, monthly_rent), " +
         "hostel:hms_hostels(name, referral_campaign, referral_referrer_percent, referral_referred_percent)"
     )
     .eq("status_token_hash", hashToken(rawToken))
@@ -88,8 +94,8 @@ export async function getReferralStatus(
   // is the row. Narrowed once here rather than at each field.
   const r = row as unknown as {
     id: string; code: string; tenant_id: string; hostel_id: string;
-    tenant: { full_name: string; phone_digits: string | null; is_active: boolean }
-          | { full_name: string; phone_digits: string | null; is_active: boolean }[] | null;
+    tenant: { full_name: string; phone_digits: string | null; is_active: boolean; monthly_rent: number | null }
+          | { full_name: string; phone_digits: string | null; is_active: boolean; monthly_rent: number | null }[] | null;
     hostel: { name: string; referral_campaign: string; referral_referrer_percent: number; referral_referred_percent: number }
           | { name: string; referral_campaign: string; referral_referrer_percent: number; referral_referred_percent: number }[] | null;
   };
@@ -120,9 +126,18 @@ export async function getReferralStatus(
   const earned = (rewards ?? [])
     .filter((r) => r.status === "applied")
     .reduce((s, r) => s + Number(r.applied_amount ?? 0), 0);
-  const pending = (rewards ?? []).filter(
+  const pendingRewards = (rewards ?? []).filter(
     (r) => r.status === "scheduled" || r.status === "held"
-  ).length;
+  );
+  // "Rs 0 earned, 1 pending" is what a tenant saw after successfully referring
+  // somebody who joined AND paid — a count answers "how many", when the only
+  // question they have is "how much". Estimated the same way the owner's
+  // Marketing page estimates it, so the two screens cannot disagree.
+  const rent = Number(tenant.monthly_rent ?? 0);
+  const pendingAmount = pendingRewards.reduce(
+    (s, r) => s + Math.round((rent * Number(r.percent ?? 0)) / 100),
+    0
+  );
 
   return {
     tenantName: tenant.full_name ?? "",
@@ -134,7 +149,8 @@ export async function getReferralStatus(
     totalReferred: list.length,
     joined: list.filter((r) => r.status === "joined").length,
     earned,
-    pending,
+    pending: pendingRewards.length,
+    pendingAmount,
     // FIRST NAME ONLY. The full name of somebody who did not consent to appear
     // on a page their friend can forward is not ours to publish.
     people: list.map((r) => ({
