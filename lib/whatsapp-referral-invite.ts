@@ -4,10 +4,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { TEMPLATES } from "@/lib/whatsapp-templates";
 import { normalizePhoneDigits } from "@/lib/phone";
-import { mintStatusToken } from "@/lib/referral-status";
+import { mintStatusToken, referralStatusUrl } from "@/lib/referral-status";
+import { siteUrl } from "@/lib/site-url";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Admin = SupabaseClient<any, any, any>;
+
+const SITE_URL = siteUrl();
 
 /**
  * Sends one tenant their referral link.
@@ -110,18 +113,17 @@ export async function sendReferralInvite(
       digits,
       TEMPLATES.referralInvitation.name,
       TEMPLATES.referralInvitation.language,
-      [firstName, hostel.name ?? "your hostel", String(referrerPct), String(referredPct)],
+      [
+        firstName,
+        hostel.name ?? "your hostel",
+        `${SITE_URL}/ref/${r.code}`,
+        String(referrerPct),
+        String(referredPct),
+        referralStatusUrl(rawToken),
+      ],
       // "marketing", not "announcement": this is a promotional template and the
       // monitoring page must be able to separate outreach from service messages.
-      { hostelId: r.hostel_id, tenantId: r.tenant_id, messageType: "marketing" as const },
-      // SUFFIXES ONLY. The buttons are approved as
-      //   https://<site>/ref/{{1}}  and  https://<site>/rs/{{1}}
-      // so the origin lives in the template, not here — Meta rejects a
-      // parameter that would change the approved base URL. It also means the
-      // site domain for these two links is fixed at approval time and is NOT
-      // read from NEXT_PUBLIC_SITE_URL; changing that variable no longer moves
-      // them, which is worth remembering the next time the domain changes.
-      { buttonUrlSuffixes: [r.code, rawToken] }
+      { hostelId: r.hostel_id, tenantId: r.tenant_id, messageType: "marketing" as const }
     );
 
     if (!result.ok) return { sent: false, reason: "send_failed" };

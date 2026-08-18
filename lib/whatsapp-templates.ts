@@ -16,16 +16,9 @@ import type { PaymentMethodAccount } from "@/types";
  */
 export const TEMPLATES = {
   reminderFull: { name: "hms_payment_reminder_full", language: "en" },
-  /** v2 moves both links out of the body and into URL buttons.
-   *
-   *  v1 put them inline, which made the message 488 characters over ~24
-   *  rendered lines — WhatsApp collapsed it behind "Read more" at the third
-   *  line, so the offer itself was hidden — and a URL in the body also makes
-   *  WhatsApp render a link-preview card. Buttons count toward neither.
-   *
-   *  Four body variables: first name, hostel name, referrer %, referred %.
-   *  Two button suffixes: the referral code, then the status token. */
-  referralInvitation: { name: "hms_referral_invitation_v2", language: "en" },
+  /** Approved 2026-08-18. Six body variables, in order: first name, hostel name,
+   *  share link, referrer %, referred %, private status-page link. */
+  referralInvitation: { name: "hms_referral_invitation", language: "en" },
   reminderPartial: { name: "hms_payment_reminder_partial", language: "en" },
   paymentConfirmed: { name: "hms_payment_confirmed", language: "en" },
   seatReserved: { name: "hms_seat_reserved", language: "en" },
