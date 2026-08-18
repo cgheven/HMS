@@ -267,12 +267,16 @@ function PercentageSettings({
         <Percent className="w-4 h-4 text-amber" />
         <h3 className="text-sm font-medium">Discounts</h3>
       </div>
-      <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+      {/* Two 20ch number fields and a Save button stacked into a full-height
+          column on a phone, with Save rendered as a full-width primary bar —
+          for editing a percentage that is almost never touched. They are small
+          enough to sit in one row at any width; only the explanation wraps. */}
+      <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1">
           <label className="text-xs text-muted-foreground">Tenant who refers</label>
           <div className="flex items-center gap-1.5">
             <Input value={referrer} onChange={(e) => setReferrer(e.target.value)}
-              inputMode="numeric" className="h-9 w-20 text-sm" />
+              inputMode="numeric" className="h-9 w-16 sm:w-20 text-sm" />
             <span className="text-sm text-muted-foreground">%</span>
           </div>
         </div>
@@ -280,14 +284,14 @@ function PercentageSettings({
           <label className="text-xs text-muted-foreground">Person who joins</label>
           <div className="flex items-center gap-1.5">
             <Input value={referred} onChange={(e) => setReferred(e.target.value)}
-              inputMode="numeric" className="h-9 w-20 text-sm" />
+              inputMode="numeric" className="h-9 w-16 sm:w-20 text-sm" />
             <span className="text-sm text-muted-foreground">%</span>
           </div>
         </div>
-        <Button size="sm" className="h-9" onClick={requestSave} disabled={saving || !dirty}>
+        <Button size="sm" className="h-9 ml-auto sm:ml-0" onClick={requestSave} disabled={saving || !dirty}>
           {saving ? "Saving..." : "Save"}
         </Button>
-        <p className="text-[11px] text-muted-foreground sm:ml-2 sm:pb-2">
+        <p className="w-full sm:w-auto text-[11px] text-muted-foreground sm:ml-2 sm:pb-2">
           {clean(referred) > 0
             ? `The referral page offers visitors ${clean(referred)}% off their first month.`
             : "Set to 0 — the referral page makes no offer to visitors."}
@@ -1183,24 +1187,35 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
       {/* Controlled: "View referrals" on a link card has to move the owner to
           the Submissions tab, not just set a filter they cannot see. */}
       <Tabs value={tab} onValueChange={setTab}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          {/* Scrolls rather than clips: at 390px the three triggers do not fit,
-              and a clipped third tab reads as a broken page rather than a
-              scrollable one. */}
-          <div className="-mx-1 px-1 max-w-full overflow-x-auto">
-            <TabsList>
-              <TabsTrigger value="submissions">Submissions ({referrals.length})</TabsTrigger>
-              <TabsTrigger value="rewards">Rewards ({rewards.length})</TabsTrigger>
-              <TabsTrigger value="links">Tenant links ({referrers.length})</TabsTrigger>
-            </TabsList>
-          </div>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          {/* Full-width thirds on a phone rather than a scrolling strip. Three
+              triggers do not fit at 390px, and a strip the owner has to swipe —
+              with the first tab sitting under a fade — reads as a broken page
+              rather than a scrollable one. Laid out to fit, it needs no fade. */}
+          <TabsList noFade className="w-full grid grid-cols-3 sm:w-auto sm:inline-flex">
+            <TabsTrigger value="submissions" className="justify-center px-2 sm:px-3 text-[11px] sm:text-xs">
+              <span className="truncate">Submissions ({referrals.length})</span>
+            </TabsTrigger>
+            <TabsTrigger value="rewards" className="justify-center px-2 sm:px-3 text-[11px] sm:text-xs">
+              <span className="truncate">Rewards ({rewards.length})</span>
+            </TabsTrigger>
+            <TabsTrigger value="links" className="justify-center px-2 sm:px-3 text-[11px] sm:text-xs">
+              <span className="truncate">
+                <span className="sm:hidden">Links</span>
+                <span className="hidden sm:inline">Tenant links</span> ({referrers.length})
+              </span>
+            </TabsTrigger>
+          </TabsList>
           <div className="flex items-center gap-2 shrink-0">
             {/* The campaign switch. Off is the only state that spends money on
                 click, so it is the only one styled as a primary action; live and
                 paused are status first, control second. */}
             {ov.campaign === "active" ? (
-              <div className="flex items-center gap-2">
-                <span className="hidden sm:inline-flex items-center gap-1.5 text-xs text-emerald-400">
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                {/* Shown on every width. On a phone this used to be hidden, which
+                    left a bare "Pause" button with nothing saying the campaign
+                    was running — the one fact that makes the button make sense. */}
+                <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
                   <span className="relative flex w-2 h-2">
                     <span className="absolute inline-flex w-full h-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
                     <span className="relative inline-flex w-2 h-2 rounded-full bg-emerald-400" />
@@ -1212,7 +1227,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                   disabled={isPending}
                   size="sm"
                   variant="outline"
-                  className="gap-2"
+                  className="gap-2 ml-auto sm:ml-0"
                 >
                   <Pause className="w-4 h-4" />
                   Pause
@@ -1228,7 +1243,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                     : "WhatsApp is not enabled for this branch — contact support to turn it on."
                 }
                 size="sm"
-                className="gap-2 bg-amber text-background border-amber hover:bg-amber/90 font-semibold"
+                className="gap-2 w-full sm:w-auto justify-center bg-amber text-background border-amber hover:bg-amber/90 font-semibold"
               >
                 <Megaphone className="w-4 h-4" />
                 {ov.campaign === "paused" ? "Resume campaign" : "Start campaign"}

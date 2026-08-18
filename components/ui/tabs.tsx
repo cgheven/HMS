@@ -4,7 +4,16 @@ import { cn } from "@/lib/utils";
 
 const Tabs = TabsPrimitive.Root;
 
-function TabsList({ className, ...props }: React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>) {
+function TabsList({
+  className,
+  noFade,
+  ...props
+}: React.ComponentPropsWithoutRef<typeof TabsPrimitive.List> & {
+  /** Suppress the scroll-hint fades. Set this when the strip is laid out to fit
+   *  (e.g. a full-width grid on mobile): with nothing to scroll, the fades wash
+   *  out the first and last tab and the strip reads as clipped instead. */
+  noFade?: boolean;
+}) {
   return (
     <div className="relative max-w-full">
       <TabsPrimitive.List
@@ -16,8 +25,12 @@ function TabsList({ className, ...props }: React.ComponentPropsWithoutRef<typeof
         {...props}
       />
       {/* Edge fades hint that the tab strip scrolls horizontally when it overflows */}
-      <div className="md:hidden pointer-events-none absolute inset-y-0 left-0 w-5 bg-gradient-to-r from-background to-transparent rounded-l-lg" />
-      <div className="md:hidden pointer-events-none absolute inset-y-0 right-0 w-5 bg-gradient-to-l from-background to-transparent rounded-r-lg" />
+      {!noFade && (
+        <>
+          <div className="md:hidden pointer-events-none absolute inset-y-0 left-0 w-5 bg-gradient-to-r from-background to-transparent rounded-l-lg" />
+          <div className="md:hidden pointer-events-none absolute inset-y-0 right-0 w-5 bg-gradient-to-l from-background to-transparent rounded-r-lg" />
+        </>
+      )}
     </div>
   );
 }
