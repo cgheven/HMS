@@ -1557,6 +1557,16 @@ export interface ReferralOverview {
    *  hms_referrals.pulse_commission_amount — the amount ACTUALLY charged and
    *  snapshotted at conversion, never re-derived from today's rate. */
   pulseCommissionInMonth: number
+  /** The half of `pulseCommissionInMonth` whose referred tenant has actually
+   *  paid something. The fee accrues at conversion while revenue is cash, so
+   *  this is the only half that can be set against collected revenue without
+   *  comparing two different accounting bases. */
+  pulseCommissionConfirmedInMonth: number
+  /** The remainder: fees charged for tenants who have not yet paid a rupee.
+   *  Shown, never netted off — a tenant who joined this morning is not a loss. */
+  pulseCommissionPendingInMonth: number
+  /** Referrals that reached 'joined' in `month` but have paid nothing yet. */
+  joinedUnpaidInMonth: number
   /** Rupees given away since the feature was switched on, both sides combined.
    *  Paired with joined count, this is the whole business case: what the branch
    *  paid, against how many tenants it bought. */

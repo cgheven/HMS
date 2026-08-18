@@ -498,6 +498,9 @@ export async function getReferralOverview(month?: string): Promise<{
           joinedInMonth: 0,
           joinedPaidInMonth: 0,
           pulseCommissionInMonth: 0,
+          pulseCommissionConfirmedInMonth: 0,
+          pulseCommissionPendingInMonth: 0,
+          joinedUnpaidInMonth: 0,
           submittedInMonth: 0,
           revenueInMonth: 0,
           discountGivenThisMonth: ledger.discountGivenThisMonth,
@@ -838,6 +841,22 @@ export async function getReferralOverview(month?: string): Promise<{
     }));
 
 
+    // Bucketed on when the fee was CHARGED, not when the referral was submitted:
+    // a link shared in July that converts in August is August's charge, and
+    // filing it under July would drop a fee into a month already reported on.
+    // Reversed fees are excluded — a rejected referral costs the owner nothing.
+    const commissionRowsInMonth = referrals.filter(
+      (r) =>
+        r.status === "joined" &&
+        !r.pulse_commission_reversed_at &&
+        (r.pulse_commission_charged_at ?? "").slice(0, 7) === monthKey
+    );
+    // Any non-reservation money at all, in any month — a tenant who paid last
+    // month has plainly converted, and scoping this to the picked month would
+    // flip their fee back to "pending" the moment the owner steps forward.
+    const hasCollected = (tenantId: string | null) =>
+      tenantId ? (revenueByTenant.get(tenantId) ?? 0) > 0 : false;
+
     return {
       data: {
         hostelId,
@@ -856,16 +875,29 @@ export async function getReferralOverview(month?: string): Promise<{
         // charge, and filing it under July would drop a fee into a month that
         // has already been reported on. Reversed fees are excluded — a rejected
         // referral costs the owner nothing.
-        pulseCommissionInMonth: referrals
-          .filter(
-            (r) =>
-              r.status === "joined" &&
-              !r.pulse_commission_reversed_at &&
-              (r.pulse_commission_charged_at ?? "").slice(0, 7) === monthKey
-          )
+        pulseCommissionInMonth: commissionRowsInMonth.reduce(
+          (sum, r) => sum + Number(r.pulse_commission_amount ?? 0),
+          0
+        ),
+        // Split by whether the referred tenant has actually paid anything.
+        //
+        // The fee is charged when a referral flips to 'joined', which is an
+        // ACCRUAL event, while revenue is cash. Presenting the two side by side
+        // on one basis made a tenant who joined this morning read as a pure
+        // loss: full fee against Rs 0 collected. Confirmed is the half that
+        // pairs honestly with collected revenue; pending is stated separately
+        // so it is visible without being counted as money owed today.
+        pulseCommissionConfirmedInMonth: commissionRowsInMonth
+          .filter((r) => hasCollected(r.matched_tenant_id as string | null))
+          .reduce((sum, r) => sum + Number(r.pulse_commission_amount ?? 0), 0),
+        pulseCommissionPendingInMonth: commissionRowsInMonth
+          .filter((r) => !hasCollected(r.matched_tenant_id as string | null))
           .reduce((sum, r) => sum + Number(r.pulse_commission_amount ?? 0), 0),
         joinedPaidInMonth: monthRows.filter(
           (r) => r.status === "joined" && (r.revenueCollected ?? 0) > 0
+        ).length,
+        joinedUnpaidInMonth: monthRows.filter(
+          (r) => r.status === "joined" && !((r.revenueCollected ?? 0) > 0)
         ).length,
         submittedInMonth: monthRows.length,
         revenueInMonth,

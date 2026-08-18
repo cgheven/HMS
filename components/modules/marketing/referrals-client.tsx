@@ -698,8 +698,18 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
   // commission are both branch-scoped, and subtracting the owner-WIDE discount
   // total from them double-counts across a multi-branch owner's two Marketing
   // pages — enough to render a profitable branch as an amber loss.
+  // Collected revenue minus the commission on tenants who actually paid.
+  //
+  // The owner's discounts are NOT subtracted here. hms_payments.amount is stored
+  // NET of the referral discount, so amount_paid — which is what revenueInMonth
+  // sums — is already post-discount; taking discountGivenThisMonthBranch off
+  // again charged the owner for the same rupees twice.
+  //
+  // Confirmed commission, not total: the fee accrues at conversion while revenue
+  // is cash, so netting the full fee against collected revenue showed a tenant
+  // who joined this morning as a loss.
   const earningAfterDiscounts =
-    ov.revenueInMonth - ov.discountGivenThisMonthBranch - ov.pulseCommissionInMonth;
+    ov.revenueInMonth - ov.pulseCommissionConfirmedInMonth;
 
   const openRewardCount = rewards.filter(
     (r) => r.status === "scheduled" || r.status === "held"
@@ -1115,35 +1125,47 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
             value: `${ov.joinedPaidInMonth}`,
             color: "text-emerald-400",
             size: "text-2xl",
+            note: ov.joinedUnpaidInMonth > 0 ? `${ov.joinedUnpaidInMonth} not paid yet` : null,
           },
           {
-            label: "Revenue from referrals",
+            label: "Revenue collected",
             value: rs(ov.revenueInMonth),
             color: "text-emerald-400",
             size: "text-base sm:text-lg lg:text-xl",
+            note: null,
           },
           {
             label: "Pulse commission",
-            value: rs(ov.pulseCommissionInMonth),
+            value: rs(ov.pulseCommissionConfirmedInMonth),
             color: "text-amber",
             size: "text-base sm:text-lg lg:text-xl",
+            note:
+              ov.pulseCommissionPendingInMonth > 0
+                ? `${rs(ov.pulseCommissionPendingInMonth)} pending`
+                : null,
           },
           {
-            // Not "after discounts": it is now net of the owner's discounts AND
-            // Pulse's commission, and a label naming only one of them
-            // understates what was taken off.
+            // Collected revenue minus confirmed commission — both sides on the
+            // same cash basis, so this can never go negative on the strength of
+            // a tenant who simply has not paid yet.
             label: "Net earning",
             value: `${earningAfterDiscounts < 0 ? "−" : ""}${rs(Math.abs(earningAfterDiscounts))}`,
             color: earningAfterDiscounts < 0 ? "text-amber" : "text-emerald-400",
             size: "text-base sm:text-lg lg:text-xl",
+            note: null,
           },
-        ].map(({ label, value, color, size }) => (
+        ].map(({ label, value, color, size, note }) => (
           <div
             key={label}
             className="rounded-2xl border border-sidebar-border bg-card p-4 text-center"
           >
             <p className={`${size} font-bold ${color} truncate`}>{value}</p>
             <p className="text-xs text-muted-foreground mt-1">{label}</p>
+            {/* Reserved whether or not it is filled, so a tile that gains a note
+                does not grow taller than the three beside it. */}
+            <p className="text-[11px] text-muted-foreground/70 mt-0.5 h-4 truncate">
+              {note ?? ""}
+            </p>
           </div>
         ))}
       </div>
