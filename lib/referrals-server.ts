@@ -1,6 +1,7 @@
 import "server-only";
 
 import { headers } from "next/headers";
+import { after } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizeReferralCode, REFERRAL_VIEW_HOURLY_LIMIT } from "@/lib/referrals";
 
@@ -16,6 +17,43 @@ import { normalizeReferralCode, REFERRAL_VIEW_HOURLY_LIMIT } from "@/lib/referra
  * an empty string is exactly the value that has silently disabled a rate limit
  * in this codebase before.
  */
+// A link pasted into a chat is fetched by the messenger to build its preview
+// card, and that arrives here as a normal request with a bot user-agent. It is
+// the only observable trace of a share — forwarding itself is invisible to us —
+// and it is also the thing that would silently inflate opens if left unsplit.
+//
+// Matched loosely on purpose. A crawler we fail to recognise lands in `view`
+// and overstates opens; one we match wrongly lands in `share` and understates
+// them. Neither is recoverable from the counter afterwards, so the list covers
+// the messengers this product is actually shared through, plus the generic
+// bot markers, and nothing speculative.
+const PREVIEW_BOT_RE =
+  /whatsapp|facebookexternalhit|facebot|telegrambot|twitterbot|slackbot|discordbot|linkedinbot|skypeuripreview|viber|line-podcast|snapchat|pinterest|redditbot|googlebot|bingbot|embedly|quora link preview|bot\b|crawler|spider|preview/i;
+
+/**
+ * Records one hit against a referral link, split into open vs share.
+ *
+ * FIRE AND FORGET, via after(): this is analytics on a public page, and a
+ * counter that cannot be written is never a reason to fail somebody's referral
+ * link. after() also keeps the UPDATE off the response path, so the page does
+ * not wait on it.
+ */
+function trackLinkHit(admin: ReturnType<typeof createAdminClient>, codeId: string): void {
+  try {
+    after(async () => {
+      try {
+        const ua = (await headers()).get("user-agent") ?? "";
+        const kind = PREVIEW_BOT_RE.test(ua) ? "share" : "view";
+        await admin.rpc("hms_referral_link_hit", { p_code_id: codeId, p_kind: kind });
+      } catch {
+        // Swallowed by design.
+      }
+    });
+  } catch {
+    // after() throws outside a request scope. Nothing to do and nothing to say.
+  }
+}
+
 export async function clientIp(): Promise<string | null> {
   try {
     const headersList = await headers();
@@ -107,6 +145,13 @@ export async function getReferralTarget(rawCode: string): Promise<ReferralTarget
   // never moved in is not a resident handing out a link.
   if (!tenant?.is_active || tenant.is_waiting) return { kind: "dead" };
   if (!hostel?.referral_enabled) return { kind: "dead" };
+
+  // Counted from here on, where the link is known to be real and this tenant's.
+  // Dead links are not counted at all: a mistyped code is not an open, and
+  // letting it increment anything would make the funnel countable by strangers.
+  // Deliberately above the paused check — a paused campaign still tells the
+  // owner their tenants are circulating the link.
+  trackLinkHit(admin, row.id);
   // Paused, not dead. The link is genuinely this tenant's and works again the
   // moment the owner resumes, so a stranger is told to come back rather than
   // told the link is broken.

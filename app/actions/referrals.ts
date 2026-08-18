@@ -541,7 +541,7 @@ export async function getReferralOverview(month?: string): Promise<{
           .order("created_at", { ascending: false }),
         admin
           .from("hms_referral_codes")
-          .select("tenant_id, code, link_sent_at")
+          .select("tenant_id, code, link_sent_at, view_count, share_count, last_viewed_at")
           .eq("hostel_id", hostelId)
           .eq("is_active", true),
         admin
@@ -617,6 +617,15 @@ export async function getReferralOverview(month?: string): Promise<{
 
     const tenantById = new Map(tenants.map((t) => [t.id, t]));
     const codeByTenant = new Map((codesRes.data ?? []).map((c) => [c.tenant_id, c.code]));
+    const linkStatsByTenant = new Map(
+      (codesRes.data ?? []).map((c) => [
+        c.tenant_id as string,
+        {
+          opens: Number((c as { view_count?: number }).view_count ?? 0),
+          shares: Number((c as { share_count?: number }).share_count ?? 0),
+        },
+      ])
+    );
 
     type Candidate = {
       id: string;
@@ -804,6 +813,8 @@ export async function getReferralOverview(month?: string): Promise<{
           discountPending: money?.pendingValue ?? 0,
           lastReferralAt: counts?.lastAt ?? null,
           revenueFromReferred: counts?.revenue ?? 0,
+          linkOpens: linkStatsByTenant.get(t.id)?.opens ?? 0,
+          linkShares: linkStatsByTenant.get(t.id)?.shares ?? 0,
         };
       })
       // Most recent referral activity first — a link handed out in March that

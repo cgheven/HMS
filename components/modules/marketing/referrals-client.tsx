@@ -1687,6 +1687,32 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                     </span>
                   );
 
+                // The half of the funnel that used to be invisible.
+                //
+                // A tenant with shares and opens but no submissions is the most
+                // actionable row on this page: the link IS circulating and the
+                // offer is not landing, which is a problem the owner can fix.
+                // Without this the same row is indistinguishable from a tenant
+                // who never touched their link, and the only available reading
+                // was "this tenant is not helping" — which may be the opposite
+                // of the truth.
+                //
+                // No column of its own: the grid has five fixed tracks and a
+                // sixth would need the header rewritten to match, which is
+                // exactly how the header drifted off its data last time.
+                // All-time by nature, so it carries its own explanation rather
+                // than being silently read as the selected month's.
+                const reach =
+                  r.linkOpens > 0 || r.linkShares > 0 ? (
+                    <span
+                      className="text-muted-foreground/70"
+                      title="All time, not just the selected month. Shares are counted when the link is pasted into a chat and the messenger fetches its preview."
+                    >
+                      {r.linkOpens} open{r.linkOpens === 1 ? "" : "s"}
+                      {r.linkShares > 0 && ` · ${r.linkShares} share${r.linkShares === 1 ? "" : "s"}`}
+                    </span>
+                  ) : null;
+
                 return (
                   <div
                     key={r.tenantId}
@@ -1703,6 +1729,9 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                           {r.roomNumber ? `Room ${r.roomNumber} · ` : ""}
                           {counts ?? "No referrals yet"}
                         </p>
+                        {reach && (
+                          <p className="text-[11px] truncate mt-0.5">{reach}</p>
+                        )}
                         {!r.code && (
                           <p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">
                             No link yet
@@ -1771,6 +1800,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                       ) : (
                         <span className="text-muted-foreground/40">None yet</span>
                       )}
+                      {reach && <p className="text-[11px] truncate mt-0.5">{reach}</p>}
                     </div>
 
                     <div className="hidden md:block text-right min-w-0">

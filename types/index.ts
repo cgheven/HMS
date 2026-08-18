@@ -1430,6 +1430,13 @@ export interface ReferrerRow {
   discountEarned: number
   /** Still coming to them — 'scheduled' plus 'held', estimated. */
   discountPending: number
+  /** All-time human opens of this person's link. NOT month-scoped, unlike every
+   *  other figure on the page — the UI has to say so rather than let it be read
+   *  as this month's. Preview-crawler fetches are excluded; see linkShares. */
+  linkOpens: number
+  /** All-time link-preview fetches: the closest observable proxy for this person
+   *  pasting their link into a chat. Forwarding itself is invisible to us. */
+  linkShares: number
   /** Most recent submission through their link. Null if they have never been
    *  used. Drives the sort: the person who sent someone yesterday matters more
    *  than the person who has held a link since March. */
