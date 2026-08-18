@@ -44,8 +44,13 @@ export type ReferralStatus = {
   referredPercent: number;
   totalReferred: number;
   joined: number;
-  /** Money already taken off their bills. */
+  /** Money already taken off their bills — BOTH roles: what they earned by
+   *  referring, plus the welcome discount for joining through someone's link.
+   *  Every such row is a rupee off this tenant's own bill. */
   earned: number;
+  /** The part of `earned` that is their own joining discount, so the page can
+   *  explain a figure that would otherwise not match their referral count. */
+  joiningDiscount: number;
   /** How many rewards are earned but not yet applied. */
   pending: number;
   /** What those pending rewards are worth, in rupees.
@@ -107,35 +112,61 @@ export async function getReferralStatus(
   // The second factor. A mismatch is indistinguishable from a bad token.
   if (tenant.phone_digits !== digits) return null;
 
-  const [{ data: referrals }, { data: rewards }] = await Promise.all([
+  const [{ data: referrals, count: referralCount }, { count: joinedCount }, { data: rewards }] = await Promise.all([
     admin
       .from("hms_referrals")
-      .select("name, status")
-      .eq("code_id", r.id)
+      // Keyed on the REFERRER, not on this code. A rotated code leaves its
+      // submissions pointing at the old row, and scoping to the live code told
+      // a tenant who had referred five people that they had referred none.
+      // Matches how the owner's Marketing page counts, so the two agree.
+      //
+      // count is exact and separate from the row limit: the limit caps the
+      // NAMES rendered, and folding it into the totals silently capped anyone
+      // past the 50th at 50.
+      .select("name, status", { count: "exact" })
+      .eq("referrer_tenant_id", r.tenant_id)
       .order("created_at", { ascending: false })
       .limit(50),
+    // Counted, not derived from the 50 names above — a prolific referrer past
+    // that limit would have had their joins undercounted alongside them.
+    admin
+      .from("hms_referrals")
+      .select("id", { count: "exact", head: true })
+      .eq("referrer_tenant_id", r.tenant_id)
+      .eq("status", "joined"),
     admin
       .from("hms_referral_rewards")
-      .select("status, percent, applied_amount")
+      .select("role, status, percent, applied_amount")
       .eq("tenant_id", r.tenant_id)
-      .eq("role", "referrer")
       .neq("status", "void"),
   ]);
 
   const list = referrals ?? [];
-  const earned = (rewards ?? [])
-    .filter((r) => r.status === "applied")
-    .reduce((s, r) => s + Number(r.applied_amount ?? 0), 0);
-  const pendingRewards = (rewards ?? []).filter(
-    (r) => r.status === "scheduled" || r.status === "held"
+  const all = rewards ?? [];
+
+  // BOTH roles. Every one of these rows is money coming off THIS tenant's own
+  // bill: 'referrer' is what they earned by referring, 'referred' is the
+  // welcome discount they got for joining through somebody else's link.
+  // Counting only the first told a tenant whose bill already showed a Rs 1,500
+  // referral discount that they had earned Rs 0 — the page and their bill
+  // disagreeing about their own money.
+  const applied = all.filter((w) => w.status === "applied");
+  const earned = applied.reduce((s, w) => s + Number(w.applied_amount ?? 0), 0);
+  const joiningDiscount = applied
+    .filter((w) => w.role === "referred")
+    .reduce((s, w) => s + Number(w.applied_amount ?? 0), 0);
+
+  const pendingRewards = all.filter(
+    (w) => w.status === "scheduled" || w.status === "held"
   );
   // "Rs 0 earned, 1 pending" is what a tenant saw after successfully referring
   // somebody who joined AND paid — a count answers "how many", when the only
-  // question they have is "how much". Estimated the same way the owner's
-  // Marketing page estimates it, so the two screens cannot disagree.
+  // question they have is "how much". Estimated off their own rent and percent,
+  // the same way estimateRewardValue does for the owner, so the two screens
+  // cannot disagree.
   const rent = Number(tenant.monthly_rent ?? 0);
   const pendingAmount = pendingRewards.reduce(
-    (s, r) => s + Math.round((rent * Number(r.percent ?? 0)) / 100),
+    (s, w) => s + Math.round((rent * Number(w.percent ?? 0)) / 100),
     0
   );
 
@@ -146,9 +177,10 @@ export async function getReferralStatus(
     campaign: hostel.referral_campaign ?? "active",
     referrerPercent: Number(hostel.referral_referrer_percent ?? 0),
     referredPercent: Number(hostel.referral_referred_percent ?? 0),
-    totalReferred: list.length,
-    joined: list.filter((r) => r.status === "joined").length,
+    totalReferred: referralCount ?? list.length,
+    joined: joinedCount ?? list.filter((x) => x.status === "joined").length,
     earned,
+    joiningDiscount,
     pending: pendingRewards.length,
     pendingAmount,
     // FIRST NAME ONLY. The full name of somebody who did not consent to appear

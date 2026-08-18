@@ -93,6 +93,18 @@ export function ReferralStatusClient({ token }: { token: string }) {
           />
         </div>
 
+        {/* Earned counts BOTH the joining discount and referral earnings, so a
+            tenant who has referred nobody can still legitimately see a figure.
+            Left unexplained that reads as a mistake, so the breakdown is stated
+            rather than left to be inferred from the referral count beside it. */}
+        {data.joiningDiscount > 0 && data.earned > 0 && (
+          <p className="text-xs text-muted-foreground text-center">
+            {data.earned > data.joiningDiscount
+              ? `Includes ${rs(data.joiningDiscount)} off your own first month for joining through a referral.`
+              : `That is ${rs(data.joiningDiscount)} off your own first month for joining through a referral.`}
+          </p>
+        )}
+
         {/* Without this, somebody who has just referred a friend who joined AND
             paid reads "Earned Rs 0" and concludes the programme did nothing.
             Worded to hold in both cases: the discount may already be sitting on
