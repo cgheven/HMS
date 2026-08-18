@@ -54,6 +54,12 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       { href: "/spaces",        label: "Spaces",        icon: BedDouble },
       { href: "/tenants",       label: "Tenants",       icon: Users },
       { href: "/payments",      label: "Payments",      icon: CreditCard },
+      // Sits with the residents it is about, not down in Operations. Referrals
+      // are how the next tenant arrives, and buried under Kitchen and Bills the
+      // owner never opened the page at all. Still ownerOnly + referralOnly: a
+      // referral link goes out under the account's name to people who are not
+      // customers yet, so the flags travel with it unchanged.
+      { href: "/marketing",     label: "Marketing",     icon: Share2, ownerOnly: true, referralOnly: true },
     ],
   },
   {
@@ -75,9 +81,6 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       // performance ratings in question 3.
       { href: "/feedback",      label: "Feedback",      icon: MessageSquareHeart },
       { href: "/announcements", label: "Announcements", icon: Megaphone },
-      // Owner-level like Billing: a referral link goes out under the account's
-      // name to people who are not customers yet.
-      { href: "/marketing", label: "Marketing", icon: Share2, ownerOnly: true, referralOnly: true },
     ],
   },
   {
