@@ -16,7 +16,20 @@ import { ReferralFormClient } from "./referral-form-client";
 // link-open counter. It also keeps the branch name out of the card, which a
 // forwarded screenshot would otherwise carry.
 export const metadata: Metadata = {
-  robots: { index: false, follow: false, nocache: true },
+  // No `robots: { index: false }` here, deliberately.
+  //
+  // Facebook's crawler honours a noindex meta tag by refusing to build a
+  // preview card at all — it fetched this page happily (the share counter
+  // proves it) and then rendered a bare "hostel.yourpulse.io" chip with no
+  // logo. There is no way to exempt one agent from a meta directive, so the
+  // tag had to go for the card to exist.
+  //
+  // The protection that actually did the work is unchanged: robots.txt still
+  // carries Disallow: /ref/ for User-Agent: *, so a compliant search engine
+  // never fetches this page. A noindex tag only helps a crawler that is
+  // allowed to read it, which for search engines is precisely none of them —
+  // it was belt-and-braces that cost the feature its preview. Referral URLs
+  // are not linked from anywhere public, so there is nothing to discover.
   title: "You have been invited",
   description: "A friend has invited you. Open to see your discount and reserve your place.",
   openGraph: {
