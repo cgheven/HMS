@@ -5,13 +5,10 @@ import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { TEMPLATES } from "@/lib/whatsapp-templates";
 import { normalizePhoneDigits } from "@/lib/phone";
 import { generateReferralCode } from "@/lib/referrals";
-import { mintStatusToken, referralStatusUrl } from "@/lib/referral-status";
-import { siteUrl } from "@/lib/site-url";
+import { mintStatusToken } from "@/lib/referral-status";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Admin = SupabaseClient<any, any, any>;
-
-const SITE_URL = siteUrl();
 
 /**
  * Sends one tenant their referral link.
@@ -137,17 +134,22 @@ export async function sendReferralInvite(
       digits,
       TEMPLATES.referralInvitation.name,
       TEMPLATES.referralInvitation.language,
+      // {{1}} name · {{2}} hostel · {{3}} referral CODE · {{4}} referrer % ·
+      // {{5}} referred %. {{3}} is the bare code, not a URL: the template holds
+      // https://hostel.yourpulse.io/ref/{{3}} and Meta rejects a parameter that
+      // would alter the approved origin.
       [
         firstName,
         hostel.name ?? "your hostel",
-        `${SITE_URL}/ref/${r.code}`,
+        r.code,
         String(referrerPct),
         String(referredPct),
-        referralStatusUrl(rawToken),
       ],
       // "marketing", not "announcement": this is a promotional template and the
       // monitoring page must be able to separate outreach from service messages.
-      { hostelId: r.hostel_id, tenantId: r.tenant_id, messageType: "marketing" as const }
+      { hostelId: r.hostel_id, tenantId: r.tenant_id, messageType: "marketing" as const },
+      // The status token as the button's URL suffix — again the suffix only.
+      { buttonUrlSuffixes: [rawToken] }
     );
 
     if (!result.ok) return { sent: false, reason: "send_failed" };

@@ -23,10 +23,6 @@ function hashToken(raw: string): string {
   return createHash("sha256").update(raw, "utf8").digest("hex");
 }
 
-export function referralStatusUrl(rawToken: string): string {
-  return `${SITE_URL}/rs/${rawToken}`;
-}
-
 /** 32 bytes = 256 bits, base64url, 43 chars. Guessing one is not a strategy. */
 export function mintStatusToken(): { raw: string; hash: string } {
   const raw = randomBytes(32).toString("base64url");
