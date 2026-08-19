@@ -13,6 +13,7 @@ import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 import type { RedflagMatch } from "@/types";
 import type { ApplicationStatus, PackageTier, Profile } from "@/types";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
+import { ensureAndSendReferralInvite } from "@/lib/whatsapp-referral-invite";
 
 /**
  * Who is acting on an application. Managers reach this module through the
@@ -496,6 +497,10 @@ export async function convertToTenant(
       phone: app.phone,
       checkIn: extra.check_in,
     });
+      // Their own link, so the owner never hands one out by hand. Fire and
+      // forget: a marketing message must not be able to fail an admission, and
+      // every gate is re-checked inside the helper at the moment of sending.
+    void ensureAndSendReferralInvite(admin, app.hostel_id, newTenant.id);
   }
 
   return { success: true, redflagUnavailable };

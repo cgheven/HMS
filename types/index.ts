@@ -1441,7 +1441,7 @@ export interface ReferrerRow {
    *  'none' = never attempted. Belongs here rather than on Payments, where a
    *  failed marketing blast was badging paid tenants as "Failed" on the rent
    *  screen. */
-  inviteStatus: "none" | "sending" | "delivered" | "read" | "failed"
+  inviteStatus: "none" | "sending" | "sent" | "delivered" | "read" | "failed"
   /** Most recent submission through their link. Null if they have never been
    *  used. Drives the sort: the person who sent someone yesterday matters more
    *  than the person who has held a link since March. */
@@ -1600,7 +1600,6 @@ export interface ReferralOverview {
   campaign: string
   /** Residents who have not yet been sent their link — what Start will send. */
   unsentCount: number
-  whatsappEnabled: boolean
 }
 
 /** One branch on the Super Admin growth page. Occupancy and referral performance

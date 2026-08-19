@@ -12,6 +12,7 @@ import { pktYearMonth } from "@/lib/pkt-time"
 import { isValidCnic, normalizeCnic } from "@/lib/cnic";
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
+import { ensureAndSendReferralInvite } from "@/lib/whatsapp-referral-invite";
 import { detachReferralRewards } from "@/lib/referral-rewards";
 import type { CheckoutInput, CheckoutSettlement, Payment } from "@/types";
 
@@ -224,12 +225,18 @@ export async function addTenantAsPartner(
     // measure against — attributing here would CONSUME the referral at 'joined'
     // and leave nothing to pay out when they actually activate. Firing on the
     // activation transition is Phase 2 Step 0.
-    if (!payload.is_waiting) await linkReferralForNewTenant(admin, {
-      tenantId,
-      hostelId,
-      phone: payload.phone,
-      checkIn: payload.check_in,
-    });
+    if (!payload.is_waiting) {
+      await linkReferralForNewTenant(admin, {
+        tenantId,
+        hostelId,
+        phone: payload.phone,
+        checkIn: payload.check_in,
+      });
+      // Their own link, so the owner never hands one out by hand. Fire and
+      // forget: a marketing message must not be able to fail an admission, and
+      // every gate is re-checked inside the helper at the moment of sending.
+      void ensureAndSendReferralInvite(admin, hostelId, tenantId);
+    }
 
     return { error: null, tenantId };
   } catch (err: unknown) {
@@ -539,6 +546,11 @@ export async function editTenantAsPartner(
         phone: payload.phone,
         checkIn: null,
       });
+      // Activation is this person's real admission — until now they had no room
+      // and no bill. The owner path sends here too, so a manager or partner
+      // activating somebody must not leave them the only resident never told
+      // about their link.
+      void ensureAndSendReferralInvite(admin, hostelId, tenantId);
     }
 
     // Moving an already-active tenant back to the waiting list leaves behind

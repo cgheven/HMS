@@ -52,8 +52,9 @@ export async function GET(request: NextRequest) {
   let query = admin
     .from("hms_hostels")
     .select("id, name")
+    // referral_enabled, not whatsapp_enabled: marketing is its own entitlement
+    // and a branch may hold it without the reminders-and-receipts one.
     .eq("referral_enabled", true)
-    .eq("whatsapp_enabled", true)
     .eq("referral_campaign", "active");
   if (onlyHostel) query = query.eq("id", onlyHostel);
 

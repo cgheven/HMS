@@ -883,7 +883,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
           (r) =>
             r.linkOpens === 0 &&
             r.linkShares === 0 &&
-            (r.inviteStatus === "read" || r.inviteStatus === "delivered")
+            (r.inviteStatus === "read" || r.inviteStatus === "delivered" || r.inviteStatus === "sent")
         );
       case "unreached":
         return searchedReferrers.filter(
@@ -1374,7 +1374,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                 {ov.unsentCount > 0 && (
                   <Button
                     onClick={() => setConfirmStart(true)}
-                    disabled={isPending || !ov.whatsappEnabled}
+                    disabled={isPending}
                     size="sm"
                     className="gap-2 ml-auto sm:ml-0 bg-amber text-background border-amber hover:bg-amber/90 font-semibold"
                   >
@@ -1395,13 +1395,12 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
               </div>
             ) : (
               <Button
+                // Not gated on the WhatsApp entitlement any more: marketing is
+                // sold separately, so a branch can run referrals on a tier that
+                // has no reminders or receipts. Reaching this page at all means
+                // the branch already holds the marketing grant.
                 onClick={() => setConfirmStart(true)}
-                disabled={isPending || !ov.whatsappEnabled}
-                title={
-                  ov.whatsappEnabled
-                    ? undefined
-                    : "WhatsApp is not enabled for this branch — contact support to turn it on."
-                }
+                disabled={isPending}
                 size="sm"
                 className="gap-2 w-full sm:w-auto justify-center bg-amber text-background border-amber hover:bg-amber/90 font-semibold"
               >
@@ -1940,6 +1939,16 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                     </span>
                   ) : r.inviteStatus === "sending" ? (
                     <span className="text-muted-foreground/70">Sending…</span>
+                  ) : r.inviteStatus === "sent" ? (
+                    // Dispatched, never confirmed either way. Distinct from
+                    // Delivered, which WhatsApp actually told us about, and from
+                    // Sending, which claims it is still on its way.
+                    <span
+                      className="text-muted-foreground/60"
+                      title="Sent to WhatsApp, which never confirmed delivery. This is common and does not mean it failed — most such messages do arrive."
+                    >
+                      Sent
+                    </span>
                   ) : r.inviteStatus === "read" ? (
                     <span
                       className="text-emerald-400/80"
