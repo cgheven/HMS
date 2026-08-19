@@ -9,6 +9,11 @@ export const maxDuration = 300;
 /**
  * Daily retry of referral invites Meta accepted but never delivered.
  *
+ * Runs 05:30 UTC — 10:30 PKT. Vercel crons are UTC, and every schedule in
+ * vercel.json is written in it; the 90 minutes after the 04:00 UTC block keep a
+ * retry from competing with the payment-reminder run for the same WhatsApp
+ * number's send pacing.
+ *
  * The gap this closes: hms_referral_codes.link_sent_at records that Meta took
  * the message, not that a tenant received it. Delivery failures arrive later on
  * the webhook, at which point the code already reads as sent, is excluded from

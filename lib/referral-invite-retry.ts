@@ -54,9 +54,10 @@ export async function retryUndeliveredInvites(
   hostelId: string,
   hostelName: string,
   /** Overrides only for a supervised manual run — the scheduled pass never
-   *  passes these. A first execution that happens unattended at 05:30 is a
-   *  first execution nobody sees fail, so the route exposes these behind the
-   *  cron secret to make the mechanism observable once. */
+   *  passes these. A first execution that happens unattended (10:30 PKT, from
+   *  a 05:30 UTC schedule — Vercel crons are UTC) is a first execution nobody
+   *  sees fail, so the route exposes these behind the cron secret to make the
+   *  mechanism observable once. */
   opts: { backoffHours?: number; maxAttempts?: number } = {}
 ): Promise<RetrySummary> {
   const summary: RetrySummary = {
