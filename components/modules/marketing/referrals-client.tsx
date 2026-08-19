@@ -1713,9 +1713,19 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
               {/* Every track is a fixed width or an fr — never `auto`, or the
                    header and the rows (two separate grids) size their tracks to
                    different content and the labels drift off their data. */}
-              <div className="hidden md:grid grid-cols-[minmax(0,1.6fr)_7rem_8rem_8rem_11rem] gap-3 px-4 py-2 bg-white/[0.02] border-b border-sidebar-border text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              <div className={cn(
+                "hidden md:grid gap-3 px-4 py-2 bg-white/[0.02] border-b border-sidebar-border text-[10px] font-medium uppercase tracking-wider text-muted-foreground",
+                "grid-cols-[minmax(0,1.7fr)_6rem_5rem_5rem_7rem_7rem_10rem]"
+              )}>
                 <span>Tenant</span>
                 <span>Referrals</span>
+                {/* Opens and shares are NUMBERS and belong in numeric columns.
+                    Squeezed into the 7rem Referrals cell as prose — "Read · 7
+                    opens · 1 share" — they truncated mid-word, could not be
+                    compared down the column, and grew worse with every extra
+                    digit. */}
+                <span className="text-right">Opens</span>
+                <span className="text-right">Shares</span>
                 <span className="text-right">Earned</span>
                 <span className="text-right">Revenue</span>
                 <span className="text-right">Actions</span>
@@ -1884,7 +1894,10 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                 return (
                   <div
                     key={r.tenantId}
-                    className="md:grid md:grid-cols-[minmax(0,1.6fr)_7rem_8rem_8rem_11rem] md:items-center md:gap-x-3 md:px-4 md:py-3 border-b border-sidebar-border/60 last:border-b-0 hover:bg-white/[0.02] transition-colors"
+                    className={cn(
+                      "md:grid md:items-center md:gap-x-3 md:px-4 md:py-3 border-b border-sidebar-border/60 last:border-b-0 hover:bg-white/[0.02] transition-colors",
+                      "grid-cols-[minmax(0,1.7fr)_6rem_5rem_5rem_7rem_7rem_10rem]"
+                    )}
                   >
                     {/* ── PHONE ────────────────────────────────────────────────
                         Not the table stacked. Identity and what the link has done
@@ -1957,6 +1970,14 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                             <RotateCcw className="w-3 h-3" />
                           </button>
                         )}
+                        {/* The invite state is WORDS, so it lives on the widest
+                            column rather than in a 6rem numeric one. */}
+                        {invite && (
+                          <>
+                            <span className="text-muted-foreground/30">·</span>
+                            <span className="truncate text-[11px]">{invite}</span>
+                          </>
+                        )}
                       </p>
                     </div>
 
@@ -1972,14 +1993,29 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                       ) : (
                         <span className="text-muted-foreground/40">None yet</span>
                       )}
-                      {(invite || reach || linkActivity) && (
-                        <p className="text-[11px] truncate mt-0.5">
-                          {invite}
-                          {invite && (reach || linkActivity) ? " · " : ""}
-                          {reach ?? linkActivity}
-                        </p>
-                      )}
                     </div>
+
+                    {/* Opens and shares. All-time by nature — the counters cannot
+                        be scoped to the month picker — so the tooltip says so
+                        rather than letting them be read as this month's.
+                        A zero is muted but still printed: "nobody opened it" is
+                        a real finding, and a blank cell reads as missing data. */}
+                    <p
+                      className="hidden md:block text-right text-xs tabular-nums"
+                      title="Times this link was opened. All time, not just the selected month."
+                    >
+                      <span className={r.linkOpens > 0 ? "text-foreground" : "text-muted-foreground/40"}>
+                        {r.linkOpens}
+                      </span>
+                    </p>
+                    <p
+                      className="hidden md:block text-right text-xs tabular-nums"
+                      title="Times this link was pasted into a chat — counted when the messenger fetches its preview. All time."
+                    >
+                      <span className={r.linkShares > 0 ? "text-foreground" : "text-muted-foreground/40"}>
+                        {r.linkShares}
+                      </span>
+                    </p>
 
                     <div className="hidden md:block text-right min-w-0">
                       {r.discountEarned > 0 ? (
