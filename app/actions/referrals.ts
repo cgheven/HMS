@@ -6,6 +6,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrAbove, requireOwnerOrPartnerTier } from "@/lib/auth";
 import { logActivity } from "@/lib/audit";
 import { getAuthContext } from "@/lib/data";
+import { getProfile } from "@/lib/auth";
 import { processInBatches } from "@/lib/batch";
 import { normalizePhoneDigits } from "@/lib/phone";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
@@ -1463,8 +1464,34 @@ export async function lookupReferralForAdmission(
   phone: string
 ): Promise<AdmissionReferralLookup> {
   try {
-    const branch = await resolveBranch();
-    const { hostelId, ownerId, enabled, admin, profile, referredPercent } = branch;
+    // NOT resolveBranch(). That calls requireOwnerOrAbove(), which REDIRECTS to
+    // /login for anyone who is not an owner — and this runs on every keystroke
+    // in the phone field of the Add Tenant form. A partner or manager typing a
+    // number was navigated away mid-form, losing everything they had entered.
+    // It looked like the page had crashed; it was an auth redirect fired from a
+    // debounced lookup. 12 users across every branch, all of them staff who
+    // admit tenants for a living.
+    //
+    // getProfile() answers null instead of redirecting, which is the only safe
+    // shape for a background call: the worst outcome of an unentitled caller
+    // must be an empty answer, never a navigation.
+    const profile = await getProfile();
+    if (!profile) return NO_MATCH;
+
+    const ctx = await getAuthContext();
+    const hostelId = ctx?.hostelId ?? null;
+    if (!hostelId) return NO_MATCH;
+
+    const admin = createAdminClient();
+    const { data: hostel } = await admin
+      .from("hms_hostels")
+      .select("owner_id, referral_enabled, referral_referred_percent")
+      .eq("id", hostelId)
+      .maybeSingle();
+
+    const ownerId = (hostel?.owner_id as string | null) ?? null;
+    const enabled = hostel?.referral_enabled === true;
+    const referredPercent = clampPercent(hostel?.referral_referred_percent);
 
     if (!enabled || !ownerId) return { ...NO_MATCH, reason: "not_enabled" };
 
@@ -1531,7 +1558,13 @@ export async function lookupReferralForAdmission(
 
     const referrer = Array.isArray(referral.referrer) ? referral.referrer[0] : referral.referrer;
     const referrerHostelId = (referrer?.hostel_id as string | null) ?? null;
-    const visible = referrerHostelId !== null && rewardScopeIds(branch).includes(referrerHostelId);
+    // Same owner-wide scope resolveBranch used to supply, rebuilt from the auth
+    // context: a referral submitted at a sibling branch is still this owner's.
+    const scope = rewardScopeIds({
+      hostelId,
+      ownerHostels: (ctx?.hostels ?? []).map((h) => ({ id: h.id })),
+    });
+    const visible = referrerHostelId !== null && scope.includes(referrerHostelId);
     const room = Array.isArray(referrer?.room) ? referrer?.room[0] : referrer?.room;
 
     // LEAST(what the public page promised this visitor, what the branch that
