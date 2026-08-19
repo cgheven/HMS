@@ -93,6 +93,11 @@ export async function sendReferralInvite(
 
     // Reuse an existing token if one was somehow minted without a send; only
     // mint when there is none, so a retry cannot invalidate a link already sent.
+    // The status token is still minted and stored, even though v2 does not
+    // carry it: /rs/<token> remains live for every link already sent, and the
+    // planned code + mobile lookup page needs the row to exist. What changed is
+    // only that a NEW tenant is not handed the URL — a second link in the body
+    // is what forced WhatsApp to render a preview card.
     let rawToken: string | null = null;
     let tokenHash = r.status_token_hash;
     if (!tokenHash) {
@@ -147,9 +152,7 @@ export async function sendReferralInvite(
       ],
       // "marketing", not "announcement": this is a promotional template and the
       // monitoring page must be able to separate outreach from service messages.
-      { hostelId: r.hostel_id, tenantId: r.tenant_id, messageType: "marketing" as const },
-      // The status token as the button's URL suffix — again the suffix only.
-      { buttonUrlSuffixes: [rawToken] }
+      { hostelId: r.hostel_id, tenantId: r.tenant_id, messageType: "marketing" as const }
     );
 
     if (!result.ok) return { sent: false, reason: "send_failed" };
