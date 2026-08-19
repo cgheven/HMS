@@ -52,7 +52,12 @@ export type RetrySummary = {
 export async function retryUndeliveredInvites(
   admin: Admin,
   hostelId: string,
-  hostelName: string
+  hostelName: string,
+  /** Overrides only for a supervised manual run — the scheduled pass never
+   *  passes these. A first execution that happens unattended at 05:30 is a
+   *  first execution nobody sees fail, so the route exposes these behind the
+   *  cron secret to make the mechanism observable once. */
+  opts: { backoffHours?: number; maxAttempts?: number } = {}
 ): Promise<RetrySummary> {
   const summary: RetrySummary = {
     hostelId,
@@ -64,8 +69,10 @@ export async function retryUndeliveredInvites(
 
   const { data: rows, error } = await admin.rpc("hms_referral_invites_to_retry", {
     p_hostel_id: hostelId,
-    p_max_attempts: MAX_ATTEMPTS,
-    p_backoff_hours: BACKOFF_HOURS,
+    p_max_attempts: opts.maxAttempts ?? MAX_ATTEMPTS,
+    // Clamped at 0: a negative interval would make now() - interval move
+    // FORWARDS and quietly select nothing, which reads as "all healthy".
+    p_backoff_hours: Math.max(0, opts.backoffHours ?? BACKOFF_HOURS),
   });
   if (error) {
     console.error("[retryUndeliveredInvites] lookup failed:", error.code ?? "unknown");

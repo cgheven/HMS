@@ -37,12 +37,22 @@ export async function GET(request: NextRequest) {
 
   const admin = createAdminClient();
 
-  const { data: hostels, error } = await admin
+  // Manual-run overrides, reachable only with the cron secret. The scheduled
+  // invocation passes none of them and behaves exactly as before.
+  const params = request.nextUrl.searchParams;
+  const backoffRaw = params.get("backoffHours");
+  const backoffHours = backoffRaw === null ? undefined : Number(backoffRaw);
+  const onlyHostel = params.get("hostelId");
+
+  let query = admin
     .from("hms_hostels")
     .select("id, name")
     .eq("referral_enabled", true)
     .eq("whatsapp_enabled", true)
     .eq("referral_campaign", "active");
+  if (onlyHostel) query = query.eq("id", onlyHostel);
+
+  const { data: hostels, error } = await query;
 
   if (error) {
     console.error("[cron/referral-invites] branch lookup failed:", error.code ?? "unknown");
@@ -51,7 +61,11 @@ export async function GET(request: NextRequest) {
 
   const results: RetrySummary[] = [];
   for (const h of hostels ?? []) {
-    results.push(await retryUndeliveredInvites(admin, h.id as string, (h.name as string) ?? ""));
+    results.push(
+      await retryUndeliveredInvites(admin, h.id as string, (h.name as string) ?? "", {
+        backoffHours: Number.isFinite(backoffHours) ? backoffHours : undefined,
+      })
+    );
   }
 
   const totals = results.reduce(
