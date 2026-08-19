@@ -642,6 +642,13 @@ export async function getReferralOverview(month?: string): Promise<{
     // recent attempt per tenant and ignores earlier ones. A tenant whose invite
     // failed and was later re-sent successfully should read as delivered, not
     // carry the old failure forever.
+    // Same gate sendReferralInvite applies before it will send to anybody, so
+    // the count on the button and the set the loop actually messages cannot
+    // drift apart.
+    const reachableTenantIds = new Set(
+      tenants.filter((t) => !!normalizePhoneDigits(t.phone)).map((t) => t.id)
+    );
+
     const inviteByTenant = new Map<string, { status: string; at: string }>();
     for (const m of invitesRes.data ?? []) {
       const id = m.tenant_id as string;
@@ -970,9 +977,19 @@ export async function getReferralOverview(month?: string): Promise<{
         campaign: branch.campaign,
         // What pressing Start would actually send — the owner should never have
         // to guess how many messages a click is about to cost.
-        unsentCount: (codesRes.data ?? []).filter(
-          (c) => !(c as { link_sent_at?: string | null }).link_sent_at
-        ).length,
+        //
+        // Tenants with no usable phone are excluded, because they are not
+        // pending, they are unreachable. Counting them left the button offering
+        // "Send 1 pending" forever on a branch where that 1 could never be
+        // sent: every press failed, the count never moved, and the owner was
+        // handed a permanent red error with no action that could clear it.
+        // Their row still says so — see the No number chip on Tenant links —
+        // which is the actionable version of the same fact.
+        unsentCount: (codesRes.data ?? []).filter((c) => {
+          const row = c as { link_sent_at?: string | null; tenant_id?: string };
+          if (row.link_sent_at) return false;
+          return reachableTenantIds.has(row.tenant_id ?? "");
+        }).length,
         whatsappEnabled: branch.whatsappEnabled,
       },
     };

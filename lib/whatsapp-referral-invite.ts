@@ -30,13 +30,18 @@ const SITE_URL = siteUrl();
  */
 export async function sendReferralInvite(
   admin: Admin,
-  codeRowId: string
+  codeRowId: string,
+  /** Retry mode. Skips the already-sent guard, because link_sent_at means Meta
+   *  ACCEPTED the message, not that it arrived — a delivery failure lands later
+   *  on the webhook, and by then the row already looks sent. Only the retry
+   *  pass sets this; it selects on the message actually having failed. */
+  opts: { retry?: boolean } = {}
 ): Promise<{ sent: boolean; reason?: string }> {
   try {
     const { data: row } = await admin
       .from("hms_referral_codes")
       .select(
-        "id, code, tenant_id, hostel_id, is_active, link_sent_at, status_token_hash, " +
+        "id, code, tenant_id, hostel_id, is_active, link_sent_at, status_token_hash, invite_attempts, " +
           "tenant:hms_tenants(full_name, phone, is_active, is_waiting), " +
           "hostel:hms_hostels(name, whatsapp_enabled, referral_enabled, referral_campaign, " +
           "referral_referrer_percent, referral_referred_percent)"
@@ -51,6 +56,7 @@ export async function sendReferralInvite(
     const r = row as unknown as {
       id: string; code: string; tenant_id: string; hostel_id: string;
       is_active: boolean; link_sent_at: string | null; status_token_hash: string | null;
+      invite_attempts: number | null;
       tenant: Emb<{ full_name: string; phone: string | null; is_active: boolean; is_waiting: boolean }>;
       hostel: Emb<{ name: string; whatsapp_enabled: boolean; referral_enabled: boolean;
                     referral_campaign: string; referral_referrer_percent: number;
@@ -58,7 +64,7 @@ export async function sendReferralInvite(
     };
 
     if (!r.is_active) return { sent: false, reason: "no_code" };
-    if (r.link_sent_at) return { sent: false, reason: "already_sent" };
+    if (r.link_sent_at && !opts.retry) return { sent: false, reason: "already_sent" };
 
     const tenant = Array.isArray(r.tenant) ? r.tenant[0] : r.tenant;
     const hostel = Array.isArray(r.hostel) ? r.hostel[0] : r.hostel;
@@ -108,6 +114,17 @@ export async function sendReferralInvite(
     }
 
     const firstName = String(tenant.full_name ?? "").trim().split(/\s+/)[0] || "there";
+
+    // Counted here, immediately before the call, so it records ATTEMPTS rather
+    // than successes — a retry loop that only counted successes would never
+    // reach its cap and would hammer an unreachable number forever.
+    await admin
+      .from("hms_referral_codes")
+      .update({
+        invite_attempts: Number(r.invite_attempts ?? 0) + 1,
+        invite_last_attempt_at: new Date().toISOString(),
+      })
+      .eq("id", r.id);
 
     const result = await sendWhatsAppTemplateMessage(
       digits,

@@ -1832,6 +1832,18 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                     >
                       Delivered
                     </span>
+                  ) : r.code && !r.phone ? (
+                    // Named separately from "Not sent", because the fix is
+                    // different: this one is not waiting on a send, it is
+                    // waiting on somebody to add a phone number. Left as "Not
+                    // sent" it looked pending forever while every attempt
+                    // failed.
+                    <span
+                      className="text-amber/80"
+                      title="No mobile number on file, so their referral link cannot be sent. Add a number on the Tenants page."
+                    >
+                      No number
+                    </span>
                   ) : r.code ? (
                     <span
                       className="text-amber/80"
