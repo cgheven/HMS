@@ -50,6 +50,18 @@ const REASON_COPY: Record<string, string> = {
   unknown: "please contact support.",
 };
 
+/** Tenant-links activity filter. Ordered by what an owner does with it: who is
+ *  spreading the link, who opened it, who ignored it, who never got it. */
+type LinkFilter = "all" | "shared" | "opened" | "idle" | "unreached";
+
+const LINK_FILTERS: { key: LinkFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "shared", label: "Shared" },
+  { key: "opened", label: "Opened" },
+  { key: "idle", label: "No activity" },
+  { key: "unreached", label: "Not reached" },
+];
+
 const STATUS_FILTERS: StatusFilter[] = ["all", "pending", "joined", "rejected"];
 
 /** 'void' is filtered out server-side — a cancelled reward is not a line item. */
@@ -616,6 +628,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<ReferralRewardRow | null>(null);
   const [confirmStopAll, setConfirmStopAll] = useState(false);
+  const [linkFilter, setLinkFilter] = useState<LinkFilter>("all");
   const [confirmStart, setConfirmStart] = useState(false);
   const [isPending, startTransition] = useTransition();
   // Which pending row has its "attribute by hand" picker open. A phone match is
@@ -821,7 +834,10 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
     [referrerScoped, status, q, qDigits]
   );
 
-  const filteredReferrers = useMemo(
+  // Search first, activity second — so the chip counts describe what the search
+  // has already narrowed to. Counting against the unsearched list would show
+  // "Shared (12)" beside a filtered view holding three of them.
+  const searchedReferrers = useMemo(
     () =>
       referrers.filter((r) => {
         if (!q) return true;
@@ -833,6 +849,50 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
       }),
     [referrers, q]
   );
+
+  const linkCounts = useMemo(
+    () => ({
+      all: searchedReferrers.length,
+      shared: searchedReferrers.filter((r) => r.linkShares > 0).length,
+      opened: searchedReferrers.filter((r) => r.linkOpens > 0).length,
+      // The row that is actually worth acting on: they were told, and nothing
+      // happened. Restricted to invites that ARRIVED — a tenant whose message
+      // failed has done nothing wrong and does not belong in a list of people
+      // who ignored you.
+      idle: searchedReferrers.filter(
+        (r) =>
+          r.linkOpens === 0 &&
+          r.linkShares === 0 &&
+          (r.inviteStatus === "read" || r.inviteStatus === "delivered")
+      ).length,
+      unreached: searchedReferrers.filter(
+        (r) => r.inviteStatus === "failed" || r.inviteStatus === "none"
+      ).length,
+    }),
+    [searchedReferrers]
+  );
+
+  const filteredReferrers = useMemo(() => {
+    switch (linkFilter) {
+      case "shared":
+        return searchedReferrers.filter((r) => r.linkShares > 0);
+      case "opened":
+        return searchedReferrers.filter((r) => r.linkOpens > 0);
+      case "idle":
+        return searchedReferrers.filter(
+          (r) =>
+            r.linkOpens === 0 &&
+            r.linkShares === 0 &&
+            (r.inviteStatus === "read" || r.inviteStatus === "delivered")
+        );
+      case "unreached":
+        return searchedReferrers.filter(
+          (r) => r.inviteStatus === "failed" || r.inviteStatus === "none"
+        );
+      default:
+        return searchedReferrers;
+    }
+  }, [searchedReferrers, linkFilter]);
 
   const filteredRewards = useMemo(
     () =>
@@ -1694,9 +1754,43 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
             openRewardCount={openRewardCount}
             openRewardValue={ov.openRewardValue}
           />
+
+          {/* Same chip shape as the Submissions filters, so the two tabs are
+              operated the same way. A chip whose count is zero is disabled
+              rather than hidden: an owner who wants "who never got it" needs to
+              see that the answer is nobody, and a filter that disappears when it
+              is satisfied cannot tell them that. */}
+          <div className="flex flex-wrap items-center gap-2">
+            {LINK_FILTERS.map(({ key, label }) => {
+              const n = linkCounts[key];
+              const active = linkFilter === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => setLinkFilter(key)}
+                  disabled={n === 0 && key !== "all"}
+                  className={
+                    "text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-40 disabled:cursor-not-allowed " +
+                    (active
+                      ? "border-amber/40 bg-amber/[0.08] text-amber"
+                      : "border-sidebar-border text-muted-foreground hover:text-foreground")
+                  }
+                >
+                  {label} ({n})
+                </button>
+              );
+            })}
+          </div>
+
           {filteredReferrers.length === 0 ? (
             <EmptyBlock
-              line1={referrers.length === 0 ? "No active tenants yet" : "Nothing matches this search."}
+              line1={
+                referrers.length === 0
+                  ? "No active tenants yet"
+                  : linkFilter !== "all"
+                    ? "Nobody matches this filter."
+                    : "Nothing matches this search."
+              }
               line2={
                 referrers.length === 0
                   ? "Every active tenant gets their own link the moment they check in."
