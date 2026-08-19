@@ -497,6 +497,7 @@ export async function getReferralOverview(month?: string): Promise<{
           month: monthKey,
           joinedInMonth: 0,
           joinedPaidInMonth: 0,
+          pulseCommissionPercent: 0,
           pulseCommissionInMonth: 0,
           pulseCommissionConfirmedInMonth: 0,
           pulseCommissionPendingInMonth: 0,
@@ -530,7 +531,7 @@ export async function getReferralOverview(month?: string): Promise<{
       hostel_id: string;
     };
 
-    const [tenantsRes, codesRes, referralsRes, otherTenantsRes, duplicatesRes, rewardsRes, invitesRes] =
+    const [tenantsRes, codesRes, referralsRes, otherTenantsRes, duplicatesRes, rewardsRes, invitesRes, commissionPctRes] =
       await Promise.all([
         admin
           .from("hms_tenants")
@@ -590,6 +591,12 @@ export async function getReferralOverview(month?: string): Promise<{
           .like("template", "hms_referral_invitation%")
           .order("created_at", { ascending: false })
           .limit(1000),
+        // The rate Pulse actually charges this branch — the same resolver the
+        // charging engine uses, not a second coalesce of hostel-override over
+        // platform-default. Two implementations of one commercial term drift,
+        // and the one on screen drifting from the one on the invoice is the
+        // version an owner notices.
+        admin.rpc("hms_pulse_commission_percent", { p_hostel_id: hostelId }),
       ]);
 
     if (tenantsRes.error) throw tenantsRes.error;
@@ -942,6 +949,11 @@ export async function getReferralOverview(month?: string): Promise<{
         // charge, and filing it under July would drop a fee into a month that
         // has already been reported on. Reversed fees are excluded — a rejected
         // referral costs the owner nothing.
+        // Shown beside the rupee figure the owner is already charged. A fee they
+        // can see but cannot check is worse than either — 20% of a 15,000 first
+        // month is 2,250, and an owner who can verify that trusts the rest of
+        // the page more.
+        pulseCommissionPercent: Number(commissionPctRes.data ?? 0),
         pulseCommissionInMonth: commissionRowsInMonth.reduce(
           (sum, r) => sum + Number(r.pulse_commission_amount ?? 0),
           0

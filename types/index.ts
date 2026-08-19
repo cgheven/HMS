@@ -1568,6 +1568,10 @@ export interface ReferralOverview {
   /** Pulse's one-time commission on referrals that converted in `month`, from
    *  hms_referrals.pulse_commission_amount — the amount ACTUALLY charged and
    *  snapshotted at conversion, never re-derived from today's rate. */
+  /** The rate Pulse charges THIS branch, resolved through any per-branch relief
+   *  — never the platform default on its own, or a client on a discounted rate
+   *  sees a number that does not match their invoice. */
+  pulseCommissionPercent: number
   pulseCommissionInMonth: number
   /** The half of `pulseCommissionInMonth` whose referred tenant has actually
    *  paid something. The fee accrues at conversion while revenue is cash, so

@@ -1239,6 +1239,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
           // on a card of their own — they are already itemised per referral in
           // the list below, and a fifth card would break the equation.
           {
+            id: "tenants",
             label: "Tenants joined",
             value: `${ov.joinedPaidInMonth}`,
             color: "text-emerald-400",
@@ -1246,6 +1247,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
             note: ov.joinedUnpaidInMonth > 0 ? `${ov.joinedUnpaidInMonth} not paid yet` : null,
           },
           {
+            id: "revenue",
             label: "Revenue collected",
             value: rs(ov.revenueInMonth),
             color: "text-emerald-400",
@@ -1253,7 +1255,22 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
             note: null,
           },
           {
-            label: "Pulse commission",
+            // The rate lives in the LABEL, not a tooltip. A fee tucked behind a
+            // hover reads as something being kept quiet, and this one is
+            // trivially checkable against the figure above it.
+            id: "commission",
+            // "Pulse commission · 20%" wraps to a second line in a half-width
+            // tile, and this label does not truncate — so that tile alone would
+            // grow taller than the three beside it, which is the exact thing the
+            // reserved note height below exists to prevent. The word "Pulse" is
+            // the droppable half on a phone: the page is already Pulse.
+            label: (
+              <>
+                <span className="sm:hidden">Commission</span>
+                <span className="hidden sm:inline">Pulse commission</span>
+                {ov.pulseCommissionPercent > 0 && <> · {ov.pulseCommissionPercent}%</>}
+              </>
+            ),
             value: rs(ov.pulseCommissionConfirmedInMonth),
             color: "text-amber",
             size: "text-base sm:text-lg lg:text-xl",
@@ -1266,15 +1283,16 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
             // Collected revenue minus confirmed commission — both sides on the
             // same cash basis, so this can never go negative on the strength of
             // a tenant who simply has not paid yet.
+            id: "net",
             label: "Net earning",
             value: `${earningAfterDiscounts < 0 ? "−" : ""}${rs(Math.abs(earningAfterDiscounts))}`,
             color: earningAfterDiscounts < 0 ? "text-amber" : "text-emerald-400",
             size: "text-base sm:text-lg lg:text-xl",
             note: null,
           },
-        ].map(({ label, value, color, size, note }) => (
+        ].map(({ id, label, value, color, size, note }) => (
           <div
-            key={label}
+            key={id}
             className="rounded-2xl border border-sidebar-border bg-card p-4 text-center"
           >
             <p className={`${size} font-bold ${color} truncate`}>{value}</p>
