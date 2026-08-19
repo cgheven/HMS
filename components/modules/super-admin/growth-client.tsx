@@ -12,16 +12,8 @@ interface Props {
   loadError: string | null;
 }
 
-type SortKey = "empty" | "occupancy" | "revenue" | "name";
+type SortKey = "empty" | "submitted" | "commission" | "revenue" | "name";
 
-// Blunt on purpose. A sales conversation only needs "room to fill", "filling up"
-// or "full"; a finer scale just invites arguing about the boundary.
-function tone(pct: number, capacity: number) {
-  if (capacity === 0) return { text: "text-muted-foreground/40", bar: "bg-white/10" };
-  if (pct >= 90) return { text: "text-emerald-400", bar: "bg-emerald-400" };
-  if (pct >= 70) return { text: "text-amber", bar: "bg-amber" };
-  return { text: "text-orange-400", bar: "bg-orange-400" };
-}
 
 // Cities arrive however they were typed — "Lahore" on one branch, "LAHORE" on
 // the next. Shouting one row's city and not its neighbour's reads as a defect
@@ -34,27 +26,6 @@ function cityLabel(city: string | null) {
     .replace(/\b[a-z]/g, (c) => c.toUpperCase());
 }
 
-function OccupancyBar({ pct, capacity }: { pct: number; capacity: number }) {
-  const t = tone(pct, capacity);
-  if (capacity === 0) {
-    return <span className="text-[11px] text-muted-foreground/40">no rooms yet</span>;
-  }
-  return (
-    <div className="flex items-center gap-2.5">
-      {/* The bar is what makes the table scannable: an owner reads "who has room"
-          from the shape of the column, not by comparing eight percentages. */}
-      <div className="relative h-1.5 flex-1 min-w-0 rounded-full bg-white/[0.07] overflow-hidden">
-        <div
-          className={cn("absolute inset-y-0 left-0 rounded-full transition-all", t.bar)}
-          style={{ width: `${Math.min(100, Math.max(pct, pct > 0 ? 3 : 0))}%` }}
-        />
-      </div>
-      <span className={cn("text-xs font-medium tabular-nums w-9 text-right shrink-0", t.text)}>
-        {pct}%
-      </span>
-    </div>
-  );
-}
 
 export function GrowthClient({ branches, totals, loadError }: Props) {
   const [sort, setSort] = useState<SortKey>("empty");
@@ -66,15 +37,20 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
     [branches]
   );
 
-  const cols = showReferral
-    ? "md:grid-cols-[minmax(0,1.5fr)_minmax(7rem,1fr)_6rem_5rem_8rem_7rem]"
-    : "md:grid-cols-[minmax(0,1.5fr)_minmax(9rem,1fr)_7rem_6rem]";
+  // No occupancy track. A 450px bar restated what "52 / 152" already says, and
+  // it was the widest thing on a page whose subject is referral performance —
+  // so the space now carries the funnel instead: submitted, joined, what it
+  // returned, what Pulse earned.
+  const cols =
+    "md:grid-cols-[minmax(0,1.6fr)_6rem_4rem_6rem_5rem_7rem_7rem]";
 
   const sorted = useMemo(() => {
     const list = [...branches];
     switch (sort) {
-      case "occupancy":
-        return list.sort((a, b) => a.occupancyPercent - b.occupancyPercent);
+      case "submitted":
+        return list.sort((a, b) => b.referralsSubmitted - a.referralsSubmitted);
+      case "commission":
+        return list.sort((a, b) => b.pulseCommission - a.pulseCommission);
       case "revenue":
         return list.sort((a, b) => b.referralRevenue - a.referralRevenue);
       case "name":
@@ -177,8 +153,7 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
           <div className="min-w-0">
             <CardTitle>Branches</CardTitle>
             <CardDescription>
-              Occupancy counted from tenants actually holding a room
-              {showReferral ? " · all-time referral figures" : ""}
+              Beds counted from tenants actually holding a room · all-time referral figures
             </CardDescription>
           </div>
           <select
@@ -187,8 +162,9 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
             className="shrink-0 rounded-lg border border-sidebar-border bg-background px-2.5 py-1.5 text-xs text-foreground hover:border-white/20 transition-colors"
           >
             <option value="empty">Most empty seats</option>
-            <option value="occupancy">Lowest occupancy</option>
-            {showReferral && <option value="revenue">Most referral revenue</option>}
+            <option value="submitted">Most submissions</option>
+            <option value="commission">Most commission</option>
+            <option value="revenue">Most referral revenue</option>
             <option value="name">Name</option>
           </select>
         </CardHeader>
@@ -204,18 +180,30 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
             )}
           >
             <span>Branch</span>
-            <span>Occupancy</span>
             <span className="text-right">Filled</span>
             <span className="text-right">Empty</span>
-            {showReferral && <span className="text-right">Referral revenue</span>}
-            {showReferral && <span className="text-right">Commission</span>}
+            {/* The referral funnel, in the order it happens. Submitted is the
+                top of it — a branch with submissions but no admissions is a
+                conversion problem, one with neither is a distribution problem,
+                and the two need different conversations. */}
+            <span className="text-right" title="Referral forms submitted through tenants' links">
+              Submitted
+            </span>
+            <span className="text-right" title="Referred people who actually moved in">
+              Joined
+            </span>
+            <span className="text-right" title="Everything referred tenants have paid, net of refundable deposits">
+              Revenue
+            </span>
+            <span className="text-right" title="What Pulse earned from this branch's referrals">
+              Commission
+            </span>
           </div>
 
           {sorted.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-12">No branches yet.</p>
           ) : (
             sorted.map((b) => {
-              const t = tone(b.occupancyPercent, b.capacity);
               const city = cityLabel(b.city);
               return (
                 <div
@@ -241,27 +229,28 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
 
                   {/* Phone: the desktop cells are display:none there, so every
                       number has to appear somewhere. */}
-                  <div className="md:hidden mt-2 space-y-1.5">
-                    <OccupancyBar pct={b.occupancyPercent} capacity={b.capacity} />
+                  {/* Phone: the same facts the columns carry, since the desktop
+                      cells are display:none here and would otherwise vanish. */}
+                  <div className="md:hidden mt-2 space-y-0.5">
                     <p className="text-xs text-muted-foreground">
                       <span className="font-semibold text-orange-400">{b.emptySeats} empty</span>
                       {" · "}
                       {b.filled}/{b.capacity} filled
-                      {b.referralRevenue > 0 && (
-                        <span className="text-emerald-400">
-                          {" · "}
-                          {formatCurrency(b.referralRevenue)}
-                        </span>
-                      )}
                     </p>
+                    {b.referralEnabled && (
+                      <p className="text-[11px] text-muted-foreground">
+                        {b.referralsSubmitted} submitted · {b.referralsJoined} joined
+                        {b.pulseCommission > 0 && (
+                          <span className="text-amber">
+                            {" · "}
+                            {formatCurrency(b.pulseCommission)} commission
+                          </span>
+                        )}
+                      </p>
+                    )}
                   </div>
 
-                  <div className="hidden md:block min-w-0">
-                    <OccupancyBar pct={b.occupancyPercent} capacity={b.capacity} />
-                  </div>
-
-                  {/* Filled and total in one cell. As two columns they were read
-                      as unrelated figures; the ratio is the fact. */}
+                  {/* Occupancy bar removed — see the grid note above. */}
                   <p className="hidden md:block text-right text-xs tabular-nums text-muted-foreground">
                     <span className="text-foreground">{b.filled}</span>
                     <span className="text-muted-foreground/40"> / {b.capacity || "—"}</span>
@@ -275,25 +264,46 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
                     )}
                   </p>
 
-                  {showReferral && (
-                    <p className="hidden md:block text-right text-xs tabular-nums">
-                      {b.referralRevenue > 0 ? (
-                        <span className="text-emerald-400">{formatCurrency(b.referralRevenue)}</span>
-                      ) : (
-                        <span className="text-muted-foreground/30">—</span>
-                      )}
-                    </p>
-                  )}
+                  {/* A zero is printed, not blanked. "This branch has referrals
+                      on and nobody has submitted" is the finding worth acting
+                      on, and an empty cell reads as missing data instead. A
+                      branch not running referrals at all gets a dash, which is
+                      a different fact. */}
+                  <p className="hidden md:block text-right text-xs tabular-nums">
+                    {b.referralEnabled ? (
+                      <span className={b.referralsSubmitted > 0 ? "text-foreground" : "text-muted-foreground/40"}>
+                        {b.referralsSubmitted}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground/25">—</span>
+                    )}
+                  </p>
 
-                  {showReferral && (
-                    <p className="hidden md:block text-right text-xs tabular-nums">
-                      {b.pulseCommission > 0 ? (
-                        <span className="text-amber">{formatCurrency(b.pulseCommission)}</span>
-                      ) : (
-                        <span className="text-muted-foreground/30">—</span>
-                      )}
-                    </p>
-                  )}
+                  <p className="hidden md:block text-right text-xs tabular-nums">
+                    {b.referralEnabled ? (
+                      <span className={b.referralsJoined > 0 ? "text-emerald-400" : "text-muted-foreground/40"}>
+                        {b.referralsJoined}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground/25">—</span>
+                    )}
+                  </p>
+
+                  <p className="hidden md:block text-right text-xs tabular-nums">
+                    {b.referralRevenue > 0 ? (
+                      <span className="text-emerald-400">{formatCurrency(b.referralRevenue)}</span>
+                    ) : (
+                      <span className="text-muted-foreground/25">—</span>
+                    )}
+                  </p>
+
+                  <p className="hidden md:block text-right text-xs tabular-nums">
+                    {b.pulseCommission > 0 ? (
+                      <span className="text-amber">{formatCurrency(b.pulseCommission)}</span>
+                    ) : (
+                      <span className="text-muted-foreground/25">—</span>
+                    )}
+                  </p>
                 </div>
               );
             })
@@ -302,8 +312,11 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
       </Card>
 
       {!showReferral && (
+        // The columns are always present now — a dash on a branch that is not
+        // running referrals is itself the answer, and the sales question this
+        // page exists for is which clients those are.
         <p className="text-xs text-muted-foreground/70 text-center">
-          Referral columns appear once a client branch starts running the programme.
+          No branch is running referrals yet — a dash means the programme is off, not that nobody used it.
         </p>
       )}
     </div>

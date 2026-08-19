@@ -92,6 +92,16 @@ export async function settleReferralRewards(
   admin: Admin, hostelId: string | null | undefined, month: string
 ): Promise<number> {
   if (!hostelId) return 0;
+  // Restore any Pulse fee that was reversed by a rejection which no longer
+  // stands. A referral can return to 'joined' by a route that never re-charges
+  // — undo restoring it to 'pending' and attribution re-joining it afterwards —
+  // and the charge RPC refuses a row it has already charged once, so without a
+  // sweep the fee is lost silently while the tenant keeps their discount.
+  //
+  // Placed here because this runs on every Payments load and nightly from the
+  // cron, so the repair happens without anyone noticing there was damage.
+  // Fail-open: reward settlement is the job, this is the passenger.
+  await callRpc(admin, "hms_referral_heal_commissions", { p_hostel_id: hostelId });
   const n = await callRpc(admin, "hms_referral_settle_rewards", {
     p_hostel_id: hostelId, p_month: month,
   });
