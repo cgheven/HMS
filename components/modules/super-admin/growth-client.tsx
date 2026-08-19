@@ -42,7 +42,7 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
   // so the space now carries the funnel instead: submitted, joined, what it
   // returned, what Pulse earned.
   const cols =
-    "md:grid-cols-[minmax(0,1.6fr)_6rem_4rem_6rem_5rem_7rem_7rem]";
+    "md:grid-cols-[minmax(12rem,1fr)_6.5rem_5rem_7rem_5.5rem_8rem_8rem]";
 
   const sorted = useMemo(() => {
     const list = [...branches];
@@ -117,7 +117,7 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-7">
       <div>
         <h1 className="text-3xl font-serif font-normal tracking-tight text-foreground">Growth</h1>
         <p className="text-muted-foreground mt-1 text-sm">
@@ -149,7 +149,7 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
       )}
 
       <Card>
-        <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
+        <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 pb-4">
           <div className="min-w-0">
             <CardTitle>Branches</CardTitle>
             <CardDescription>
@@ -209,7 +209,7 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
                 <div
                   key={b.hostelId}
                   className={cn(
-                    "md:grid md:items-center gap-x-4 px-5 py-2.5 border-b border-sidebar-border/40 last:border-b-0 hover:bg-white/[0.025] transition-colors",
+                    "md:grid md:items-center gap-x-4 px-5 py-3.5 border-b border-sidebar-border last:border-b-0 hover:bg-white/[0.03] transition-colors",
                     cols
                   )}
                 >

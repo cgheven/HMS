@@ -168,8 +168,19 @@ export function SuperAdminShell({
           </div>
         </div>
 
+        {/* Every Super Admin page rendered edge to edge: the heading, the tiles
+            and the tables all butted straight against the sidebar border, and
+            the rightmost card ran off the viewport. The owner shell has always
+            wrapped its children — this one never did, so the gutter had to be
+            re-invented per page and in practice never was.
+
+            max-w-[1600px] rather than the owner's max-w-7xl (1280px): these
+            tables are genuinely wider — Growth alone carries seven columns —
+            and 1280 would squeeze them back into the crush this fixes. */}
         <div className="flex-1 overflow-y-auto">
-          {children}
+          <div className="mx-auto w-full max-w-[1600px] px-4 sm:px-6 lg:px-8 py-6">
+            {children}
+          </div>
         </div>
       </div>
     </div>
