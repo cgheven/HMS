@@ -15,6 +15,11 @@ import { ReferralFormClient } from "./referral-form-client";
 // runs twice per request, double-counting both the per-IP rate limiter and the
 // link-open counter. It also keeps the branch name out of the card, which a
 // forwarded screenshot would otherwise carry.
+//
+// Static also means one card for both link sources, so it must be true of both:
+// a Pulse link has no referrer, and "a friend has invited you" on a link pasted
+// into a public bio is a lie. The source-specific line lives on the page body,
+// where the code has already been resolved.
 export const metadata: Metadata = {
   // No `robots: { index: false }` here, deliberately.
   //
@@ -31,17 +36,17 @@ export const metadata: Metadata = {
   // it was belt-and-braces that cost the feature its preview. Referral URLs
   // are not linked from anywhere public, so there is nothing to discover.
   title: "You have been invited",
-  description: "A friend has invited you. Open to see your discount and reserve your place.",
+  description: "Open to see your discount and reserve your place.",
   openGraph: {
     title: "You have been invited",
-    description: "A friend has invited you. Open to see your discount and reserve your place.",
+    description: "Open to see your discount and reserve your place.",
     images: ["/opengraph-image.jpg"],
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
     title: "You have been invited",
-    description: "A friend has invited you. Open to see your discount and reserve your place.",
+    description: "Open to see your discount and reserve your place.",
     images: ["/opengraph-image.jpg"],
   },
 };
@@ -116,5 +121,6 @@ export default async function ReferralPage({ params }: Props) {
       code={code}
       hostelName={target.hostelName}
       referredPercent={target.referredPercent}
+      source={target.source}
     />;
 }

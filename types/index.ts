@@ -1459,8 +1459,14 @@ export interface ReferralRow {
   phone: string
   status: ReferralStatus
   createdAt: string
-  referrerTenantId: string
-  /** Null only if the referring tenant's row has since been deleted. */
+  /** Who sent this lead. 'pulse' means the platform's own per-branch link, which
+   *  has no referring tenant at all — referrerTenantId, referrerName and
+   *  referrerRoom are all null and no referrer-side reward exists. */
+  source: "tenant" | "pulse"
+  /** Null for every 'pulse' row. */
+  referrerTenantId: string | null
+  /** Null when source is 'pulse', or if the referring tenant's row has since
+   *  been deleted. */
   referrerName: string | null
   /** The referrer's room. Two tenants genuinely share a name often enough that
    *  the name alone does not identify who earned the reward — the room is what
@@ -1527,6 +1533,7 @@ export interface ReferralDuplicateRow {
   name: string
   phone: string
   createdAt: string
+  source: "tenant" | "pulse"
   referrerName: string | null
 }
 
@@ -1631,6 +1638,14 @@ export interface GrowthBranchRow {
   /** Rupees actually taken off bills — 'applied' only, never promised. */
   referralDiscounts: number
   pulseCommission: number
+  /** The branch's own Pulse referral link code, null until referrals are
+   *  enabled. Pulse pastes {origin}/ref/{code} wherever it likes; there is no
+   *  referring tenant behind it. */
+  pulseCode: string | null
+  /** Opens and shares of that Pulse link — the only per-branch distribution
+   *  signal Pulse has for its own marketing. */
+  pulseViews: number
+  pulseShares: number
 }
 
 export interface GrowthTotals {

@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizePhoneDigits } from "@/lib/phone";
 import { clientIp } from "@/lib/referrals-server";
 import {
+  MAX_PENDING_PER_PULSE_LINK,
   MAX_PENDING_PER_REFERRER,
   REFERRAL_CODE_INPUT_MAX_LENGTH,
   REFERRAL_HONEYPOT_MAX_LENGTH,
@@ -12,6 +13,7 @@ import {
   REFERRAL_IP_LINK_HOURLY_LIMIT,
   REFERRAL_NAME_MAX_LENGTH,
   REFERRAL_PHONE_MAX_LENGTH,
+  REFERRAL_PULSE_IP_LINK_HOURLY_LIMIT,
   isReferrableMobile,
   normalizeReferralCode,
 } from "@/lib/referrals";
@@ -115,6 +117,12 @@ export async function submitReferral(
       p_ip_link_hourly_limit: REFERRAL_IP_LINK_HOURLY_LIMIT,
       p_ip_hourly_limit: REFERRAL_IP_HOURLY_LIMIT,
       p_hostel_hourly_limit: REFERRAL_HOSTEL_HOURLY_LIMIT,
+      // Both pairs are passed on every call; the RPC picks between them on the
+      // resolved code's source, because that is the only place the source is
+      // known without a second query — and asking here would leak whether the
+      // code exists before any ceiling has been charged.
+      p_pulse_max_pending: MAX_PENDING_PER_PULSE_LINK,
+      p_pulse_ip_link_hourly_limit: REFERRAL_PULSE_IP_LINK_HOURLY_LIMIT,
     });
 
     if (error) {

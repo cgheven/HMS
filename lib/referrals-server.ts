@@ -90,8 +90,12 @@ export type ReferralTarget =
    * reason to fill the form without it — and it costs no extra query: the
    * branch row is already being read to check referral_enabled. 0 means the
    * owner runs referrer-only mode, and the page then makes no promise.
+   *
+   * `source` rides on THIS variant and no other. A caller who reaches "ok"
+   * already holds a working code, so naming who circulated it leaks nothing;
+   * putting it on a refusal would turn the answer into a code-validity oracle.
    */
-  | { kind: "ok"; hostelName: string; referredPercent: number }
+  | { kind: "ok"; hostelName: string; referredPercent: number; source: "tenant" | "pulse" }
   /** The branch has paused its campaign. Distinct from "dead": the link is
    *  genuinely theirs and will work again, so telling a stranger it is dead
    *  would be both wrong and a lost referral once it resumes. */
@@ -130,7 +134,7 @@ export async function getReferralTarget(rawCode: string): Promise<ReferralTarget
   const { data, error } = await admin
     .from("hms_referral_codes")
     .select(
-      "id, is_active, tenant:hms_tenants(is_active, is_waiting), hostel:hms_hostels(name, referral_enabled, referral_referred_percent, referral_campaign)"
+      "id, is_active, source, tenant:hms_tenants(is_active, is_waiting), hostel:hms_hostels(name, referral_enabled, referral_referred_percent, referral_campaign)"
     )
     .eq("code", code)
     .maybeSingle();
@@ -144,6 +148,7 @@ export async function getReferralTarget(rawCode: string): Promise<ReferralTarget
   type Row = {
     id: string;
     is_active: boolean;
+    source: string;
     tenant: { is_active: boolean; is_waiting: boolean } | { is_active: boolean; is_waiting: boolean }[] | null;
     hostel:
       | { name: string; referral_enabled: boolean; referral_referred_percent: number; referral_campaign: string }
@@ -153,29 +158,48 @@ export async function getReferralTarget(rawCode: string): Promise<ReferralTarget
   const row = data as unknown as Row;
   const tenant = Array.isArray(row.tenant) ? row.tenant[0] : row.tenant;
   const hostel = Array.isArray(row.hostel) ? row.hostel[0] : row.hostel;
+  // Narrowed rather than cast: the column is a CHECK-constrained text, and
+  // anything unrecognised must degrade to the stricter tenant path, not to the
+  // one that skips the resident gate.
+  const source: "tenant" | "pulse" = row.source === "pulse" ? "pulse" : "tenant";
 
   if (!row.is_active) return { kind: "dead" };
   // is_active alone is not the house definition of an active tenant: a
   // waiting-list row can be is_active with is_waiting true, and someone who has
   // never moved in is not a resident handing out a link.
-  if (!tenant?.is_active || tenant.is_waiting) return { kind: "dead" };
+  //
+  // A Pulse code has no tenant behind it at all, so the resident gate is not
+  // merely skipped for it — it has nothing to read. Every other gate above and
+  // below still applies, and a Pulse code on a disabled branch falls through to
+  // the same hostel gate and the same indistinguishable "dead".
+  if (source !== "pulse" && (!tenant?.is_active || tenant.is_waiting)) return { kind: "dead" };
   if (!hostel?.referral_enabled) return { kind: "dead" };
 
-  // Counted from here on, where the link is known to be real and this tenant's.
+  // Clamped rather than trusted: the column is CHECK-constrained, but this
+  // value is rendered to the public as a promise the owner must honour.
+  const pct = Math.max(0, Math.min(100, Math.trunc(Number(hostel.referral_referred_percent ?? 0))));
+
+  // A Pulse link on a branch discounting 0% is dead, and hms_submit_referral
+  // refuses it identically. There is no referrer to reward and nothing to
+  // promise the visitor, so the page would be advertising nothing — and the
+  // owner would be taking public lead-gen while Pulse earned no commission,
+  // because the fee is gated on the referral having actually paid somebody.
+  //
+  // A TENANT link at 0% is deliberately untouched: it can still pay its
+  // referrer, so it is a real offer to a real person.
+  if (source === "pulse" && pct < 1) return { kind: "dead" };
+
+  // Counted from here on, where the link is known to be real and live.
   // Dead links are not counted at all: a mistyped code is not an open, and
   // letting it increment anything would make the funnel countable by strangers.
   // Deliberately above the paused check — a paused campaign still tells the
   // owner their tenants are circulating the link.
   await trackLinkHit(admin, row.id);
-  // Paused, not dead. The link is genuinely this tenant's and works again the
-  // moment the owner resumes, so a stranger is told to come back rather than
-  // told the link is broken.
+  // Paused, not dead. The link is genuine and works again the moment the owner
+  // resumes, so a stranger is told to come back rather than told it is broken.
   if (hostel.referral_campaign === "paused") {
     return { kind: "paused", hostelName: hostel.name };
   }
 
-  // Clamped rather than trusted: the column is CHECK-constrained, but this
-  // value is rendered to the public as a promise the owner must honour.
-  const pct = Math.max(0, Math.min(100, Math.trunc(Number(hostel.referral_referred_percent ?? 0))));
-  return { kind: "ok", hostelName: hostel.name, referredPercent: pct };
+  return { kind: "ok", hostelName: hostel.name, referredPercent: pct, source };
 }

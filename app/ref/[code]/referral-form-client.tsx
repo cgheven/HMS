@@ -14,9 +14,10 @@ interface Props {
   hostelName: string;
   /** 0 = referrer-only mode; the page then promises the visitor nothing. */
   referredPercent: number;
+  source: "tenant" | "pulse";
 }
 
-export function ReferralFormClient({ code, hostelName, referredPercent }: Props) {
+export function ReferralFormClient({ code, hostelName, referredPercent, source }: Props) {
   const offersDiscount = referredPercent > 0;
   const [form, setForm] = useState({ name: "", phone: "", website_url: "" });
   const [loading, setLoading] = useState(false);
@@ -114,6 +115,14 @@ export function ReferralFormClient({ code, hostelName, referredPercent }: Props)
               ? `Get ${referredPercent}% off your first bill`
               : `Looking for a room at ${hostelName}?`}
           </h1>
+          {/* The only source-specific copy on the page. Nobody referred this
+              visitor, so nothing here may imply a friend did — it names the
+              actual sender instead. Tenant links render nothing extra. */}
+          {source === "pulse" && (
+            <p className="text-muted-foreground/80 text-xs mt-2 leading-relaxed">
+              Shared by Pulse — the platform {hostelName} runs on.
+            </p>
+          )}
           <p className="text-muted-foreground text-sm mt-1.5 leading-relaxed">
             Leave your name and number, then visit {hostelName}. Give this number when you arrive
             {offersDiscount ? " and your discount is applied to your first bill." : "."}

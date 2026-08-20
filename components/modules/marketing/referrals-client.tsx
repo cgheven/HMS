@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useTransition } from "react";
 import {
-  AlertTriangle, Ban, Check, ChevronLeft, ChevronRight, Copy, Link2, Megaphone, Pause, RefreshCw,
+  AlertTriangle, Ban, ChevronLeft, ChevronRight, Link2, Megaphone, Pause, RefreshCw,
   RotateCcw, Search, Sparkles, Undo2, Users, X, MessageCircle, Percent,
 } from "lucide-react";
 import {
@@ -11,6 +11,7 @@ import {
   revokeReferralReward, rotateReferralCode, stopAllReferralRewards, undoRejectReferral,
   updateReferralPercentages,
 } from "@/app/actions/referrals";
+import { CopyLinkButton } from "@/components/modules/referrals/copy-link-button";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
@@ -26,6 +27,17 @@ import type {
 } from "@/types";
 
 type StatusFilter = "all" | ReferralStatus;
+
+/** Sentinel for the referrer dropdown. Tenant ids are UUIDs, so this can never
+ *  collide with one. */
+const PULSE_FILTER = "pulse";
+
+/** Who sent this lead, in the owner's words. A Pulse row has no referring
+ *  tenant at all, so falling through to "a former tenant" would misattribute
+ *  the lead in the exact place the owner uses to attribute it. */
+function referrerLabel(r: { source: "tenant" | "pulse"; referrerName: string | null }) {
+  return r.source === "pulse" ? "Pulse" : r.referrerName ?? "a former tenant";
+}
 
 /**
  * Why a referral link did not go out, in words an owner can act on.
@@ -123,31 +135,6 @@ function EmptyBlock({ line1, line2 }: { line1: string; line2?: string }) {
       <p className="text-sm">{line1}</p>
       {line2 && <p className="text-xs text-center max-w-sm">{line2}</p>}
     </div>
-  );
-}
-
-function CopyLinkButton({ link }: { link: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      size="sm"
-      // `link` is empty until the origin effect has run — copying then would
-      // put a relative path on the clipboard.
-      disabled={!link}
-      // Icon only: four controls plus the money have to fit one phone row, and
-      // the label is the first thing that can go without losing an action.
-      className="gap-1.5 h-7 text-[11px] px-2 shrink-0"
-      title={copied ? "Copied" : "Copy this tenant's referral link"}
-      onClick={async () => {
-        await navigator.clipboard.writeText(link);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      }}
-    >
-      {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-    </Button>
   );
 }
 
@@ -759,11 +746,11 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
   // stated again after a reload.
   const openValueKnown = rewards.length === overview.rewards.length;
 
-  const referrerScoped = useMemo(
-    () =>
-      referrerFilter ? referrals.filter((r) => r.referrerTenantId === referrerFilter) : referrals,
-    [referrals, referrerFilter]
-  );
+  const referrerScoped = useMemo(() => {
+    if (!referrerFilter) return referrals;
+    if (referrerFilter === PULSE_FILTER) return referrals.filter((r) => r.source === "pulse");
+    return referrals.filter((r) => r.referrerTenantId === referrerFilter);
+  }, [referrals, referrerFilter]);
 
   // Scoped to the referrer filter, not to the search box: a filter chip the owner
   // can see should agree with the tab counts beside it, whereas typing in a
@@ -797,8 +784,16 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
     [referrers]
   );
 
+  /** Counted straight off the rows rather than injected into `referrers` —
+   *  that array also drives the Tenant links tab, where Pulse is not a tenant. */
+  const pulseTally = useMemo(() => {
+    const rows = referrals.filter((r) => r.source === "pulse");
+    return { total: rows.length, joined: rows.filter((r) => r.status === "joined").length };
+  }, [referrals]);
+
   const referrerFilterName = useMemo(() => {
     if (!referrerFilter) return null;
+    if (referrerFilter === PULSE_FILTER) return "Pulse";
     return (
       referrers.find((r) => r.tenantId === referrerFilter)?.tenantName ??
       referrals.find((r) => r.referrerTenantId === referrerFilter)?.referrerName ??
@@ -828,7 +823,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
         return (
           r.name.toLowerCase().includes(q) ||
           (qDigits.length >= 3 && r.phone.replace(/\D/g, "").includes(qDigits)) ||
-          (r.referrerName ?? "").toLowerCase().includes(q)
+          referrerLabel(r).toLowerCase().includes(q)
         );
       }),
     [referrerScoped, status, q, qDigits]
@@ -1449,7 +1444,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                 leaderboard — the owner reads their best advocates off the top
                 without opening it. Hidden entirely until someone has actually
                 referred somebody, when it would be an empty control. */}
-            {rankedReferrers.length > 0 && (
+            {(rankedReferrers.length > 0 || pulseTally.total > 0) && (
               <Select
                 value={referrerFilter ?? "all"}
                 onValueChange={(v) => setReferrerFilter(v === "all" ? null : v)}
@@ -1459,6 +1454,11 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All referrers</SelectItem>
+                  {pulseTally.total > 0 && (
+                    <SelectItem value={PULSE_FILTER}>
+                      Pulse — {pulseTally.total} referred, {pulseTally.joined} joined
+                    </SelectItem>
+                  )}
                   {rankedReferrers.map((r) => (
                     <SelectItem key={r.tenantId} value={r.tenantId}>
                       {r.tenantName} — {r.totalReferred} referred, {r.joined} joined
@@ -1634,8 +1634,8 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                         <div className="min-w-0">
                           <p className="text-sm font-medium text-foreground truncate">{r.name}</p>
                           <p className="text-xs text-muted-foreground truncate">
-                            via {r.referrerName ?? "a former tenant"}
-                            {r.referrerRoom ? ` · Rm ${r.referrerRoom}` : ""}
+                            via {referrerLabel(r)}
+                            {r.source !== "pulse" && r.referrerRoom ? ` · Rm ${r.referrerRoom}` : ""}
                           </p>
                           <p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">
                             {formatPhoneDisplay(r.phone)} · {formatDate(r.createdAt)}
@@ -1676,10 +1676,15 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                     </div>
 
                     <div className="hidden md:block min-w-0">
-                      <p className="text-xs text-foreground truncate">
-                        {r.referrerName ?? "a former tenant"}
+                      <p
+                        className={cn(
+                          "text-xs truncate",
+                          r.source === "pulse" ? "text-sky-400 font-medium" : "text-foreground"
+                        )}
+                      >
+                        {referrerLabel(r)}
                       </p>
-                      {r.referrerRoom && (
+                      {r.source !== "pulse" && r.referrerRoom && (
                         <p className="text-xs text-muted-foreground truncate">Rm {r.referrerRoom}</p>
                       )}
                       {r.status === "rejected" && r.rejectedAt && (
@@ -1728,7 +1733,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                 {ov.duplicateClaims.map((d) => (
                   <p key={d.id} className="text-xs text-muted-foreground">
                     <span className="text-foreground">{d.name}</span> ·{" "}
-                    {formatPhoneDisplay(d.phone)} · sent by {d.referrerName ?? "a former tenant"} on{" "}
+                    {formatPhoneDisplay(d.phone)} · sent by {referrerLabel(d)} on{" "}
                     {formatDate(d.createdAt)}
                   </p>
                 ))}

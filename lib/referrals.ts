@@ -79,6 +79,20 @@ export const REFERRAL_CODE_INPUT_MAX_LENGTH = 64;
 export const REFERRAL_IP_LINK_HOURLY_LIMIT = 10;
 export const REFERRAL_IP_HOURLY_LIMIT = 120;
 export const REFERRAL_HOSTEL_HOURLY_LIMIT = 250;
+
+// Pulse links are BROADCAST — one per branch, posted publicly — so the two
+// ceilings sized for a tenant's private link are wrong for them in opposite
+// directions. hms_submit_referral picks between the pairs on the code's source.
+/** A tenant's link is shared with people they know; Pulse's is shared with a
+ *  city. At 10 the eleventh genuine visitor behind one hostel's WiFi or a
+ *  carrier NAT is refused — and that refusal is reported to the visitor as
+ *  success, so the lead disappears with nobody told. */
+export const REFERRAL_PULSE_IP_LINK_HOURLY_LIMIT = 200;
+/** MAX_PENDING_PER_REFERRER counts rows by referrer_tenant_id, which is NULL
+ *  for every Pulse referral — so for Pulse that cap silently matches nothing.
+ *  This one is counted by code instead. Higher than 25 because it bounds a whole
+ *  branch's public link rather than one resident's. */
+export const MAX_PENDING_PER_PULSE_LINK = 100;
 /** Resolving a code is a free service-role query for anyone holding a link, so
  *  the page render is metered too — the submit cap protects nothing while the
  *  lookup beside it is unlimited. */

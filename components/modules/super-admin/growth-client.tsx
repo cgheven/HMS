@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, BedDouble, Megaphone, TrendingUp, Wallet } from "lucide-react";
+import { CopyLinkButton } from "@/components/modules/referrals/copy-link-button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { formatCurrency, cn } from "@/lib/utils";
 import type { GrowthBranchRow, GrowthTotals } from "@/types";
@@ -29,6 +30,10 @@ function cityLabel(city: string | null) {
 
 export function GrowthClient({ branches, totals, loadError }: Props) {
   const [sort, setSort] = useState<SortKey>("empty");
+  // This is a client component behind a server page, so an effect is the only
+  // way to learn the host the link has to be built against.
+  const [origin, setOrigin] = useState("");
+  useEffect(() => setOrigin(window.location.origin), []);
 
   // Two entire columns of "—" is not a table, it is furniture. They appear only
   // once some branch has referral activity to put in them.
@@ -215,16 +220,33 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
                 >
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-foreground truncate">{b.name}</p>
-                    <p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">
-                      {city ?? "—"}
-                      {b.referralEnabled && (
-                        <span className="text-emerald-400/80"> · referrals {b.campaign}</span>
+                    {/* The Pulse link rides the sub-line rather than taking an
+                        eighth track — the header and the rows are two separate
+                        grids, and a track added to one silently misaligns the
+                        other at every breakpoint. */}
+                    <div className="flex items-center gap-1.5 min-w-0 mt-0.5">
+                      <p className="text-[11px] text-muted-foreground/70 truncate">
+                        {city ?? "—"}
+                        {b.referralEnabled && (
+                          <span className="text-emerald-400/80"> · referrals {b.campaign}</span>
+                        )}
+                        {/* Surfaced, never folded in: these tenants pay but hold no
+                            bed, so they sit outside the ratio entirely and would
+                            otherwise read as people who had gone missing. */}
+                        {b.unroomedTenants > 0 && <span> · {b.unroomedTenants} without a room</span>}
+                        {b.referralEnabled && b.pulseCode && (
+                          <span className="text-sky-400/80">
+                            {" · "}Pulse link · {b.pulseViews} view{b.pulseViews === 1 ? "" : "s"}
+                          </span>
+                        )}
+                      </p>
+                      {b.referralEnabled && b.pulseCode && (
+                        <CopyLinkButton
+                          link={origin ? `${origin}/ref/${b.pulseCode}` : ""}
+                          title={`Copy Pulse's referral link for ${b.name}`}
+                        />
                       )}
-                      {/* Surfaced, never folded in: these tenants pay but hold no
-                          bed, so they sit outside the ratio entirely and would
-                          otherwise read as people who had gone missing. */}
-                      {b.unroomedTenants > 0 && <span> · {b.unroomedTenants} without a room</span>}
-                    </p>
+                    </div>
                   </div>
 
                   {/* Phone: the desktop cells are display:none there, so every
