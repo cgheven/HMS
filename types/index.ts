@@ -1459,6 +1459,9 @@ export interface ReferralRow {
   phone: string
   status: ReferralStatus
   createdAt: string
+  /** Optional date the visitor said they would come. Advisory — it never gates
+   *  attribution, and the 14-day TTL still runs from createdAt. */
+  visitingDate: string | null
   /** Who sent this lead. 'pulse' means the platform's own per-branch link, which
    *  has no referring tenant at all — referrerTenantId, referrerName and
    *  referrerRoom are all null and no referrer-side reward exists. */

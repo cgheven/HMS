@@ -39,6 +39,10 @@ const GENERIC_ERROR = "Something went wrong. Please try again.";
 export interface ReferralSubmission {
   name: string;
   phone: string;
+  /** Optional "when will you visit". ISO yyyy-mm-dd from a native date input.
+   *  Advisory only — it never affects whether the referral is accepted, and the
+   *  14-day TTL is still measured from submission. */
+  visiting_date?: string;
   /** Honeypot — a real person never sees this field, let alone fills it. */
   website_url?: string;
 }
@@ -68,6 +72,7 @@ export async function submitReferral(
     const rawName = typeof fields.name === "string" ? fields.name : "";
     const rawPhone = typeof fields.phone === "string" ? fields.phone : "";
     const rawHoneypot = typeof fields.website_url === "string" ? fields.website_url : "";
+    const rawVisiting = typeof fields.visiting_date === "string" ? fields.visiting_date : "";
 
     // Length caps genuinely first — before the honeypot branch, which used to
     // jump the queue and .trim() an uncapped string. serverActions.bodySizeLimit
@@ -77,7 +82,10 @@ export async function submitReferral(
       rawCode.length > REFERRAL_CODE_INPUT_MAX_LENGTH ||
       rawName.length > REFERRAL_NAME_MAX_LENGTH ||
       rawPhone.length > REFERRAL_PHONE_MAX_LENGTH ||
-      rawHoneypot.length > REFERRAL_HONEYPOT_MAX_LENGTH
+      rawHoneypot.length > REFERRAL_HONEYPOT_MAX_LENGTH ||
+      // A date is 10 characters. Capped with the rest so an oversized string
+      // cannot be copied before the honeypot branch runs.
+      rawVisiting.length > 10
     ) {
       return { success: false, error: GENERIC_ERROR };
     }
@@ -101,6 +109,12 @@ export async function submitReferral(
     const normalizedCode = normalizeReferralCode(rawCode);
     if (!normalizedCode) return { success: false, error: DEAD_LINK };
 
+    // Shape-checked here, range-checked in the RPC. An unparseable value is
+    // dropped rather than refused: the date is optional, and turning a bad one
+    // into a visible error would cost a real lead over a field nobody had to
+    // fill in.
+    const visitingDate = /^\d{4}-\d{2}-\d{2}$/.test(rawVisiting) ? rawVisiting : null;
+
     const ipAddress = await clientIp();
     const admin = createAdminClient();
 
@@ -123,6 +137,7 @@ export async function submitReferral(
       // code exists before any ceiling has been charged.
       p_pulse_max_pending: MAX_PENDING_PER_PULSE_LINK,
       p_pulse_ip_link_hourly_limit: REFERRAL_PULSE_IP_LINK_HOURLY_LIMIT,
+      p_visiting_date: visitingDate,
     });
 
     if (error) {

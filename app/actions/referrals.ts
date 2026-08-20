@@ -557,7 +557,7 @@ export async function getReferralOverview(month?: string): Promise<{
         admin
           .from("hms_referrals")
           .select(
-            "id, name, phone, phone_digits, status, created_at, source, referrer_tenant_id, matched_tenant_id, matched_at, rejected_at, rejected_by, rewards_skipped_reason, pulse_commission_amount, pulse_commission_charged_at, pulse_commission_reversed_at"
+            "id, name, phone, phone_digits, status, created_at, visiting_date, source, referrer_tenant_id, matched_tenant_id, matched_at, rejected_at, rejected_by, rewards_skipped_reason, pulse_commission_amount, pulse_commission_charged_at, pulse_commission_reversed_at"
           )
           .eq("hostel_id", hostelId)
           .order("created_at", { ascending: false }),
@@ -643,6 +643,7 @@ export async function getReferralOverview(month?: string): Promise<{
       rejected_at: string | null;
       rejected_by: string | null;
       rewards_skipped_reason: string | null;
+      visiting_date: string | null;
     };
     const referrals = (referralsRes.data ?? []) as ReferralDbRow[];
 
@@ -801,6 +802,7 @@ export async function getReferralOverview(month?: string): Promise<{
         // shape of the attribution bug the security review removed.
         status: isReferralStale(r.status, r.created_at) ? "expired" : r.status,
         createdAt: r.created_at,
+        visitingDate: r.visiting_date,
         source: r.source,
         referrerTenantId: r.referrer_tenant_id,
         referrerName: r.referrer_tenant_id

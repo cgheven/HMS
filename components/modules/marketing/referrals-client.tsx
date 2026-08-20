@@ -74,6 +74,26 @@ const LINK_FILTERS: { key: LinkFilter; label: string }[] = [
   { key: "unreached", label: "Not reached" },
 ];
 
+/**
+ * "Visiting 3 Sep" — the one thing an owner wants from a lead beyond the number.
+ *
+ * Rendered only while it is still ahead of us. A date that has passed is not a
+ * plan any more, and leaving it on the row would have the page assert an
+ * appointment that did not happen. Nothing here changes attribution: the date is
+ * what the visitor typed, and the referral's own deadline still runs from
+ * submission.
+ */
+function visitingChip(iso: string | null) {
+  if (!iso) return null;
+  const today = new Date().toISOString().slice(0, 10);
+  if (iso < today) return null;
+  return (
+    <span className="text-amber/90">
+      {iso === today ? "Visiting today" : `Visiting ${formatDate(iso)}`}
+    </span>
+  );
+}
+
 const STATUS_FILTERS: StatusFilter[] = ["all", "pending", "joined", "rejected"];
 
 /** 'void' is filtered out server-side — a cancelled reward is not a line item. */
@@ -1639,6 +1659,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                           </p>
                           <p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">
                             {formatPhoneDisplay(r.phone)} · {formatDate(r.createdAt)}
+                            {visitingChip(r.visitingDate) && <> · {visitingChip(r.visitingDate)}</>}
                           </p>
                         </div>
                         <StatusBadge status={r.status} />
@@ -1672,6 +1693,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                       <p className="text-sm font-medium text-foreground truncate">{r.name}</p>
                       <p className="text-xs text-muted-foreground truncate">
                         {formatPhoneDisplay(r.phone)} · {formatDate(r.createdAt)}
+                        {visitingChip(r.visitingDate) && <> · {visitingChip(r.visitingDate)}</>}
                       </p>
                     </div>
 
