@@ -19,7 +19,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatPhoneDisplay, normalizePhoneDigits } from "@/lib/phone";
-import { REFERRAL_PENDING_TTL_DAYS, REFERRAL_STATUS_CONFIG, referralLinkFor } from "@/lib/referrals";
+import {
+  isBelowReferralFloor,
+  REFERRAL_MIN_PERCENT,
+  REFERRAL_PENDING_TTL_DAYS,
+  REFERRAL_STATUS_CONFIG,
+  referralLinkFor,
+} from "@/lib/referrals";
 import { cn, formatDate, formatMonthLong } from "@/lib/utils";
 import type {
   ReferralOverview, ReferralRewardRole, ReferralRewardRow, ReferralRewardStatus, ReferralRow,
@@ -77,14 +83,22 @@ const LINK_FILTERS: { key: LinkFilter; label: string }[] = [
 /**
  * "Visiting 3 Sep" — the one thing an owner wants from a lead beyond the number.
  *
- * Rendered only while it is still ahead of us. A date that has passed is not a
- * plan any more, and leaving it on the row would have the page assert an
- * appointment that did not happen. Nothing here changes attribution: the date is
- * what the visitor typed, and the referral's own deadline still runs from
- * submission.
+ * Rendered only while it is still ahead of us AND the lead is still open. A date
+ * that has passed is not a plan any more, and leaving it on the row would have
+ * the page assert an appointment that did not happen.
+ *
+ * Gated on status for the same reason. The chip answers one question — when
+ * should the owner expect this person at the door — and joining or rejecting
+ * answers it for good. Beside a "Joined" badge the date is spent, and on a
+ * future date it is a contradiction: that tenant already lives there. Beside
+ * "Rejected" it points at a visit nobody is waiting for.
+ *
+ * Nothing here changes attribution: the date is what the visitor typed, and the
+ * referral's own deadline still runs from submission.
  */
-function visitingChip(iso: string | null) {
+function visitingChip(iso: string | null, status: ReferralStatus) {
   if (!iso) return null;
+  if (status !== "pending") return null;
   const today = new Date().toISOString().slice(0, 10);
   if (iso < today) return null;
   // Amber and on its own line: this is the one fact on the row an owner acts on
@@ -98,6 +112,21 @@ function visitingChip(iso: string | null) {
 }
 
 const STATUS_FILTERS: StatusFilter[] = ["all", "pending", "joined", "rejected"];
+
+/**
+ * Shared sizing for the campaign row's buttons (Start / Send / Pause / Create),
+ * so the row reads as a block instead of three ragged left-packed lines.
+ *
+ * flex-auto, NOT flex-1. Both fill the line, but flex-1 zeroes the basis and
+ * hands every button an equal share — which puts "Create 2 missing links" into
+ * half a phone row next to Pause and wraps the label. flex-auto sizes from the
+ * content first and distributes only the slack, so a long button stays long and
+ * a short one stays short, while the line still ends flush at both edges.
+ *
+ * A button alone on the last line grows to full width, which is what squares
+ * the block off. From sm up the row stops wrapping and natural widths return.
+ */
+const ACTION_BUTTON = "gap-2 justify-center flex-auto sm:flex-none";
 
 /** 'void' is filtered out server-side — a cancelled reward is not a line item. */
 type RewardFilter = "all" | Exclude<ReferralRewardStatus, "void">;
@@ -281,11 +310,18 @@ function PercentageSettings({
   const clean = (v: string) => Math.max(0, Math.min(100, Math.trunc(Number(v) || 0)));
   const dirty = clean(referrer) !== referrerPercent || clean(referred) !== referredPercent;
   const lowering = clean(referrer) < referrerPercent || clean(referred) < referredPercent;
+  // Below the floor, per side, so the message can point at the field that is
+  // wrong rather than at the card. 0 is not below it — 0 is how a side is
+  // switched off, and referrer-only mode (10/0) stays reachable.
+  const referrerTooLow = isBelowReferralFloor(clean(referrer));
+  const referredTooLow = isBelowReferralFloor(clean(referred));
+  const tooLow = referrerTooLow || referredTooLow;
 
   // Decided here rather than from what updateReferralPercentages hands back: the
   // action writes the new percentages BEFORE it returns those counts, so its
   // answer can explain a save but can never gate one.
   function requestSave() {
+    if (tooLow) return;
     if (lowering && openRewardCount > 0) setConfirmLower(true);
     else void save();
   }
@@ -333,14 +369,21 @@ function PercentageSettings({
             <span className="text-sm text-muted-foreground">%</span>
           </div>
         </div>
-        <Button size="sm" className="h-9 ml-auto sm:ml-0" onClick={requestSave} disabled={saving || !dirty}>
+        <Button size="sm" className="h-9 ml-auto sm:ml-0" onClick={requestSave} disabled={saving || !dirty || tooLow}>
           {saving ? "Saving..." : "Save"}
         </Button>
-        <p className="w-full sm:w-auto text-[11px] text-muted-foreground sm:ml-2 sm:pb-2">
-          {clean(referred) > 0
-            ? `The referral page offers visitors ${clean(referred)}% off their first month.`
-            : "Set to 0 — the referral page makes no offer to visitors."}
-        </p>
+        {tooLow ? (
+          <p className="w-full sm:w-auto text-[11px] font-medium text-amber sm:ml-2 sm:pb-2">
+            {`Minimum discount is ${REFERRAL_MIN_PERCENT}%. Enter 0 to turn `}
+            {referrerTooLow && referredTooLow ? "either side" : "that side"} off.
+          </p>
+        ) : (
+          <p className="w-full sm:w-auto text-[11px] text-muted-foreground sm:ml-2 sm:pb-2">
+            {clean(referred) > 0
+              ? `The referral page offers visitors ${clean(referred)}% off their first month.`
+              : "Set to 0 — the referral page makes no offer to visitors."}
+          </p>
+        )}
       </div>
 
       <ConfirmDialog
@@ -1356,25 +1399,45 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
               </span>
             </TabsTrigger>
           </TabsList>
-          <div className="flex items-center gap-2 shrink-0">
+          {/* One wrapping row of SIBLINGS — the status and every button are
+              direct children, so they share one flex context and line up.
+              Previously the campaign controls sat in their own nested w-full
+              div, which meant "Create N missing links" could never share a line
+              with them: it was pushed off the right edge, and once the row was
+              allowed to wrap it dropped to a third line of its own, leaving
+              three buttons of three different widths and a ragged right edge.
+
+              Each button is flex-1 with a half-row floor, so two share a line
+              and a lone one on the last line grows to full width. That holds
+              for every combination of Start/Send/Pause/Create without counting
+              them. From sm up the floor is dropped and the row stops wrapping,
+              restoring the natural inline widths. */}
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto sm:shrink-0 sm:flex-nowrap">
+            {/* Its own line on a phone, set to the right so it reads as a status
+                stamp over the controls rather than competing with them for the
+                left edge. justify-end only bites while w-full — from sm up the
+                span shrinks to its content and sits inline before the buttons.
+                Shown on every width: on a phone this used to be hidden, which
+                left a bare "Pause" button with nothing saying the campaign was
+                running — the one fact that makes the button make sense. */}
+            {ov.campaign === "active" && (
+              <span className="inline-flex w-full sm:w-auto shrink-0 items-center justify-end gap-1.5 whitespace-nowrap text-xs text-emerald-400">
+                <span className="relative flex w-2 h-2">
+                  <span className="absolute inline-flex w-full h-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
+                  <span className="relative inline-flex w-2 h-2 rounded-full bg-emerald-400" />
+                </span>
+                Campaign live
+              </span>
+            )}
+
             {/* The campaign switch. Off is the only state that spends money on
                 click, so it is the only one styled as a primary action; live and
                 paused are status first, control second. */}
             {ov.campaign === "active" ? (
-              <div className="flex items-center gap-2 w-full sm:w-auto">
-                {/* Shown on every width. On a phone this used to be hidden, which
-                    left a bare "Pause" button with nothing saying the campaign
-                    was running — the one fact that makes the button make sense. */}
-                <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
-                  <span className="relative flex w-2 h-2">
-                    <span className="absolute inline-flex w-full h-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
-                    <span className="relative inline-flex w-2 h-2 rounded-full bg-emerald-400" />
-                  </span>
-                  Campaign live
-                </span>
+              <>
                 {/* The escape hatch from a campaign that started but did not
                     send.
-                    
+
                     Start only ever ran on the off -> active transition, and
                     nothing in the app can set 'off' again — so a branch whose
                     blast failed had its flag flipped to active with nobody
@@ -1382,7 +1445,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                     happened to a live client: 52 codes minted, 52 sends
                     rejected by Meta, campaign showing as running, and the only
                     control on screen was Pause.
-                    
+
                     Reuses startReferralCampaign unchanged, which is already
                     idempotent — it re-sets a flag that is already active, mints
                     only missing codes, and sends only where link_sent_at is
@@ -1394,7 +1457,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                     onClick={() => setConfirmStart(true)}
                     disabled={isPending}
                     size="sm"
-                    className="gap-2 ml-auto sm:ml-0 bg-amber text-background border-amber hover:bg-amber/90 font-semibold"
+                    className={cn(ACTION_BUTTON, "bg-amber text-background border-amber hover:bg-amber/90 font-semibold")}
                   >
                     <Megaphone className="w-4 h-4" />
                     Send {ov.unsentCount} pending
@@ -1405,12 +1468,12 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                   disabled={isPending}
                   size="sm"
                   variant="outline"
-                  className={cn("gap-2", ov.unsentCount > 0 ? "" : "ml-auto sm:ml-0")}
+                  className={ACTION_BUTTON}
                 >
                   <Pause className="w-4 h-4" />
                   Pause
                 </Button>
-              </div>
+              </>
             ) : (
               <Button
                 // Not gated on the WhatsApp entitlement any more: marketing is
@@ -1420,24 +1483,24 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                 onClick={() => setConfirmStart(true)}
                 disabled={isPending}
                 size="sm"
-                className="gap-2 w-full sm:w-auto justify-center bg-amber text-background border-amber hover:bg-amber/90 font-semibold"
+                className={cn(ACTION_BUTTON, "bg-amber text-background border-amber hover:bg-amber/90 font-semibold")}
               >
                 <Megaphone className="w-4 h-4" />
                 {ov.campaign === "paused" ? "Resume campaign" : "Start campaign"}
               </Button>
             )}
+
             {missingCodes > 0 && (
-              /* Outline on a phone, solid amber from sm up. Minting missing links
-                 is maintenance, and as a full-bleed amber block it was the loudest
-                 thing on the screen — louder than the money the page is about.
-                 Now that Start sits beside it, it stays outline at every width —
-                 two solid amber buttons side by side have no primary. */
+              /* Outline at every width. Minting missing links is maintenance,
+                 and as a solid amber block it was the loudest thing on the
+                 screen — louder than the money the page is about. Beside a
+                 solid Start or Send, two amber buttons would have no primary. */
               <Button
                 onClick={handleEnsureAll}
                 disabled={isPending}
                 size="sm"
                 variant="outline"
-                className="gap-2 shrink-0"
+                className={ACTION_BUTTON}
               >
                 <Sparkles className="w-4 h-4" />
                 Create {missingCodes} missing link{missingCodes === 1 ? "" : "s"}
@@ -1472,7 +1535,11 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                 value={referrerFilter ?? "all"}
                 onValueChange={(v) => setReferrerFilter(v === "all" ? null : v)}
               >
-                <SelectTrigger className="h-[30px] text-xs flex-1 min-w-[11rem] sm:flex-none sm:w-56">
+                {/* Its own line on a phone. flex-1 sized it from whatever the
+                    status chips left on their wrapped row, so it rendered a
+                    different width on every branch — beside "Rejected (3)" it
+                    stretched wider than the four chips put together. */}
+                <SelectTrigger className="h-[30px] text-xs w-full sm:w-56 sm:flex-none">
                   <SelectValue placeholder="Any referrer" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1663,7 +1730,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                           <p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">
                             {formatPhoneDisplay(r.phone)} · {formatDate(r.createdAt)}
                           </p>
-                          {visitingChip(r.visitingDate)}
+                          {visitingChip(r.visitingDate, r.status)}
                         </div>
                         <StatusBadge status={r.status} />
                       </div>
@@ -1702,7 +1769,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                           cut it to "Visiting 1 Sept 2…" — and a date clipped
                           mid-year is worse than no date, because the owner
                           cannot tell which day was meant. */}
-                      {visitingChip(r.visitingDate)}
+                      {visitingChip(r.visitingDate, r.status)}
                     </div>
 
                     <div className="hidden md:block min-w-0">

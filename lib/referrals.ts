@@ -63,6 +63,27 @@ export const REFERRAL_STATUS_ORDER: ReferralStatus[] = ["pending", "joined", "re
  *  submitting concurrently. */
 export const MAX_PENDING_PER_REFERRER = 25;
 
+/**
+ * The floor on either referral discount. A percentage is 0 or it is at least
+ * this — never 1-4.
+ *
+ * 0 is kept legal because it is a MEANING, not an absence: it is how an owner
+ * switches one side off, and 10/0 (referrer-only) is a configuration the engine
+ * supports deliberately. What the floor forbids is a discount too small to be
+ * worth advertising to a stranger.
+ *
+ * Mirrored by the CHECK constraint hms_hostels_referral_percent_floor
+ * (migration 199), which is the real guarantee — a CHECK cannot import this
+ * constant, so the two must be changed together. This one exists so an owner
+ * meets a written sentence instead of a 23514.
+ */
+export const REFERRAL_MIN_PERCENT = 5;
+
+/** True for a value the floor forbids: set, but below the minimum. */
+export function isBelowReferralFloor(percent: number): boolean {
+  return percent > 0 && percent < REFERRAL_MIN_PERCENT;
+}
+
 export const REFERRAL_NAME_MAX_LENGTH = 80;
 export const REFERRAL_PHONE_MAX_LENGTH = 20;
 /** The honeypot is the one field a person never fills and a bot always does, so

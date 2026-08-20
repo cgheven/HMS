@@ -12,7 +12,9 @@ import { normalizePhoneDigits } from "@/lib/phone";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import {
   generateReferralCode,
+  isBelowReferralFloor,
   isReferralStale,
+  REFERRAL_MIN_PERCENT,
   REFERRAL_PENDING_TTL_DAYS,
 } from "@/lib/referrals";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
@@ -1325,6 +1327,20 @@ export async function updateReferralPercentages(
 
     const nextReferrer = clampPercent(referrerPercent);
     const nextReferred = clampPercent(referredPercent);
+
+    // Refused HERE, in words, before the UPDATE is issued.
+    //
+    // The guarantee is the CHECK constraint (migration 199); this is the layer
+    // an owner actually meets. Without it the same save still fails, but as a
+    // raw 23514 rendered into the toast by the catch below — which names a
+    // constraint, not a rule. Clamped values are tested, not the raw arguments:
+    // clampPercent is what will be written.
+    if (isBelowReferralFloor(nextReferrer) || isBelowReferralFloor(nextReferred)) {
+      return {
+        error: `A referral discount must be at least ${REFERRAL_MIN_PERCENT}%. Enter 0 to turn that side off.`,
+      };
+    }
+
     const isLowering = nextReferrer < prevReferrer || nextReferred < prevReferred;
 
     const { error } = await admin
@@ -1370,6 +1386,13 @@ export async function updateReferralPercentages(
     };
   } catch (err) {
     unstable_rethrow(err);
+    // The floor is checked above, so reaching it here means a writer got past
+    // that check — but the owner still gets the rule rather than the SQLSTATE.
+    if (typeof (err as { code?: string })?.code === "string" && (err as { code: string }).code === "23514") {
+      return {
+        error: `A referral discount must be at least ${REFERRAL_MIN_PERCENT}%. Enter 0 to turn that side off.`,
+      };
+    }
     return { error: err instanceof Error ? err.message : "Could not save the percentages" };
   }
 }
