@@ -1,12 +1,13 @@
 "use client";
 import { useState, useMemo, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Receipt, Search, Edit2, Trash2, TrendingDown, Filter, Download, X } from "lucide-react";
+import { Plus, Receipt, Search, Edit2, Trash2, TrendingDown, Tag, Download, X } from "lucide-react";
 import { addExpenseAsManager, updateExpenseAsManager } from "@/app/actions/managers";
 import * as XLSX from "xlsx";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent } from "@/components/ui/card";
+import { QuickAddTray } from "@/components/ui/quick-add-tray";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -225,6 +226,25 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
 
   const total = useMemo(() => filtered.reduce((s, e) => s + Number(e.amount), 0), [filtered]);
 
+  /**
+   * The biggest category in view, replacing an "Average" card that was total
+   * divided by count — derivable from the two cards beside it, and an answer to
+   * a question nobody asks. Where the money went is the question.
+   *
+   * Computed from `filtered`, not `expenses`, so it respects the category and
+   * date-range filters like every other figure on this page. No extra query.
+   */
+  const topCategory = useMemo(() => {
+    if (filtered.length === 0) return null;
+    const byCat = new Map<string, number>();
+    for (const e of filtered) byCat.set(e.category, (byCat.get(e.category) ?? 0) + Number(e.amount));
+    let best: { category: string; amount: number } | null = null;
+    for (const [category, amount] of byCat) {
+      if (!best || amount > best.amount) best = { category, amount };
+    }
+    return best;
+  }, [filtered]);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -237,54 +257,76 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* Two-up on a phone with the money figure spanning both. Stacked one per
+          row, these three cards filled the entire first screen and pushed the
+          expense list — the reason the page exists — below two folds. */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
         {[
-          { label: customFrom ? "Total (Range)" : "Total This Month", value: formatCurrency(total), icon: TrendingDown, color: "text-rose-400", bg: "bg-rose-500/10 border border-rose-500/20" },
-          { label: "Total Entries", value: filtered.length, icon: Receipt, color: "text-blue-400", bg: "bg-blue-500/10 border border-blue-500/20" },
-          { label: "Average", value: filtered.length ? formatCurrency(total / filtered.length) : "—", icon: Filter, color: "text-purple-400", bg: "bg-purple-500/10 border border-purple-500/20" },
-        ].map(({ label, value, icon: Icon, color, bg }) => (
-          <Card key={label}><CardContent className="p-4 flex items-center gap-3"><div className={`p-2 rounded-lg ${bg}`}><Icon className={`w-4 h-4 ${color}`} /></div><div><p className="text-xs text-muted-foreground">{label}</p><p className="text-xl font-bold">{value}</p></div></CardContent></Card>
+          { label: customFrom ? "Total (Range)" : "Total This Month", value: formatCurrency(total), icon: TrendingDown, color: "text-rose-400", bg: "bg-rose-500/10 border border-rose-500/20", wide: true },
+          { label: "Entries", value: filtered.length, icon: Receipt, color: "text-blue-400", bg: "bg-blue-500/10 border border-blue-500/20", wide: false },
+          {
+            label: topCategory ? `Top: ${topCategory.category}` : "Top category",
+            value: topCategory ? formatCurrency(topCategory.amount) : "—",
+            icon: Tag, color: "text-purple-400", bg: "bg-purple-500/10 border border-purple-500/20", wide: false,
+          },
+        ].map(({ label, value, icon: Icon, color, bg, wide }) => (
+          <Card key={label} className={wide ? "col-span-2 sm:col-span-1" : ""}>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className={`p-2 rounded-lg shrink-0 ${bg}`}><Icon className={`w-4 h-4 ${color}`} /></div>
+              {/* min-w-0 + truncate: a long category name in a half-width card
+                  would otherwise push the figure out of the card entirely. */}
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground truncate capitalize">{label}</p>
+                <p className="text-xl font-bold truncate">{value}</p>
+              </div>
+            </CardContent>
+          </Card>
         ))}
       </div>
 
       {/* Quick Add */}
       {canAdd && (
-      <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
-        <div className="flex items-center gap-2">
-          <Plus className="w-3.5 h-3.5 text-muted-foreground" />
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
-          <span className="text-xs text-muted-foreground/50">— tap to pre-fill the form</span>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {QUICK_ITEMS.map((item) => (
-            <button
-              key={item.label}
-              onClick={() => quickAdd(item)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${CHIP_STYLES[item.category]}`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <QuickAddTray count={QUICK_ITEMS.length} hint="— tap to pre-fill the form">
+        {QUICK_ITEMS.map((item) => (
+          <button
+            key={item.label}
+            onClick={() => quickAdd(item)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${CHIP_STYLES[item.category]}`}
+          >
+            {item.label}
+          </button>
+        ))}
+      </QuickAddTray>
       )}
 
       <div className="space-y-3">
         {/* Row 1: search + month + category */}
         <div className="flex flex-col sm:flex-row gap-3 flex-wrap">
-          <div className="relative flex-1 min-w-[180px] max-w-sm"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input placeholder="Search..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" /></div>
-          <Input type="month" value={monthFilter} onChange={(e) => { setMonthFilter(e.target.value); setCustomFrom(""); setCustomTo(""); loadMonth(e.target.value); }} className="w-auto" />
-          <Select value={filterCat} onValueChange={setFilterCat}><SelectTrigger className="w-full sm:w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All Categories</SelectItem>{categories.map((c) => <SelectItem key={c} value={c} className="capitalize">{c}</SelectItem>)}</SelectContent></Select>
+          <div className="relative w-full sm:flex-1 sm:min-w-[180px] sm:max-w-sm"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input placeholder="Search..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" /></div>
+          {/* Paired on a phone. Stacked they cost two full rows of a small screen
+              before a single expense is visible, and neither control needs the
+              width — a month reads as "August 2026" and the category truncates
+              gracefully. sm:contents dissolves this wrapper from sm up so both
+              return to being direct children of the row above. */}
+          <div className="grid grid-cols-2 gap-3 sm:contents">
+            <Input type="month" value={monthFilter} onChange={(e) => { setMonthFilter(e.target.value); setCustomFrom(""); setCustomTo(""); loadMonth(e.target.value); }} className="w-full min-w-0 sm:w-auto" />
+            <Select value={filterCat} onValueChange={setFilterCat}><SelectTrigger className="w-full min-w-0 sm:w-44"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All Categories</SelectItem>{categories.map((c) => <SelectItem key={c} value={c} className="capitalize">{c}</SelectItem>)}</SelectContent></Select>
+          </div>
         </div>
 
         {/* Row 2: date range */}
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-muted-foreground">Date range:</span>
-          <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-8 text-xs w-36" />
-          <span className="text-xs text-muted-foreground">to</span>
-          <Input type="date" value={customTo} min={customFrom} onChange={(e) => setCustomTo(e.target.value)} className="h-8 text-xs w-36" />
+          {/* Its own line on a phone. Inline, the label ate enough of the row
+              that the second date could not fit and wrapped — which left "to"
+              dangling at the end of the first line, pointing at nothing. */}
+          <span className="w-full sm:w-auto text-xs text-muted-foreground">Date range:</span>
+          {/* flex-1 with min-w-0, not a fixed w-36: the pair has to fit whatever
+              is left of the row, and a fixed width is exactly what overflowed. */}
+          <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-8 text-xs flex-1 min-w-0 sm:flex-none sm:w-36" />
+          <span className="shrink-0 text-xs text-muted-foreground">to</span>
+          <Input type="date" value={customTo} min={customFrom} onChange={(e) => setCustomTo(e.target.value)} className="h-8 text-xs flex-1 min-w-0 sm:flex-none sm:w-36" />
           {(customFrom || customTo) && (
-            <button type="button" onClick={() => { setCustomFrom(""); setCustomTo(""); }} className="text-muted-foreground hover:text-foreground transition-colors">
+            <button type="button" onClick={() => { setCustomFrom(""); setCustomTo(""); }} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
               <X className="w-3.5 h-3.5" />
             </button>
           )}
@@ -304,7 +346,16 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
                 <tbody className="divide-y">
                   {filtered.map((exp) => (
                     <tr key={exp.id} className="hover:bg-muted/20 transition-colors">
-                      <td className="px-4 py-3"><p className="font-medium text-sm">{exp.title}</p>{exp.notes && <p className="text-xs text-muted-foreground truncate max-w-[200px]">{exp.notes}</p>}</td>
+                      <td className="px-4 py-3"><p className="font-medium text-sm">{exp.title}</p>
+                        {/* The Date column is hidden below md and Category below sm,
+                            so on a phone neither was visible ANYWHERE — an expense
+                            list with no dates. Each is folded under the title only
+                            at the widths where its own column is gone. */}
+                        <p className="md:hidden text-xs text-muted-foreground mt-0.5">
+                          {formatDate(exp.date)}
+                          <span className="sm:hidden capitalize"> · {exp.category}</span>
+                        </p>
+                        {exp.notes && <p className="text-xs text-muted-foreground truncate max-w-[200px]">{exp.notes}</p>}</td>
                       <td className="px-4 py-3 hidden sm:table-cell"><Badge variant={categoryColors[exp.category]} className="capitalize text-xs">{exp.category}</Badge></td>
                       <td className="px-4 py-3 text-sm text-muted-foreground hidden md:table-cell">{formatDate(exp.date)}</td>
                       <td className="px-4 py-3 text-right font-semibold text-sm">{formatCurrency(exp.amount)}</td>
@@ -319,7 +370,11 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
                     </tr>
                   ))}
                 </tbody>
-                <tfoot><tr className="border-t bg-muted/30"><td colSpan={3} className="px-4 py-3 text-sm font-semibold">Total</td><td className="px-4 py-3 text-right font-bold">{formatCurrency(total)}</td><td /></tr></tfoot>
+                {/* Mirrors the body's responsive columns instead of a fixed colSpan={3}.
+                    Category is hidden below sm and Date below md, so on a phone the
+                    table has three columns while colSpan={3} still claimed five —
+                    and the Total figure drifted out from under the Amount column. */}
+                <tfoot><tr className="border-t bg-muted/30"><td className="px-4 py-3 text-sm font-semibold">Total</td><td className="hidden sm:table-cell" /><td className="hidden md:table-cell" /><td className="px-4 py-3 text-right font-bold">{formatCurrency(total)}</td><td /></tr></tfoot>
               </table>
             </div>
           )}

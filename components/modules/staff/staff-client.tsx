@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { QuickAddTray } from "@/components/ui/quick-add-tray";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
@@ -152,11 +153,6 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
   // lowering it just carries the rest into next month.
   const [deductInput, setDeductInput] = useState("");
   const [writeOffId, setWriteOffId] = useState<string | null>(null);
-
-  const totalOutstanding = useMemo(
-    () => advances.reduce((sum, a) => sum + Math.max(0, Number(a.balance ?? 0)), 0),
-    [advances]
-  );
 
   /** Unsettled balance per employee — drives the badge and the pay dialog. */
   const outstandingByEmployee = useMemo(() => {
@@ -396,29 +392,50 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: "Total Staff",     value: stats.total,              icon: Users,        color: "text-blue-400",    bg: "bg-blue-500/10 border border-blue-500/20" },
-          { label: "Monthly Payroll", value: formatCurrency(stats.payroll), icon: TrendingDown, color: "text-amber",        bg: "bg-amber/10 border border-amber/20" },
-          { label: "Paid This Month", value: formatCurrency(stats.paid),    icon: CheckCircle2, color: "text-emerald-400",  bg: "bg-emerald-500/10 border border-emerald-500/20" },
-          { label: "Pending",         value: formatCurrency(stats.pending),  icon: Clock,        color: "text-rose-400",    bg: "bg-rose-500/10 border border-rose-500/20" },
-        ].map(({ label, value, icon: Icon, color, bg }) => (
+          { label: "Total Staff",     short: "Staff",   value: stats.total,              icon: Users,        color: "text-blue-400",    bg: "bg-blue-500/10 border border-blue-500/20" },
+          { label: "Monthly Payroll", short: "Payroll", value: formatCurrency(stats.payroll), icon: TrendingDown, color: "text-amber",        bg: "bg-amber/10 border border-amber/20" },
+          { label: "Paid This Month", short: "Paid",    value: formatCurrency(stats.paid),    icon: CheckCircle2, color: "text-emerald-400",  bg: "bg-emerald-500/10 border border-emerald-500/20" },
+          { label: "Pending",                           value: formatCurrency(stats.pending),  icon: Clock,        color: "text-rose-400",    bg: "bg-rose-500/10 border border-rose-500/20" },
+        ].map(({ label, short, value, icon: Icon, color, bg }) => (
           <Card key={label}>
-            <CardContent className="p-4 flex items-center gap-3">
-              <div className={`p-2 rounded-lg ${bg}`}><Icon className={`w-4 h-4 ${color}`} /></div>
-              <div><p className="text-xs text-muted-foreground">{label}</p><p className="text-xl font-bold">{value}</p></div>
+            <CardContent className="p-4 flex items-center gap-2 lg:gap-3">
+              {/* Tighter icon below lg. Four half-width cards leave ~89px for
+                  text at 390px, and "Rs 25,000" at text-xl needs ~95px — so the
+                  figure itself was being clipped to "Rs 25,…". A truncated label
+                  is a cosmetic loss; a truncated AMOUNT is the page lying about
+                  money, so the icon gives up the room and the number shrinks a
+                  step rather than the other way round. */}
+              <div className={`p-1.5 lg:p-2 rounded-lg shrink-0 ${bg}`}><Icon className={`w-3.5 h-3.5 lg:w-4 lg:h-4 ${color}`} /></div>
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground truncate">
+                  {short ? (<><span className="lg:hidden">{short}</span><span className="hidden lg:inline">{label}</span></>) : label}
+                </p>
+                <p className="text-lg lg:text-xl font-bold">{value}</p>
+              </div>
             </CardContent>
           </Card>
         ))}
       </div>
 
       <Tabs defaultValue="employees" className="space-y-6">
-        <TabsList>
-          <TabsTrigger value="employees"><Users className="w-3.5 h-3.5 mr-1.5" />Employees</TabsTrigger>
-          <TabsTrigger value="salaries"><Wallet className="w-3.5 h-3.5 mr-1.5" />Salaries</TabsTrigger>
-          <TabsTrigger value="advances">
-            <HandCoins className="w-3.5 h-3.5 mr-1.5" />Advances
-            {totalOutstanding > 0 && (
-              <span className="ml-1.5 text-[10px] font-semibold text-amber">{formatCurrency(totalOutstanding)}</span>
-            )}
+        {/* Laid out to fit rather than scrolled. Three triggers plus the amber
+            outstanding figure ran past the right edge of a phone, so "Advances
+            Rs 5,0…" was clipped — and the clipped part is money owed. Equal
+            thirds at full width, with the icons dropped below sm to buy the
+            room back. */}
+        <TabsList noFade className="w-full grid grid-cols-3 sm:w-auto sm:inline-flex">
+          <TabsTrigger value="employees" className="px-2 sm:px-3">
+            <Users className="hidden sm:inline-block w-3.5 h-3.5 mr-1.5" />Employees
+          </TabsTrigger>
+          <TabsTrigger value="salaries" className="px-2 sm:px-3">
+            <Wallet className="hidden sm:inline-block w-3.5 h-3.5 mr-1.5" />Salaries
+          </TabsTrigger>
+          <TabsTrigger value="advances" className="px-2 sm:px-3">
+            {/* Label only. The outstanding figure rode along here and was the
+                first thing to be clipped when the strip ran out of room —
+                "Advances Rs 5,0…" — and a half-shown amount owed is worse than
+                none. The tab itself is one tap from the real number. */}
+            <HandCoins className="hidden sm:inline-block w-3.5 h-3.5 mr-1.5" />Advances
           </TabsTrigger>
         </TabsList>
 
@@ -426,24 +443,17 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
         <TabsContent value="employees" className="space-y-4">
           {/* Quick Add */}
           {canFullTier && (
-          <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <Plus className="w-3.5 h-3.5 text-muted-foreground" />
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
-              <span className="text-xs text-muted-foreground/50">— tap to pre-fill the form</span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {QUICK_STAFF.map((item) => (
-                <button
-                  key={item.label}
-                  onClick={() => quickStaff(item)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${ROLE_CHIP[item.role]}`}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          <QuickAddTray count={QUICK_STAFF.length} hint="— tap to pre-fill the form">
+            {QUICK_STAFF.map((item) => (
+              <button
+                key={item.label}
+                onClick={() => quickStaff(item)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${ROLE_CHIP[item.role]}`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </QuickAddTray>
           )}
 
           <div className="relative max-w-sm">
@@ -464,7 +474,13 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                 {filteredEmployees.map((emp) => {
                   const rc = roleConfig[emp.role];
                   return (
-                    <div key={emp.id} className="flex items-center gap-4 px-4 py-3 hover:bg-white/[0.02] transition-colors">
+                    /* Stacked on a phone for the same reason as the salaries
+                       row: the avatar, the salary and two icon buttons are all
+                       shrink-0, so the badges and the phone/CNIC/joined line
+                       were being squeezed into a column too narrow to hold
+                       them. */
+                    <div key={emp.id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-4 py-3 hover:bg-white/[0.02] transition-colors">
+                      <div className="flex items-start gap-3 sm:gap-4 min-w-0 sm:flex-1">
                       {/* Avatar */}
                       <div className="flex items-center justify-center w-9 h-9 rounded-full bg-white/5 border border-sidebar-border text-sm font-semibold shrink-0">
                         {rc.icon}
@@ -487,8 +503,13 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                           <span className="text-xs text-muted-foreground">Joined: {formatDate(emp.join_date)}</span>
                         </div>
                       </div>
-                      {/* Salary */}
-                      <div className="text-right shrink-0 hidden sm:block">
+                      </div>
+                      {/* Salary + actions. The salary was hidden outright below
+                          sm, so a phone showed a staff list with no pay on it —
+                          on a page whose whole subject is pay. It now shows
+                          inline on its own line instead of being dropped. */}
+                      <div className="flex items-center justify-between gap-3 pl-12 sm:pl-0 sm:justify-end sm:shrink-0">
+                      <div className="text-right shrink-0">
                         <p className="text-sm font-semibold">{formatCurrency(emp.monthly_salary)}</p>
                         <p className="text-xs text-muted-foreground">/month</p>
                       </div>
@@ -499,6 +520,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                           <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteId(emp.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
                         </div>
                       )}
+                      </div>
                     </div>
                   );
                 })}
@@ -509,16 +531,29 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
 
         {/* ── Salaries tab ───────────────────────────────── */}
         <TabsContent value="salaries" className="space-y-4">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-            <Input type="month" value={selectedMonth} onChange={(e) => { setSelectedMonth(e.target.value); reloadSalaries(e.target.value); }} className="w-auto" />
+          {/* One row, not two ragged left-aligned blocks. The month picker and
+              the button that acts on that month belong together — stacked at
+              their own natural widths they read as unrelated controls, and the
+              flex-col also stretched the picker to full width for no reason.
+              "Generate for All Active" shortens to "Generate All" on a phone so
+              the pair fits one line. */}
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <Input
+              type="month"
+              value={selectedMonth}
+              onChange={(e) => { setSelectedMonth(e.target.value); reloadSalaries(e.target.value); }}
+              className="w-auto shrink-0"
+            />
             {canFullTier && (
-              <Button onClick={generateSalaries} disabled={generating} variant="outline" className="gap-2">
+              <Button onClick={generateSalaries} disabled={generating} variant="outline" className="gap-2 shrink-0">
                 <Plus className="w-4 h-4" />
-                {generating ? "Generating…" : "Generate for All Active"}
+                {generating ? "Generating…" : (
+                  <><span className="sm:hidden">Generate All</span><span className="hidden sm:inline">Generate for All Active</span></>
+                )}
               </Button>
             )}
             {monthPayments.length > 0 && (
-              <span className="text-xs text-muted-foreground ml-auto">
+              <span className="w-full sm:w-auto text-xs text-muted-foreground sm:ml-auto">
                 {monthPayments.filter((p) => p.status === "paid").length}/{monthPayments.length} paid
               </span>
             )}
@@ -540,23 +575,38 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                   const rc = roleConfig[role];
                   const isPaid = p.status === "paid";
                   return (
-                    <div key={p.id} className="flex items-center gap-4 px-4 py-3 hover:bg-white/[0.02] transition-colors">
-                      <span className="text-lg shrink-0">{rc.icon}</span>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="text-sm font-medium">{p.employee?.full_name ?? "—"}</p>
-                          <Badge variant="secondary" className={`text-xs ${rc.color}`}>{rc.label}</Badge>
-                          {(outstandingByEmployee[p.employee_id] ?? 0) > 0 && (
-                            <Badge variant="secondary" className="text-xs bg-amber/10 text-amber border-amber/25">
-                              Advance due {formatCurrency(outstandingByEmployee[p.employee_id])}
-                            </Badge>
+                    /* Stacked on a phone, one row from sm up.
+                     *
+                     * This row did not merely crowd — it OVERLAPPED. The icon,
+                     * the amount block and two buttons are all shrink-0, which
+                     * left the flex-1 middle roughly 55px at 390px. A Badge
+                     * cannot shrink below its own min-content, so "Manager" and
+                     * "Advance due Rs 5,000" spilled out of their box and painted
+                     * over the amount and the status beside them. Giving the
+                     * name and its badges the full width is the fix; min-w-0
+                     * alone could never have been enough. */
+                    <div key={p.id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-4 py-3 hover:bg-white/[0.02] transition-colors">
+                      <div className="flex items-start gap-3 min-w-0 sm:flex-1">
+                        <span className="text-lg shrink-0 leading-none">{rc.icon}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-sm font-medium">{p.employee?.full_name ?? "—"}</p>
+                            <Badge variant="secondary" className={`text-xs ${rc.color}`}>{rc.label}</Badge>
+                            {(outstandingByEmployee[p.employee_id] ?? 0) > 0 && (
+                              <Badge variant="secondary" className="text-xs bg-amber/10 text-amber border-amber/25">
+                                Advance due {formatCurrency(outstandingByEmployee[p.employee_id])}
+                              </Badge>
+                            )}
+                          </div>
+                          {isPaid && p.payment_date && (
+                            <p className="text-xs text-muted-foreground mt-0.5">Paid {formatDate(p.payment_date)} · {p.receipt_number}</p>
                           )}
                         </div>
-                        {isPaid && p.payment_date && (
-                          <p className="text-xs text-muted-foreground mt-0.5">Paid {formatDate(p.payment_date)} · {p.receipt_number}</p>
-                        )}
                       </div>
-                      <div className="text-right shrink-0">
+                      {/* pl-7 lines the figure up under the name on a phone (the
+                          text-lg icon plus its gap) and is dropped at sm. */}
+                      <div className="flex items-center justify-between gap-3 pl-7 sm:pl-0 sm:justify-end sm:shrink-0">
+                      <div className="sm:text-right shrink-0">
                         <p className="text-sm font-semibold">{formatCurrency(p.amount)}</p>
                         <p className={`text-xs font-medium ${isPaid ? "text-emerald-400" : "text-amber"}`}>
                           {isPaid ? "Paid" : "Pending"}
@@ -597,6 +647,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                           )}
                         </div>
                       )}
+                      </div>
                     </div>
                   );
                 })}
@@ -637,7 +688,13 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                       {a.notes && <p className="text-xs text-muted-foreground/70 mt-0.5">{a.notes}</p>}
                     </div>
 
-                    <div className="text-right shrink-0">
+                    {/* Balance and actions share one line on a phone. Stacked,
+                        the figure was right-aligned across the full width — far
+                        from the name it belongs to — with the buttons stranded
+                        on a third line below it. sm:contents dissolves this
+                        wrapper from sm up so the desktop row is untouched. */}
+                    <div className="flex items-center justify-between gap-3 sm:contents">
+                    <div className="text-left sm:text-right shrink-0">
                       <p className={cn("text-sm font-bold", bal > 0 ? "text-amber" : "text-muted-foreground")}>
                         {formatCurrency(bal)}
                       </p>
@@ -671,6 +728,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                         )}
                       </div>
                     )}
+                    </div>
                   </div>
                 );
               })}

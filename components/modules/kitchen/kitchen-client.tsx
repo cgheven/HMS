@@ -15,8 +15,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { QuickAddTray } from "@/components/ui/quick-add-tray";
 import { toast } from "@/hooks/use-toast";
-import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
+import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
 import type { KitchenExpense, PartnerTier, StaffPermission } from "@/types";
 
 // ── Quick-add chips (page-level) ─────────────────────────
@@ -478,16 +479,32 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* Two-up on a phone, with the total spanning both. These three are not
+          peers: grandTotal IS dailyTotal + groceryTotal, so the layout now says
+          so — headline first, its two halves beneath. Stacked one per row they
+          also filled the entire first screen and pushed the kitchen entries
+          below the fold. */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
         {[
-          { label: "Total This Month",    value: formatCurrency(grandTotal),   icon: TrendingDown,  color: "text-amber",        bg: "bg-amber/10 border border-amber/20" },
-          { label: "Daily Kitchen",       value: formatCurrency(dailyTotal),   icon: ChefHat,       color: "text-emerald-400",  bg: "bg-emerald-500/10 border border-emerald-500/20" },
-          { label: "Monthly Grocery",     value: formatCurrency(groceryTotal), icon: ShoppingCart,  color: "text-blue-400",     bg: "bg-blue-500/10 border border-blue-500/20" },
-        ].map(({ label, value, icon: Icon, color, bg }) => (
-          <Card key={label}>
+          { label: "Total This Month",    value: formatCurrency(grandTotal),   icon: TrendingDown,  color: "text-amber",        bg: "bg-amber/10 border border-amber/20", wide: true },
+          { label: "Daily Kitchen",       value: formatCurrency(dailyTotal),   icon: ChefHat,       color: "text-emerald-400",  bg: "bg-emerald-500/10 border border-emerald-500/20", wide: false },
+          // "Monthly Grocery" needs ~95px and a half-width card leaves ~89px once
+          // the icon and gap are paid for, so it truncated to "Monthly Groc…".
+          // Shortened on a phone rather than shrunk: the cart icon and the tab
+          // directly below both already say "monthly".
+          { label: "Monthly Grocery", short: "Grocery", value: formatCurrency(groceryTotal), icon: ShoppingCart,  color: "text-blue-400",     bg: "bg-blue-500/10 border border-blue-500/20", wide: false },
+        ].map(({ label, short, value, icon: Icon, color, bg, wide }) => (
+          <Card key={label} className={wide ? "col-span-2 sm:col-span-1" : ""}>
             <CardContent className="p-4 flex items-center gap-3">
-              <div className={`p-2 rounded-lg ${bg}`}><Icon className={`w-4 h-4 ${color}`} /></div>
-              <div><p className="text-xs text-muted-foreground">{label}</p><p className="text-xl font-bold">{value}</p></div>
+              <div className={`p-2 rounded-lg shrink-0 ${bg}`}><Icon className={`w-4 h-4 ${color}`} /></div>
+              {/* min-w-0 + truncate so a six-figure total cannot push its own
+                  label out of a half-width card. */}
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground truncate">
+                  {short ? (<><span className="sm:hidden">{short}</span><span className="hidden sm:inline">{label}</span></>) : label}
+                </p>
+                <p className="text-xl font-bold truncate">{value}</p>
+              </div>
             </CardContent>
           </Card>
         ))}
@@ -499,7 +516,11 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input placeholder="Search items..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
         </div>
-        <Input type="month" value={monthFilter} onChange={(e) => { setMonthFilter(e.target.value); loadMonth(e.target.value); }} className="w-auto" />
+        {/* self-start, not just w-auto. The container is flex-col on a phone and
+            a flex column stretches its items to full width by default, so w-auto
+            was being overridden and the month picker spanned the whole row for
+            no reason. self-start opts out of that stretch. */}
+        <Input type="month" value={monthFilter} onChange={(e) => { setMonthFilter(e.target.value); loadMonth(e.target.value); }} className="w-auto self-start sm:self-auto" />
       </div>
 
       {/* Tabs */}
@@ -513,24 +534,17 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
         <TabsContent value="daily" className="space-y-4">
           {/* Quick Add */}
           {canAdd && (
-            <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
-              <div className="flex items-center gap-2">
-                <Plus className="w-3.5 h-3.5 text-muted-foreground" />
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
-                <span className="text-xs text-muted-foreground/50">— tap to open form pre-filled</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {QUICK_DAILY.map((item) => (
-                  <button
-                    key={item.label}
-                    onClick={() => quickDailyItem(item.label)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${DAILY_CHIP[item.cat]}`}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <QuickAddTray count={QUICK_DAILY.length} hint="— tap to open form pre-filled">
+              {QUICK_DAILY.map((item) => (
+                <button
+                  key={item.label}
+                  onClick={() => quickDailyItem(item.label)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${DAILY_CHIP[item.cat]}`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </QuickAddTray>
           )}
 
           {loadingMonth ? (
@@ -579,24 +593,17 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
         <TabsContent value="grocery" className="space-y-4">
           {/* Quick Add */}
           {canAdd && (
-            <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
-              <div className="flex items-center gap-2">
-                <Plus className="w-3.5 h-3.5 text-muted-foreground" />
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Quick Add</p>
-                <span className="text-xs text-muted-foreground/50">— tap to open form pre-filled</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {QUICK_GROCERY.map((item) => (
-                  <button
-                    key={item.label}
-                    onClick={() => quickGroceryItem(item.label)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${GROCERY_CHIP[item.cat]}`}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <QuickAddTray count={QUICK_GROCERY.length} hint="— tap to open form pre-filled">
+              {QUICK_GROCERY.map((item) => (
+                <button
+                  key={item.label}
+                  onClick={() => quickGroceryItem(item.label)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${GROCERY_CHIP[item.cat]}`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </QuickAddTray>
           )}
 
           {loadingMonth ? (
