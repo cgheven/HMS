@@ -87,10 +87,13 @@ function visitingChip(iso: string | null) {
   if (!iso) return null;
   const today = new Date().toISOString().slice(0, 10);
   if (iso < today) return null;
+  // Amber and on its own line: this is the one fact on the row an owner acts on
+  // — somebody is turning up on a day — and it competed for space with two
+  // figures that never change once written.
   return (
-    <span className="text-amber/90">
+    <p className="text-[11px] font-medium text-amber mt-0.5 truncate">
       {iso === today ? "Visiting today" : `Visiting ${formatDate(iso)}`}
-    </span>
+    </p>
   );
 }
 
@@ -1659,8 +1662,8 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                           </p>
                           <p className="text-[11px] text-muted-foreground/70 truncate mt-0.5">
                             {formatPhoneDisplay(r.phone)} · {formatDate(r.createdAt)}
-                            {visitingChip(r.visitingDate) && <> · {visitingChip(r.visitingDate)}</>}
                           </p>
+                          {visitingChip(r.visitingDate)}
                         </div>
                         <StatusBadge status={r.status} />
                       </div>
@@ -1693,8 +1696,13 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                       <p className="text-sm font-medium text-foreground truncate">{r.name}</p>
                       <p className="text-xs text-muted-foreground truncate">
                         {formatPhoneDisplay(r.phone)} · {formatDate(r.createdAt)}
-                        {visitingChip(r.visitingDate) && <> · {visitingChip(r.visitingDate)}</>}
                       </p>
+                      {/* Its own line, not appended to the one above. Sharing a
+                          truncating line with the phone and the submission date
+                          cut it to "Visiting 1 Sept 2…" — and a date clipped
+                          mid-year is worse than no date, because the owner
+                          cannot tell which day was meant. */}
+                      {visitingChip(r.visitingDate)}
                     </div>
 
                     <div className="hidden md:block min-w-0">
