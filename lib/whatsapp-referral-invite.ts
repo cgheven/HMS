@@ -5,13 +5,10 @@ import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { TEMPLATES } from "@/lib/whatsapp-templates";
 import { normalizePhoneDigits } from "@/lib/phone";
 import { generateReferralCode } from "@/lib/referrals";
-import { mintStatusToken, referralStatusUrl } from "@/lib/referral-status";
-import { siteUrl } from "@/lib/site-url";
+import { mintStatusToken } from "@/lib/referral-status";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Admin = SupabaseClient<any, any, any>;
-
-const SITE_URL = siteUrl();
 
 /**
  * Sends one tenant their referral link.
@@ -96,6 +93,11 @@ export async function sendReferralInvite(
 
     // Reuse an existing token if one was somehow minted without a send; only
     // mint when there is none, so a retry cannot invalidate a link already sent.
+    // The status token is still minted and stored, even though v2 does not
+    // carry it: /rs/<token> remains live for every link already sent, and the
+    // planned code + mobile lookup page needs the row to exist. What changed is
+    // only that a NEW tenant is not handed the URL — a second link in the body
+    // is what forced WhatsApp to render a preview card.
     let rawToken: string | null = null;
     let tokenHash = r.status_token_hash;
     if (!tokenHash) {
@@ -137,13 +139,16 @@ export async function sendReferralInvite(
       digits,
       TEMPLATES.referralInvitation.name,
       TEMPLATES.referralInvitation.language,
+      // {{1}} name · {{2}} hostel · {{3}} referral CODE · {{4}} referrer % ·
+      // {{5}} referred %. {{3}} is the bare code, not a URL: the template holds
+      // https://hostel.yourpulse.io/ref/{{3}} and Meta rejects a parameter that
+      // would alter the approved origin.
       [
         firstName,
         hostel.name ?? "your hostel",
-        `${SITE_URL}/ref/${r.code}`,
+        r.code,
         String(referrerPct),
         String(referredPct),
-        referralStatusUrl(rawToken),
       ],
       // "marketing", not "announcement": this is a promotional template and the
       // monitoring page must be able to separate outreach from service messages.

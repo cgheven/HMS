@@ -16,9 +16,21 @@ import type { PaymentMethodAccount } from "@/types";
  */
 export const TEMPLATES = {
   reminderFull: { name: "hms_payment_reminder_full", language: "en" },
-  /** Approved 2026-08-18. Six body variables, in order: first name, hostel name,
-   *  share link, referrer %, referred %, private status-page link. */
-  referralInvitation: { name: "hms_referral_invitation", language: "en" },
+  /** v2, approved 2026-08-19. Both links moved out of the body: the share link
+   *  is now a bare CODE the template turns into a URL, and the private status
+   *  link is a dynamic URL BUTTON.
+   *
+   *  v1 put both inline as full URLs, which made the message 494 characters over
+   *  ~24 rendered lines — WhatsApp collapsed it behind "Read more" at the third
+   *  line, hiding the offer itself — and a URL in the body also forced a
+   *  link-preview card. v2 is ~246 characters with neither problem.
+   *
+   *  Five body variables in order: first name, hostel name, referral CODE,
+   *  referrer %, referred %. One button suffix: the status token.
+   *
+   *  Note the two links no longer read NEXT_PUBLIC_SITE_URL — their origin is
+   *  fixed in the approved template and only Meta can change it. */
+  referralInvitation: { name: "hms_referral_invitation_v2", language: "en" },
   reminderPartial: { name: "hms_payment_reminder_partial", language: "en" },
   paymentConfirmed: { name: "hms_payment_confirmed", language: "en" },
   seatReserved: { name: "hms_seat_reserved", language: "en" },
