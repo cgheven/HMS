@@ -63,6 +63,27 @@ export const REFERRAL_STATUS_ORDER: ReferralStatus[] = ["pending", "joined", "re
  *  submitting concurrently. */
 export const MAX_PENDING_PER_REFERRER = 25;
 
+/**
+ * The floor on either referral discount. A percentage is 0 or it is at least
+ * this — never 1-4.
+ *
+ * 0 is kept legal because it is a MEANING, not an absence: it is how an owner
+ * switches one side off, and 10/0 (referrer-only) is a configuration the engine
+ * supports deliberately. What the floor forbids is a discount too small to be
+ * worth advertising to a stranger.
+ *
+ * Mirrored by the CHECK constraint hms_hostels_referral_percent_floor
+ * (migration 199), which is the real guarantee — a CHECK cannot import this
+ * constant, so the two must be changed together. This one exists so an owner
+ * meets a written sentence instead of a 23514.
+ */
+export const REFERRAL_MIN_PERCENT = 5;
+
+/** True for a value the floor forbids: set, but below the minimum. */
+export function isBelowReferralFloor(percent: number): boolean {
+  return percent > 0 && percent < REFERRAL_MIN_PERCENT;
+}
+
 export const REFERRAL_NAME_MAX_LENGTH = 80;
 export const REFERRAL_PHONE_MAX_LENGTH = 20;
 /** The honeypot is the one field a person never fills and a bot always does, so
@@ -79,6 +100,20 @@ export const REFERRAL_CODE_INPUT_MAX_LENGTH = 64;
 export const REFERRAL_IP_LINK_HOURLY_LIMIT = 10;
 export const REFERRAL_IP_HOURLY_LIMIT = 120;
 export const REFERRAL_HOSTEL_HOURLY_LIMIT = 250;
+
+// Pulse links are BROADCAST — one per branch, posted publicly — so the two
+// ceilings sized for a tenant's private link are wrong for them in opposite
+// directions. hms_submit_referral picks between the pairs on the code's source.
+/** A tenant's link is shared with people they know; Pulse's is shared with a
+ *  city. At 10 the eleventh genuine visitor behind one hostel's WiFi or a
+ *  carrier NAT is refused — and that refusal is reported to the visitor as
+ *  success, so the lead disappears with nobody told. */
+export const REFERRAL_PULSE_IP_LINK_HOURLY_LIMIT = 200;
+/** MAX_PENDING_PER_REFERRER counts rows by referrer_tenant_id, which is NULL
+ *  for every Pulse referral — so for Pulse that cap silently matches nothing.
+ *  This one is counted by code instead. Higher than 25 because it bounds a whole
+ *  branch's public link rather than one resident's. */
+export const MAX_PENDING_PER_PULSE_LINK = 100;
 /** Resolving a code is a free service-role query for anyone holding a link, so
  *  the page render is metered too — the submit cap protects nothing while the
  *  lookup beside it is unlimited. */

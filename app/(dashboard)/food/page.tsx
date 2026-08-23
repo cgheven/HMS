@@ -14,7 +14,9 @@ export default async function FoodPage() {
       hostelId={hostelId}
       initialItems={items}
       initialMonth={month}
-      initialMenuType={ctx?.hostel?.food_menu_type ?? "monthly"}
+      // Dead fallback in practice — the column is NOT NULL — but it should not
+      // contradict the DB default, which migration 200 set to 'weekly'.
+      initialMenuType={ctx?.hostel?.food_menu_type ?? "weekly"}
       partnerTier={ctx?.partnerTier}
     />
   );

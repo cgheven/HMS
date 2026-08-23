@@ -911,7 +911,7 @@ export async function getGrowthAnalytics(): Promise<{
     await requireSuperAdmin();
     const admin = createAdminClient();
 
-    const [hostelsRes, roomsRes, tenantsRes, referralsRes, rewardsRes] = await Promise.all([
+    const [hostelsRes, roomsRes, tenantsRes, referralsRes, rewardsRes, pulseCodesRes] = await Promise.all([
       admin
         .from("hms_hostels")
         .select("id, owner_id, name, city, referral_enabled, referral_campaign")
@@ -927,6 +927,16 @@ export async function getGrowthAnalytics(): Promise<{
         .from("hms_referrals")
         .select("hostel_id, status, matched_tenant_id, pulse_commission_amount, pulse_commission_reversed_at"),
       admin.from("hms_referral_rewards").select("hostel_id, status, applied_amount"),
+      // Pulse's own per-branch link. At most one ACTIVE row per branch is a
+      // database invariant (partial unique index), so no ordering is needed to
+      // pick a winner — but "at least one" is only guaranteed at the moment
+      // referral_enabled flips, so the repair pass below backfills any branch
+      // whose code was retired while the campaign stayed on.
+      admin
+        .from("hms_referral_codes")
+        .select("hostel_id, code, view_count, share_count")
+        .eq("source", "pulse")
+        .eq("is_active", true),
     ]);
 
     if (hostelsRes.error) throw hostelsRes.error;
@@ -1014,10 +1024,48 @@ export async function getGrowthAnalytics(): Promise<{
       );
     }
 
+    const pulseByHostel = new Map(
+      (pulseCodesRes.data ?? []).map((c) => [
+        c.hostel_id as string,
+        {
+          code: c.code as string,
+          views: Number(c.view_count ?? 0),
+          shares: Number(c.share_count ?? 0),
+        },
+      ])
+    );
+
+    // "referral_enabled implies an active Pulse code" is created by a trigger on
+    // the false->true edge, which makes it a transition-time guarantee rather
+    // than an invariant: retire the code by hand and the branch keeps an enabled
+    // campaign with a permanently blank link, because nothing re-mints it.
+    // hms_ensure_pulse_code is idempotent and returns the existing code when
+    // there is one, so this costs one indexed probe per genuinely missing row
+    // and nothing at all on the normal path.
+    const missingPulse = realHostels.filter((h) => h.referral_enabled && !pulseByHostel.has(h.id));
+    if (missingPulse.length > 0) {
+      const minted = await Promise.all(
+        missingPulse.map(async (h) => {
+          const { data, error } = await admin.rpc("hms_ensure_pulse_code", { p_hostel_id: h.id });
+          // Logged, never thrown: a missing link is a blank cell on one row of a
+          // dashboard, and it must not take the whole Super Admin page down.
+          if (error) {
+            console.error("[getGrowthAnalytics] pulse code repair failed:", error.code ?? "unknown");
+            return null;
+          }
+          return typeof data === "string" ? ([h.id, data] as const) : null;
+        })
+      );
+      for (const row of minted) {
+        if (row) pulseByHostel.set(row[0], { code: row[1], views: 0, shares: 0 });
+      }
+    }
+
     const branches: GrowthBranchRow[] = realHostels.map((h) => {
       const capacity = capacityByHostel.get(h.id) ?? 0;
       const filled = filledByHostel.get(h.id) ?? 0;
       const ref = refByHostel.get(h.id);
+      const pulse = pulseByHostel.get(h.id);
       return {
         hostelId: h.id,
         name: h.name,
@@ -1038,6 +1086,9 @@ export async function getGrowthAnalytics(): Promise<{
         referralRevenue: ref?.revenue ?? 0,
         referralDiscounts: discountByHostel.get(h.id) ?? 0,
         pulseCommission: ref?.commission ?? 0,
+        pulseCode: pulse?.code ?? null,
+        pulseViews: pulse?.views ?? 0,
+        pulseShares: pulse?.shares ?? 0,
       };
     });
 

@@ -12,7 +12,9 @@ import { normalizePhoneDigits } from "@/lib/phone";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import {
   generateReferralCode,
+  isBelowReferralFloor,
   isReferralStale,
+  REFERRAL_MIN_PERCENT,
   REFERRAL_PENDING_TTL_DAYS,
 } from "@/lib/referrals";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
@@ -550,11 +552,14 @@ export async function getReferralOverview(month?: string): Promise<{
           .from("hms_referral_codes")
           .select("tenant_id, code, link_sent_at, view_count, share_count, last_viewed_at")
           .eq("hostel_id", hostelId)
+          // Every consumer of this array keys it by tenant_id. The branch's
+          // Pulse code has none, and it belongs to Pulse, not to this page.
+          .not("tenant_id", "is", null)
           .eq("is_active", true),
         admin
           .from("hms_referrals")
           .select(
-            "id, name, phone, phone_digits, status, created_at, referrer_tenant_id, matched_tenant_id, matched_at, rejected_at, rejected_by, rewards_skipped_reason, pulse_commission_amount, pulse_commission_charged_at, pulse_commission_reversed_at"
+            "id, name, phone, phone_digits, status, created_at, visiting_date, source, referrer_tenant_id, matched_tenant_id, matched_at, rejected_at, rejected_by, rewards_skipped_reason, pulse_commission_amount, pulse_commission_charged_at, pulse_commission_reversed_at"
           )
           .eq("hostel_id", hostelId)
           .order("created_at", { ascending: false }),
@@ -571,7 +576,7 @@ export async function getReferralOverview(month?: string): Promise<{
           : Promise.resolve({ data: [] as OtherTenantRow[], error: null }),
         admin
           .from("hms_referral_duplicate_claims")
-          .select("id, name, phone, created_at, referrer_tenant_id")
+          .select("id, name, phone, created_at, source, referrer_tenant_id")
           .eq("hostel_id", hostelId)
           .order("created_at", { ascending: false })
           .limit(200),
@@ -630,7 +635,8 @@ export async function getReferralOverview(month?: string): Promise<{
       phone_digits: string;
       status: ReferralStatus;
       created_at: string;
-      referrer_tenant_id: string;
+      source: "tenant" | "pulse";
+      referrer_tenant_id: string | null;
       matched_tenant_id: string | null;
       pulse_commission_amount: number | string | null;
       pulse_commission_charged_at: string | null;
@@ -639,6 +645,7 @@ export async function getReferralOverview(month?: string): Promise<{
       rejected_at: string | null;
       rejected_by: string | null;
       rewards_skipped_reason: string | null;
+      visiting_date: string | null;
     };
     const referrals = (referralsRes.data ?? []) as ReferralDbRow[];
 
@@ -797,9 +804,14 @@ export async function getReferralOverview(month?: string): Promise<{
         // shape of the attribution bug the security review removed.
         status: isReferralStale(r.status, r.created_at) ? "expired" : r.status,
         createdAt: r.created_at,
+        visitingDate: r.visiting_date,
+        source: r.source,
         referrerTenantId: r.referrer_tenant_id,
-        referrerName: tenantById.get(r.referrer_tenant_id)?.full_name ?? null,
+        referrerName: r.referrer_tenant_id
+          ? tenantById.get(r.referrer_tenant_id)?.full_name ?? null
+          : null,
         referrerRoom: (() => {
+          if (!r.referrer_tenant_id) return null;
           const rt = tenantById.get(r.referrer_tenant_id);
           const room = Array.isArray(rt?.room) ? rt?.room[0] : rt?.room;
           return room?.room_number ?? null;
@@ -839,6 +851,9 @@ export async function getReferralOverview(month?: string): Promise<{
     // referralRows arrives newest-first, so the FIRST row seen for a referrer is
     // their most recent — no date comparison needed.
     for (const row of monthRows) {
+      // A Pulse referral has no referrer. Keying the map on its null would
+      // collapse every one of them into a single phantom tenant on Tenant links.
+      if (!row.referrerTenantId) continue;
       const counts = countsByReferrer.get(row.referrerTenantId)
         ?? { pending: 0, joined: 0, total: 0, revenue: 0, lastAt: null };
       if (row.status === "pending") counts.pending += 1;
@@ -924,14 +939,18 @@ export async function getReferralOverview(month?: string): Promise<{
         name: string;
         phone: string;
         created_at: string;
-        referrer_tenant_id: string;
+        source: "tenant" | "pulse";
+        referrer_tenant_id: string | null;
       }[]
     ).map((d) => ({
       id: d.id,
       name: d.name,
       phone: d.phone,
       createdAt: d.created_at,
-      referrerName: tenantById.get(d.referrer_tenant_id)?.full_name ?? null,
+      source: d.source,
+      referrerName: d.referrer_tenant_id
+        ? tenantById.get(d.referrer_tenant_id)?.full_name ?? null
+        : null,
     }));
 
 
@@ -1308,6 +1327,20 @@ export async function updateReferralPercentages(
 
     const nextReferrer = clampPercent(referrerPercent);
     const nextReferred = clampPercent(referredPercent);
+
+    // Refused HERE, in words, before the UPDATE is issued.
+    //
+    // The guarantee is the CHECK constraint (migration 199); this is the layer
+    // an owner actually meets. Without it the same save still fails, but as a
+    // raw 23514 rendered into the toast by the catch below — which names a
+    // constraint, not a rule. Clamped values are tested, not the raw arguments:
+    // clampPercent is what will be written.
+    if (isBelowReferralFloor(nextReferrer) || isBelowReferralFloor(nextReferred)) {
+      return {
+        error: `A referral discount must be at least ${REFERRAL_MIN_PERCENT}%. Enter 0 to turn that side off.`,
+      };
+    }
+
     const isLowering = nextReferrer < prevReferrer || nextReferred < prevReferred;
 
     const { error } = await admin
@@ -1353,6 +1386,13 @@ export async function updateReferralPercentages(
     };
   } catch (err) {
     unstable_rethrow(err);
+    // The floor is checked above, so reaching it here means a writer got past
+    // that check — but the owner still gets the rule rather than the SQLSTATE.
+    if (typeof (err as { code?: string })?.code === "string" && (err as { code: string }).code === "23514") {
+      return {
+        error: `A referral discount must be at least ${REFERRAL_MIN_PERCENT}%. Enter 0 to turn that side off.`,
+      };
+    }
     return { error: err instanceof Error ? err.message : "Could not save the percentages" };
   }
 }
@@ -1412,6 +1452,10 @@ type AdmissionReferralLookup = {
    *  the system already holds is both wasted work and a chance to mis-spell it
    *  against the referral it has to match. */
   referredName: string | null;
+  /** 'pulse' means Pulse's own branch link sent this person — there is no
+   *  referring tenant, so referrerName and referrerRoom are null by fact and
+   *  not by privacy withholding. */
+  source: "tenant" | "pulse";
   referrerName: string | null;
   referrerRoom: string | null;
   referredPercent: number;
@@ -1426,6 +1470,7 @@ type AdmissionReferralLookup = {
 const NO_MATCH: AdmissionReferralLookup = {
   found: false,
   referredName: null,
+  source: "tenant",
   referrerName: null,
   referrerRoom: null,
   referredPercent: 0,
@@ -1516,6 +1561,11 @@ export async function lookupReferralForAdmission(
         p_phone_digits: digits,
         p_as_of: pktTodayDateString(),
         p_ttl_days: REFERRAL_PENDING_TTL_DAYS,
+        // Passed so this preview and hms_attribute_referral answer the same
+        // question. A Pulse lead is only claimable at the branch whose link
+        // produced it, and a banner promising a discount the admission would
+        // then refuse is worse than no banner.
+        p_hostel_id: hostelId,
       }),
     ]);
 
@@ -1551,7 +1601,7 @@ export async function lookupReferralForAdmission(
     // saved hop is felt.
     const { data: referral } = await admin
       .from("hms_referrals")
-      .select("id, name, created_at, referrer_tenant_id, promised_referred_percent, referrer:hms_tenants!hms_referrals_referrer_tenant_id_fkey(id, full_name, hostel_id, room:hms_rooms(room_number))")
+      .select("id, name, created_at, source, referrer_tenant_id, promised_referred_percent, referrer:hms_tenants!hms_referrals_referrer_tenant_id_fkey(id, full_name, hostel_id, room:hms_rooms(room_number))")
       .eq("id", referralId as string)
       .maybeSingle();
     if (!referral) return NO_MATCH;
@@ -1564,6 +1614,10 @@ export async function lookupReferralForAdmission(
       hostelId,
       ownerHostels: (ctx?.hostels ?? []).map((h) => ({ id: h.id })),
     });
+    const source = ((referral.source as string | null) ?? "tenant") as "tenant" | "pulse";
+    // Only a real referrer can be withheld. A Pulse lead has none, so `visible`
+    // stays false and the banner must read the source instead of inferring
+    // "a resident at another branch" from the missing name.
     const visible = referrerHostelId !== null && scope.includes(referrerHostelId);
     const room = Array.isArray(referrer?.room) ? referrer?.room[0] : referrer?.room;
 
@@ -1580,6 +1634,7 @@ export async function lookupReferralForAdmission(
       // Not gated on `visible`: this is the name of the person standing in front
       // of the operator, not the referrer's, so there is nothing to withhold.
       referredName: (referral.name as string | null) ?? null,
+      source,
       referrerName: visible ? (referrer?.full_name as string | null) ?? null : null,
       referrerRoom: visible ? room?.room_number ?? null : null,
       referredPercent: effectivePercent,
@@ -1926,6 +1981,11 @@ export async function startReferralCampaign(): Promise<{
       .from("hms_referral_codes")
       .select("id")
       .eq("hostel_id", hostelId)
+      // The Pulse code has no tenant and so can never be sent — left in, its
+      // permanently-null link_sent_at would be queued on every start, fail as
+      // "no_tenant", and on a fully-invited branch become the dominant reason
+      // in the owner's toast.
+      .not("tenant_id", "is", null)
       .eq("is_active", true)
       .is("link_sent_at", null);
 

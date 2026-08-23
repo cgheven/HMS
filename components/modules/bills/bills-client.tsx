@@ -4,6 +4,7 @@ import { Plus, FileText, Search, Edit2, Trash2, CheckCircle2, Clock, AlertTriang
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
 import { Card, CardContent } from "@/components/ui/card";
+import { QuickAddTray } from "@/components/ui/quick-add-tray";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -131,33 +132,41 @@ export function BillsClient({ hostelId, initialBills, partnerTier = null }: Prop
 
       {/* Quick-add presets */}
       {canStandardTier && (
-      <div className="rounded-2xl border border-sidebar-border bg-card p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <Zap className="w-3.5 h-3.5 text-amber" />
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Quick Add</span>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {PRESETS.map((p) => (
-            <button
-              key={p.label}
-              onClick={() => openAdd(p)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-sidebar-border bg-white/[0.03] hover:bg-white/[0.07] hover:border-amber/30 text-sm transition-colors"
-            >
-              <span>{p.icon}</span>
-              <span className="text-foreground/80">{p.label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+      <QuickAddTray count={PRESETS.length} icon={Zap} iconClassName="text-amber">
+        {PRESETS.map((p) => (
+          <button
+            key={p.label}
+            onClick={() => openAdd(p)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-sidebar-border bg-white/[0.03] hover:bg-white/[0.07] hover:border-amber/30 text-sm transition-colors"
+          >
+            <span>{p.icon}</span>
+            <span className="text-foreground/80">{p.label}</span>
+          </button>
+        ))}
+      </QuickAddTray>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* Two-up on a phone, the money owed spanning both. Stacked one per row
+          these filled the whole screen and pushed the bills themselves under it. */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
         {[
-          { label: "Pending Amount", value: formatCurrency(totals.unpaid), icon: Clock, color: "text-amber", bg: "bg-amber/10 border border-amber/20" },
-          { label: "Paid This Period", value: formatCurrency(totals.paid), icon: CheckCircle2, color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20" },
-          { label: "Overdue Bills", value: totals.overdue, icon: AlertTriangle, color: "text-rose-400", bg: "bg-rose-500/10 border border-rose-500/20" },
-        ].map(({ label, value, icon: Icon, color, bg }) => (
-          <Card key={label}><CardContent className="p-4 flex items-center gap-3"><div className={`p-2 rounded-lg ${bg}`}><Icon className={`w-4 h-4 ${color}`} /></div><div><p className="text-xs text-muted-foreground">{label}</p><p className="text-xl font-bold">{value}</p></div></CardContent></Card>
+          { label: "Pending Amount", value: formatCurrency(totals.unpaid), icon: Clock, color: "text-amber", bg: "bg-amber/10 border border-amber/20", wide: true },
+          { label: "Paid This Period", short: "Paid", value: formatCurrency(totals.paid), icon: CheckCircle2, color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20", wide: false },
+          { label: "Overdue Bills", short: "Overdue", value: totals.overdue, icon: AlertTriangle, color: "text-rose-400", bg: "bg-rose-500/10 border border-rose-500/20", wide: false },
+        ].map(({ label, short, value, icon: Icon, color, bg, wide }) => (
+          <Card key={label} className={wide ? "col-span-2 sm:col-span-1" : ""}>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className={`p-2 rounded-lg shrink-0 ${bg}`}><Icon className={`w-4 h-4 ${color}`} /></div>
+              <div className="min-w-0">
+                {/* "Paid This Period" does not fit a half-width card beside its
+                    icon; shortened on a phone rather than truncated to "Paid Thi…". */}
+                <p className="text-xs text-muted-foreground truncate">
+                  {short ? (<><span className="sm:hidden">{short}</span><span className="hidden sm:inline">{label}</span></>) : label}
+                </p>
+                <p className="text-xl font-bold truncate">{value}</p>
+              </div>
+            </CardContent>
+          </Card>
         ))}
       </div>
 
@@ -175,17 +184,33 @@ export function BillsClient({ hostelId, initialBills, partnerTier = null }: Prop
               {filtered.map((bill) => {
                 const cfg = statusConfig[bill.status];
                 return (
-                  <div key={bill.id} className="flex items-center gap-3 px-4 py-4 hover:bg-white/[0.02] transition-colors">
-                    <div className="text-2xl shrink-0">{categoryIcons[bill.category]}</div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex flex-wrap items-center gap-2"><p className="font-medium text-sm">{bill.title}</p><Badge variant={cfg.badge} className="text-xs">{cfg.label}</Badge></div>
-                      <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5"><span className="text-xs text-muted-foreground capitalize">{bill.category}</span><span className="text-xs text-muted-foreground">Due: {formatDate(bill.due_date)}</span>{bill.paid_date && <span className="text-xs text-muted-foreground">Paid: {formatDate(bill.paid_date)}</span>}</div>
+                  /* Stacked on a phone, one row from sm up.
+                   *
+                   * As a single row the icon, the amount and three buttons all
+                   * claimed fixed widths first, leaving the middle column about
+                   * 65px at 390px — so the category and "Due: 17 Aug 2026" broke
+                   * across three lines beside a vertically-centred icon. Giving
+                   * the title and dates the full width, and putting the amount on
+                   * its own line with the actions, lets every part sit on one
+                   * line at any width. */
+                  <div key={bill.id} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 px-4 py-4 hover:bg-white/[0.02] transition-colors">
+                    <div className="flex items-start gap-3 min-w-0 sm:flex-1">
+                      <div className="text-2xl shrink-0 leading-none">{categoryIcons[bill.category]}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2"><p className="font-medium text-sm">{bill.title}</p><Badge variant={cfg.badge} className="text-xs">{cfg.label}</Badge></div>
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5"><span className="text-xs text-muted-foreground capitalize">{bill.category}</span><span className="text-xs text-muted-foreground">Due: {formatDate(bill.due_date)}</span>{bill.paid_date && <span className="text-xs text-muted-foreground">Paid: {formatDate(bill.paid_date)}</span>}</div>
+                      </div>
                     </div>
-                    <div className="text-right shrink-0"><p className="font-bold text-sm">{formatCurrency(bill.amount)}</p></div>
+                    {/* pl-11 lines the amount up under the title on a phone —
+                        the 2xl icon plus its gap — and is dropped at sm where
+                        this returns to being the tail of a single row. */}
+                    <div className="flex items-center justify-between gap-2 pl-11 sm:pl-0 sm:justify-end sm:gap-3 sm:shrink-0">
+                      <p className="font-bold text-sm">{formatCurrency(bill.amount)}</p>
                     <div className="flex items-center gap-1 shrink-0">
                       {canStandardTier && bill.status !== "paid" && <Button variant="ghost" size="sm" className="h-8 text-xs gap-1 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => markPaid(bill)}><CheckCircle2 className="w-3 h-3" /> Pay</Button>}
                       {canStandardTier && <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(bill); setForm({ title: bill.title, category: bill.category, amount: bill.amount.toString(), due_date: bill.due_date, paid_date: bill.paid_date ?? "", status: bill.status, notes: bill.notes ?? "" }); setDialogOpen(true); }}><Edit2 className="w-3.5 h-3.5" /></Button>}
                       {canStandardTier && <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => setDeleteId(bill.id)}><Trash2 className="w-3.5 h-3.5" /></Button>}
+                    </div>
                     </div>
                   </div>
                 );

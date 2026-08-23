@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircle2, Home, Loader2, Phone, User } from "lucide-react";
+import { CalendarDays, CheckCircle2, Home, Loader2, Phone, User } from "lucide-react";
 import { submitReferral } from "@/app/actions/referrals-public";
 import { REFERRAL_PENDING_TTL_DAYS } from "@/lib/referrals";
 import { Button } from "@/components/ui/button";
@@ -14,11 +14,20 @@ interface Props {
   hostelName: string;
   /** 0 = referrer-only mode; the page then promises the visitor nothing. */
   referredPercent: number;
+  source: "tenant" | "pulse";
 }
 
-export function ReferralFormClient({ code, hostelName, referredPercent }: Props) {
+// Computed once. Inside the component these would be recomputed on every
+// keystroke, and a date crossing midnight mid-session would silently move the
+// input's own bounds under the person filling it in.
+const TODAY = new Date().toISOString().slice(0, 10);
+const LAST_VALID_VISIT = new Date(Date.now() + REFERRAL_PENDING_TTL_DAYS * 86_400_000)
+  .toISOString()
+  .slice(0, 10);
+
+export function ReferralFormClient({ code, hostelName, referredPercent, source }: Props) {
   const offersDiscount = referredPercent > 0;
-  const [form, setForm] = useState({ name: "", phone: "", website_url: "" });
+  const [form, setForm] = useState({ name: "", phone: "", visiting_date: "", website_url: "" });
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +44,7 @@ export function ReferralFormClient({ code, hostelName, referredPercent }: Props)
       const result = await submitReferral(code, {
         name: form.name,
         phone: form.phone,
+        visiting_date: form.visiting_date,
         website_url: form.website_url,
       });
 
@@ -114,6 +124,14 @@ export function ReferralFormClient({ code, hostelName, referredPercent }: Props)
               ? `Get ${referredPercent}% off your first bill`
               : `Looking for a room at ${hostelName}?`}
           </h1>
+          {/* The only source-specific copy on the page. Nobody referred this
+              visitor, so nothing here may imply a friend did — it names the
+              actual sender instead. Tenant links render nothing extra. */}
+          {source === "pulse" && (
+            <p className="text-muted-foreground/80 text-xs mt-2 leading-relaxed">
+              Shared by Pulse — the platform {hostelName} runs on.
+            </p>
+          )}
           <p className="text-muted-foreground text-sm mt-1.5 leading-relaxed">
             Leave your name and number, then visit {hostelName}. Give this number when you arrive
             {offersDiscount ? " and your discount is applied to your first bill." : "."}
@@ -155,6 +173,28 @@ export function ReferralFormClient({ code, hostelName, referredPercent }: Props)
                 onChange={(e) => setForm({ ...form, phone: e.target.value })}
                 required
               />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="flex items-center gap-1.5">
+                <CalendarDays className="w-3.5 h-3.5 text-muted-foreground" />
+                When will you visit?
+                <span className="text-muted-foreground/60 font-normal">(optional)</span>
+              </Label>
+              <Input
+                type="date"
+                value={form.visiting_date}
+                min={TODAY}
+                max={LAST_VALID_VISIT}
+                onChange={(e) => setForm({ ...form, visiting_date: e.target.value })}
+              />
+              {/* The bound is the OFFER's deadline, not the form's. Letting
+                  somebody pick a day after their discount has expired invites
+                  them to arrive expecting money off that no longer exists. */}
+              <p className="text-[11px] text-muted-foreground/70">
+                Helps the hostel expect you. Your discount is valid for{" "}
+                {REFERRAL_PENDING_TTL_DAYS} days.
+              </p>
             </div>
 
             {/* Honeypot — hidden from people, irresistible to bots. */}

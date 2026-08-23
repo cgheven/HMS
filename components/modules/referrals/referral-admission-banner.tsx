@@ -135,11 +135,27 @@ export function ReferralAdmissionBanner({
     return null;
   }
 
+  // Pulse is checked BEFORE the anonymous test, not after. A Pulse referral has
+  // no referrer at all, so it reaches this component with no name — which the
+  // anonymous branch would render as "a resident at another branch", inventing a
+  // person who does not exist next to a discount that is real.
+  const isPulse = state.source === "pulse";
+
   // Cross-branch privacy: the action withholds the name and the room whenever
   // the referrer sits at a branch this user has no access to, so an absent name
   // on a found referral is the signal to say nothing more about who they are.
   const anonymous = !state.referrerName;
   const who = `${state.referrerName}${state.referrerRoom ? ` (Rm ${state.referrerRoom})` : ""}`;
+  const sourceLine = isPulse
+    ? "Came in through the Pulse referral link."
+    : anonymous
+      ? "Referred by a resident at another branch."
+      : `Referred by ${who}.`;
+  const headlineLine = isPulse
+    ? "Referral — Pulse sent this person."
+    : anonymous
+      ? "Referred by a resident at another branch."
+      : `Referral — ${who} sent this person.`;
 
   const dates = (
     <p className="text-muted-foreground">
@@ -154,7 +170,7 @@ export function ReferralAdmissionBanner({
       <div className={className}>
         <Box tone="muted">
           <p className="text-foreground/80">
-            {anonymous ? "Referred by a resident at another branch." : `Referred by ${who}.`}
+            {sourceLine}
           </p>
           {dates}
           <p className="text-muted-foreground">
@@ -175,7 +191,7 @@ export function ReferralAdmissionBanner({
     <div className={className}>
       <Box tone="emerald">
         <p className="font-semibold text-emerald-400">
-          {anonymous ? "Referred by a resident at another branch." : `Referral — ${who} sent this person.`}
+          {headlineLine}
         </p>
         {dates}
         {/* One line, not three. The only thing the operator has to KNOW is that

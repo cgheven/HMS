@@ -537,17 +537,22 @@ export function ManagersClient({ managers: initial, availableHostels, hostelId: 
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header. Stacks on a phone like every other page: inline, the button
+          squeezed the subtitle into two lines and left the two fighting for a
+          390px row. The heading was also the only one in the app still on
+          text-2xl font-bold — Bills, Staff, Expenses and Kitchen all use the
+          serif display face, so "Managers" rendered visibly heavier than its
+          neighbours. */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Managers</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">Manage portal access and permissions</p>
+          <h1 className="text-3xl font-serif font-normal tracking-tight">Managers</h1>
+          <p className="text-muted-foreground text-sm mt-1">Manage portal access and permissions</p>
         </div>
         <Button
           onClick={() => setCreateOpen(true)}
-          className="bg-amber text-black hover:bg-amber/90"
+          className="gap-2 w-full sm:w-auto bg-amber text-black hover:bg-amber/90"
         >
-          <Plus className="w-4 h-4 mr-2" />
+          <Plus className="w-4 h-4" />
           Add Manager
         </Button>
       </div>
@@ -631,8 +636,12 @@ export function ManagersClient({ managers: initial, availableHostels, hostelId: 
                 )}
               </div>
 
-              {/* Action buttons */}
-              <div className="flex items-center gap-1.5 flex-shrink-0">
+              {/* Action buttons. flex-wrap because Permissions + Branches +
+                  Reset + delete measure ~287px and a 320px phone leaves ~288px
+                  inside the card padding — it fits today only by a hair, and
+                  without wrapping the next label added here silently overflows
+                  the card instead of dropping to a second line. */}
+              <div className="flex flex-wrap items-center gap-1.5 sm:flex-nowrap sm:flex-shrink-0">
                 <Button
                   size="sm"
                   variant="ghost"

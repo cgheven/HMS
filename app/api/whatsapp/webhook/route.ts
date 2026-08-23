@@ -39,6 +39,58 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ error: "Verification failed" }, { status: 403 });
 }
 
+/**
+ * Hands a marketing lead back its one shot at a campaign when the message died
+ * after Meta accepted it.
+ *
+ * sendLeadCampaign claims the lead in hms_lead_campaign_sends BEFORE calling
+ * Meta, and hms_lead_campaign_sends_once — UNIQUE (lead_id, campaign_key) WHERE
+ * status <> 'failed' — is what stops a second send. That is correct for a
+ * message that arrived, and wrong for one that did not: Meta returns 200 with a
+ * message id and only reports the failure here, seconds later. 131049 ("not
+ * delivered to maintain healthy ecosystem engagement" — the per-recipient
+ * marketing cap) does exactly that, and on a 74-lead blast it is not an edge
+ * case. Without this, every lead it hits is marked 'sent', never receives
+ * anything, and can never be sent the campaign again.
+ *
+ * Scoped by wamid, which the ledger only carries for a campaign send, so this
+ * cannot touch a rent reminder, a referral invite or any other message type —
+ * they have no row here to match.
+ *
+ * Two guards make a retried webhook harmless: eq('status', 'sent') means an
+ * already-released row is a no-op, and a released row simply leaves the partial
+ * index, so a later send inserts a fresh row rather than colliding.
+ *
+ * A failure webhook that somehow beat the ledger's own wamid write matches
+ * nothing and is skipped — that is the behaviour this page had before, so the
+ * race can only fail back to the status quo, never past it.
+ */
+async function releaseCampaignClaim(
+  admin: ReturnType<typeof createAdminClient>,
+  wamid: string,
+  err: { code?: number; title?: string; message?: string } | undefined
+): Promise<void> {
+  // Swallowed on purpose. Meta batches many statuses into one POST, and this
+  // call sits inside that loop: a network blip here would abort the whole
+  // batch, silently dropping delivery updates for messages that have nothing
+  // to do with marketing — a client's rent reminders, sitting behind a
+  // campaign row in the same payload. Losing a ledger release costs one lead a
+  // retry; losing the batch costs sixteen clients their delivery status.
+  try {
+    const reason = err?.title ?? err?.message ?? "Undelivered";
+    await admin
+      .from("hms_lead_campaign_sends")
+      .update({
+        status: "failed",
+        error: err?.code ? `[${err.code}] ${reason}` : reason,
+      })
+      .eq("wamid", wamid)
+      .eq("status", "sent");
+  } catch (e) {
+    console.error("[whatsapp-webhook] could not release campaign claim:", e);
+  }
+}
+
 /** Meta's status vocabulary, mapped to ours. */
 const STATUS_MAP: Record<string, string> = {
   sent: "sent",
@@ -75,6 +127,8 @@ export async function POST(request: NextRequest) {
               updated_at: new Date().toISOString(),
             })
             .eq("wamid", st.id);
+
+          if (mapped === "undelivered") await releaseCampaignClaim(admin, st.id, err);
         }
       }
     }
