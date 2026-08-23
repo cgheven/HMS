@@ -1,5 +1,8 @@
 import { requireSuperAdmin } from "@/lib/auth";
-import { listCampaignTemplates, listCampaignAudience } from "@/app/actions/lead-campaigns";
+import {
+  listCampaignTemplates, listCampaignAudience, listCampaignHistory,
+} from "@/app/actions/lead-campaigns";
+import { defaultCampaignTemplate } from "@/lib/lead-campaigns";
 import { MarketingClient } from "@/components/modules/super-admin/marketing-client";
 
 export const dynamic = "force-dynamic";
@@ -11,15 +14,20 @@ export default async function SuperAdminMarketingPage() {
   // is nothing to fetch until we know which templates exist.
   const { templates, error } = await listCampaignTemplates();
   const list = templates ?? [];
-  const first = list.find((t) => !t.unsupported) ?? list[0] ?? null;
+  const first = defaultCampaignTemplate(list);
 
-  const { rows } = first ? await listCampaignAudience(first.name) : { rows: [] };
+  // Independent of each other, so they fan out rather than chain.
+  const [{ rows }, { rows: history }] = await Promise.all([
+    first ? listCampaignAudience(first.name) : Promise.resolve({ rows: [] }),
+    listCampaignHistory(),
+  ]);
 
   return (
     <MarketingClient
       initialTemplate={first?.name ?? null}
       templates={list}
       initialRows={rows ?? []}
+      history={history ?? []}
       loadError={error ?? null}
     />
   );

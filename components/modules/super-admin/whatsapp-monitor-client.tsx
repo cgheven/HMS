@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
+import { WHATSAPP_ERROR_HINTS as ERROR_HINTS } from "@/lib/whatsapp-errors";
 import { formatDateTime, cn } from "@/lib/utils";
 import type { WhatsAppLogRow, WhatsAppLogStats } from "@/app/actions/whatsapp-monitor";
 import { AUDIENCE_LABELS, type WhatsAppAudience } from "@/lib/whatsapp-audience";
@@ -20,17 +21,6 @@ const STATUS_CONFIG: Record<string, { label: string; cls: string }> = {
   queued:      { label: "Queued",      cls: "bg-white/5 text-muted-foreground border-white/10" },
   undelivered: { label: "Not delivered", cls: "bg-amber/10 text-amber border-amber/20" },
   failed:      { label: "Failed",      cls: "bg-rose-500/10 text-rose-400 border-rose-500/20" },
-};
-
-/** Meta error codes worth translating — the raw text is not self-explanatory. */
-const ERROR_HINTS: Record<number, string> = {
-  131026: "Number is not on WhatsApp",
-  131047: "Outside the 24-hour window — needs an approved template",
-  132001: "Template name or language does not match",
-  132000: "Wrong number of template parameters",
-  100: "Invalid parameter sent to Meta",
-  131049: "Blocked by Meta to protect user experience",
-  131048: "Spam rate limit hit for this number",
 };
 
 interface Props {

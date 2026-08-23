@@ -896,10 +896,27 @@ export interface PlatformLead {
 
 /** Refuses the send outright. Not overridable from the UI — the send action
  *  recomputes every one of these from the database before dispatching. */
-export type LeadAudienceBlock = "opted_out" | "already_sent" | "no_phone" | "no_name";
-
-/** Reason to think twice. Selectable, just never pre-selected. */
-export type LeadAudienceWarning = "converted" | "existing_client" | "rejected";
+/**
+ * Why a lead is not getting this campaign. Ordered by how it reads to a human:
+ * the first one that applies is the one shown.
+ *
+ * There used to be a second, softer tier — warnings — for leads that were
+ * selectable but never pre-selected. It is gone. "Rejected" was its only
+ * remaining member, and splitting the audience into eligible / clean-and-ready
+ * meant two different counts of "who is getting this", which is one more than
+ * anybody can hold in their head. A lead is either in the send or it is out,
+ * with a reason.
+ */
+export type LeadAudienceBlock =
+  | "opted_out"
+  | "already_sent"
+  | "existing_client"
+  | "rejected"
+  | "recently_messaged"
+  | "duplicate_number"
+  | "bad_number"
+  | "no_phone"
+  | "no_name";
 
 export interface CampaignAudienceRow {
   lead_id: string;
@@ -918,11 +935,38 @@ export interface CampaignAudienceRow {
    *  Flagged in the table because it is otherwise indistinguishable. */
   greeting_from_business: boolean;
   blocked: LeadAudienceBlock | null;
-  warnings: LeadAudienceWarning[];
+  /** The specifics behind the block, when a label alone is not enough to act
+   *  on — which lead a duplicate collides with, how long ago the number was
+   *  last messaged. null when the label says everything. */
+  block_detail: string | null;
+  /** Why this lead looks like an existing client, in words — shown on the badge
+   *  so an admin can judge a fuzzy match without opening the CRM. null when
+   *  nothing matched. Survives the override, so a cleared lead still explains
+   *  itself. */
+  client_match: string | null;
+  /** A human confirmed the client match is wrong. Clears the block. */
+  not_a_client: boolean;
   /** Maintained by the Meta delivery webhook — queued/sent/delivered/read/
    *  undelivered/failed. null until a first send exists. */
   delivery: string | null;
+  /** Meta's failure code on the most recent send, for the funnel breakdown.
+   *  130472 (a temporary Meta experiment) and 131026 (not on WhatsApp) demand
+   *  completely different responses and must not be counted as one number. */
+  error_code: number | null;
   sent_at: string | null;
+}
+
+/** One row of the cross-campaign funnel — how each blast actually performed,
+ *  rather than only the template currently selected. */
+export interface CampaignHistoryRow {
+  campaign_key: string;
+  recipients: number;
+  delivered: number;
+  read: number;
+  undelivered: number;
+  failed: number;
+  first_sent_at: string | null;
+  last_sent_at: string | null;
 }
 
 export interface CampaignSendSummary {
