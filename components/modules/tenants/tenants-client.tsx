@@ -6,7 +6,7 @@ import {
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, Eye,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
   FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check, UtensilsCrossed,
-  CalendarClock, CalendarX, MessageCircle, Car, Download,
+  CalendarClock, CalendarX, MessageCircle, Car, Download, Printer,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -29,7 +29,7 @@ import { computeACSegmentBilling } from "@/lib/ac-billing";
 import { formatCnic, isValidCnic, normalizeCnic } from "@/lib/cnic";
 import { VISIT_PURPOSE_OPTIONS, VISIT_PURPOSE_LABELS, visitPurposeLabel } from "@/lib/visit-purpose";
 import { RELATIONSHIP_OPTIONS } from "@/types";
-import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, PaymentStatus, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory, VisitPurpose } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, PaymentStatus, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory, VisitPurpose, MealTimes } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
@@ -59,6 +59,11 @@ interface Props {
   foodAddonRates?: FoodAddonRates;
   foodMonthlyRate?: number;
   noticePeriodDays?: number;
+  /** hms_hostels.meal_times — printed as a rule on the admission form. */
+  mealTimes?: MealTimes | null;
+  /** Branch-level AC maintenance rate. Applied on the admission form only to a
+   *  resident whose room has AC, matching what the payment trigger charges. */
+  acMaintenanceRate?: number;
   currentMonthPaymentByTenant?: Record<string, { status: string; remaining: number }>;
   // null/undefined = owner (unrestricted). Add/Edit Tenant and Give Notice are
   // deferred for partners in this pass — the safe write actions only cover a
@@ -279,10 +284,14 @@ interface TenantRowProps {
   noticePeriodDays?: number;
   currentMonthPaymentByTenant?: Record<string, { status: string; remaining: number }>;
   sendingWelcome?: boolean;
+  /** True while this row's admission form is being built. */
+  printingForm?: boolean;
   // Omitted for managers: opens the same Add/Edit Tenant form read-only, and
   // that form resolves hostelId client-side in a way managers don't have.
   // Undefined hides the control entirely.
   onView?: (t: Tenant) => void;
+  /** Prints the admission form, pre-filled from this row. Undefined hides it. */
+  onPrintForm?: (t: Tenant) => void;
   onCheckout: (t: Tenant) => void;
   onActivate: (t: Tenant) => void;
   onEdit: (t: Tenant) => void;
@@ -292,7 +301,7 @@ interface TenantRowProps {
   onRecordDeposit?: (t: Tenant) => void;
 }
 
-function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, showSendWelcome = false, showRecordDeposit = false, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, sendingWelcome = false, onView, onCheckout, onActivate, onEdit, onDelete, onGiveNotice, onSendWelcome, onRecordDeposit }: TenantRowProps) {
+function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, showSendWelcome = false, showRecordDeposit = false, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, sendingWelcome = false, printingForm = false, onView, onPrintForm, onCheckout, onActivate, onEdit, onDelete, onGiveNotice, onSendWelcome, onRecordDeposit }: TenantRowProps) {
   const room = t.room_id ? roomMap[t.room_id] : null;
   const foodCharge = calcFoodAddonCharge(t, foodAddonRates);
   const initials = t.full_name[0].toUpperCase();
@@ -505,6 +514,20 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
             {sendingWelcome ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MessageCircle className="w-3.5 h-3.5" />}
           </Button>
         )}
+        {onPrintForm && (
+          // Desktop only, like View: this ends at a printer, and the row is
+          // already carrying six controls on a phone.
+          <Button
+            variant="ghost"
+            size="icon"
+            className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground"
+            title="Print admission form"
+            disabled={printingForm}
+            onClick={() => onPrintForm(t)}
+          >
+            {printingForm ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Printer className="w-3.5 h-3.5" />}
+          </Button>
+        )}
         {onView && (
           <Button variant="ghost" size="icon" className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground" title="View Tenant" onClick={() => onView(t)}>
             <Eye className="w-3.5 h-3.5" />
@@ -633,7 +656,7 @@ function RedflagWarningDialog({
   );
 }
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, mealTimes = null, acMaintenanceRate = 0, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null }: Props) {
   const isPartner = !!partnerTier;
   const canFullTier = !partnerTier || partnerTier === "full";
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
@@ -862,6 +885,51 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [noticeFilter, setNoticeFilter] = useState(false);
   const [roomFilter, setRoomFilter] = useState<string>("all"); // room_id or "all"
   const [exportLoading, setExportLoading] = useState<"excel" | "pdf" | null>(null);
+  const [printingForm, setPrintingForm] = useState<string | null>(null);
+
+  /**
+   * The admission form, pre-filled and sent straight to the print dialog.
+   *
+   * Gated exactly like onView at every call site. The form carries CNIC, the
+   * permanent address, the father's name and the emergency contact — the same
+   * data the tenant detail dialog withholds from a manager who lacks
+   * edit_members. Ungated, this button was a printable route around that.
+   *
+   * The room number is resolved here rather than inside the generator: the row
+   * already holds roomMap, and the PDF has no business knowing how this page
+   * stores rooms.
+   */
+  async function handlePrintForm(t: Tenant) {
+    setPrintingForm(t.id);
+    try {
+      const { printTenantForm } = await import("@/lib/tenant-form-pdf");
+      const room = t.room_id ? roomMap[t.room_id] : null;
+      await printTenantForm(
+        {
+          ...t,
+          bed_number: [room?.room_number ? `Room ${room.room_number}` : null, t.bed_number]
+            .filter(Boolean)
+            .join(" · ") || null,
+          // Same rule the payment trigger applies: the branch rate, but only
+          // for a room that actually has AC.
+          ac_maintenance: room?.has_ac ? acMaintenanceRate : 0,
+        },
+        {
+          name: hostelName || "Hostel",
+          noticePeriodDays,
+          mealTimes,
+        }
+      );
+    } catch {
+      toast({
+        title: "Could not print",
+        description: "The form could not be generated. Try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setPrintingForm(null);
+    }
+  }
   const [depositDialogTenant, setDepositDialogTenant] = useState<Tenant | null>(null);
   const [depositForm, setDepositForm] = useState({ amount: "", date: formatDateInput(new Date()), method: "cash" as PaymentMethod, notes: "" });
   const [depositSubmitting, setDepositSubmitting] = useState(false);
@@ -2524,6 +2592,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   currentMonthPaymentByTenant={currentMonthPaymentByTenant}
                   sendingWelcome={sendingWelcomeId === t.id}
                   onView={!isManager || canEditAsManager ? openView : undefined}
+                  printingForm={printingForm === t.id}
+                  onPrintForm={!isManager || canEditAsManager ? handlePrintForm : undefined}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}
@@ -2561,7 +2631,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       noticePeriodDays={noticePeriodDays}
                       currentMonthPaymentByTenant={currentMonthPaymentByTenant}
                       onView={!isManager || canEditAsManager ? openView : undefined}
-                      onCheckout={openCheckout}
+                      printingForm={printingForm === t.id}
+                  onPrintForm={!isManager || canEditAsManager ? handlePrintForm : undefined}
+                  onCheckout={openCheckout}
                       onActivate={(tenant) => openEdit(tenant, true)}
                       onEdit={openEdit}
                       onDelete={openDeleteDialog}
@@ -2661,6 +2733,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   noticePeriodDays={noticePeriodDays}
                   currentMonthPaymentByTenant={currentMonthPaymentByTenant}
                   onView={!isManager || canEditAsManager ? openView : undefined}
+                  printingForm={printingForm === t.id}
+                  onPrintForm={!isManager || canEditAsManager ? handlePrintForm : undefined}
                   onCheckout={openCheckout}
                   onActivate={(tenant) => openEdit(tenant, true)}
                   onEdit={openEdit}
