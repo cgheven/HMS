@@ -70,15 +70,25 @@ async function releaseCampaignClaim(
   wamid: string,
   err: { code?: number; title?: string; message?: string } | undefined
 ): Promise<void> {
-  const reason = err?.title ?? err?.message ?? "Undelivered";
-  await admin
-    .from("hms_lead_campaign_sends")
-    .update({
-      status: "failed",
-      error: err?.code ? `[${err.code}] ${reason}` : reason,
-    })
-    .eq("wamid", wamid)
-    .eq("status", "sent");
+  // Swallowed on purpose. Meta batches many statuses into one POST, and this
+  // call sits inside that loop: a network blip here would abort the whole
+  // batch, silently dropping delivery updates for messages that have nothing
+  // to do with marketing — a client's rent reminders, sitting behind a
+  // campaign row in the same payload. Losing a ledger release costs one lead a
+  // retry; losing the batch costs sixteen clients their delivery status.
+  try {
+    const reason = err?.title ?? err?.message ?? "Undelivered";
+    await admin
+      .from("hms_lead_campaign_sends")
+      .update({
+        status: "failed",
+        error: err?.code ? `[${err.code}] ${reason}` : reason,
+      })
+      .eq("wamid", wamid)
+      .eq("status", "sent");
+  } catch (e) {
+    console.error("[whatsapp-webhook] could not release campaign claim:", e);
+  }
 }
 
 /** Meta's status vocabulary, mapped to ours. */
