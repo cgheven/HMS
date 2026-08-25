@@ -889,9 +889,44 @@ export interface PlatformLead {
   priority: LeadPriority;
   created_by: string | null;
   marketing_opt_out: boolean;
+  /** NULL = a CRM sales lead. Set = an imported marketing contact, which never
+   *  appears on the leads board or in pipeline counts. */
+  list_id: string | null;
+  campaign_response: CampaignResponse | null;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
   sales_rep?: { id: string; name: string } | null;
+}
+
+/**
+ * What came back from a campaign, entered by a human.
+ *
+ * Deliberately three separate things from the two statuses already on this
+ * page. `status` (new/contacted/demo_done/…) is a sales process an imported
+ * cold contact is not in. The Meta delivery status says the phone received the
+ * message, not that anyone answered it. This is the answer. null means no reply
+ * yet, which is the honest default for a contact nobody has heard from.
+ */
+export type CampaignResponse =
+  | "replied"
+  | "interested"
+  | "not_interested"
+  | "wrong_number"
+  | "converted";
+
+/** A named import batch — "Punjab hostels · Aug 2026". Deleting one cascades
+ *  its contacts away, which is the whole point: a list is disposable, the CRM
+ *  pipeline is not. */
+export interface LeadList {
+  id: string;
+  name: string;
+  notes: string | null;
+  created_at: string;
+  /** Live counts, computed per request rather than stored — a denormalised
+   *  count is one webhook away from lying. */
+  contact_count: number;
+  messaged_count: number;
 }
 
 /** Refuses the send outright. Not overridable from the UI — the send action
@@ -954,6 +989,12 @@ export interface CampaignAudienceRow {
    *  completely different responses and must not be counted as one number. */
   error_code: number | null;
   sent_at: string | null;
+  /** null for a CRM lead. Set for an imported contact, so the audience can be
+   *  scoped to one list without the sales pipeline coming with it. */
+  list_id: string | null;
+  list_name: string | null;
+  email: string | null;
+  campaign_response: CampaignResponse | null;
 }
 
 /** One row of the cross-campaign funnel — how each blast actually performed,

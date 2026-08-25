@@ -102,6 +102,11 @@ export async function listLeadsForAdmin(): Promise<
     const { data, error } = await admin
       .from("hms_platform_leads")
       .select("*, sales_rep:hms_sales_reps(id,name)")
+      // The sales board is the CRM pipeline only. Imported marketing lists live
+      // in the same table so they share its dedupe, opt-out and send ledger —
+      // but 300 scraped cold contacts on this board would bury the leads a rep
+      // is actually working.
+      .is("list_id", null)
       .order("created_at", { ascending: false });
 
     if (error) throw error;
@@ -121,6 +126,7 @@ export async function listMyLeads(): Promise<{ leads: PlatformLead[] } | { error
     const { data, error } = await admin
       .from("hms_platform_leads")
       .select("*")
+      .is("list_id", null)
       .eq("assigned_to", ctx.salesRep.id)
       .order("next_follow_up_date", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: false });
@@ -662,7 +668,7 @@ export async function getSalesPerformance(): Promise<
         .select("sales_rep_id, type, occurred_at")
         .gte("occurred_at", weekStart.toISOString())
         .in("type", ["call", "visit"]),
-      admin.from("hms_platform_leads").select("assigned_to, status"),
+      admin.from("hms_platform_leads").select("assigned_to, status").is("list_id", null),
     ]);
 
     if (repsRes.error) throw repsRes.error;
@@ -727,7 +733,7 @@ export async function getMyPerformance(): Promise<
         .eq("sales_rep_id", ctx.salesRep.id)
         .gte("occurred_at", weekStart.toISOString())
         .in("type", ["call", "visit"]),
-      admin.from("hms_platform_leads").select("status").eq("assigned_to", ctx.salesRep.id),
+      admin.from("hms_platform_leads").select("status").is("list_id", null).eq("assigned_to", ctx.salesRep.id),
     ]);
 
     if (activitiesRes.error) throw activitiesRes.error;

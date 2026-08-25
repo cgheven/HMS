@@ -4,7 +4,8 @@ import { useMemo, useRef, useState, useTransition } from "react";
 import {
   Megaphone, Search, Send, CheckCheck, Check, Clock, Ban, AlertTriangle,
   BellOff, Bell, RefreshCw, Eye, FlaskConical, Flag, User, X, SlidersHorizontal,
-  History, MapPin, ImagePlus, Trash2, Plus,
+  MapPin, ImagePlus, Trash2, Plus, Download, Pencil, FileSpreadsheet,
+  Users, MessageSquare,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -23,13 +24,17 @@ import {
   setLeadNotAClient, uploadCampaignHeaderImage, removeCampaignHeaderImage, addCampaignLead,
 } from "@/app/actions/lead-campaigns";
 import {
+  setCampaignResponse, updateLeadListEntry, deleteLeadListEntry, listLeadLists,
+} from "@/app/actions/lead-lists";
+import { LeadListImportDialog } from "@/components/modules/super-admin/lead-list-import-dialog";
+import {
   canonicalCity, OTHER_CITY, type CampaignTemplate, type HeaderImageSource,
 } from "@/lib/lead-campaigns";
 import { LEAD_STATUS_CONFIG } from "@/lib/lead-status";
 import { formatDateTime, cn } from "@/lib/utils";
 import { whatsappErrorShort } from "@/lib/whatsapp-errors";
 import type {
-  CampaignAudienceRow, CampaignHistoryRow, LeadAudienceBlock,
+  CampaignAudienceRow, CampaignHistoryRow, CampaignResponse, LeadAudienceBlock, LeadList,
 } from "@/types";
 
 /**
@@ -103,6 +108,50 @@ const DELIVERY_CONFIG: Record<string, { label: string; icon: typeof Check; cls: 
   failed:      { label: "Failed",        icon: AlertTriangle, cls: "text-rose-400" },
 };
 
+/**
+ * The four exclusive answers to "what happened to this message".
+ *
+ * Deliberately NOT nested the way Meta reports them — a read message is also a
+ * delivered one, and a chip set where clicking "Delivered" and "Read" returns
+ * overlapping rows cannot be used to build a follow-up list. "Delivered,
+ * unread" is the whole point of this control: it is the set of hostels that
+ * received the campaign and ignored it.
+ */
+type DeliveryFilter = "read" | "delivered" | "sent" | "failed";
+
+const DELIVERY_FILTERS: {
+  value: DeliveryFilter;
+  label: string;
+  hint: string;
+  cls: string;
+  match: (d: string | null) => boolean;
+}[] = [
+  {
+    value: "read", label: "Read",
+    hint: "Opened on the phone — the only status that proves a human saw it",
+    cls: "border-emerald-500/25 bg-emerald-500/10 text-emerald-300",
+    match: (d) => d === "read",
+  },
+  {
+    value: "delivered", label: "Delivered, unread",
+    hint: "Reached the phone but has not been opened — this is your follow-up list",
+    cls: "border-blue-500/25 bg-blue-500/10 text-blue-300",
+    match: (d) => d === "delivered",
+  },
+  {
+    value: "sent", label: "Sent, no receipt",
+    hint: "Accepted by Meta but no delivery receipt yet — phone off, or still in flight",
+    cls: "border-white/10 bg-white/5 text-muted-foreground",
+    match: (d) => d === "sent" || d === "queued",
+  },
+  {
+    value: "failed", label: "Never arrived",
+    hint: "Meta reported it undelivered or the request never left — the reason is on the row",
+    cls: "border-rose-500/25 bg-rose-500/10 text-rose-300",
+    match: (d) => d === "undelivered" || d === "failed",
+  },
+];
+
 type ViewFilter = "eligible" | "blocked" | "sent" | "all";
 /** The preview shares the tab bar with the audience views. It used to be a
  *  330px column pinned beside the table, which cost the workspace a third of
@@ -116,6 +165,46 @@ const VIEW_FILTERS: { value: ViewFilter; label: string }[] = [
   { value: "all", label: "All" },
 ];
 
+/**
+ * What came back, entered by hand.
+ *
+ * A third status on a page that already has two, and the only one a human
+ * writes. The other two are facts about the message — the pipeline stage a lead
+ * is at, and whether Meta delivered it. This is the answer, and no webhook will
+ * ever fill it in.
+ */
+const RESPONSE_CONFIG: Record<CampaignResponse, { label: string; cls: string }> = {
+  replied:        { label: "Replied",        cls: "text-sky-300 border-sky-500/25 bg-sky-500/10" },
+  interested:     { label: "Interested",     cls: "text-emerald-300 border-emerald-500/25 bg-emerald-500/10" },
+  not_interested: { label: "Not interested", cls: "text-muted-foreground border-white/10 bg-white/5" },
+  wrong_number:   { label: "Wrong number",   cls: "text-amber border-amber/25 bg-amber/10" },
+  converted:      { label: "Converted",      cls: "text-emerald-400 border-emerald-500/35 bg-emerald-500/15" },
+};
+
+const RESPONSE_ORDER: CampaignResponse[] = [
+  "replied", "interested", "not_interested", "wrong_number", "converted",
+];
+
+/** Short enough to sit inline in a card. formatDateTime is the full stamp and
+ *  is still what the table and the CSV use — here the question is only "was
+ *  this recent", and a 16-character timestamp answers it slower than "2d ago". */
+function shortAge(iso: string | null): string {
+  if (!iso) return "";
+  const mins = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
+/** The CRM pipeline, as a source you can pick alongside the imported lists.
+ *  Not a list id, so it needs a sentinel that cannot collide with a uuid. */
+const CRM_SOURCE = "__crm__";
+/** "No reply yet" is a real answer to filter on, and null cannot be a Select
+ *  value. */
+const NO_RESPONSE = "__none__";
+
 const ANY = "__any__";
 /** assigned_to is nullable, and "nobody owns this lead" is a real thing to
  *  target — a separate sentinel so it isn't confused with "no filter". */
@@ -123,15 +212,20 @@ const UNASSIGNED = "__unassigned__";
 
 const EMPTY_LEAD = { business_name: "", owner_name: "", phone: "", city: "" };
 
+const EMPTY_EDIT = { lead_id: "", business_name: "", phone: "", city: "", email: "" };
+
 interface Props {
   initialTemplate: string | null;
   templates: CampaignTemplate[];
   initialRows: CampaignAudienceRow[];
   history: CampaignHistoryRow[];
+  initialLists: LeadList[];
   loadError: string | null;
 }
 
-export function MarketingClient({ initialTemplate, templates, initialRows, history, loadError }: Props) {
+export function MarketingClient({
+  initialTemplate, templates, initialRows, history, initialLists, loadError,
+}: Props) {
   const [templateName, setTemplateName] = useState<string | null>(initialTemplate);
   const [rows, setRows] = useState<CampaignAudienceRow[]>(initialRows);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -142,6 +236,9 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
   const [tab, setTab] = useState<Tab>("eligible");
   /** Set by clicking a reason in the Excluded card — "show me those 12". */
   const [blockFilter, setBlockFilter] = useState<LeadAudienceBlock | null>(null);
+  /** Set by clicking a stage in the delivery card or the chips above the Sent
+   *  list — "show me the 14 who never opened it". */
+  const [deliveryFilter, setDeliveryFilter] = useState<DeliveryFilter | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   /** Which slice of the audience the table is showing. The preview tab is not
    *  one, so it falls back to the view a click on it came from. */
@@ -166,6 +263,17 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
   const [addOpen, setAddOpen] = useState(false);
   const [addForm, setAddForm] = useState(EMPTY_LEAD);
   const [adding, setAdding] = useState(false);
+  const [lists, setLists] = useState<LeadList[]>(initialLists);
+  const [importOpen, setImportOpen] = useState(false);
+  /** Which audiences are in play — CRM_SOURCE and/or list ids. Empty means all
+   *  of them, exactly like the city chips: an empty multi-select that filtered
+   *  everything out would read as a page with no leads. */
+  const [sources, setSources] = useState<Set<string>>(new Set());
+  const [responseFilter, setResponseFilter] = useState<string>(ANY);
+  const [editForm, setEditForm] = useState(EMPTY_EDIT);
+  const [editOpen, setEditOpen] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [removeRow, setRemoveRow] = useState<CampaignAudienceRow | null>(null);
   const [, startTransition] = useTransition();
 
   const template = useMemo(
@@ -192,6 +300,101 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
       return;
     }
     setRows(res.rows ?? []);
+  }
+
+  /** Both halves of the page state come from the same two queries the server
+   *  page runs, so a list change never leaves the chips describing an audience
+   *  the table no longer holds. */
+  async function reloadAll() {
+    const [audience, index] = await Promise.all([
+      templateName ? listCampaignAudience(templateName) : Promise.resolve({ rows: [] as CampaignAudienceRow[] }),
+      listLeadLists(),
+    ]);
+    if (!("error" in audience) || !audience.error) setRows(audience.rows ?? []);
+    setLists(index.lists);
+    // A list that has just been deleted must not stay selected, or the page
+    // filters to an audience of nobody with no visible reason.
+    setSources((prev) => {
+      const live = new Set([CRM_SOURCE, ...index.lists.map((l) => l.id)]);
+      const next = new Set([...prev].filter((v) => live.has(v)));
+      return next.size === prev.size ? prev : next;
+    });
+  }
+
+  function toggleSource(key: string) {
+    setSources((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+    // Cities are counted per source, so a chip picked for the old audience can
+    // name a city the new one has none of.
+    setCities(new Set());
+    setSelected(new Set());
+  }
+
+  async function saveResponse(row: CampaignAudienceRow, value: CampaignResponse | null) {
+    // Patched locally rather than reloaded: this is a one-click field an admin
+    // works down a column of, and a full audience refetch between each click
+    // makes it unusable.
+    setRows((prev) =>
+      prev.map((r) => (r.lead_id === row.lead_id ? { ...r, campaign_response: value } : r))
+    );
+    const res = await setCampaignResponse(row.lead_id, value);
+    if (res.error) {
+      setRows((prev) =>
+        prev.map((r) => (r.lead_id === row.lead_id ? { ...r, campaign_response: row.campaign_response } : r))
+      );
+      toast({ title: "Could not save", description: res.error, variant: "destructive" });
+    }
+  }
+
+  function openEdit(row: CampaignAudienceRow) {
+    setEditForm({
+      lead_id: row.lead_id,
+      business_name: row.business_name,
+      phone: row.phone,
+      city: row.city ?? "",
+      email: row.email ?? "",
+    });
+    setEditOpen(true);
+  }
+
+  async function saveEdit() {
+    const row = rows.find((r) => r.lead_id === editForm.lead_id);
+    setSavingEdit(true);
+    const res = await updateLeadListEntry({
+      ...editForm,
+      campaign_response: row?.campaign_response ?? null,
+    });
+    setSavingEdit(false);
+    if (res.error) {
+      toast({ title: "Could not save", description: res.error, variant: "destructive" });
+      return;
+    }
+    setEditOpen(false);
+    // Reloaded, not patched: changing the number re-runs duplicate detection,
+    // client matching and the cooldown server-side, and any of them can flip
+    // this hostel out of the campaign.
+    void reloadAll();
+  }
+
+  async function confirmRemove() {
+    if (!removeRow) return;
+    const row = removeRow;
+    setRemoveRow(null);
+    const res = await deleteLeadListEntry(row.lead_id);
+    if (res.error) {
+      toast({ title: "Could not remove", description: res.error, variant: "destructive" });
+      return;
+    }
+    toast({
+      title: `${row.business_name} removed`,
+      description: res.archived
+        ? "Archived rather than deleted — it has already been messaged, and its send record is what stops that number being messaged again."
+        : "Deleted.",
+    });
+    void reloadAll();
   }
 
   function switchTemplate(name: string) {
@@ -288,57 +491,101 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
     void reload();
   }
 
+  /**
+   * The audience, narrowed to the sources in play.
+   *
+   * Everything below counts and filters off this rather than off `rows`. A
+   * source chip that only filtered the table while the cards kept describing
+   * all 423 hostels would be worse than no chip at all — the whole point is to
+   * be able to look at one list and see what that list did.
+   */
+  const scoped = useMemo(() => {
+    if (sources.size === 0) return rows;
+    return rows.filter((r) => sources.has(r.list_id ?? CRM_SOURCE));
+  }, [rows, sources]);
+
+  /** Counted over every row, never over `scoped` — a chip whose number changes
+   *  when you click it cannot be used to navigate. */
+  const sourceOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of rows) {
+      const key = r.list_id ?? CRM_SOURCE;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const named = new Map(lists.map((l) => [l.id, l.name]));
+    return [
+      [CRM_SOURCE, "Client Leads", counts.get(CRM_SOURCE) ?? 0] as const,
+      ...lists.map((l) => [l.id, named.get(l.id) ?? "List", counts.get(l.id) ?? 0] as const),
+    ].filter(([, , n]) => n > 0);
+  }, [rows, lists]);
+
   const stats = useMemo(() => {
-    const ready = rows.filter((r) => !r.blocked);
-    const sent = rows.filter((r) => r.delivery !== null);
+    const ready = scoped.filter((r) => !r.blocked);
+    const sent = scoped.filter((r) => r.delivery !== null);
     return {
-      total: rows.length,
+      total: scoped.length,
       ready: ready.length,
-      excluded: rows.length - ready.length,
+      excluded: scoped.length - ready.length,
       sent: sent.length,
       delivered: sent.filter((r) => r.delivery === "delivered" || r.delivery === "read").length,
       read: sent.filter((r) => r.delivery === "read").length,
+      // Reached the phone and was never opened. The one number on this card
+      // that is a to-do list rather than a score.
+      unread: sent.filter((r) => r.delivery === "delivered").length,
       // Undelivered and failed are one number to an admin — the message did not
       // arrive. Why they differ is in the breakdown, not in the headline.
       failed: sent.filter((r) => r.delivery === "undelivered" || r.delivery === "failed").length,
+      // What the Sent tab actually lists. Wider than `sent`: a lead the ledger
+      // has claimed but whose webhook has not landed yet is still a hostel this
+      // campaign went to, and leaving it off the list would make the tab
+      // disagree with the "already sent" exclusion chip.
+      listed: scoped.filter((r) => r.delivery !== null || r.blocked === "already_sent").length,
     };
-  }, [rows]);
+  }, [scoped]);
+
+  /** How many hostels sit at each stage of the funnel, for the chips and the
+   *  delivery card. Counted over every send, not over the filtered view — a
+   *  chip that changes when you click it cannot be used to navigate. */
+  const deliveryCounts = useMemo(() => {
+    const sent = scoped.filter((r) => r.delivery !== null);
+    return DELIVERY_FILTERS.map((f) => [f, sent.filter((r) => f.match(r.delivery)).length] as const);
+  }, [scoped]);
 
   /** Every reason a lead is out, biggest first within a fixed order. This is
    *  the answer to "who is NOT getting this and why", which is the question the
    *  page exists to make obvious. */
   const exclusionBreakdown = useMemo(() => {
     const counts = new Map<LeadAudienceBlock, number>();
-    for (const r of rows) {
+    for (const r of scoped) {
       if (!r.blocked) continue;
       counts.set(r.blocked, (counts.get(r.blocked) ?? 0) + 1);
     }
     return BLOCK_ORDER.filter((b) => counts.has(b)).map((b) => [b, counts.get(b)!] as const);
-  }, [rows]);
+  }, [scoped]);
 
   /** Why sends failed, most common first. A bare "102 failed" is not
    *  actionable; "102 · bad template" is the difference between a bug to fix
    *  and a Meta experiment to wait out. */
   const failureBreakdown = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const r of rows) {
+    for (const r of scoped) {
       if (r.delivery !== "undelivered" && r.delivery !== "failed") continue;
       const label = whatsappErrorShort(r.error_code);
       counts.set(label, (counts.get(label) ?? 0) + 1);
     }
     return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  }, [rows]);
+  }, [scoped]);
 
   /** The rows the current tab is about, before any targeting is applied. City
    *  counts come from here rather than from every lead: a chip reading
    *  "Lahore 50" that opens 31 rows because 19 are excluded is a chip that
    *  lies, and this is the number the admin is about to act on. */
   const viewRows = useMemo(() => {
-    if (view === "eligible") return rows.filter((r) => !r.blocked);
-    if (view === "blocked") return rows.filter((r) => !!r.blocked);
-    if (view === "sent") return rows.filter((r) => r.delivery !== null || r.blocked === "already_sent");
-    return rows;
-  }, [rows, view]);
+    if (view === "eligible") return scoped.filter((r) => !r.blocked);
+    if (view === "blocked") return scoped.filter((r) => !!r.blocked);
+    if (view === "sent") return scoped.filter((r) => r.delivery !== null || r.blocked === "already_sent");
+    return scoped;
+  }, [scoped, view]);
 
   // Counted, because "Islamabad 9" tells you whether a city is worth a blast
   // and a bare list does not. Biggest first for the same reason.
@@ -361,29 +608,52 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
     });
   }
 
+  /** One way in and out of a tab, so a filter set on one view can never survive
+   *  into another and silently hide rows the new tab is supposed to be about. */
+  function goTo(
+    next: Tab,
+    opts?: { block?: LeadAudienceBlock | null; delivery?: DeliveryFilter | null }
+  ) {
+    setTab(next);
+    setBlockFilter(opts?.block ?? null);
+    setDeliveryFilter(opts?.delivery ?? null);
+  }
+
   function showExclusion(block: LeadAudienceBlock) {
-    setTab("blocked");
-    setBlockFilter((prev) => (prev === block ? null : block));
+    goTo("blocked", { block: blockFilter === block ? null : block });
+  }
+
+  function showDelivery(stage: DeliveryFilter) {
+    goTo("sent", { delivery: deliveryFilter === stage ? null : stage });
   }
 
   // Derived from the rows rather than fetched — this only ever needs to offer
   // reps and stages that actually have leads behind them.
-  const stages = useMemo(() => [...new Set(rows.map((r) => r.status))].sort(), [rows]);
+  const stages = useMemo(() => [...new Set(scoped.map((r) => r.status))].sort(), [scoped]);
   const assignees = useMemo(() => {
     const map = new Map<string, string>();
-    for (const r of rows) if (r.assigned_to && r.assigned_to_name) map.set(r.assigned_to, r.assigned_to_name);
+    for (const r of scoped) if (r.assigned_to && r.assigned_to_name) map.set(r.assigned_to, r.assigned_to_name);
     return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
-  }, [rows]);
+  }, [scoped]);
 
   /**
-   * Whether a target has been picked yet.
+   * Whether this tab is asking WHERE to send.
    *
-   * Nothing lists until it has. Opening on 96 rows answers a question nobody
-   * asked — the first decision in a campaign is always WHERE, and a wall of
-   * every hostel in the country buries it. An exclusion chip counts as a
-   * target too, so "show me those 15 rejected" still works in one click.
+   * Only two of them are. "Ready to send" and "All" open on every hostel in the
+   * country, and a wall of 106 rows buries the first decision in a campaign —
+   * so those stay behind a city pick. "Sent" and "Excluded" are not that
+   * question: their audience is already decided, and gating them meant the
+   * cards could say "1 read" and "18 rejected" while the list underneath
+   * refused to name a single one of them.
    */
-  const targeted = cities.size > 0 || search.trim() !== "" || blockFilter !== null;
+  const needsTarget = view === "eligible" || view === "all";
+
+  /** The Response column only earns its width where a reply is possible. On
+   *  "Ready to send" nothing has gone out yet, so every cell would be blank. */
+  const showResponse = view === "sent" || view === "blocked";
+
+  const targeted =
+    !needsTarget || cities.size > 0 || search.trim() !== "" || blockFilter !== null;
 
   const allCitiesPicked = cityOptions.length > 0 && cities.size === cityOptions.length;
 
@@ -392,7 +662,9 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
   }
 
   const filtersActive =
-    cities.size > 0 || stage !== ANY || assignee !== ANY || search.trim() !== "" || blockFilter !== null;
+    cities.size > 0 || stage !== ANY || assignee !== ANY || search.trim() !== "" ||
+    blockFilter !== null || deliveryFilter !== null || responseFilter !== ANY ||
+    sources.size > 0;
 
   function clearFilters() {
     setCities(new Set());
@@ -400,15 +672,24 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
     setAssignee(ANY);
     setSearch("");
     setBlockFilter(null);
+    setDeliveryFilter(null);
+    setResponseFilter(ANY);
+    setSources(new Set());
   }
 
   const filtered = useMemo(() => {
-    let list = rows;
+    let list = scoped;
     if (view === "eligible") list = list.filter((r) => !r.blocked);
     else if (view === "sent") list = list.filter((r) => r.delivery !== null || r.blocked === "already_sent");
     else if (view === "blocked") list = list.filter((r) => !!r.blocked);
 
     if (blockFilter) list = list.filter((r) => r.blocked === blockFilter);
+    if (responseFilter === NO_RESPONSE) list = list.filter((r) => r.campaign_response === null);
+    else if (responseFilter !== ANY) list = list.filter((r) => r.campaign_response === responseFilter);
+    if (deliveryFilter) {
+      const cfg = DELIVERY_FILTERS.find((f) => f.value === deliveryFilter)!;
+      list = list.filter((r) => cfg.match(r.delivery));
+    }
 
     // Empty set means "everywhere", not "nowhere" — an empty multi-select that
     // filtered everything out would look like a page with no leads.
@@ -428,7 +709,7 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
       );
     }
     return list;
-  }, [rows, view, blockFilter, cities, stage, assignee, search]);
+  }, [scoped, view, blockFilter, deliveryFilter, responseFilter, cities, stage, assignee, search]);
 
   /** What "Select all" takes: everything sendable that the current filters are
    *  showing. There is no second, quieter tier any more — a lead the page calls
@@ -476,6 +757,55 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
     void reload();
   }
 
+  /**
+   * The list, off the page. A sales rep chasing the hostels that received the
+   * campaign and never opened it works from a phone list, not from a browser
+   * tab — and the reps do not have super-admin.
+   *
+   * Exports what is on screen, filters and all, so "Delivered, unread ·
+   * Lahore" is a two-click call sheet.
+   */
+  function exportCsv() {
+    const head = [
+      "Hostel", "Owner", "Phone", "City", "Email", "Source", "Stage", "Status",
+      "Response", "Detail", "Sent at",
+    ];
+    // Excel reads a leading = + - @ as a formula. Every field here is
+    // operator-entered CRM text, so a business name starting with "=" is a
+    // typo away, and the phone column is the one that matters most.
+    const cell = (v: string | null) => {
+      const t = (v ?? "").replace(/"/g, '""');
+      const safe = /^[=+\-@\t\r]/.test(t) ? `'${t}` : t;
+      return `"${safe}"`;
+    };
+    const lines = [
+      head.join(","),
+      ...filtered.map((r) => {
+        const d = r.delivery ? DELIVERY_CONFIG[r.delivery]?.label ?? r.delivery : null;
+        const status = d ?? (r.blocked ? BLOCK_CONFIG[r.blocked].label : "Ready");
+        const detail =
+          r.delivery === "undelivered" || r.delivery === "failed"
+            ? whatsappErrorShort(r.error_code)
+            : r.block_detail ?? r.client_match ?? "";
+        return [
+          cell(r.business_name), cell(r.owner_name), cell(r.phone), cell(r.city),
+          cell(r.email), cell(r.list_name ?? "Client Leads"),
+          cell(LEAD_STATUS_CONFIG[r.status].label), cell(status),
+          cell(r.campaign_response ? RESPONSE_CONFIG[r.campaign_response].label : "No reply"),
+          cell(detail), cell(r.sent_at ? formatDateTime(r.sent_at) : ""),
+        ].join(",");
+      }),
+    ];
+    const url = URL.createObjectURL(
+      new Blob([`\uFEFF${lines.join("\n")}`], { type: "text/csv;charset=utf-8" })
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${template?.name ?? "campaign"}-${view}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function toggleOptOut(row: CampaignAudienceRow) {
     const next = !row.marketing_opt_out;
     setRows((prev) =>
@@ -506,6 +836,40 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
   }
 
   const readRate = stats.sent > 0 ? Math.round((stats.read / stats.sent) * 100) : 0;
+
+  /** This campaign's row in the send ledger. Counted across every recipient it
+   *  ever had, which is deliberately a different number from `stats` the moment
+   *  a source chip is on — hence the "in total" the card prints rather than
+   *  letting the two silently disagree. */
+  const ledger = useMemo(
+    () => history.find((h) => h.campaign_key === template?.name) ?? null,
+    [history, template]
+  );
+
+  /**
+   * Every OTHER blast, newest first.
+   *
+   * This was a table of its own at the foot of the page — a heading, a card and
+   * six columns to say what fits on one line each. The selected campaign
+   * appeared in it twice over: once there and once in the card above, carrying
+   * different numbers whenever a filter was on.
+   */
+  const otherCampaigns = useMemo(
+    () =>
+      history
+        .filter((h) => h.campaign_key !== template?.name)
+        .sort((a, b) => (b.last_sent_at ?? "").localeCompare(a.last_sent_at ?? "")),
+    [history, template]
+  );
+
+  /** On the tab itself, because "Sent" reading 0 is the answer to "did the
+   *  blast go out" and needed a click to find out. */
+  const tabCounts: Record<ViewFilter, number> = {
+    eligible: stats.ready,
+    blocked: stats.excluded,
+    sent: stats.listed,
+    all: stats.total,
+  };
 
   // SuperAdminShell renders {children} with no frame of its own — unlike
   // DashboardShell, which supplies the container. Every super-admin page
@@ -566,6 +930,11 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
             <Plus className="w-4 h-4" />
             Add hostel
           </Button>
+          <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setImportOpen(true)}>
+            <FileSpreadsheet className="w-4 h-4" />
+            <span className="hidden sm:inline">Lists</span>
+            {lists.length > 0 && <span className="opacity-50 tabular-nums">{lists.length}</span>}
+          </Button>
           <Button variant="ghost" size="sm" className="gap-2" onClick={() => void reload()} disabled={refreshing}>
             <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
             <span className="hidden sm:inline">Refresh</span>
@@ -583,7 +952,7 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
             "cursor-pointer transition-colors",
             tab === "eligible" && !blockFilter ? "border-amber/40" : "hover:border-white/20"
           )}
-          onClick={() => { setTab("eligible"); setBlockFilter(null); }}
+          onClick={() => goTo("eligible")}
         >
           <CardContent className="p-4">
             <p className="text-xs text-muted-foreground">Ready to send</p>
@@ -598,7 +967,7 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
           <CardContent className="p-4">
             <button
               className="text-left"
-              onClick={() => { setTab("blocked"); setBlockFilter(null); }}
+              onClick={() => goTo("blocked")}
             >
               <p className="text-xs text-muted-foreground">Excluded</p>
               <p className="text-3xl font-semibold mt-0.5">{stats.excluded}</p>
@@ -626,7 +995,11 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
           </CardContent>
         </Card>
 
-        <Card>
+        {/* Every number here opens the hostels behind it. It used to be four
+            read-only figures, which answered "how many" and left "which ones"
+            with nowhere to go — the reason this card existed and the Sent list
+            could not be reached at the same time. */}
+        <Card className={cn("transition-colors", tab === "sent" ? "border-white/20" : "")}>
           <CardContent className="p-4">
             <p className="text-xs text-muted-foreground">This campaign so far</p>
             {stats.sent === 0 ? (
@@ -636,30 +1009,107 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
               </>
             ) : (
               <>
+                {/* Every figure on this line opens exactly that many rows, so
+                    they have to be disjoint. "Delivered" is not: a read message
+                    is a delivered one, so a clickable "12 delivered" next to a
+                    "12 read" would open an empty list. It survives as context
+                    in the sentence below, where nothing claims to be a filter. */}
                 <div className="flex items-baseline gap-3 mt-0.5 flex-wrap">
-                  <span className="text-3xl font-semibold">{stats.sent}</span>
-                  <span className="text-sm text-blue-400">{stats.delivered} delivered</span>
-                  <span className="text-sm text-emerald-400">{stats.read} read</span>
+                  <button
+                    onClick={() => goTo("sent")}
+                    className="text-3xl font-semibold hover:text-amber transition-colors"
+                    title="Show every hostel this campaign has gone to"
+                  >
+                    {stats.sent}
+                  </button>
+                  <button
+                    onClick={() => showDelivery("read")}
+                    className="text-sm text-emerald-400 hover:underline"
+                    title="Opened on the phone — click to list them"
+                  >
+                    {stats.read} read
+                  </button>
+                  {stats.unread > 0 && (
+                    <button
+                      onClick={() => showDelivery("delivered")}
+                      className="text-sm text-blue-400 hover:underline"
+                      title="Reached the phone and was never opened — your follow-up list"
+                    >
+                      {stats.unread} unread
+                    </button>
+                  )}
                 </div>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  {readRate}% of sends were opened
+                  {stats.delivered} of {stats.sent} reached the phone · {readRate}% opened
                   {stats.failed > 0 && (
-                    <span className="text-rose-400"> · {stats.failed} never arrived</span>
+                    <button
+                      onClick={() => showDelivery("failed")}
+                      className="text-rose-400 hover:underline"
+                    >
+                      {" · "}{stats.failed} never arrived
+                    </button>
                   )}
                 </p>
                 {failureBreakdown.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1.5">
                     {failureBreakdown.map(([label, n]) => (
-                      <span
+                      <button
                         key={label}
-                        className="rounded border border-rose-500/20 bg-rose-500/5 text-rose-300 px-1.5 py-0.5 text-[10px]"
+                        onClick={() => showDelivery("failed")}
+                        className="rounded border border-rose-500/20 bg-rose-500/5 text-rose-300 px-1.5 py-0.5 text-[10px] hover:bg-rose-500/15 transition-colors"
                       >
                         {n} · {label}
-                      </span>
+                      </button>
                     ))}
                   </div>
                 )}
               </>
+            )}
+
+            {/* History, in the card the history is about — rather than a
+                separate table at the foot of the page repeating the same
+                campaign with a different denominator. Each line switches the
+                page to that campaign, so its full audience, delivery chips and
+                hostel list come with it. */}
+            {(ledger || otherCampaigns.length > 0) && (
+              <div className="mt-3 pt-2.5 border-t border-white/5 space-y-1">
+                {ledger && (
+                  <p className="text-[10px] text-muted-foreground">
+                    {/* Only when the two can disagree. The card counts the
+                        sources currently picked; the ledger counts everyone the
+                        blast ever reached, and a silent gap between them reads
+                        as a bug. */}
+                    {sources.size > 0 && ledger.recipients !== stats.sent && (
+                      <>{ledger.recipients} in total across all sources · </>
+                    )}
+                    First sent {shortAge(ledger.first_sent_at)}
+                    {ledger.last_sent_at !== ledger.first_sent_at &&
+                      `, last ${shortAge(ledger.last_sent_at)}`}
+                  </p>
+                )}
+                {otherCampaigns.map((h) => {
+                  const pct = h.recipients > 0 ? Math.round((h.read / h.recipients) * 100) : 0;
+                  const dead = h.failed + h.undelivered;
+                  return (
+                    <button
+                      key={h.campaign_key}
+                      onClick={() => switchTemplate(h.campaign_key)}
+                      disabled={!templates.some((t) => t.name === h.campaign_key)}
+                      title={`${h.recipients} sent · ${h.delivered} delivered · ${h.read} read${dead > 0 ? ` · ${dead} never arrived` : ""}`}
+                      className="w-full flex items-baseline gap-1.5 text-left rounded px-1 -mx-1 py-0.5 hover:bg-white/5 transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+                    >
+                      <code className="text-[10px] truncate flex-1 text-muted-foreground">
+                        {h.campaign_key}
+                      </code>
+                      <span className="text-[10px] tabular-nums text-muted-foreground shrink-0">{h.recipients}</span>
+                      <span className="text-[10px] tabular-nums text-emerald-400/80 shrink-0 w-8 text-right">{pct}%</span>
+                      {dead > 0 && (
+                        <span className="text-[10px] tabular-nums text-rose-400/80 shrink-0">{dead}✗</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </CardContent>
         </Card>
@@ -672,13 +1122,14 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
           {VIEW_FILTERS.map(({ value, label }) => (
             <button
               key={value}
-              onClick={() => { setTab(value); setBlockFilter(null); }}
+              onClick={() => goTo(value)}
               className={cn(
                 "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap",
                 tab === value ? "bg-amber/10 text-amber" : "text-muted-foreground hover:text-foreground"
               )}
             >
               {label}
+              <span className="ml-1.5 opacity-50 tabular-nums">{tabCounts[value]}</span>
             </button>
           ))}
           <span className="w-px bg-sidebar-border mx-1 my-1" />
@@ -899,6 +1350,88 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
 
       {tab !== "preview" && (
         <div className="space-y-3 min-w-0">
+          {/* Which audience this campaign is aimed at.
+              An imported list and the sales pipeline share one table — that is
+              what makes a hostel sitting in both get exactly one message — but
+              they are not one audience. Everything on this page counts off the
+              chosen sources, so picking a list means the cards describe that
+              list and nothing else. */}
+          {sourceOptions.length > 1 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <Users className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <button
+                onClick={() => { setSources(new Set()); setCities(new Set()); setSelected(new Set()); }}
+                className={cn(
+                  "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
+                  sources.size === 0
+                    ? "bg-amber/10 text-amber border-amber/25"
+                    : "border-sidebar-border text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Everyone <span className="opacity-50">{rows.length}</span>
+              </button>
+              {sourceOptions.map(([key, label, n]) => (
+                <button
+                  key={key}
+                  onClick={() => toggleSource(key)}
+                  title={
+                    key === CRM_SOURCE
+                      ? "Leads your sales team is working — the CRM pipeline"
+                      : "An imported list. Marketing only: never on the Leads board, never assigned to a rep."
+                  }
+                  className={cn(
+                    "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors inline-flex items-center gap-1.5",
+                    sources.has(key)
+                      ? "bg-amber/10 text-amber border-amber/25"
+                      : "border-sidebar-border text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {key === CRM_SOURCE
+                    ? <User className="w-3 h-3" />
+                    : <FileSpreadsheet className="w-3 h-3" />}
+                  {label} <span className="opacity-50">{n}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* The funnel, as a filter. On the Sent tab the question is never
+              "where" — it is "who opened it and who did not", and that could
+              not be asked at all before: the stages existed only as totals in
+              a card. */}
+          {view === "sent" && stats.sent > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <CheckCheck className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <button
+                onClick={() => setDeliveryFilter(null)}
+                className={cn(
+                  "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
+                  deliveryFilter === null
+                    ? "bg-amber/10 text-amber border-amber/25"
+                    : "border-sidebar-border text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Everyone messaged <span className="opacity-50">{stats.listed}</span>
+              </button>
+              {deliveryCounts.map(([f, n]) => (
+                <button
+                  key={f.value}
+                  onClick={() => setDeliveryFilter(deliveryFilter === f.value ? null : f.value)}
+                  title={f.hint}
+                  disabled={n === 0}
+                  className={cn(
+                    "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors disabled:opacity-30 disabled:cursor-not-allowed",
+                    deliveryFilter === f.value
+                      ? f.cls
+                      : "border-sidebar-border text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {f.label} <span className="opacity-50">{n}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Chips rather than a dropdown: there are six cities, targeting is
               usually two of them at once ("Lahore and Islamabad"), and a
               single-select made that two separate blasts. Counts are on the
@@ -963,6 +1496,22 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
                   ))}
                 </SelectContent>
               </Select>
+
+              {showResponse && (
+                <Select value={responseFilter} onValueChange={setResponseFilter}>
+                  <SelectTrigger className="h-9 w-[165px] text-sm">
+                    <MessageSquare className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ANY}>Any response</SelectItem>
+                    <SelectItem value={NO_RESPONSE}>No reply</SelectItem>
+                    {RESPONSE_ORDER.map((r) => (
+                      <SelectItem key={r} value={r}>{RESPONSE_CONFIG[r].label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           )}
 
@@ -971,18 +1520,25 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
             !targeted && "opacity-40 pointer-events-none"
           )}>
             <div className="flex items-center gap-2 flex-wrap min-w-0">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setSelected(new Set(selectableIds))}
-                disabled={selectableIds.length === 0}
-              >
-                Select all {selectableIds.length}
-              </Button>
-              {selected.size > 0 && (
-                <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
-                  Clear
-                </Button>
+              {/* Only on the tabs that can actually dispatch. On Sent and
+                  Excluded every row is, by definition, one this button cannot
+                  touch — a permanent "Send to 0" reads as a broken control. */}
+              {needsTarget && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelected(new Set(selectableIds))}
+                    disabled={selectableIds.length === 0}
+                  >
+                    Select all {selectableIds.length}
+                  </Button>
+                  {selected.size > 0 && (
+                    <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
+                      Clear
+                    </Button>
+                  )}
+                </>
               )}
               {filtersActive && (
                 <Button variant="ghost" size="sm" className="text-xs gap-1" onClick={clearFilters}>
@@ -994,14 +1550,28 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
                 Showing {targeted ? filtered.length : 0} of {viewRows.length}
               </span>
             </div>
-            <Button
-              className="gap-2 shrink-0"
-              onClick={() => setConfirmOpen(true)}
-              disabled={sending || selectedRows.length === 0}
-            >
-              <Send className="w-4 h-4" />
-              {sending ? "Sending..." : `Send to ${selectedRows.length}`}
-            </Button>
+            {needsTarget ? (
+              <Button
+                className="gap-2 shrink-0"
+                onClick={() => setConfirmOpen(true)}
+                disabled={sending || selectedRows.length === 0}
+              >
+                <Send className="w-4 h-4" />
+                {sending ? "Sending..." : `Send to ${selectedRows.length}`}
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2 shrink-0"
+                onClick={exportCsv}
+                disabled={filtered.length === 0}
+                title="Download exactly what is listed below, filters included"
+              >
+                <Download className="w-4 h-4" />
+                Export {filtered.length}
+              </Button>
+            )}
           </div>
 
           <Card>
@@ -1034,9 +1604,15 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
               ) : filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-muted-foreground text-center px-4">
                   <Megaphone className="w-10 h-10 mb-3 opacity-30" />
-                  <p className="font-medium">Nothing here</p>
+                  <p className="font-medium">
+                    {view === "sent" && stats.listed === 0 ? "Not sent to anyone yet" : "Nothing here"}
+                  </p>
                   <p className="text-xs mt-1">
-                    {filtersActive ? "Try a different city, or reset the filters." : "Add a hostel to start building this list."}
+                    {view === "sent" && stats.listed === 0
+                      ? `Nobody has received ${template.name}. Pick a city on Ready to send.`
+                      : filtersActive
+                        ? "Try a different city, or reset the filters."
+                        : "Add a hostel to start building this list."}
                   </p>
                 </div>
               ) : (
@@ -1044,12 +1620,22 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
                   <table className="w-full">
                     <thead>
                       <tr className="border-b bg-muted/30">
-                        <th className="w-10 px-4 py-3" />
+                        {needsTarget && <th className="w-10 px-4 py-3" />}
                         <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Hostel</th>
                         {usesGreeting && (
                           <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3 hidden lg:table-cell">Greeting</th>
                         )}
                         <th className="text-left text-xs font-medium text-muted-foreground px-4 py-3">Status</th>
+                        {/* Only where a reply could exist. On "Ready to send"
+                            nothing has gone out, so every cell would be empty. */}
+                        {showResponse && (
+                          <th
+                            className="text-left text-xs font-medium text-muted-foreground px-4 py-3"
+                            title="What came back. Nothing fills this in automatically — the delivery status says the phone received it, not that anyone answered."
+                          >
+                            Response
+                          </th>
+                        )}
                         <th
                           className="text-right text-xs font-medium text-muted-foreground px-4 py-3"
                           title="A permanent suppression list. A lead marked here is never included in any campaign, now or in future."
@@ -1060,30 +1646,57 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
                     </thead>
                     <tbody className="divide-y">
                       {filtered.map((row) => {
-                        const block = row.blocked ? BLOCK_CONFIG[row.blocked] : null;
+                        // "Already sent" next to "Read" is noise — a delivery
+                        // status is itself proof the campaign went out. It only
+                        // earns the badge when the ledger has claimed the lead
+                        // but no receipt has landed yet.
+                        const redundantSent = row.blocked === "already_sent" && row.delivery !== null;
+                        const block = row.blocked && !redundantSent ? BLOCK_CONFIG[row.blocked] : null;
                         const d = row.delivery ? DELIVERY_CONFIG[row.delivery] : null;
+                        // undelivered and failed are the only statuses that
+                        // carry a reason worth printing under the badge.
+                        const arrived = row.delivery !== "undelivered" && row.delivery !== "failed";
                         const stageCfg = LEAD_STATUS_CONFIG[row.status];
                         return (
                           <tr key={row.lead_id} className="hover:bg-muted/20 transition-colors">
-                            <td className="px-4 py-3">
-                              <input
-                                type="checkbox"
-                                checked={selected.has(row.lead_id)}
-                                disabled={!!row.blocked}
-                                onChange={() => toggle(row.lead_id)}
-                                className="w-4 h-4 accent-amber cursor-pointer disabled:cursor-not-allowed disabled:opacity-30"
-                              />
-                            </td>
+                            {needsTarget && (
+                              <td className="px-4 py-3">
+                                <input
+                                  type="checkbox"
+                                  checked={selected.has(row.lead_id)}
+                                  disabled={!!row.blocked}
+                                  onChange={() => toggle(row.lead_id)}
+                                  className="w-4 h-4 accent-amber cursor-pointer disabled:cursor-not-allowed disabled:opacity-30"
+                                />
+                              </td>
+                            )}
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-2 min-w-0">
                                 <p className="font-medium text-sm truncate max-w-[220px]">{row.business_name}</p>
-                                <span className={cn("hidden sm:inline-flex shrink-0 rounded border text-[10px] font-medium px-1.5 py-0.5", stageCfg.cls)}>
-                                  {stageCfg.label}
-                                </span>
+                                {/* The pipeline stage is a CRM fact. An imported
+                                    contact is not in the pipeline at all, and a
+                                    row of "New" badges on 317 scraped hostels
+                                    says nothing — so it carries its list
+                                    instead, which is the fact that matters when
+                                    every source is in view. */}
+                                {row.list_id ? (
+                                  <span className="hidden sm:inline-flex shrink-0 items-center gap-1 rounded border border-white/10 bg-white/5 text-[10px] font-medium px-1.5 py-0.5 text-muted-foreground max-w-[140px]">
+                                    <FileSpreadsheet className="w-2.5 h-2.5 shrink-0" />
+                                    <span className="truncate">{row.list_name}</span>
+                                  </span>
+                                ) : (
+                                  <span className={cn("hidden sm:inline-flex shrink-0 rounded border text-[10px] font-medium px-1.5 py-0.5", stageCfg.cls)}>
+                                    {stageCfg.label}
+                                  </span>
+                                )}
                               </div>
                               <p className="text-xs text-muted-foreground mt-0.5">
-                                {row.owner_name} · {row.phone}
+                                {/* A scrape carries no owner, and "Unknown ·
+                                    0300…" on every row is a column of noise. */}
+                                {row.owner_name !== "Unknown" && `${row.owner_name} · `}
+                                {row.phone}
                                 {row.city ? ` · ${row.city}` : ""}
+                                {row.email ? ` · ${row.email}` : ""}
                               </p>
                             </td>
                             {usesGreeting && (
@@ -1125,6 +1738,16 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
                                   <span className="text-xs text-emerald-400">Ready</span>
                                 )}
                               </div>
+                              {/* Meta's own reason, per hostel. It was only ever
+                                  aggregated in the card, so a row could say
+                                  "Not delivered" while the one fact that decides
+                                  what to do about it — a dead number to fix
+                                  versus a throttle to wait out — was not on it. */}
+                              {!arrived && d && (
+                                <p className="text-[10px] text-rose-300/80 mt-1">
+                                  {whatsappErrorShort(row.error_code)}
+                                </p>
+                              )}
                               {row.block_detail && (
                                 <p className="text-[10px] text-muted-foreground mt-1 max-w-[260px]">
                                   {row.block_detail}
@@ -1158,7 +1781,58 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
                                 </p>
                               )}
                             </td>
+                            {showResponse && (
+                              <td className="px-4 py-3">
+                                <Select
+                                  value={row.campaign_response ?? NO_RESPONSE}
+                                  onValueChange={(v) =>
+                                    void saveResponse(row, v === NO_RESPONSE ? null : (v as CampaignResponse))
+                                  }
+                                >
+                                  <SelectTrigger
+                                    className={cn(
+                                      "h-7 w-[140px] text-xs border",
+                                      row.campaign_response
+                                        ? RESPONSE_CONFIG[row.campaign_response].cls
+                                        : "text-muted-foreground/50"
+                                    )}
+                                  >
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value={NO_RESPONSE}>No reply</SelectItem>
+                                    {RESPONSE_ORDER.map((r) => (
+                                      <SelectItem key={r} value={r}>{RESPONSE_CONFIG[r].label}</SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </td>
+                            )}
                             <td className="px-4 py-3 text-right">
+                              {/* Imported entries only. A CRM lead has a
+                                  pipeline, a rep and an activity log this form
+                                  knows nothing about — it is edited on Leads,
+                                  and the server refuses it here either way. */}
+                              {row.list_id && (
+                                <>
+                                  <Button
+                                    variant="ghost" size="sm"
+                                    className="h-7 w-7 p-0 text-muted-foreground/40 hover:text-foreground"
+                                    onClick={() => openEdit(row)}
+                                    title="Edit this entry"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost" size="sm"
+                                    className="h-7 w-7 p-0 text-muted-foreground/40 hover:text-rose-400"
+                                    onClick={() => setRemoveRow(row)}
+                                    title="Remove from the list"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </Button>
+                                </>
+                              )}
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -1191,70 +1865,6 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
             </CardContent>
           </Card>
         </div>
-      )}
-
-      {/* Cross-campaign, because the cards above only ever describe the template
-          currently selected. Comparing v2 against v4 is the only way to know
-          whether a rewrite actually did anything. */}
-      {history.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <History className="w-4 h-4 text-muted-foreground" />
-              Campaign history
-            </CardTitle>
-            <CardDescription className="text-xs">
-              Every blast ever sent from this page. Test sends are excluded — they never touch the ledger.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b bg-muted/30">
-                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-2.5">Campaign</th>
-                    <th className="text-right text-xs font-medium text-muted-foreground px-4 py-2.5">Sent</th>
-                    <th className="text-right text-xs font-medium text-muted-foreground px-4 py-2.5">Delivered</th>
-                    <th className="text-right text-xs font-medium text-muted-foreground px-4 py-2.5">Read</th>
-                    <th className="text-right text-xs font-medium text-muted-foreground px-4 py-2.5 hidden sm:table-cell">Failed</th>
-                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-2.5 hidden md:table-cell">Last sent</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {history.map((h) => {
-                    const pct = (n: number) => (h.recipients > 0 ? Math.round((n / h.recipients) * 100) : 0);
-                    return (
-                      <tr key={h.campaign_key} className="hover:bg-muted/20 transition-colors">
-                        <td className="px-4 py-2.5">
-                          <code className={cn("text-xs", h.campaign_key === template.name && "text-amber")}>
-                            {h.campaign_key}
-                          </code>
-                        </td>
-                        <td className="px-4 py-2.5 text-right text-sm font-medium">{h.recipients}</td>
-                        <td className="px-4 py-2.5 text-right text-sm text-blue-400">
-                          {h.delivered}
-                          <span className="text-[10px] text-muted-foreground ml-1">{pct(h.delivered)}%</span>
-                        </td>
-                        <td className="px-4 py-2.5 text-right text-sm text-emerald-400">
-                          {h.read}
-                          <span className="text-[10px] text-muted-foreground ml-1">{pct(h.read)}%</span>
-                        </td>
-                        <td className="px-4 py-2.5 text-right text-sm hidden sm:table-cell">
-                          <span className={cn(h.failed + h.undelivered > 0 ? "text-rose-400" : "text-muted-foreground/50")}>
-                            {h.failed + h.undelivered}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 text-xs text-muted-foreground hidden md:table-cell whitespace-nowrap">
-                          {h.last_sent_at ? formatDateTime(h.last_sent_at) : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
       )}
 
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
@@ -1318,6 +1928,82 @@ export function MarketingClient({ initialTemplate, templates, initialRows, histo
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit entry</DialogTitle>
+            <DialogDescription>
+              Changing the number re-runs every check on save — duplicates, the
+              cooldown and client detection — so this hostel can drop out of the
+              campaign as a result.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-1">
+            <div className="space-y-1.5">
+              <Label>Hostel name *</Label>
+              <Input
+                autoFocus
+                value={editForm.business_name}
+                onChange={(e) => setEditForm({ ...editForm, business_name: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Mobile number *</Label>
+              <Input
+                value={editForm.phone}
+                onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>City</Label>
+                <Input
+                  value={editForm.city}
+                  onChange={(e) => setEditForm({ ...editForm, city: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Email</Label>
+                <Input
+                  placeholder="Optional"
+                  value={editForm.email}
+                  onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button
+              onClick={() => void saveEdit()}
+              disabled={savingEdit || editForm.business_name.trim().length < 2 || editForm.phone.trim().length < 10}
+            >
+              {savingEdit ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <LeadListImportDialog
+        open={importOpen}
+        lists={lists}
+        onClose={() => setImportOpen(false)}
+        onChanged={() => { void reloadAll(); }}
+      />
+
+      <ConfirmDialog
+        open={removeRow !== null}
+        title={`Remove ${removeRow?.business_name ?? ""}?`}
+        description={
+          removeRow?.delivery || removeRow?.blocked === "already_sent"
+            ? "This hostel has already been messaged, so it is archived rather than deleted — its send record is what stops that number being messaged again. It disappears from every list and every audience."
+            : "Deletes this entry from the list. Nothing has been sent to it, so nothing is lost."
+        }
+        confirmLabel="Remove"
+        onConfirm={() => void confirmRemove()}
+        onCancel={() => setRemoveRow(null)}
+      />
 
       <ConfirmDialog
         open={confirmOpen}

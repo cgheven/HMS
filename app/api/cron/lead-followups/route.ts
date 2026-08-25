@@ -31,6 +31,10 @@ export async function GET(request: NextRequest) {
   const { data, error } = await admin
     .from("hms_platform_leads")
     .select("*, sales_rep:hms_sales_reps(id,name,email,is_active)")
+    // Belt and braces: an imported marketing contact has no follow-up date, so
+    // it could never reach a rep's inbox anyway — but nothing stops one being
+    // given one by hand, and a scraped cold number is not a rep's follow-up.
+    .is("list_id", null)
     .not("next_follow_up_date", "is", null)
     .lte("next_follow_up_date", today)
     .order("next_follow_up_date", { ascending: true });

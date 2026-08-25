@@ -14,7 +14,8 @@ import {
   type CampaignTemplate, type HeaderImageSource, type MetaTemplate,
 } from "@/lib/lead-campaigns";
 import type {
-  CampaignAudienceRow, CampaignHistoryRow, CampaignSendSummary, LeadAudienceBlock, LeadStatus,
+  CampaignAudienceRow, CampaignHistoryRow, CampaignResponse, CampaignSendSummary,
+  LeadAudienceBlock, LeadStatus,
 } from "@/types";
 import { siteUrl } from "@/lib/site-url";
 
@@ -161,7 +162,11 @@ interface LeadRow {
   converted_hostel_id: string | null;
   marketing_opt_out: boolean;
   not_a_client: boolean;
+  email: string | null;
+  list_id: string | null;
+  campaign_response: CampaignResponse | null;
   sales_rep: { id: string; name: string } | { id: string; name: string }[] | null;
+  lead_list: { id: string; name: string } | { id: string; name: string }[] | null;
 }
 
 /**
@@ -207,8 +212,12 @@ async function buildAudience(template: CampaignTemplate): Promise<CampaignAudien
       // FK join rather than a second query + JS map — the rep name is only ever
       // used alongside the lead it belongs to.
       .select(
-        "id, business_name, owner_name, phone, city, status, assigned_to, converted_hostel_id, marketing_opt_out, not_a_client, sales_rep:hms_sales_reps(id,name)"
+        "id, business_name, owner_name, phone, email, city, status, assigned_to, converted_hostel_id, marketing_opt_out, not_a_client, list_id, campaign_response, sales_rep:hms_sales_reps(id,name), lead_list:hms_lead_lists(id,name)"
       )
+      // Archived entries are removed from every audience but keep their place
+      // in the send ledger, so a number that has already been messaged cannot
+      // come back through a re-import.
+      .is("archived_at", null)
       .order("created_at", { ascending: false }),
     admin
       .from("hms_lead_campaign_sends")
@@ -304,6 +313,7 @@ async function buildAudience(template: CampaignTemplate): Promise<CampaignAudien
 
   return ((leads ?? []) as unknown as LeadRow[]).map((lead) => {
     const rep = Array.isArray(lead.sales_rep) ? lead.sales_rep[0] : lead.sales_rep;
+    const list = Array.isArray(lead.lead_list) ? lead.lead_list[0] : lead.lead_list;
     const digits = normalizePhoneDigits(lead.phone);
     const greeting = campaignGreeting(lead.owner_name, lead.business_name);
     const sentAt = claimed.get(lead.id) ?? null;
@@ -363,6 +373,10 @@ async function buildAudience(template: CampaignTemplate): Promise<CampaignAudien
       delivery: d?.status ?? null,
       error_code: d?.code ?? null,
       sent_at: sentAt ?? d?.at ?? null,
+      list_id: lead.list_id,
+      list_name: list?.name ?? null,
+      email: lead.email,
+      campaign_response: lead.campaign_response,
     };
   });
 }
