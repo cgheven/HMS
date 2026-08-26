@@ -56,10 +56,12 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       { href: "/payments",      label: "Payments",      icon: CreditCard },
       // Sits with the residents it is about, not down in Operations. Referrals
       // are how the next tenant arrives, and buried under Kitchen and Bills the
-      // owner never opened the page at all. Still ownerOnly + referralOnly: a
-      // referral link goes out under the account's name to people who are not
-      // customers yet, so the flags travel with it unchanged.
-      { href: "/marketing",     label: "Marketing",     icon: Share2, ownerOnly: true, referralOnly: true },
+      // owner never opened the page at all.
+      //
+      // Not ownerOnly: a partner owns their branch, and the reward queries were
+      // already scoped to the branches their partnership grants them. Still
+      // referralOnly — that is an entitlement, not a role.
+      { href: "/marketing",     label: "Marketing",     icon: Share2, referralOnly: true },
     ],
   },
   {

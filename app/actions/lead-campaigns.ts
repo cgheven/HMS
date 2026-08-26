@@ -7,6 +7,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { writeAuditLog } from "@/lib/audit";
 import { processInBatches } from "@/lib/batch";
 import { normalizePhoneDigits } from "@/lib/phone";
+import { fetchAllPages } from "@/lib/supabase/fetch-all";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { isRealImage } from "@/lib/image-bytes";
 import {
@@ -204,31 +205,56 @@ async function buildAudience(template: CampaignTemplate): Promise<CampaignAudien
   ).toISOString();
 
   const [
-    { data: leads }, { data: sends }, { data: messages }, { data: deadNumbers },
+    leadPages, sendPages, messagePages, { data: deadNumbers },
     { data: recent }, { data: profiles }, { data: hostels },
   ] = await Promise.all([
-    admin
-      .from("hms_platform_leads")
-      // FK join rather than a second query + JS map — the rep name is only ever
-      // used alongside the lead it belongs to.
-      .select(
-        "id, business_name, owner_name, phone, email, city, status, assigned_to, converted_hostel_id, marketing_opt_out, not_a_client, list_id, campaign_response, sales_rep:hms_sales_reps(id,name), lead_list:hms_lead_lists(id,name)"
-      )
-      // Archived entries are removed from every audience but keep their place
-      // in the send ledger, so a number that has already been messaged cannot
-      // come back through a re-import.
-      .is("archived_at", null)
-      .order("created_at", { ascending: false }),
-    admin
-      .from("hms_lead_campaign_sends")
-      .select("lead_id, status, created_at")
-      .eq("campaign_key", templateName),
-    admin
-      .from("hms_whatsapp_messages")
-      .select("lead_id, status, error_code, created_at")
-      .eq("template", templateName)
-      .not("lead_id", "is", null)
-      .order("created_at", { ascending: false }),
+    // Paged, all three. PostgREST caps an unbounded select at 1000 rows without
+    // saying so, and these three decide who gets messaged: sendLeadCampaign()
+    // re-derives eligibility from this very function, and a lead past row 1000
+    // is not blocked, it is ABSENT — which the send summary reports as
+    // "skipped". Every filter and the order must match across pages or rows
+    // fall between the windows, so each one orders by id.
+    fetchAllPages<LeadRow>((from, to) =>
+      admin
+        .from("hms_platform_leads")
+        // FK join rather than a second query + JS map — the rep name is only ever
+        // used alongside the lead it belongs to.
+        .select(
+          "id, business_name, owner_name, phone, email, city, status, assigned_to, converted_hostel_id, marketing_opt_out, not_a_client, list_id, campaign_response, sales_rep:hms_sales_reps(id,name), lead_list:hms_lead_lists(id,name)"
+        )
+        // Archived entries are removed from every audience but keep their place
+        // in the send ledger, so a number that has already been messaged cannot
+        // come back through a re-import.
+        .is("archived_at", null)
+        // created_at desc is load-bearing, not cosmetic: the duplicate-number
+        // collapse below reverses this list so the OLDEST row per number wins —
+        // the lead the sales team has been working, rather than the accidental
+        // re-entry. id is only the tiebreaker that makes the order total, which
+        // paging needs; created_at alone is not unique and rows would fall
+        // between two windows.
+        .order("created_at", { ascending: false })
+        .order("id")
+        .range(from, to) as unknown as PromiseLike<{ data: LeadRow[] | null; error: { message: string } | null }>
+    ),
+    fetchAllPages<{ lead_id: string; status: string; created_at: string }>((from, to) =>
+      admin
+        .from("hms_lead_campaign_sends")
+        .select("lead_id, status, created_at")
+        .eq("campaign_key", templateName)
+        .order("id")
+        .range(from, to)
+    ),
+    fetchAllPages<{ lead_id: string; status: string; error_code: number | null; created_at: string }>(
+      (from, to) =>
+        admin
+          .from("hms_whatsapp_messages")
+          .select("lead_id, status, error_code, created_at")
+          .eq("template", templateName)
+          .not("lead_id", "is", null)
+          .order("created_at", { ascending: false })
+          .order("id")
+          .range(from, to)
+    ),
     // Numbers Meta has told us are not WhatsApp accounts, across EVERY campaign
     // rather than only this one. A dead number does not come back to life for a
     // new template, and scoping this to the current template would rediscover
@@ -256,6 +282,14 @@ async function buildAudience(template: CampaignTemplate): Promise<CampaignAudien
     admin.from("hms_profiles").select("phone, full_name, business_name, email"),
     admin.from("hms_hostels").select("name"),
   ]);
+
+  // A partial audience is worse than none: it silently drops hostels from the
+  // list and from every count above it, and the admin has no way to tell.
+  const pageErr = leadPages.error ?? sendPages.error ?? messagePages.error;
+  if (pageErr) throw new Error(pageErr);
+  const leads = leadPages.data;
+  const sends = sendPages.data;
+  const messages = messagePages.data;
 
   const fingerprint = buildClientFingerprint(
     (hostels ?? []) as { name: string | null }[],
@@ -851,17 +885,34 @@ export async function listCampaignHistory(): Promise<{
     await requireSuperAdmin();
     const admin = createAdminClient();
 
-    const [{ data: sends }, { data: messages }] = await Promise.all([
-      admin
-        .from("hms_lead_campaign_sends")
-        .select("campaign_key, lead_id, status, created_at")
-        .order("created_at", { ascending: true }),
-      admin
-        .from("hms_whatsapp_messages")
-        .select("lead_id, template, status, created_at")
-        .not("lead_id", "is", null)
-        .order("created_at", { ascending: false }),
+    // Both grow with every send, so both page. Truncated, this table would
+    // quietly under-report older campaigns — and comparing one campaign against
+    // another is the only thing it is for.
+    const [sendPages, messagePages] = await Promise.all([
+      fetchAllPages<{ campaign_key: string; lead_id: string; status: string; created_at: string }>(
+        (from, to) =>
+          admin
+            .from("hms_lead_campaign_sends")
+            .select("campaign_key, lead_id, status, created_at")
+            .order("created_at", { ascending: true })
+            .order("id")
+            .range(from, to)
+      ),
+      fetchAllPages<{ lead_id: string; template: string; status: string; created_at: string }>(
+        (from, to) =>
+          admin
+            .from("hms_whatsapp_messages")
+            .select("lead_id, template, status, created_at")
+            .not("lead_id", "is", null)
+            .order("created_at", { ascending: false })
+            .order("id")
+            .range(from, to)
+      ),
     ]);
+    if (sendPages.error) throw new Error(sendPages.error);
+    if (messagePages.error) throw new Error(messagePages.error);
+    const sends = sendPages.data;
+    const messages = messagePages.data;
 
     // Newest message per (template, lead) — a retried send must count once.
     const latest = new Map<string, string>();
@@ -948,10 +999,13 @@ export async function addCampaignLead(input: {
 
     // Compared on normalized digits, not raw text: 0321-4272165 and +923214272165
     // are the same owner and would otherwise both be created and both messaged.
-    const { data: existing } = await admin
-      .from("hms_platform_leads")
-      .select("id, business_name, phone");
-    const clash = (existing ?? []).find((l) => normalizePhoneDigits(l.phone as string) === digits);
+    const { data: existing, error: existingErr } = await fetchAllPages<
+      { id: string; business_name: string; phone: string }
+    >((from, to) =>
+      admin.from("hms_platform_leads").select("id, business_name, phone").order("id").range(from, to)
+    );
+    if (existingErr) throw new Error(existingErr);
+    const clash = existing.find((l) => normalizePhoneDigits(l.phone) === digits);
     if (clash) throw new Error(`That number is already on the list as "${clash.business_name}"`);
 
     const { error } = await admin.from("hms_platform_leads").insert({

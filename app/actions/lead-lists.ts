@@ -7,6 +7,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { writeAuditLog } from "@/lib/audit";
 import { normalizePhoneDigits } from "@/lib/phone";
 import { parseLeadList, cleanHostelName, normalizeCity, isPkMobile } from "@/lib/lead-list-import";
+import { fetchAllPages, chunk } from "@/lib/supabase/fetch-all";
 import type { CampaignResponse, LeadList } from "@/types";
 
 async function requireSuperAdmin() {
@@ -29,26 +30,43 @@ export async function listLeadLists(): Promise<{ lists: LeadList[]; error?: stri
     await requireSuperAdmin();
     const admin = createAdminClient();
 
-    const [{ data: lists, error }, { data: members }] = await Promise.all([
+    const [{ data: lists, error }, members, sends] = await Promise.all([
       admin.from("hms_lead_lists").select("id, name, notes, created_at").order("created_at", { ascending: false }),
       // Counted here rather than stored on the list: a denormalised count is one
       // missed webhook away from disagreeing with the table underneath it.
-      admin.from("hms_platform_leads").select("id, list_id").not("list_id", "is", null).is("archived_at", null),
+      fetchAllPages<{ id: string; list_id: string }>((from, to) =>
+        admin
+          .from("hms_platform_leads")
+          .select("id, list_id")
+          .not("list_id", "is", null)
+          .is("archived_at", null)
+          .order("id")
+          .range(from, to)
+      ),
+      // Read whole and intersected in memory rather than filtered by .in() on
+      // the contact ids. That list is one id per imported hostel, and PostgREST
+      // puts .in() values in the URL — 397 of them is already past what the
+      // gateway accepts, which would have broken this page (and so the whole
+      // Marketing route) on the second import.
+      fetchAllPages<{ lead_id: string }>((from, to) =>
+        admin
+          .from("hms_lead_campaign_sends")
+          .select("lead_id")
+          .neq("status", "failed")
+          .order("lead_id")
+          .range(from, to)
+      ),
     ]);
     if (error) throw error;
+    if (members.error) throw new Error(members.error);
+    if (sends.error) throw new Error(sends.error);
 
-    const ids = (members ?? []).map((m) => m.id as string);
-    const { data: sends } = ids.length
-      ? await admin.from("hms_lead_campaign_sends").select("lead_id").neq("status", "failed").in("lead_id", ids)
-      : { data: [] as { lead_id: string }[] };
-
-    const messaged = new Set((sends ?? []).map((s) => s.lead_id as string));
+    const messaged = new Set(sends.data.map((s) => s.lead_id));
     const total = new Map<string, number>();
     const sent = new Map<string, number>();
-    for (const m of members ?? []) {
-      const key = m.list_id as string;
-      total.set(key, (total.get(key) ?? 0) + 1);
-      if (messaged.has(m.id as string)) sent.set(key, (sent.get(key) ?? 0) + 1);
+    for (const m of members.data) {
+      total.set(m.list_id, (total.get(m.list_id) ?? 0) + 1);
+      if (messaged.has(m.id)) sent.set(m.list_id, (sent.get(m.list_id) ?? 0) + 1);
     }
 
     return {
@@ -73,19 +91,30 @@ export async function listLeadLists(): Promise<{ lists: LeadList[]; error?: stri
  * The preview asks for this before parsing so "already on a list" is decided
  * against the whole database, not just against the file. One shared table only
  * buys cross-list dedupe if something actually looks across it.
+ *
+ * Paged, because a truncated read here fails silently in the worst possible
+ * direction: numbers past row 1000 look unknown, the preview reports them as
+ * fresh, and the import creates a second copy of a hostel that is already on a
+ * list — which is how one owner gets two identical WhatsApp messages minutes
+ * apart from the number every tenant's rent reminder uses.
  */
+async function knownDigits(admin: ReturnType<typeof createAdminClient>): Promise<Set<string>> {
+  const { data, error } = await fetchAllPages<{ id: string; phone: string }>((from, to) =>
+    admin.from("hms_platform_leads").select("id, phone").order("id").range(from, to)
+  );
+  if (error) throw new Error(error);
+  const out = new Set<string>();
+  for (const r of data) {
+    const d = normalizePhoneDigits(r.phone);
+    if (d) out.add(d);
+  }
+  return out;
+}
+
 export async function existingLeadDigits(): Promise<{ digits: string[]; error?: string }> {
   try {
     await requireSuperAdmin();
-    const admin = createAdminClient();
-    const { data, error } = await admin.from("hms_platform_leads").select("phone");
-    if (error) throw error;
-    const out = new Set<string>();
-    for (const r of data ?? []) {
-      const d = normalizePhoneDigits(r.phone as string);
-      if (d) out.add(d);
-    }
-    return { digits: [...out] };
+    return { digits: [...(await knownDigits(createAdminClient()))] };
   } catch (err) {
     unstable_rethrow(err);
     return { digits: [], error: err instanceof Error ? err.message : "Could not load numbers" };
@@ -116,14 +145,7 @@ export async function importLeadList(input: {
 
     const admin = createAdminClient();
 
-    const { data: known } = await admin.from("hms_platform_leads").select("phone");
-    const existing = new Set<string>();
-    for (const r of known ?? []) {
-      const d = normalizePhoneDigits(r.phone as string);
-      if (d) existing.add(d);
-    }
-
-    const { contacts, dropped } = parseLeadList(input.rows, existing);
+    const { contacts, dropped } = parseLeadList(input.rows, await knownDigits(admin));
     if (contacts.length === 0) throw new Error("No hostel in that file has a usable mobile number");
 
     const { data: list, error: listErr } = await admin
@@ -202,24 +224,34 @@ export async function deleteLeadList(listId: string): Promise<{ error?: string }
     const profile = await requireSuperAdmin();
     const admin = createAdminClient();
 
-    const [{ data: list }, { data: members }] = await Promise.all([
+    // The membership read is paged and the ledger check is chunked. A list is
+    // hundreds of rows by design, and both a truncated membership read and an
+    // over-long .in() would answer "nobody has been messaged" — which is the
+    // answer that lets the delete through and destroys the send record.
+    const [{ data: list }, members] = await Promise.all([
       admin.from("hms_lead_lists").select("name").eq("id", listId).maybeSingle(),
-      admin.from("hms_platform_leads").select("id").eq("list_id", listId),
+      fetchAllPages<{ id: string }>((from, to) =>
+        admin.from("hms_platform_leads").select("id").eq("list_id", listId).order("id").range(from, to)
+      ),
     ]);
     if (!list) throw new Error("That list no longer exists");
+    if (members.error) throw new Error(members.error);
 
-    const ids = (members ?? []).map((m) => m.id as string);
-    if (ids.length) {
-      const { count } = await admin
+    const ids = members.data.map((m) => m.id);
+    let messaged = 0;
+    for (const batch of chunk(ids)) {
+      const { count, error } = await admin
         .from("hms_lead_campaign_sends")
         .select("lead_id", { count: "exact", head: true })
         .neq("status", "failed")
-        .in("lead_id", ids);
-      if ((count ?? 0) > 0) {
-        throw new Error(
-          `${count} hostel${count === 1 ? " on" : "s on"} this list has already been messaged. Deleting it would lose the record that stops them being messaged again — remove those entries individually instead.`
-        );
-      }
+        .in("lead_id", batch);
+      if (error) throw error;
+      messaged += count ?? 0;
+    }
+    if (messaged > 0) {
+      throw new Error(
+        `${messaged} hostel${messaged === 1 ? " on" : "s on"} this list ${messaged === 1 ? "has" : "have"} already been messaged. Deleting it would lose the record that stops them being messaged again — remove those entries individually instead.`
+      );
     }
 
     const { error } = await admin.from("hms_lead_lists").delete().eq("id", listId);
@@ -269,9 +301,16 @@ export async function updateLeadListEntry(input: {
     if (!isPkMobile(digits)) throw new Error("That is a landline — WhatsApp needs a mobile number");
 
     if (digits !== normalizePhoneDigits(lead.phone as string)) {
-      const { data: all } = await admin.from("hms_platform_leads").select("id, business_name, phone");
-      const clash = (all ?? []).find(
-        (l) => l.id !== input.lead_id && normalizePhoneDigits(l.phone as string) === digits
+      // Paged: a truncated read reports "no clash" for every number past row
+      // 1000, which is the answer that lets the duplicate through.
+      const { data: all, error: allErr } = await fetchAllPages<
+        { id: string; business_name: string; phone: string }
+      >((from, to) =>
+        admin.from("hms_platform_leads").select("id, business_name, phone").order("id").range(from, to)
+      );
+      if (allErr) throw new Error(allErr);
+      const clash = all.find(
+        (l) => l.id !== input.lead_id && normalizePhoneDigits(l.phone) === digits
       );
       if (clash) throw new Error(`That number is already on the list as "${clash.business_name}"`);
     }

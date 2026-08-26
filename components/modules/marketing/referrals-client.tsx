@@ -12,6 +12,7 @@ import {
   updateReferralPercentages,
 } from "@/app/actions/referrals";
 import { CopyLinkButton } from "@/components/modules/referrals/copy-link-button";
+import { useHostelContext } from "@/contexts/hostel-context";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
@@ -405,7 +406,7 @@ function PercentageSettings({
  * able to see, and stop, the money that is still going out.
  */
 function OpenRewardsCard({
-  enabled, count, value, valueKnown, busy, onStopAll,
+  enabled, count, value, valueKnown, busy, canStopAll, onStopAll,
 }: {
   enabled: boolean;
   count: number;
@@ -414,6 +415,9 @@ function OpenRewardsCard({
    *  a server-side estimate off each tenant's rent, which a row does not carry. */
   valueKnown: boolean;
   busy: boolean;
+  /** The figure is branch-scoped; stopping is not — it voids the queue across
+   *  every branch the account holds. A partner reads it and cannot press it. */
+  canStopAll: boolean;
   onStopAll: () => void;
 }) {
   const alarming = !enabled && count > 0;
@@ -444,7 +448,7 @@ function OpenRewardsCard({
         </div>
       </div>
 
-      {count > 0 && (
+      {count > 0 && canStopAll && (
         <Button
           variant="outline"
           size="sm"
@@ -460,12 +464,15 @@ function OpenRewardsCard({
 }
 
 function RewardsPanel({
-  rewards, totalRewards, busyId, onRevoke,
+  rewards, totalRewards, busyId, canRevoke, onRevoke,
 }: {
   rewards: ReferralRewardRow[];
   /** Pre-search total, so "nothing matches" is not reported as "nothing exists". */
   totalRewards: number;
   busyId: string | null;
+  /** Revoking cancels a discount already promised — owner, or a full-tier
+   *  partner, matching what revokeReferralReward has always demanded. */
+  canRevoke: boolean;
   onRevoke: (reward: ReferralRewardRow) => void;
 }) {
   const [filter, setFilter] = useState<RewardFilter>("all");
@@ -542,7 +549,7 @@ function RewardsPanel({
             /* Built once and rendered into both layouts. A second copy of the
                button is how the phone and the desktop quietly drift into
                offering different actions. */
-            const cancellable = r.status === "scheduled" || r.status === "held";
+            const cancellable = canRevoke && (r.status === "scheduled" || r.status === "held");
             const actions = cancellable ? (
               <Button
                 variant="outline"
@@ -663,6 +670,26 @@ function RewardsPanel({
 }
 
 export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
+  /**
+   * Account-level controls, hidden from partners.
+   *
+   * A partner owns their branch, which is why they reach this page at all now.
+   * But three things here are not branch-level: the commission percentages (a
+   * promise made under the account's name to people who are not customers yet),
+   * the campaign switch (a WhatsApp blast to every resident, billed to the
+   * account), and Stop all rewards (which voids the queue across every branch
+   * the OWNER holds, not only this one).
+   *
+   * The server refuses all three for a partner regardless — resolveBranch()
+   * stayed owner-only for exactly those actions. This only stops the page
+   * offering buttons that can only fail.
+   */
+  const { partnerTier } = useHostelContext();
+  const isAccountOwner = !partnerTier;
+  /** Matches the tier the money-moving actions already demanded server-side
+   *  before this page let partners in at all. */
+  const canFullTier = !partnerTier || partnerTier === "full";
+
   // The whole payload is state, not just the lists: every tile, total and label
   // on this page is scoped to one month, so a month change has to swap all of
   // them together or the page shows two months at once.
@@ -1138,6 +1165,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
       value={ov.openRewardValue}
       valueKnown={openValueKnown}
       busy={isPending}
+      canStopAll={isAccountOwner}
       onStopAll={() => setConfirmStopAll(true)}
     />
   );
@@ -1246,17 +1274,20 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
             rewards keep landing on bills until the reconciler clears them, and
             setting a percentage to 0 is the only way to stop future grants. */}
         {liabilityCard}
-        <PercentageSettings
-          referrerPercent={referrerPercent}
-          referredPercent={referredPercent}
-          openRewardCount={openRewardCount}
-          openRewardValue={ov.openRewardValue}
-        />
+        {isAccountOwner && (
+          <PercentageSettings
+            referrerPercent={referrerPercent}
+            referredPercent={referredPercent}
+            openRewardCount={openRewardCount}
+            openRewardValue={ov.openRewardValue}
+          />
+        )}
         {rewards.length > 0 && (
           <RewardsPanel
             rewards={rewards}
             totalRewards={rewards.length}
             busyId={busyId}
+            canRevoke={canFullTier}
             onRevoke={setRevokeTarget}
           />
         )}
@@ -1432,8 +1463,13 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
 
             {/* The campaign switch. Off is the only state that spends money on
                 click, so it is the only one styled as a primary action; live and
-                paused are status first, control second. */}
-            {ov.campaign === "active" ? (
+                paused are status first, control second.
+
+                Owner only: every state of this button sends WhatsApp to every
+                resident on the account's number and against its message quota.
+                The "Campaign live" indicator above stays visible to a partner —
+                knowing whether it is running is not the same as flipping it. */}
+            {!isAccountOwner ? null : ov.campaign === "active" ? (
               <>
                 {/* The escape hatch from a campaign that started but did not
                     send.
@@ -1628,7 +1664,12 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                 /* Built once and rendered in both layouts. A second copy of the
                    button logic is how the phone and the desktop quietly drift
                    into offering different actions. */
-                const actions = (
+                /* Grant, Undo and Cancel reward all move money on somebody's
+                   bill, so they follow the file's existing convention: owner,
+                   or a partner on the full tier. The server enforces the same
+                   thing — hiding them only spares a lower-tier partner a row of
+                   buttons that answer with a permission toast. */
+                const actions = !canFullTier ? null : (
                   <>
                     {r.status === "joined" &&
                       (r.rewardState === null || r.rewardState === "None") && (
@@ -1847,32 +1888,39 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
                 {openValueKnown ? ` (${rs(ov.openRewardValue)})` : ""} — these come off
                 tenants&apos; bills as they fall due, across every branch you own.
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5 h-8 text-xs text-muted-foreground hover:text-rose-400 shrink-0"
-                disabled={isPending}
-                onClick={() => setConfirmStopAll(true)}
-              >
-                <Ban className="w-3.5 h-3.5" /> Stop all rewards
-              </Button>
+              {/* Voids the queue across every branch the account holds, not
+                  just this one — so it belongs to whoever holds the account. */}
+              {isAccountOwner && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 h-8 text-xs text-muted-foreground hover:text-rose-400 shrink-0"
+                  disabled={isPending}
+                  onClick={() => setConfirmStopAll(true)}
+                >
+                  <Ban className="w-3.5 h-3.5" /> Stop all rewards
+                </Button>
+              )}
             </div>
           )}
           <RewardsPanel
             rewards={filteredRewards}
             totalRewards={rewards.length}
             busyId={busyId}
+            canRevoke={canFullTier}
             onRevoke={setRevokeTarget}
           />
         </TabsContent>
 
         <TabsContent value="links" className="space-y-4">
-          <PercentageSettings
-            referrerPercent={referrerPercent}
-            referredPercent={referredPercent}
-            openRewardCount={openRewardCount}
-            openRewardValue={ov.openRewardValue}
-          />
+          {isAccountOwner && (
+            <PercentageSettings
+              referrerPercent={referrerPercent}
+              referredPercent={referredPercent}
+              openRewardCount={openRewardCount}
+              openRewardValue={ov.openRewardValue}
+            />
+          )}
 
           {/* Same chip shape as the Submissions filters, so the two tabs are
               operated the same way. A chip whose count is zero is disabled

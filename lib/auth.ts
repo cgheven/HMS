@@ -81,6 +81,27 @@ export async function requireOwnerOrPartnerTier(minTier: PartnerTier): Promise<P
 }
 
 /**
+ * Page-level twin of requireOwnerOrPartnerTier.
+ *
+ * That one throws when a partner's tier falls short, which is right for a
+ * server action whose caller catches it into a toast. A page has no catch: an
+ * uncaught throw is a 500 where the honest answer is "this is not for you", so
+ * this one redirects to the dashboard instead. Unauthenticated still goes to
+ * /login, same as every other page guard.
+ */
+export async function requirePageOwnerOrPartnerTier(minTier: PartnerTier): Promise<Profile> {
+  const profile = await getProfile();
+  if (!profile) redirect("/login");
+  if (["owner", "super_admin"].includes(profile.role)) return profile;
+  if (profile.role === "partner") {
+    const ctx = await getAuthContext();
+    if (ctx?.partnerTier && TIER_RANK[ctx.partnerTier] >= TIER_RANK[minTier]) return profile;
+    redirect("/dashboard");
+  }
+  redirect("/login");
+}
+
+/**
  * Read the "hms_active_hostel" cookie, validate it against hms_owner_hostels
  * for the current user, and return the hostelId (or null if invalid / missing).
  */

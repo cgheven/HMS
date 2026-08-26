@@ -1,12 +1,17 @@
-import { requireOwnerOrAbove } from "@/lib/auth";
+import { requirePageOwnerOrPartnerTier } from "@/lib/auth";
 import { getReferralOverview } from "@/app/actions/referrals";
 import { ReferralsClient } from "@/components/modules/marketing/referrals-client";
 
 export default async function MarketingPage() {
-  // Owner-level, not branch-level: referral links carry the account's own name
-  // to people who are not customers yet. Partners are kept out here AND by the
-  // guard inside every action in app/actions/referrals.ts.
-  await requireOwnerOrAbove();
+  // Partners belong here: a partner owns their branch, and rewardScopeIds() in
+  // app/actions/referrals.ts already confines every reward query to the
+  // branches their partnership actually grants them — it was written that way
+  // before the page would let them in.
+  //
+  // read_only is the floor for LOOKING. Each action re-checks its own tier
+  // server-side, and the account-level ones — the commission percentages, the
+  // campaign, stop-all — stay owner-only and are hidden in the client.
+  await requirePageOwnerOrPartnerTier("read_only");
 
   // Current month by default; the client swaps months in place through the same
   // action, matching how Payments and Expenses already work.

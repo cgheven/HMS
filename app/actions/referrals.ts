@@ -28,6 +28,7 @@ import {
   voidReferralRewardsForTenant,
 } from "@/lib/referral-rewards";
 import type {
+  PartnerTier,
   Profile,
   ReferralDuplicateRow,
   ReferralOverview,
@@ -69,7 +70,19 @@ function clampPercent(v: unknown): number {
   return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
 }
 
-async function resolveBranch(): Promise<{
+/**
+ * @param minTier opt-in, per action. Omitted, this stays owner-only exactly as
+ *   it has always been — which matters, because resolveBranch() is the ONLY
+ *   guard on eleven of the actions in this file. Widening it wholesale would
+ *   hand a partner stopAllReferralRewards() and updateReferralPercentages() in
+ *   one stroke, so each action says for itself whether a partner belongs in it.
+ *
+ *   rewardScopeIds() below was already written for this: it scopes by the
+ *   caller's own branches rather than by hms_referral_rewards.owner_id, so a
+ *   partner sees their branches and no others. The gate was the only thing
+ *   missing.
+ */
+async function resolveBranch(minTier?: PartnerTier): Promise<{
   hostelId: string;
   hostelName: string;
   /** hms_hostels.owner_id, NOT the caller's id — referral scope is the owner's,
@@ -84,7 +97,9 @@ async function resolveBranch(): Promise<{
   profile: Profile;
   admin: AdminClient;
 }> {
-  const profile = await requireOwnerOrAbove();
+  const profile = minTier
+    ? await requireOwnerOrPartnerTier(minTier)
+    : await requireOwnerOrAbove();
   const ctx = await getAuthContext();
   const hostelId = await resolveHostelId();
   const admin = createAdminClient();
@@ -129,8 +144,8 @@ function rewardScopeIds(branch: {
   return Array.from(new Set([branch.hostelId, ...branch.ownerHostels.map((h) => h.id)]));
 }
 
-async function requireEnabledBranch() {
-  const branch = await resolveBranch();
+async function requireEnabledBranch(minTier?: PartnerTier) {
+  const branch = await resolveBranch(minTier);
   if (!branch.enabled) throw new Error(NOT_ENABLED);
   return branch;
 }
@@ -468,7 +483,9 @@ export async function getReferralOverview(month?: string): Promise<{
     // below are already bounded by branch and by real admissions, and filtering
     // in SQL would mean a round trip per month change for a set this small.
     const scopeMonth = MONTH_KEY.test(month ?? "") ? (month as string) : currentMonthKey();
-    const branch = await resolveBranch();
+    // read_only: a partner co-owns the branch, and rewardScopeIds() below
+    // already confines what they see to their own branches.
+    const branch = await resolveBranch("read_only");
     const { hostelId, hostelName, enabled, ownerHostels, admin, referrerPercent, referredPercent } =
       branch;
 
@@ -1055,7 +1072,9 @@ export async function ensureReferralCode(
   tenantId: string
 ): Promise<{ code?: string; error?: string }> {
   try {
-    const { hostelId, admin } = await requireEnabledBranch();
+    // standard: handing a resident their own link is front-of-house work, not
+    // a money decision — no reward is created or moved by it.
+    const { hostelId, admin } = await requireEnabledBranch("standard");
     const tenant = await requireBranchTenant(admin, hostelId, tenantId);
     if (!isResident(tenant)) {
       throw new Error("Only tenants who have moved in can have a referral link.");
@@ -1083,7 +1102,7 @@ export async function ensureCodesForAllActiveTenants(): Promise<{
   error?: string;
 }> {
   try {
-    const { hostelId, admin } = await requireEnabledBranch();
+    const { hostelId, admin } = await requireEnabledBranch("standard");
 
     const [tenantsRes, codesRes] = await Promise.all([
       admin
@@ -1127,7 +1146,7 @@ export async function rotateReferralCode(
   tenantId: string
 ): Promise<{ code?: string; error?: string }> {
   try {
-    const { hostelId, admin, profile } = await requireEnabledBranch();
+    const { hostelId, admin, profile } = await requireEnabledBranch("standard");
     const tenant = await requireBranchTenant(admin, hostelId, tenantId);
     if (!isResident(tenant)) {
       throw new Error("Only tenants who have moved in can have a referral link.");
@@ -1176,7 +1195,8 @@ export async function rejectReferral(
   referralId: string
 ): Promise<{ success?: boolean; voided?: number; commissionReversed?: number; error?: string }> {
   try {
-    const { hostelId, admin, profile } = await resolveBranch();
+    // full: rejecting a referral cancels a discount somebody was promised.
+    const { hostelId, admin, profile } = await resolveBranch("full");
 
     const { data, error } = await admin
       .from("hms_referrals")
@@ -1234,7 +1254,7 @@ export async function undoRejectReferral(
   referralId: string
 ): Promise<{ success?: boolean; status?: ReferralStatus; granted?: number; error?: string }> {
   try {
-    const { hostelId, admin, profile } = await resolveBranch();
+    const { hostelId, admin, profile } = await resolveBranch("full");
 
     const { data: row } = await admin
       .from("hms_referrals")
@@ -1676,7 +1696,8 @@ export async function detachReferralRewardsForTenant(
   fromMonth: string
 ): Promise<{ detached?: number; error?: string }> {
   try {
-    const { hostelId, admin, profile } = await resolveBranch();
+    // full: detaching rewards takes money off a resident's bill.
+    const { hostelId, admin, profile } = await resolveBranch("full");
     if (!MONTH_KEY.test(fromMonth)) throw new Error("Invalid month");
 
     // Re-derived from the caller's own branch, so a forged tenant id from another
@@ -2087,7 +2108,9 @@ export async function setReferralCampaign(
  */
 export async function sendReferralLinkForTenant(tenantId: string): Promise<void> {
   try {
-    const { hostelId, admin } = await resolveBranch();
+    // standard: same reasoning as ensureReferralCode — it sends the resident
+    // their own link and nothing else.
+    const { hostelId, admin } = await resolveBranch("standard");
     // The gates and the minting live in the lib helper, which the manager,
     // partner and application-approval paths call directly — they cannot come
     // through here, because resolveBranch insists on an owner.
