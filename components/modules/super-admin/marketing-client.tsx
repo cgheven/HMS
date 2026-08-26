@@ -181,9 +181,19 @@ const RESPONSE_CONFIG: Record<CampaignResponse, { label: string; cls: string }> 
   converted:      { label: "Converted",      cls: "text-emerald-400 border-emerald-500/35 bg-emerald-500/15" },
 };
 
+/** Warmest first, so the two chips worth acting on today sit at the front of
+ *  the row rather than in alphabetical order among the dead ends. */
 const RESPONSE_ORDER: CampaignResponse[] = [
-  "replied", "interested", "not_interested", "wrong_number", "converted",
+  "interested", "converted", "replied", "not_interested", "wrong_number",
 ];
+
+const RESPONSE_HINTS: Record<CampaignResponse, string> = {
+  interested: "Said yes to a demo or asked for pricing — the follow-up list",
+  converted: "Became a paying client off the back of this campaign",
+  replied: "Answered, but has not said yes or no yet",
+  not_interested: "Said no. Still messageable on a future campaign — use Do not contact for a permanent stop",
+  wrong_number: "Somebody else answered. Worth fixing the number or removing the entry",
+};
 
 /** Short enough to sit inline in a card. formatDateTime is the full stamp and
  *  is still what the table and the CSV use — here the question is only "was
@@ -540,6 +550,10 @@ export function MarketingClient({
       // campaign went to, and leaving it off the list would make the tab
       // disagree with the "already sent" exclusion chip.
       listed: scoped.filter((r) => r.delivery !== null || r.blocked === "already_sent").length,
+      // The only figure on this card that a human put there, and the only one
+      // that means the campaign worked. Read is attention; this is intent.
+      interested: scoped.filter((r) => r.campaign_response === "interested").length,
+      converted: scoped.filter((r) => r.campaign_response === "converted").length,
     };
   }, [scoped]);
 
@@ -587,18 +601,84 @@ export function MarketingClient({
     return scoped;
   }, [scoped, view]);
 
-  // Counted, because "Islamabad 9" tells you whether a city is worth a blast
-  // and a bare list does not. Biggest first for the same reason.
-  const cityOptions = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const r of viewRows) {
-      const c = canonicalCity(r.city);
-      counts.set(c, (counts.get(c) ?? 0) + 1);
-    }
-    return [...counts.entries()].sort((a, b) =>
-      a[0] === OTHER_CITY ? 1 : b[0] === OTHER_CITY ? -1 : b[1] - a[1]
-    );
+  /**
+   * Whether this tab is asking WHERE to send.
+   *
+   * Only two of them are. "Ready to send" and "All" open on every hostel in the
+   * country, and a wall of 106 rows buries the first decision in a campaign —
+   * so those stay behind a city pick. "Sent" and "Excluded" are not that
+   * question: their audience is already decided, and gating them meant the
+   * cards could say "1 read" and "18 rejected" while the list underneath
+   * refused to name a single one of them.
+   */
+  const needsTarget = view === "eligible" || view === "all";
+
+  /**
+   * How many hostels gave each answer.
+   *
+   * Counted over the tab's own rows rather than over the whole audience, so a
+   * chip reading "Interested 8" opens exactly eight — the same contract the
+   * city and delivery chips keep. "No reply" is a real answer with a real
+   * count, not the absence of one: it is the queue still to be worked.
+   */
+  const responseCounts = useMemo(() => {
+    const none = viewRows.filter((r) => r.campaign_response === null).length;
+    return {
+      none,
+      byValue: RESPONSE_ORDER.map(
+        (v) => [v, viewRows.filter((r) => r.campaign_response === v).length] as const
+      ),
+      /** Anything at all came back. Zero means the column has never been used,
+       *  and a row of empty chips would be noise on a page that has plenty. */
+      any: viewRows.length - none,
+    };
   }, [viewRows]);
+
+  /**
+   * Cities, with how much of each is left AND how much of it is already done.
+   *
+   * `count` is what this tab holds — the chip's promise, so clicking it opens
+   * exactly that many rows. `sent` is coverage, and it is the half that was
+   * missing: on Ready to send an already-messaged hostel is excluded, so a city
+   * you have finished shrinks towards zero and then vanishes from the row
+   * entirely. "Lahore is done" and "Lahore was never on the list" looked
+   * identical, which is exactly the question you have to answer to pick the
+   * next city.
+   *
+   * So a fully-covered city keeps its chip on the targeting tabs, carrying its
+   * coverage instead of a count, and cannot be selected — there is nobody in it
+   * left to send to.
+   */
+  const cityOptions = useMemo(() => {
+    const map = new Map<string, { city: string; count: number; sent: number; total: number }>();
+    const at = (c: string) => {
+      let e = map.get(c);
+      if (!e) map.set(c, (e = { city: c, count: 0, sent: 0, total: 0 }));
+      return e;
+    };
+    // Coverage comes from the whole audience, never from the tab — the tab is
+    // the thing that hides it.
+    for (const r of scoped) {
+      const e = at(canonicalCity(r.city));
+      e.total++;
+      // Covered means the campaign actually reached them, or the ledger still
+      // holds their one shot. A message Meta bounced (131049, 131026) is
+      // NEITHER: the ledger released it, so it is back in "Ready to send" — and
+      // counting it as covered would have it appear in both numbers at once,
+      // making the two halves of the chip fail to add up to the city.
+      const bounced = r.delivery === "undelivered" || r.delivery === "failed";
+      if (r.blocked === "already_sent" || (r.delivery !== null && !bounced)) e.sent++;
+    }
+    for (const r of viewRows) at(canonicalCity(r.city)).count++;
+
+    return [...map.values()]
+      // A city with nothing in this tab is only worth a chip when it is empty
+      // BECAUSE it is finished, and only where the question is "where next".
+      .filter((e) => e.count > 0 || (needsTarget && e.sent > 0))
+      .sort((a, b) =>
+        a.city === OTHER_CITY ? 1 : b.city === OTHER_CITY ? -1 : b.count - a.count || b.sent - a.sent
+      );
+  }, [scoped, viewRows, needsTarget]);
 
   function toggleCity(c: string) {
     setCities((prev) => {
@@ -612,11 +692,19 @@ export function MarketingClient({
    *  into another and silently hide rows the new tab is supposed to be about. */
   function goTo(
     next: Tab,
-    opts?: { block?: LeadAudienceBlock | null; delivery?: DeliveryFilter | null }
+    opts?: {
+      block?: LeadAudienceBlock | null;
+      delivery?: DeliveryFilter | null;
+      response?: string;
+    }
   ) {
     setTab(next);
     setBlockFilter(opts?.block ?? null);
     setDeliveryFilter(opts?.delivery ?? null);
+    // Cleared like the others. Its chips only render on Sent and Excluded, so a
+    // response filter carried into "Ready to send" would hide rows with no
+    // control on screen to explain why.
+    setResponseFilter(opts?.response ?? ANY);
   }
 
   function showExclusion(block: LeadAudienceBlock) {
@@ -625,6 +713,10 @@ export function MarketingClient({
 
   function showDelivery(stage: DeliveryFilter) {
     goTo("sent", { delivery: deliveryFilter === stage ? null : stage });
+  }
+
+  function showResponseFilter(value: CampaignResponse) {
+    goTo("sent", { response: responseFilter === value ? ANY : value });
   }
 
   // Derived from the rows rather than fetched — this only ever needs to offer
@@ -636,18 +728,6 @@ export function MarketingClient({
     return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
   }, [scoped]);
 
-  /**
-   * Whether this tab is asking WHERE to send.
-   *
-   * Only two of them are. "Ready to send" and "All" open on every hostel in the
-   * country, and a wall of 106 rows buries the first decision in a campaign —
-   * so those stay behind a city pick. "Sent" and "Excluded" are not that
-   * question: their audience is already decided, and gating them meant the
-   * cards could say "1 read" and "18 rejected" while the list underneath
-   * refused to name a single one of them.
-   */
-  const needsTarget = view === "eligible" || view === "all";
-
   /** The Response column only earns its width where a reply is possible. On
    *  "Ready to send" nothing has gone out yet, so every cell would be blank. */
   const showResponse = view === "sent" || view === "blocked";
@@ -655,10 +735,17 @@ export function MarketingClient({
   const targeted =
     !needsTarget || cities.size > 0 || search.trim() !== "" || blockFilter !== null;
 
-  const allCitiesPicked = cityOptions.length > 0 && cities.size === cityOptions.length;
+  /** Cities you can still send to. A finished city keeps its chip for the
+   *  coverage it reports, but there is nobody in it left to pick. */
+  const pickableCities = useMemo(
+    () => cityOptions.filter((c) => c.count > 0),
+    [cityOptions]
+  );
+
+  const allCitiesPicked = pickableCities.length > 0 && cities.size === pickableCities.length;
 
   function toggleAllCities() {
-    setCities(allCitiesPicked ? new Set() : new Set(cityOptions.map(([c]) => c)));
+    setCities(allCitiesPicked ? new Set() : new Set(pickableCities.map((c) => c.city)));
   }
 
   const filtersActive =
@@ -1036,6 +1123,29 @@ export function MarketingClient({
                       title="Reached the phone and was never opened — your follow-up list"
                     >
                       {stats.unread} unread
+                    </button>
+                  )}
+                  {/* On the headline line because it is the point of the
+                      campaign. Different axis from the delivery figures beside
+                      it — those filter on what Meta reported, this filters on
+                      what somebody wrote down — so it opens exactly its own
+                      count rather than overlapping them. */}
+                  {stats.interested > 0 && (
+                    <button
+                      onClick={() => showResponseFilter("interested")}
+                      className="text-sm text-emerald-300 hover:underline"
+                      title="Marked Interested — click to list them"
+                    >
+                      {stats.interested} interested
+                    </button>
+                  )}
+                  {stats.converted > 0 && (
+                    <button
+                      onClick={() => showResponseFilter("converted")}
+                      className="text-sm text-emerald-400 font-medium hover:underline"
+                      title="Became a paying client off this campaign"
+                    >
+                      {stats.converted} won
                     </button>
                   )}
                 </div>
@@ -1432,6 +1542,61 @@ export function MarketingClient({
             </div>
           )}
 
+          {/* What came back, as a filter.
+              The delivery row above answers "did it arrive". This one answers
+              "did it work", and it is the only row on this page whose contents
+              a human typed. Chips rather than the dropdown it started as: the
+              whole point of marking a hostel Interested is to come back to the
+              eight of them later, and a filter two clicks deep behind a
+              settings icon is one nobody uses. */}
+          {showResponse && responseCounts.any > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <MessageSquare className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <button
+                onClick={() => setResponseFilter(ANY)}
+                className={cn(
+                  "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
+                  responseFilter === ANY
+                    ? "bg-amber/10 text-amber border-amber/25"
+                    : "border-sidebar-border text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Any response <span className="opacity-50">{viewRows.length}</span>
+              </button>
+              {responseCounts.byValue.map(([value, n]) => (
+                <button
+                  key={value}
+                  onClick={() => setResponseFilter(responseFilter === value ? ANY : value)}
+                  disabled={n === 0}
+                  title={RESPONSE_HINTS[value]}
+                  className={cn(
+                    "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors disabled:opacity-30 disabled:cursor-not-allowed",
+                    responseFilter === value
+                      ? RESPONSE_CONFIG[value].cls
+                      : "border-sidebar-border text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {RESPONSE_CONFIG[value].label} <span className="opacity-50">{n}</span>
+                </button>
+              ))}
+              {/* Last, because it is the biggest number and the least
+                  interesting — everyone who has not answered yet. */}
+              <button
+                onClick={() => setResponseFilter(responseFilter === NO_RESPONSE ? ANY : NO_RESPONSE)}
+                disabled={responseCounts.none === 0}
+                title="Nobody has recorded an answer from these yet"
+                className={cn(
+                  "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors disabled:opacity-30 disabled:cursor-not-allowed",
+                  responseFilter === NO_RESPONSE
+                    ? "bg-white/10 text-foreground border-white/20"
+                    : "border-sidebar-border text-muted-foreground hover:text-foreground"
+                )}
+              >
+                No reply <span className="opacity-50">{responseCounts.none}</span>
+              </button>
+            </div>
+          )}
+
           {/* Chips rather than a dropdown: there are six cities, targeting is
               usually two of them at once ("Lahore and Islamabad"), and a
               single-select made that two separate blasts. Counts are on the
@@ -1449,20 +1614,56 @@ export function MarketingClient({
             >
               Everywhere
             </button>
-            {cityOptions.map(([c, n]) => (
-              <button
-                key={c}
-                onClick={() => toggleCity(c)}
-                className={cn(
-                  "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors",
-                  cities.has(c)
-                    ? "bg-amber/10 text-amber border-amber/25"
-                    : "border-sidebar-border text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {c} <span className="opacity-50">{n}</span>
-              </button>
-            ))}
+            {cityOptions.map(({ city, count, sent, total }) => {
+              // Nobody left to send to here. Kept on screen anyway, because
+              // "finished" is the answer that tells you where to go next.
+              const done = needsTarget && count === 0;
+              return (
+                <button
+                  key={city}
+                  onClick={() => toggleCity(city)}
+                  disabled={done}
+                  title={
+                    sent === 0
+                      ? `${total} hostel${total === 1 ? "" : "s"} in ${city}, none messaged yet`
+                      : `${sent} of ${total} in ${city} already messaged${done ? "" : ` · ${count} still to go`}`
+                  }
+                  className={cn(
+                    "px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors inline-flex items-center gap-1",
+                    done
+                      ? "border-sidebar-border text-muted-foreground/40 cursor-default"
+                      : cities.has(city)
+                        ? "bg-amber/10 text-amber border-amber/25"
+                        : "border-sidebar-border text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {city}
+                  {done ? (
+                    <span className="inline-flex items-center gap-0.5 text-emerald-400/70">
+                      <Check className="w-3 h-3" />
+                      {sent}
+                    </span>
+                  ) : (
+                    <>
+                      <span className="opacity-50">{count}</span>
+                      {/* Coverage, only where it changes the decision. On the
+                          targeting tabs a city part-way through looks identical
+                          to one never touched, and picking the next city is the
+                          whole job. */}
+                      {needsTarget && sent > 0 && (
+                        <span
+                          className="inline-flex items-center gap-0.5 text-emerald-400/60"
+                          aria-label={`${sent} already messaged`}
+                        >
+                          <Check className="w-3 h-3" />
+                          {sent}
+                        </span>
+                      )}
+                    </>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           {/* Behind a toggle, because a city plus a search box answers almost
@@ -1497,21 +1698,9 @@ export function MarketingClient({
                 </SelectContent>
               </Select>
 
-              {showResponse && (
-                <Select value={responseFilter} onValueChange={setResponseFilter}>
-                  <SelectTrigger className="h-9 w-[165px] text-sm">
-                    <MessageSquare className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ANY}>Any response</SelectItem>
-                    <SelectItem value={NO_RESPONSE}>No reply</SelectItem>
-                    {RESPONSE_ORDER.map((r) => (
-                      <SelectItem key={r} value={r}>{RESPONSE_CONFIG[r].label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+              {/* No response dropdown here any more — it is a chip row above,
+                  in the open, next to the delivery stages it is read against.
+                  Two controls for one filter is how they drift apart. */}
             </div>
           )}
 
@@ -1584,13 +1773,16 @@ export function MarketingClient({
                     Pick a city above — or search for one hostel by name, owner or number.
                   </p>
                   <div className="flex items-center gap-1.5 flex-wrap justify-center mt-4">
-                    {cityOptions.slice(0, 4).map(([c, n]) => (
+                    {/* Shortcuts, so only cities with somebody left in them —
+                        a finished city here would be a suggestion that opens
+                        an empty list. */}
+                    {pickableCities.slice(0, 4).map(({ city, count }) => (
                       <button
-                        key={c}
-                        onClick={() => toggleCity(c)}
+                        key={city}
+                        onClick={() => toggleCity(city)}
                         className="px-2.5 py-1 rounded-lg text-xs font-medium border border-sidebar-border text-muted-foreground hover:text-amber hover:border-amber/25 transition-colors"
                       >
-                        {c} <span className="opacity-50">{n}</span>
+                        {city} <span className="opacity-50">{count}</span>
                       </button>
                     ))}
                     <button
