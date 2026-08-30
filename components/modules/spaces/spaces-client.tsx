@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
-import { formatCurrency, capitalize } from "@/lib/utils";
+import { formatCurrency, capitalize, sortRooms } from "@/lib/utils";
 import type { PartnerTier, Room, RoomStatus, SpaceType, StaffPermission } from "@/types";
 
 const statusColors: Record<RoomStatus, "success" | "info" | "warning"> = { available: "success", occupied: "info", maintenance: "warning" };
@@ -47,8 +47,8 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
   const canEdit = isManager ? canManageRooms : canFullTier;
   // Delete is never available to a manager — no delete permission exists for rooms.
   const canDelete = canFullTier && !isManager;
-  const [rooms, setRooms] = useState<Room[]>(initialRooms);
-  const [filtered, setFiltered] = useState<Room[]>(initialRooms);
+  const [rooms, setRooms] = useState<Room[]>(() => sortRooms(initialRooms));
+  const [filtered, setFiltered] = useState<Room[]>(() => sortRooms(initialRooms));
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | RoomStatus>("all");
   const [roomFilter, setRoomFilter] = useState("all");
@@ -106,7 +106,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
   // Managers have no RLS read access — the browser client returns nothing for
   // them, so their list is refetched server-side and arrives as a new prop.
   useEffect(() => {
-    if (isManager) setRooms(initialRooms);
+    if (isManager) setRooms(sortRooms(initialRooms));
   }, [isManager, initialRooms]);
 
   async function reload() {
@@ -114,7 +114,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
     if (!hostelId) return;
     const supabase = createClient();
     const { data } = await supabase.from("hms_rooms").select("*").eq("hostel_id", hostelId).order("room_number");
-    setRooms((data as Room[]) ?? []);
+    setRooms(sortRooms((data as Room[]) ?? []));
   }
 
   function openAdd() {
@@ -470,7 +470,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
           {filtered.map((room) => {
             const roomPhotos = PHOTO_FIELDS.map((f) => room[f]).filter(Boolean) as string[];
             return (
-              <Card key={room.id} className="hover:shadow-md transition-shadow overflow-hidden">
+              <Card key={room.id} className="hover:shadow-md transition-shadow overflow-hidden flex flex-col h-full">
                 <div className="relative h-32 overflow-hidden bg-sidebar-accent/40">
                   {roomPhotos.length > 0 ? (
                     <>
@@ -492,7 +492,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
                   <div><CardTitle className="text-lg">Room {room.room_number}</CardTitle>{room.floor != null && <p className="text-xs text-muted-foreground">Floor {room.floor}</p>}</div>
                   <Badge variant={statusColors[room.status]}>{capitalize(room.status)}</Badge>
                 </CardHeader>
-                <CardContent className="space-y-2">
+                <CardContent className="flex flex-col gap-2 flex-1">
                   {[["Type", capitalize(room.type)], ["Capacity", `${room.occupied}/${room.capacity}`], ["Rent/mo", formatCurrency(room.monthly_rent)]].map(([k, v]) => (
                     <div key={k} className="flex items-center justify-between text-sm"><span className="text-muted-foreground">{k}</span><span className="font-medium">{v}</span></div>
                   ))}
@@ -504,7 +504,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
                     </div>
                   )}
                   {(canEdit || canDelete) && (
-                    <div className="flex gap-2 pt-2">
+                    <div className="flex gap-2 pt-2 mt-auto">
                       {canEdit && <Button variant="outline" size="sm" className="flex-1 gap-1" onClick={() => openEdit(room)}><Edit2 className="w-3 h-3" /> Edit</Button>}
                       {canDelete && <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteId(room.id)}><Trash2 className="w-3 h-3" /></Button>}
                     </div>

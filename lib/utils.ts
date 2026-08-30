@@ -87,3 +87,37 @@ export function getMonthRange(date = new Date()) {
 export function capitalize(str: string) {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
+
+// Room numbers are text, so the database sorts them as text: "F-10" lands
+// before "F-2", and "11" before "2". Chunk each number into runs of digits and
+// non-digits and compare digit runs numerically, so 1, 2, 10 read in the order
+// a person walking the corridor would expect. Prefixes still group ahead of the
+// number (F-1 … F-28, then G-1), and numbers are compared by value, so leading
+// zeros do not matter ("007" sits with 7, not with the 0s).
+const roomChunks = (s: string) =>
+  (s ?? "").match(/\d+|\D+/g) ?? [];
+
+export function compareRoomNumbers(a: string, b: string) {
+  const ca = roomChunks(a);
+  const cb = roomChunks(b);
+  for (let i = 0; i < Math.min(ca.length, cb.length); i++) {
+    const x = ca[i];
+    const y = cb[i];
+    const xNum = /^\d/.test(x);
+    const yNum = /^\d/.test(y);
+    if (xNum && yNum) {
+      const diff = parseInt(x, 10) - parseInt(y, 10);
+      if (diff !== 0) return diff;
+      // "07" vs "7" are equal by value — keep it deterministic.
+      if (x !== y) return x.length - y.length;
+    } else {
+      const diff = x.localeCompare(y, undefined, { sensitivity: "base" });
+      if (diff !== 0) return diff;
+    }
+  }
+  return ca.length - cb.length;
+}
+
+export function sortRooms<T extends { room_number: string }>(rooms: T[]): T[] {
+  return [...rooms].sort((a, b) => compareRoomNumbers(a.room_number, b.room_number));
+}

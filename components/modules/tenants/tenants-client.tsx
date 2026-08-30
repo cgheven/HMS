@@ -20,7 +20,7 @@ import { SearchableSelect } from "@/components/ui/searchable-select";
 import { organizationPresetsFor } from "@/lib/organization-presets";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
-import { formatCurrency, formatDate, formatDateInput, formatMonthLong, capitalize, cn } from "@/lib/utils";
+import { formatCurrency, formatDate, formatDateInput, formatMonthLong, capitalize, cn, sortRooms } from "@/lib/utils";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates, type FoodAddonFlags } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
 import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets , departmentPresetsFor } from "@/lib/student-category-labels";
@@ -682,7 +682,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [waiting, setWaiting] = useState(initialWaiting);
   const [checkedOut, setCheckedOut] = useState(initialCheckedOut);
   const [sendingWelcomeId, setSendingWelcomeId] = useState<string | null>(null);
-  const [rooms, setRooms] = useState(initialRooms);
+  const [rooms, setRooms] = useState(() => sortRooms(initialRooms));
   const [applications, setApplications] = useState<TenantApplication[]>(initialApplications);
   const [waitlistEntries, setWaitlistEntries] = useState<WaitlistEntry[]>(initialWaitlistEntries);
   const [search, setSearch] = useState("");
@@ -958,7 +958,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setActive(all.filter((t) => t.is_active && !t.is_waiting));
     setWaiting(all.filter((t) => t.is_waiting));
     setCheckedOut(all.filter((t) => !t.is_active && !t.is_waiting));
-    setRooms((rms ?? []) as Room[]);
+    setRooms(sortRooms((rms ?? []) as Room[]));
 
     // The owner writes tenants straight from the browser, so no server action
     // ever runs revalidatePath for them and OTHER routes keep serving their
