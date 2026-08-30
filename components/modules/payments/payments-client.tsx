@@ -974,13 +974,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     // declared above that memo.
     const isEmpty = !tenants.some(t => t.room_id === roomId && t.is_active);
     if (!isEmpty) return null;
+    // allAcReadings, NOT acReadings: the latter is already filtered to the
+    // selected month (line 322), so feeding it to a "strictly before this month"
+    // helper always yielded null. The box then rendered blank, and an operator
+    // taking that at face value and typing 0 would send an explicit opening of
+    // 0 — which wins over the server's own fallback and records the entire
+    // absolute meter reading as one month's consumption.
     return latestReadingBefore(
-      acReadings
+      allAcReadings
         .filter(r => r.room_id === roomId)
         .map(r => ({ for_month: r.for_month, meter_reading: r.meter_reading ?? null })),
       selectedMonth
     );
-  }, [acReadings, tenants, selectedMonth]);
+  }, [acReadings, allAcReadings, tenants, selectedMonth]);
 
   async function applyACUnits(roomId: string) {
     if (!canRecordPayment) return;
@@ -2245,13 +2251,24 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           {unassignedUnits > 0 && (
                             <div className="flex items-center gap-2 text-xs">
                               <span className="text-amber/70 flex-1 min-w-0 truncate">
-                                {unbilled.length > 0
-                                  ? "Unassigned — re-apply to bill the tenants above"
-                                  : "Unassigned (pre-occupancy) · hostel absorbs"}
+                                {acTenantCount === 0
+                                  ? "Nobody in the room — hostel's own cost"
+                                  : unbilled.length > 0
+                                    ? "Unassigned — re-apply to bill the tenants above"
+                                    : "Unassigned (pre-occupancy) · hostel absorbs"}
                               </span>
                               <span className="tabular-nums text-amber/70">{unassignedUnits} units</span>
-                              <span className="text-muted-foreground/40">·</span>
-                              <span className="tabular-nums text-amber/70">{formatCurrency(unassignedCharge)}</span>
+                              {/* No rupee figure when the room is empty: the electricity is
+                                  already captured in full as a utility bill, and restating it
+                                  here at the tenant recovery rate would read as a second cost.
+                                  There is also nobody to bill, so "re-apply" is not an action
+                                  the operator can take. */}
+                              {acTenantCount > 0 && (
+                                <>
+                                  <span className="text-muted-foreground/40">·</span>
+                                  <span className="tabular-nums text-amber/70">{formatCurrency(unassignedCharge)}</span>
+                                </>
+                              )}
                             </div>
                           )}
                           {overAssignedUnits > 0 && (

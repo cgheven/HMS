@@ -890,7 +890,7 @@ export async function applyRoomACUnitsAction(
       // exactly-previous-month rule has nothing to offer it. Occupied rooms
       // keep the strict rule — loosening it globally would turn a room last
       // read three months ago into one large catch-up bill.
-      supabase.from("hms_room_ac_readings").select("meter_reading, for_month").eq("room_id", roomId).eq("hostel_id", hostelId).lt("for_month", forMonth).order("for_month", { ascending: false }).limit(6),
+      supabase.from("hms_room_ac_readings").select("meter_reading, for_month").eq("room_id", roomId).eq("hostel_id", hostelId).lt("for_month", forMonth).not("meter_reading", "is", null).order("for_month", { ascending: false }).limit(6),
       // `.lt("check_in", ...)` matters for any back-dated apply: without it the
       // eligible set is "whoever lives in this room now", so closing an earlier
       // month would split it across tenants who had not moved in yet. Applying
@@ -951,6 +951,28 @@ export async function applyRoomACUnitsAction(
     // billed from whenever the room was last read, inheriting units consumed
     // before they arrived.
     if (eligible.length === 0) {
+      // Vacancy must be judged over the MONTH, not from today's roster.
+      // `eligible` is is_active only, so a room whose tenants all checked out
+      // mid-month looks empty now even though they were billed for it. Applying
+      // there would rewrite the month's stored row to tenant_count 0 and flag it
+      // hostel-borne while their charges still stand — the card would then read
+      // "0 tenants billed" for a month three people paid for.
+      const { data: billedThisMonth } = await supabase
+        .from("hms_payments")
+        .select("id, tenant:hms_tenants!inner(room_id)")
+        .eq("hostel_id", hostelId)
+        .eq("for_month", forMonth)
+        .gt("ac_charge", 0)
+        .eq("tenant.room_id", roomId)
+        .limit(1);
+      if ((billedThisMonth ?? []).length > 0) {
+        return {
+          success: false,
+          error:
+            "This room was occupied earlier this month and AC has already been billed for it. A vacant reading would overwrite that record — record the reading once the month has closed, or correct the tenants' charges instead.",
+        };
+      }
+
       const vacantOpening =
         prevRecord?.meter_reading != null
           ? Math.round(Number(prevRecord.meter_reading))
@@ -990,6 +1012,8 @@ export async function applyRoomACUnitsAction(
       if (vacantErr) throw new Error(vacantErr.message);
 
       revalidatePath("/payments");
+      // The dashboard's AC-units tile sums total_units, which this just changed.
+      revalidatePath("/dashboard");
       return { success: true, derivedUnits: vacantUnits, vacant: true, hostelBorneUnits: vacantUnits };
     }
 
@@ -1231,6 +1255,10 @@ export async function applyRoomACUnitsAction(
           // Departed tenants paid their share at checkout; omitting them made the
           // panel read "4 tenants billed" for a month that was divided by five.
           tenant_count: eligible.length + departedCounted,
+        // Asserted in both directions, exactly as tenant_count is: a month first
+        // recorded while vacant and later billed to a tenant must not stay flagged
+        // as hostel-borne. PostgREST upsert only sets the columns it is given.
+        recorded_while_vacant: false,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "room_id,for_month" }
