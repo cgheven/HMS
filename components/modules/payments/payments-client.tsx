@@ -34,7 +34,7 @@ import {
 } from "@/app/actions/payments";
 import { createInvoiceLink, createInstallmentReceiptLink, previewBillLinkAction } from "@/app/actions/tenants";
 import { recordPaymentAsPartner } from "@/app/actions/partner";
-import { deriveOpeningReading } from "@/lib/ac-billing";
+import { deriveOpeningReading, latestReadingBefore } from "@/lib/ac-billing";
 import {
   recordPaymentAsManager,
   applyRoomACUnitsAsManager,
@@ -340,6 +340,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [historyStatusFilter, setHistoryStatusFilter] = useState<StatusChip>("all");
   const [acOnly, setAcOnly] = useState(false);
   const [historyAcOnly, setHistoryAcOnly] = useState(false);
+  // Occupied is the DEFAULT: an operator who ignores this feature sees exactly
+  // the list they saw before empty rooms became meterable.
+  const [acOccupancy, setAcOccupancy] = useState<"all" | "occupied" | "empty">("occupied");
   const [acRoomFilter, setAcRoomFilter] = useState("all");
 
   const roomMap = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
@@ -959,7 +962,24 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     if (savedRow && savedRow.meter_reading != null && savedRow.total_units != null) {
       return Math.round(Number(savedRow.meter_reading)) - Math.round(Number(savedRow.total_units));
     }
-    return deriveOpeningReading(tenants.filter(t => t.room_id === roomId && t.is_active), selectedMonth);
+    const derived = deriveOpeningReading(tenants.filter(t => t.room_id === roomId && t.is_active), selectedMonth);
+    if (derived != null) return derived;
+
+    // Vacant rooms only. An empty room has no tenant to derive an opening from,
+    // and may legitimately have skipped a month — so fall back to its most
+    // recent earlier reading. Occupied rooms keep the strict previous-month
+    // rule: loosening it for them would turn a room last read three months ago
+    // into one large catch-up bill.
+    // Occupancy computed inline rather than from acRoomMeta: this callback is
+    // declared above that memo.
+    const isEmpty = !tenants.some(t => t.room_id === roomId && t.is_active);
+    if (!isEmpty) return null;
+    return latestReadingBefore(
+      acReadings
+        .filter(r => r.room_id === roomId)
+        .map(r => ({ for_month: r.for_month, meter_reading: r.meter_reading ?? null })),
+      selectedMonth
+    );
   }, [acReadings, tenants, selectedMonth]);
 
   async function applyACUnits(roomId: string) {
@@ -990,6 +1010,17 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         toast({ title: "AC Billing Error", description: result.error ?? "Failed to apply AC units.", variant: "destructive" });
       } else {
         const derivedUnits = result.derivedUnits ?? 0;
+        // A vacant room writes no payment rows, so none of the tenant-facing
+        // wording below applies — the units are the hostel's own cost.
+        if (result.vacant) {
+          toast({
+            title: "Reading recorded — hostel cost",
+            description: `${derivedUnits} unit${derivedUnits === 1 ? "" : "s"} with nobody in the room. Charged to no tenant, and the meter now carries forward for whoever moves in next.`,
+          });
+          await syncMonth(selectedMonth);
+          return;
+        }
+
         const cleared = derivedUnits === 0;
         // A bill that was already settled and is now short by this AC gets reopened
         // as partially paid — say so, or the balance appears from nowhere.
@@ -1015,18 +1046,25 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }
   }
 
-  // Only show AC rooms that have at least one currently active tenant.
-  // Rooms where all tenants have checked out are excluded — their mid-month AC was
-  // handled at checkout time and there is nothing left to bill at month end.
+  // EVERY metered room, occupied or not. Empty rooms were excluded until now, so
+  // consumption by staff, a guest, or lights left on had nowhere to go — and the
+  // meter chain broke, leaving the next tenant to inherit units used before they
+  // arrived. has_ac is the physical fact; meterAllRooms is the billing rule.
   const acRooms = useMemo(() => {
-    const activeRoomIds = new Set(tenants.map(t => t.room_id).filter(Boolean));
     return rooms
-      // has_ac is the physical fact; meterAllRooms is the billing rule. A branch
-      // billing electricity per room offers every occupied room here, so the
-      // opening/closing readings and unit entry are available for all of them.
-      .filter(r => (r.has_ac || meterAllRooms) && activeRoomIds.has(r.id))
+      .filter(r => r.has_ac || meterAllRooms)
       .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
-  }, [rooms, tenants, meterAllRooms]);
+  }, [rooms, meterAllRooms]);
+
+  // Occupancy per room, computed once rather than re-scanned inside each card.
+  const acRoomMeta = useMemo(() => {
+    const m = new Map<string, { occupied: boolean; activeTenants: TenantRow[] }>();
+    for (const r of acRooms) {
+      const active = tenants.filter(t => t.room_id === r.id && t.is_active);
+      m.set(r.id, { occupied: active.length > 0, activeTenants: active });
+    }
+    return m;
+  }, [acRooms, tenants]);
 
   // Only include payments for currently active tenants. Checked-out tenants have
   // is_active=false so they're absent from the `tenants` prop — their payment rows
@@ -1093,9 +1131,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }, [historyBase, historyStatusFilter]);
 
   const filteredAcRooms = useMemo(() => {
-    if (acRoomFilter === "all") return acRooms;
-    return acRooms.filter(r => r.id === acRoomFilter);
-  }, [acRooms, acRoomFilter]);
+    const occFiltered =
+      acOccupancy === "all"
+        ? acRooms
+        : acRooms.filter(r => (acRoomMeta.get(r.id)?.occupied ?? false) === (acOccupancy === "occupied"));
+    if (acRoomFilter === "all") return occFiltered;
+    return occFiltered.filter(r => r.id === acRoomFilter);
+  }, [acRooms, acRoomFilter, acOccupancy, acRoomMeta]);
 
   // Split so the chips can count the rows they would actually reveal. Counting
   // the whole month regardless of the room and AC filters read as a bug: Room 5
@@ -1902,6 +1944,37 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 </div>
               )}
             </div>
+            {/* Occupancy filter. Occupied is the default, so the list an operator
+                sees on arrival is exactly the one they saw before empty rooms
+                became meterable. Counts come from acRooms, never
+                filteredAcRooms, or each chip would report the current filter. */}
+            <div className="flex flex-wrap items-center gap-1 mb-2">
+              {([
+                ["occupied", "Occupied"],
+                ["empty", "Empty"],
+                ["all", "All"],
+              ] as const).map(([key, label]) => {
+                const n =
+                  key === "all"
+                    ? acRooms.length
+                    : acRooms.filter(r => (acRoomMeta.get(r.id)?.occupied ?? false) === (key === "occupied")).length;
+                const active = acOccupancy === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => { setAcOccupancy(key); setAcRoomFilter("all"); }}
+                    className={`h-7 px-3 rounded-full text-xs font-medium border transition-colors ${
+                      active
+                        ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/30"
+                        : "text-muted-foreground border-transparent hover:text-foreground hover:bg-white/[0.04]"
+                    }`}
+                  >
+                    {label}<span className="ml-1 opacity-60">{n}</span>
+                  </button>
+                );
+              })}
+            </div>
             <div className="space-y-2">
               {filteredAcRooms.map(room => {
                 const saved = acReadings.find(r => r.room_id === room.id);
@@ -1934,7 +2007,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               {acTenantCount} of {totalTenants} billed for AC
                             </span>
                           ) : (
-                            <span className="text-xs text-muted-foreground/60">No AC-package tenants</span>
+                            <>
+                              <span className="text-xs px-2 py-0.5 rounded-full bg-amber/10 text-amber border border-amber/20">Empty</span>
+                              <span className="text-xs text-muted-foreground/60">units recorded, charged to nobody</span>
+                            </>
                           )}
                         </div>
                         {saved ? (
@@ -1991,7 +2067,6 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               placeholder="0"
                               value={acOpeningReadings[room.id] ?? (derivedOpening != null ? String(derivedOpening) : "")}
                               onChange={e => setAcOpeningReadings(prev => ({ ...prev, [room.id]: e.target.value }))}
-                              disabled={acTenantCount === 0}
                               className="flex-1 sm:w-20 h-7 text-xs text-center disabled:opacity-40"
                             />
                           </div>
@@ -2004,7 +2079,6 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                             placeholder="Reading"
                             value={currentInput}
                             onChange={e => setAcUnits(prev => ({ ...prev, [room.id]: e.target.value }))}
-                            disabled={acTenantCount === 0}
                             className="flex-1 sm:w-28 h-9 text-sm text-center disabled:opacity-40"
                           />
                           {canRecordPayment && (
@@ -2012,7 +2086,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               size="sm"
                               className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40 shrink-0"
                               variant="ghost"
-                              disabled={applyingAC === room.id || !currentInput || acTenantCount === 0}
+                              disabled={applyingAC === room.id || !currentInput}
                               onClick={() => applyACUnits(room.id)}
                             >
                               {applyingAC === room.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}

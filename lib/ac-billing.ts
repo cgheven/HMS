@@ -265,7 +265,7 @@ export function computeACSegmentBilling(params: {
       tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
     } else {
       const assignedUnits = [...accumulated.values()].reduce((s, v) => s + v, 0);
-      unassignedUnits = Math.max(0, round2(units - assignedUnits));
+      // (assignment moved below — computed uniformly for every branch)
       if (assignedUnits === 0) {
         tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
       } else {
@@ -280,6 +280,15 @@ export function computeACSegmentBilling(params: {
       }
     }
   }
+
+  // Units the segmentation handed to nobody — consumption before the first
+  // joiner arrived, after the last one left, or the whole reading when the room
+  // was empty. Computed here rather than inside one branch: it was only ever
+  // assigned in the join-only branch, so the checkout-aware and equal-split
+  // branches always reported 0 however much was genuinely unallocated. The UI
+  // already labels this "hostel absorbs", and an empty room is its 100% case.
+  const assignedTotal = tenantBilling.reduce((sum, r) => sum + r.tenantUnits, 0);
+  unassignedUnits = Math.max(0, round2(units - assignedTotal));
 
   return { tenantBilling, proRatedCount, unassignedUnits, departedCounted: checkoutSegments.length };
 }
@@ -309,4 +318,29 @@ export function deriveOpeningReading(
 
   const fallback = tenants.map(toReading).filter((v): v is number => v != null);
   return fallback.length > 0 ? Math.min(...fallback) : null;
+}
+
+/**
+ * The most recent reading STRICTLY BEFORE a given month, from rows already
+ * fetched.
+ *
+ * The opening reading is normally looked up at exactly the previous month, and
+ * that stays true for occupied rooms — six call sites depend on it, and
+ * loosening it globally would turn a room last read three months ago into one
+ * large catch-up bill on the next Apply.
+ *
+ * A vacant room is the case where that rule has nothing to offer: nobody was
+ * there to be billed, so a month may legitimately have been skipped. This
+ * fallback is therefore used ONLY on the vacant path, where no tenant is
+ * charged and the sole purpose is keeping the meter chain unbroken for whoever
+ * moves in next.
+ */
+export function latestReadingBefore(
+  rows: { for_month: string; meter_reading: number | string | null }[] | null | undefined,
+  beforeMonth: string
+): number | null {
+  const prior = (rows ?? [])
+    .filter((r) => r.for_month < beforeMonth && r.meter_reading != null)
+    .sort((a, b) => (a.for_month < b.for_month ? 1 : -1));
+  return prior.length > 0 ? Number(prior[0].meter_reading) : null;
 }

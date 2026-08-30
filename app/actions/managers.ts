@@ -14,7 +14,7 @@ import { notifyOwnerPaymentRecorded, notifyOwnerPaymentUndone } from "@/lib/paym
 import { performPaymentUndo } from "@/lib/payment-undo"
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
-import { computeACSegmentBilling, deriveOpeningReading } from "@/lib/ac-billing"
+import { computeACSegmentBilling, deriveOpeningReading, latestReadingBefore } from "@/lib/ac-billing"
 import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge } from "@/lib/payment-calc"
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
@@ -332,7 +332,7 @@ export async function applyRoomACUnitsAsManager(
   forMonth: string,
   meterReading: number,
   openingReading?: number,
-): Promise<{ error: string | null; eligibleCount?: number; perTenantUnits?: number; perTenantCharge?: number; derivedUnits?: number; prevMonthReading?: number; currentReading?: number }> {
+): Promise<{ error: string | null; eligibleCount?: number; perTenantUnits?: number; perTenantCharge?: number; derivedUnits?: number; prevMonthReading?: number; currentReading?: number; vacant?: boolean; hostelBorneUnits?: number }> {
   try {
     const ctx = await requireManagerPermission("collect_payments")
     const hostelId = ctx.activeHostel.id
@@ -353,10 +353,13 @@ export async function applyRoomACUnitsAsManager(
     const prevMonthStr = getPrevMonth(forMonth)
 
     // Verify room, get config, fetch previous month reading, active tenants, join readings, and checkout readings in parallel
-    const [{ data: room }, { data: config }, { data: prevRecord }, { data: allTenants, error: allTenantsErr }, { data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
+    const [{ data: room }, { data: branch }, { data: config }, { data: prevRecord }, { data: priorReadings }, { data: allTenants, error: allTenantsErr }, { data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
       admin.from("hms_rooms").select("id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
+      admin.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).maybeSingle(),
       admin.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).maybeSingle(),
       admin.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      // Vacant-path fallback only — see applyRoomACUnitsAction.
+      admin.from("hms_room_ac_readings").select("meter_reading, for_month").eq("room_id", roomId).eq("hostel_id", hostelId).lt("for_month", forMonth).order("for_month", { ascending: false }).limit(6),
       // Scoped to tenants who had moved in by the month being billed — see
       // applyRoomACUnitsAction for why a back-dated apply otherwise charges
       // later arrivals for a month they were not there.
@@ -389,7 +392,11 @@ export async function applyRoomACUnitsAsManager(
     if (allTenantsErr) return { error: `Could not read this room's tenants: ${allTenantsErr.message}` }
 
     if (!room) return { error: "Room not found." }
-    if (!room.has_ac) return { error: "This room does not have AC." }
+    // has_ac is the physical fact; meter_all_rooms is the billing rule. The
+    // owner path (applyRoomACUnitsAction) was updated for branches that meter
+    // every room and this one was not — so on Continental, which meters all 51
+    // rooms, a manager could not record a reading for a non-AC room at all.
+    if (!room.has_ac && !branch?.meter_all_rooms) return { error: "This room does not have AC." }
 
     const perUnitRate = Number(config?.ac_per_unit_rate ?? 0)
     if (perUnitRate <= 0) {
@@ -401,8 +408,49 @@ export async function applyRoomACUnitsAsManager(
     const acMaintenanceCharge = Number(config?.ac_maintenance_rate ?? 0)
 
     const eligible = allTenants ?? []
+
+    // ── Vacant room: record the reading, charge nobody ────────────
+    // Mirrors applyRoomACUnitsAction exactly. RETURNS before every per-tenant
+    // writer below — above all before the stale-charge sweeper, which with an
+    // empty eligible set would zero the AC charge of every tenant who lived
+    // here this month. A manager holding collect_payments may do this: it
+    // writes no payment row and moves no money, so it is strictly less
+    // privileged than the occupied Apply that permission already allows.
     if (eligible.length === 0) {
-      return { error: "No active tenants found in this room." }
+      const vacantOpening =
+        prevRecord?.meter_reading != null
+          ? Math.round(Number(prevRecord.meter_reading))
+          : openingReading != null && Number.isFinite(Number(openingReading))
+            ? Math.round(Number(openingReading))
+            : latestReadingBefore(priorReadings ?? [], forMonth)
+
+      if (vacantOpening == null) {
+        return { error: "This room has no earlier meter reading, so there is nothing to measure this month's units against. Enter the opening reading for the start of the month." }
+      }
+
+      const vacantUnits = Math.round(Number(meterReading)) - vacantOpening
+      if (vacantUnits < 0) {
+        return { error: `Reading ${meterReading} is below the opening reading ${vacantOpening}.` }
+      }
+
+      const { error: vacantErr } = await admin.from("hms_room_ac_readings").upsert(
+        {
+          hostel_id: hostelId,
+          room_id: roomId,
+          for_month: forMonth,
+          meter_reading: Math.round(Number(meterReading)),
+          total_units: vacantUnits,
+          per_unit_rate: perUnitRate,
+          tenant_count: 0,
+          recorded_while_vacant: true,
+        },
+        { onConflict: "room_id,for_month" },
+      )
+      if (vacantErr) return { error: vacantErr.message }
+
+      revalidatePath("/portal/payments")
+      revalidatePath("/payments")
+      return { error: null, derivedUnits: vacantUnits, vacant: true, hostelBorneUnits: vacantUnits }
     }
 
     // No prev-month record and no explicit opening reading typed in? Fall back
