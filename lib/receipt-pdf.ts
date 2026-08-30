@@ -80,7 +80,10 @@ function pk(amount: number): string {
 }
 
 function fmtDate(dateStr: string | null | undefined): string {
-  if (!dateStr) return "—";
+  // ASCII only: the text is written into the PDF stream in a single-byte font
+  // encoding, so an em dash (U+2014) emerges as "\u00e2" — visible as `Date: \u00e2` on a
+  // real receipt.
+  if (!dateStr) return "-";
   const d = new Date(dateStr);
   return d.toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
 }
@@ -92,7 +95,7 @@ function fmtMonth(yyyyMM: string): string {
 }
 
 function methodLabel(m: string | null | undefined): string {
-  if (!m) return "—";
+  if (!m) return "-";
   return m.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -230,7 +233,7 @@ export function generateReceiptPDF(
     } else {
       addKv("Period", fmtMonth(payment.for_month)); nl(12);
     }
-    addKv("Method", (payment.payment_method ?? "—").toUpperCase()); nl(12);
+    addKv("Method", (payment.payment_method ?? "-").toUpperCase()); nl(12);
   }
   addDash(); nl(10);
 

@@ -1729,6 +1729,26 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           // typed something themselves, so re-fetching on a date edit doesn't
           // clobber a value they just entered.
           setCheckoutACReading((prev) => (prev === "" && ctx.currentMonthReading != null) ? String(ctx.currentMonthReading) : prev);
+
+          // Same treatment for the OPENING reading. It was shown only as a
+          // placeholder, so the operator saw a greyed-out number in an empty box
+          // while the departure field directly below it carried a real value —
+          // two fields, same kind of number, filled two different ways.
+          //
+          // Only when there is no previous-month record: with one, the server
+          // uses it and the dialog shows it as text with no box to fill. Same
+          // priority order as checkoutMath and the hint below the field, so the
+          // number in the box is the number the estimate is computed from.
+          if (ctx.prevMonthReading == null) {
+            const impliedOpening =
+              ctx.currentMonthReading != null && ctx.currentMonthUnits != null
+                ? ctx.currentMonthReading - ctx.currentMonthUnits
+                : null;
+            const suggested = impliedOpening ?? ctx.derivedOpening ?? null;
+            if (suggested != null) {
+              setCheckoutACOpeningReading((prev) => (prev === "" ? String(suggested) : prev));
+            }
+          }
         }
         setCheckoutACContextLoading(false);
       });
@@ -2115,7 +2135,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // unlike a genuinely fresh AC reading which isn't computed until below.
     const existingAcCharge = checkoutPendingPayment?.ac_charge ?? 0;
     const alreadyPaid = checkoutPendingPayment?.amount_paid ?? 0;
-    const isPartiallyPaid = checkoutPendingPayment?.status === "partially_paid";
+    // MUST match lib/tenant-checkout.ts rowPartiallyPaid exactly, or the figure
+  // quoted at the door differs from the one the server settles. The money test
+  // is the half that was missing: a REVERSED payment is stored partially_paid
+  // holding nothing, and treating it as "AC already collected" froze the charge
+  // here while the server recomputed it.
+  const isPartiallyPaid = checkoutPendingPayment?.status === "partially_paid"
+    && Number(checkoutPendingPayment?.amount_paid ?? 0) > 0.009;
     // Only netted out when the row IS the departure month's — otherwise the
     // fresh AC belongs to a different month than this row's charge and the two
     // must not be swapped. Mirrors supersededAcCharge in lib/tenant-checkout.ts.
@@ -4532,9 +4558,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         <div className="space-y-1.5">
                           <p className="text-xs text-amber/80">
                             {impliedOpening != null
-                              ? `No previous month record found — using this month's AC Units opening (${impliedOpening.toLocaleString()}) unless overridden below`
+                              ? `No previous month record found — auto-filled from this month's AC Units opening (${impliedOpening.toLocaleString()}); edit it if the meter started elsewhere`
                               : suggestedOpening != null
-                                ? `No previous month record found — auto-using move-in reading ${suggestedOpening.toLocaleString()} unless overridden below`
+                                ? `No previous month record found — auto-filled from the move-in reading (${suggestedOpening.toLocaleString()}); edit it if the meter started elsewhere`
                                 : "No previous month record found — enter the meter reading at the start of this month"}
                           </p>
                           <input

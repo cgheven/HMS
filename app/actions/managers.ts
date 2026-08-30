@@ -10,7 +10,8 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { requireManagerPermission } from "@/lib/manager-auth"
 import { logActivity } from "@/lib/audit"
 import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation"
-import { notifyOwnerPaymentRecorded } from "@/lib/payment-notifications"
+import { notifyOwnerPaymentRecorded, notifyOwnerPaymentUndone } from "@/lib/payment-notifications"
+import { performPaymentUndo } from "@/lib/payment-undo"
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
 import { computeACSegmentBilling, deriveOpeningReading } from "@/lib/ac-billing"
@@ -1278,6 +1279,11 @@ export async function recordPaymentAsManager(
       // stored NET of the discount — so an unguarded update would settle the
       // tenant against a total that no longer exists.
       .eq("referral_percent", existingPayment.referral_percent ?? 0)
+      // Also pin amount_paid: the referral guard catches a re-priced bill but not
+      // a re-COLLECTED one. An undo landing between this action's read and its
+      // write moves amount_paid, and without this the collection would settle
+      // against a total that no longer exists.
+      .eq("amount_paid", previousAmountPaid)
       // Return the updated row so the caller can drive the post-payment receipt
       // dialog, matching recordPaymentAsPartner.
       .select("*, tenant:hms_tenants(full_name, room_id, phone)")
@@ -1354,6 +1360,65 @@ export async function recordPaymentAsManager(
       installmentId: installmentRow?.id as string | undefined,
       error: null,
     }
+  } catch (err: unknown) {
+    unstable_rethrow(err)
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." }
+  }
+}
+
+/**
+ * Manager-side undo. Managers run the hostel day to day and are the people most
+ * likely to mistype an amount, so they can correct it themselves — gated on the
+ * same collect_payments permission that let them record it, and written to the
+ * audit log so the correction is never silent.
+ */
+export async function undoLastPaymentAsManager(
+  paymentId: string,
+): Promise<{ undone?: { amount: number; forMonth: string; tenantName: string | null }; error?: string }> {
+  try {
+    const ctx = await requireManagerPermission("collect_payments")
+    const hostelId = ctx.activeHostel.id
+    const admin = createAdminClient()
+
+    const result = await performPaymentUndo(admin, paymentId, hostelId)
+    if (result.error || !result.undone) return { error: result.error ?? "Could not undo this payment." }
+
+    if (ctx.manager.supabase_user_id) {
+      await logActivity({
+        hostel_id: hostelId,
+        actor_id: ctx.manager.supabase_user_id,
+        action: "payment.undo",
+        entity: "payment",
+        entity_id: paymentId,
+        meta: {
+          tenant_name: result.undone.tenantName,
+          amount: result.undone.amount,
+          for_month: result.undone.forMonth,
+          undone_by_name: ctx.manager.name,
+          undone_by_role: "manager",
+          installment_id: result.undone.installmentId,
+          payment_method: result.undone.paymentMethod,
+          receipt_number: result.undone.receiptNumber,
+          payment_date: result.undone.paymentDate,
+          restored_amount_paid: result.undone.restoredAmountPaid,
+        },
+      })
+    }
+
+    after(() =>
+      notifyOwnerPaymentUndone({
+        paymentId,
+        amountReversed: result.undone!.amount,
+        actorName: ctx.manager.name,
+        actorRole: "Manager",
+      })
+    )
+
+    revalidatePath("/portal/payments")
+    revalidatePath("/payments")
+    revalidatePath("/reports")
+    revalidatePath("/tenants")
+    return { undone: result.undone }
   } catch (err: unknown) {
     unstable_rethrow(err)
     return { error: err instanceof Error ? err.message : "An unexpected error occurred." }

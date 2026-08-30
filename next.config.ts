@@ -22,6 +22,11 @@ const securityHeaders = [
       "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
       "font-src 'self' data:",
       "media-src 'self' blob:",
+      // Receipts and invoices are previewed in-app rather than in a new tab.
+      // The PDF is fetched same-origin and rendered from a blob: URL, so this
+      // adds blob: to what an <iframe> may load — it does NOT relax
+      // frame-ancestors below, which still forbids anyone framing US.
+      "frame-src 'self' blob:",
       "frame-ancestors 'none'",
       "form-action 'self'",
       "base-uri 'self'",

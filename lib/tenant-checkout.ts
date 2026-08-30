@@ -305,7 +305,7 @@ export async function performTenantCheckout(
         adminDb.from("hms_room_ac_readings").select("meter_reading, total_units").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth).maybeSingle(),
         // This tenant's own already-billed AC for the month, so the breakpoint can
         // record the real figure even on the path where nothing is recomputed.
-        adminDb.from("hms_payments").select("ac_charge, ac_units_consumed, status").eq("tenant_id", input.tenantId).eq("hostel_id", hostelId).eq("for_month", checkoutMonth).maybeSingle(),
+        adminDb.from("hms_payments").select("ac_charge, ac_units_consumed, status, amount_paid").eq("tenant_id", input.tenantId).eq("hostel_id", hostelId).eq("for_month", checkoutMonth).maybeSingle(),
       ]);
 
       // If the meter hasn't actually moved past what AC Units already applied this
@@ -331,7 +331,12 @@ export async function performTenantCheckout(
       // row with ac_charge = 0 had nothing collected against AC, so there is
       // nothing to double-bill — suppressing the recompute there would bill the
       // tenant Rs 0 for a whole month of AC and never recover it at month-end.
+      // A REVERSED payment is stored partially_paid holding nothing, so without
+      // the amount_paid test it looked like a part-paid row with AC already
+      // collected — suppressing the recompute and under-billing a departing
+      // member for their final month of AC.
       const rowPartiallyPaid = ownPaymentRow?.status === "partially_paid"
+        && Number(ownPaymentRow?.amount_paid ?? 0) > 0.009
         && Number(ownPaymentRow?.ac_charge ?? 0) > 0;
       const hasNewerReading = !rowPartiallyPaid && (
         alreadyAppliedReading == null
@@ -651,6 +656,18 @@ export async function performTenantCheckout(
       .eq("hostel_id", hostelId)
       .gt("for_month", input.checkoutDate.substring(0, 7))
       .in("status", ["pending", "overdue"]);
+
+    // A REVERSED bill is stored partially_paid but holds nothing, so the filter
+    // above left it behind as a permanent phantom debt for a month the member
+    // will never occupy. Deleted only at amount_paid = 0 — a bill with real
+    // money against it stays, exactly as the comment above requires.
+    await adminDb.from("hms_payments")
+      .delete()
+      .eq("tenant_id", input.tenantId)
+      .eq("hostel_id", hostelId)
+      .gt("for_month", input.checkoutDate.substring(0, 7))
+      .eq("status", "partially_paid")
+      .eq("amount_paid", 0);
 
     // Same reasoning for referral rewards: a reward parked on a month this
     // tenant will never be billed for has nowhere to land. Scoped to months

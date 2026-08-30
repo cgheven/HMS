@@ -174,8 +174,15 @@ export async function GET(
   // itemised breakdown the tenant needs when they ask why the figure is what it
   // is. Installment-scoped links are always historical snapshots of money that
   // WAS received, so they are never invoices.
+  // Decided on MONEY HELD, not on status. An undone payment leaves the bill at
+  // partially_paid with amount_paid = 0 (that collected status is what stops the
+  // monthly sync re-pricing a historical bill), and status alone rendered it as
+  // a "PARTIAL PAYMENT RECEIPT / Amount Received Rs. 0" — a receipt for nothing,
+  // on the permanent link the tenant was already sent.
+  const heldAmount = Number((payment as { amount_paid?: number | null }).amount_paid ?? 0);
   const isInvoice =
-    !installmentSnapshot && payment.status !== "paid" && payment.status !== "partially_paid";
+    !installmentSnapshot &&
+    (heldAmount <= 0.009 || (payment.status !== "paid" && payment.status !== "partially_paid"));
 
   // A waived bill is owed by nobody. Printing "AMOUNT DUE" over it would ask a
   // tenant for money the hostel has already written off.
@@ -189,8 +196,11 @@ export async function GET(
   // make the very first cache entry stale on arrival.
   let stampSource: string | null = (payment as { updated_at?: string }).updated_at ?? null;
 
-  // Self-heal: generate + persist receipt_number on first view if it was never set.
-  if (!installmentSnapshot && !payment.receipt_number) {
+  // Self-heal: generate + persist receipt_number on first view if it was never
+  // set. Never for an invoice — stamping a receipt number onto a bill holding no
+  // money manufactures evidence of a payment that was not made, and an undo
+  // clears receipt_number precisely so it is not carried over.
+  if (!installmentSnapshot && !isInvoice && !payment.receipt_number) {
     const tenantRaw = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
     const tenantName = (tenantRaw as { full_name?: string })?.full_name ?? "";
     const initials = tenantName.split(" ").map((w: string) => w[0] ?? "").join("").toUpperCase().slice(0, 2);

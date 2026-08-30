@@ -3,9 +3,10 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   CreditCard, CheckCircle2, Clock, AlertTriangle, Wallet,
-  Banknote, Zap, Loader2, FileText, ChevronLeft, ChevronRight, Search, Gift,
+  Banknote, Zap, Loader2, FileText, ChevronLeft, ChevronRight, Search, Gift, Undo2, Send, Bell,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { RowMenu, type RowMenuItem } from "@/components/ui/row-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -19,7 +20,7 @@ import { countBillableNights } from "@/lib/daily-billing";
 import { splitPaymentCharges } from "@/lib/payment-calc";
 import { MeterPhoto } from "@/components/modules/ac/meter-photo";
 import { uploadMonthlyMeterPhoto, deleteMonthlyMeterPhoto } from "@/app/actions/ac-meter-photos";
-import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
+import { tenantDueDay, shouldRemindToday, hasCollected, effectivePaymentStatus } from "@/lib/payment-calc";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import {
   syncMonthAction,
@@ -29,14 +30,16 @@ import {
   saveACJoinReadingAction,
   sendBulkRemindersAction,
   sendDueTodayRemindersAction,
+  undoLastPaymentAction,
 } from "@/app/actions/payments";
-import { createInvoiceLink, createInstallmentReceiptLink } from "@/app/actions/tenants";
+import { createInvoiceLink, createInstallmentReceiptLink, previewBillLinkAction } from "@/app/actions/tenants";
 import { recordPaymentAsPartner } from "@/app/actions/partner";
 import { deriveOpeningReading } from "@/lib/ac-billing";
 import {
   recordPaymentAsManager,
   applyRoomACUnitsAsManager,
   saveACJoinReadingAsManager,
+  undoLastPaymentAsManager,
 } from "@/app/actions/managers";
 
 interface TenantRow {
@@ -115,6 +118,10 @@ const methodLabels: Record<PaymentMethod, string> = {
   sadapay: "SadaPay", other: "Other",
 };
 
+// Shared with the dashboard and anything else that must not read a reversed
+// payment as a real one — see lib/payment-calc.ts.
+const displayStatus = (p: Payment): PaymentStatus => effectivePaymentStatus(p);
+
 const statusConfig: Record<PaymentStatus, { label: string; color: string }> = {
   paid: { label: "Paid", color: "text-emerald-400" },
   pending: { label: "Pending", color: "text-amber" },
@@ -161,7 +168,7 @@ const STATUS_CHIPS: { key: StatusChip; label: string; title?: string }[] = [
 function countByChip(rows: Payment[], key: StatusChip): number {
   if (key === "all") return rows.length;
   if (key === "paid") return rows.filter(p => p.status === "paid").length;
-  if (key === "partial") return rows.filter(p => p.status === "partially_paid").length;
+  if (key === "partial") return rows.filter(p => displayStatus(p) === "partially_paid").length;
   return rows.filter(p => isUnpaidStatus(p.status)).length;
 }
 
@@ -488,6 +495,31 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     if (row) openMarkPaid(row);
   }
 
+  // Undo restores the bill to exactly what it was before the last installment —
+  // amount_before is stored on the row, so nothing is recalculated. The operator
+  // then records the payment again with the right number.
+  const [undoTarget, setUndoTarget] = useState<Payment | null>(null);
+  const [undoing, setUndoing] = useState(false);
+
+  async function handleUndo() {
+    if (!undoTarget) return;
+    setUndoing(true);
+    const result = isManager
+      ? await undoLastPaymentAsManager(undoTarget.id)
+      : await undoLastPaymentAction(undoTarget.id);
+    setUndoing(false);
+    if (result.error) {
+      toast({ title: "Could not undo", description: result.error, variant: "destructive" });
+      return;
+    }
+    toast({
+      title: "Payment undone",
+      description: `${formatCurrency(result.undone?.amount ?? 0)} reversed. Record it again with the correct amount.`,
+    });
+    setUndoTarget(null);
+    await syncMonth(selectedMonth);
+  }
+
   async function handleMarkPaid() {
     if (!markDialog) return;
 
@@ -626,6 +658,100 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       }
       return;
     }
+  }
+
+  // Opens the receipt that would actually be sent. installmentId scopes it to
+  // the single transaction just recorded — without it the preview shows the
+  // whole-bill cumulative receipt, which is not what the tenant would receive.
+  // Reuses the same token minting as the send path, so previewing then sending
+  // shares one permanent link rather than creating a second.
+  async function openReceiptPreview(p: Payment, installmentId?: string) {
+    await showDocPreview("Receipt preview", `${p.tenant?.full_name ?? "Member"} · ${p.for_month}`, async () => {
+      const result = installmentId
+        ? await createInstallmentReceiptLink(installmentId)
+        : await createInvoiceLink(p.id);
+      if (result.error || !result.token) return { error: result.error ?? "No receipt available." };
+      return { url: `/r/${result.token}` };
+    });
+  }
+
+  // ── In-app document preview ───────────────────────────────────────────────
+  // Shown in a dialog rather than a new tab: previewing is a glance before
+  // sending, and bouncing the operator into a separate tab (blank first, then a
+  // PDF) costs them their place in the list.
+  //
+  // The PDF is fetched same-origin and rendered from a blob: URL. It cannot be
+  // framed directly — /r/<token> carries X-Frame-Options: DENY and
+  // frame-ancestors 'none', which is right for a public receipt and should stay
+  // — and a blob has no such headers, so this reads the bytes we are already
+  // allowed to read and displays them locally.
+  const [docPreview, setDocPreview] = useState<{
+    title: string;
+    subtitle: string;
+    url: string | null;   // blob: URL for the frame
+    href: string | null;  // real URL, for "Open in new tab"
+    error: string | null;
+    /** Page aspect ratio (w/h) read from the PDF itself. */
+    ratio: number;
+  } | null>(null);
+
+  // These receipts are thermal slips — 250pt wide with a height that grows with
+  // the content (lib/receipt-pdf.ts: `PAGE_H = yTop + 10`), so there is no fixed
+  // aspect ratio to hard-code. Read the real page box out of the file and size
+  // the window to it, so the document fits exactly and never needs zooming.
+  const DEFAULT_DOC_RATIO = 250 / 364;
+  async function pdfAspectRatio(blob: Blob): Promise<number> {
+    try {
+      const head = await blob.slice(0, 4096).text();
+      const m = head.match(/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/);
+      if (!m) return DEFAULT_DOC_RATIO;
+      const w = parseFloat(m[1]);
+      const h = parseFloat(m[2]);
+      if (!(w > 0 && h > 0)) return DEFAULT_DOC_RATIO;
+      return w / h;
+    } catch {
+      return DEFAULT_DOC_RATIO;
+    }
+  }
+
+  async function showDocPreview(
+    title: string,
+    subtitle: string,
+    resolve: () => Promise<{ url?: string; error?: string }>
+  ) {
+    setDocPreview({ title, subtitle, url: null, href: null, error: null, ratio: DEFAULT_DOC_RATIO });
+    const result = await resolve();
+    if (result.error || !result.url) {
+      setDocPreview((d) => (d ? { ...d, error: result.error ?? "This document is not available." } : d));
+      return;
+    }
+    try {
+      const res = await fetch(result.url);
+      if (!res.ok) throw new Error(`The document could not be generated (${res.status}).`);
+      const blob = await res.blob();
+      const ratio = await pdfAspectRatio(blob);
+      setDocPreview((d) => (d ? { ...d, url: URL.createObjectURL(blob), href: result.url!, ratio } : d));
+    } catch (err) {
+      setDocPreview((d) =>
+        d ? { ...d, href: result.url!, error: err instanceof Error ? err.message : "Could not load the document." } : d
+      );
+    }
+  }
+
+  function closeDocPreview() {
+    // Release the blob rather than leaking it for the life of the page.
+    if (docPreview?.url) URL.revokeObjectURL(docPreview.url);
+    setDocPreview(null);
+  }
+
+  // An uncollected bill has no receipt, but it does have an invoice — the same
+  // document a payment reminder links to.
+  async function openBillPreview(p: Payment) {
+    await showDocPreview(
+      "Invoice preview",
+      `${p.tenant?.full_name ?? "Member"} · ${p.for_month}`,
+      () => previewBillLinkAction(p.id)
+    );
   }
 
   async function openReceipt(paymentId: string) {
@@ -961,7 +1087,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const filteredHistory = useMemo(() => {
     const base = historyBase;
     if (historyStatusFilter === "paid") return base.filter(p => p.status === "paid");
-    if (historyStatusFilter === "partial") return base.filter(p => p.status === "partially_paid");
+    if (historyStatusFilter === "partial") return base.filter(p => displayStatus(p) === "partially_paid");
     if (historyStatusFilter === "unpaid") return base.filter(p => isUnpaidStatus(p.status));
     return base;
   }, [historyBase, historyStatusFilter]);
@@ -1000,7 +1126,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
   const filteredPayments = useMemo(() => {
     if (statusFilter === "paid") return monthlyBase.filter(p => p.status === "paid");
-    if (statusFilter === "partial") return monthlyBase.filter(p => p.status === "partially_paid");
+    if (statusFilter === "partial") return monthlyBase.filter(p => displayStatus(p) === "partially_paid");
     if (statusFilter === "unpaid") return monthlyBase.filter(p => isUnpaidStatus(p.status));
     return monthlyBase;
   }, [monthlyBase, statusFilter]);
@@ -1042,13 +1168,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }, 0);
     const pending = billablePayments.filter((p) => p.status === "pending" || p.status === "overdue" || p.status === "partially_paid").reduce((s, p) => {
       const outstanding = Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0));
-      const acPortion = p.status === "pending" || p.status === "overdue" ? Math.max(0, Number(p.ac_charge || 0)) : 0;
+      // displayStatus, not p.status: a REVERSED bill is stored partially_paid
+      // while holding nothing, and its AC is unambiguously outstanding. A
+      // genuinely part-paid bill keeps the bundled treatment below, because
+      // nothing records whether that money went to rent or to AC.
+      const acPortion = displayStatus(p) === "pending" || p.status === "overdue" ? Math.max(0, Number(p.ac_charge || 0)) : 0;
       return s + Math.max(0, outstanding - acPortion);
     }, 0);
     // AC collected/pending stay paid-only — a partial payment can't be cleanly
     // attributed between rent and AC (which portion did it cover?).
     const acCollected = billablePayments.filter((p) => p.status === "paid").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
-    const acPending = billablePayments.filter((p) => p.status === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
+    // Same rule: a reversed bill owes all of its AC. Without this both AC totals
+    // fell to zero after an undo and the whole AC section disappeared from the
+    // page (hasAc below), hiding money that is genuinely owed.
+    const acPending = billablePayments.filter((p) => displayStatus(p) === "pending" || p.status === "overdue").reduce((s, p) => s + Math.max(0, Number(p.ac_charge || 0)), 0);
     return { due, collected, pending, acCollected, acPending };
   }, [billablePayments]);
 
@@ -1076,14 +1209,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">AC</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Total</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-center w-28">Status</span>
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-80">Action</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-[22rem]">Action</span>
       </div>
     );
   }
 
   function PaymentRow({ p }: { p: Payment }) {
     const room = p.tenant?.room_id ? roomMap[p.tenant.room_id] : null;
-    const cfg = statusConfig[p.status];
+    const cfg = statusConfig[displayStatus(p)];
     const isReservation = isReservationRow(p);
     const isLate = (p.status === "pending" || p.status === "overdue") && p.for_month < selectedMonth;
     // A reservation has no package tier — falling through to "Space Only" would
@@ -1107,9 +1240,40 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       partially_paid: "bg-blue-500/15 text-blue-400 border-blue-500/25",
     };
 
+    // The inline buttons are exactly what clients already know — Remind, Pay,
+    // Receipt, Collect Rest, in their existing places. Everything new goes in
+    // the overflow menu instead, so the familiar row does not change shape.
+    // Driven by the EFFECTIVE status throughout. A reversed bill holds no money,
+    // so it must behave exactly like an unpaid one: no receipt to preview, no
+    // receipt to WhatsApp ("We've received Rs. 0"), and an invoice instead.
+    const view = displayStatus(p);
+    const menuItems: RowMenuItem[] = [];
+    if (view === "pending" || view === "overdue") {
+      menuItems.push({
+        label: "Preview Invoice",
+        icon: <FileText className="w-3.5 h-3.5" />,
+        onSelect: () => openBillPreview(p),
+      });
+    }
+    if (view === "paid" || view === "partially_paid") {
+      menuItems.push({
+        label: "Preview Receipt",
+        icon: <FileText className="w-3.5 h-3.5" />,
+        onSelect: () => openReceiptPreview(p),
+      });
+      if (canRecordPayment) {
+        menuItems.push({
+          label: "Undo Payment",
+          icon: <Undo2 className="w-3.5 h-3.5" />,
+          danger: true,
+          onSelect: () => setUndoTarget(p),
+        });
+      }
+    }
+
     const actionButtons = (
       <>
-        {(p.status === "pending" || p.status === "overdue") && (
+        {(view === "pending" || view === "overdue") && (
           <>
             <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 shrink-0 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" onClick={() => sendReminder(p)}>
               {WA_ICON} Remind
@@ -1121,7 +1285,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             )}
           </>
         )}
-        {p.status === "partially_paid" && (
+        {view === "partially_paid" && (
           <>
             <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 shrink-0 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" onClick={() => sendReminder(p)}>
               {WA_ICON} Remind
@@ -1136,12 +1300,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             )}
           </>
         )}
-        {p.status === "paid" && (
+        {view === "paid" && (
           <Button variant="ghost" size="sm" className="h-8 px-3 text-xs gap-1.5 shrink-0 text-[#25D366] hover:text-[#25D366] hover:bg-[#25D366]/10 border border-[#25D366]/25 hover:border-[#25D366]/50" disabled={sendingWa === p.id} onClick={() => sendWhatsAppReceipt(p)}>
             {WA_ICON} Receipt
           </Button>
         )}
         {p.status === "waived" && <span className="text-xs text-muted-foreground px-2">Waived</span>}
+        {p.status !== "waived" && <RowMenu items={menuItems} />}
       </>
     );
 
@@ -1209,17 +1374,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 </p>
               )}
               {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
-              {p.status === "partially_paid" && (
+              {displayStatus(p) === "partially_paid" && (
                 <p className="text-xs text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
               )}
-              <span className={`inline-flex items-center mt-1 px-2 py-0.5 rounded-full text-xs font-medium border ${statusColors[p.status]}`}>
+              <span className={`inline-flex items-center mt-1 px-2 py-0.5 rounded-full text-xs font-medium border ${statusColors[displayStatus(p)]}`}>
                 {cfg.label}
               </span>
             </div>
           </div>
-          {/* Row 2: actions */}
+          {/* Row 2: actions. flex-wrap because this is the narrow view and Undo
+              took the row to four buttons — without it they compress past
+              legibility on a phone instead of dropping to a second line. */}
           {p.status !== "waived" && (
-            <div className="flex items-center gap-1.5 pt-0.5 border-t border-white/5">
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5 border-t border-white/5">
               {actionButtons}
             </div>
           )}
@@ -1304,12 +1471,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               </p>
             )}
             {Number(p.late_fee) > 0 && <p className="text-[10px] leading-tight text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
-            {p.status === "partially_paid" && (
+            {displayStatus(p) === "partially_paid" && (
               <p className="text-[10px] leading-tight text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
             )}
           </div>
           <div className="flex justify-center w-28">
-            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${statusColors[p.status]}`}>
+            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${statusColors[displayStatus(p)]}`}>
               {cfg.label}
             </span>
           </div>
@@ -1318,9 +1485,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               button count, rows with more buttons would compute a wider auto
               column than rows with fewer, shifting Amount/Status out of
               alignment between rows and against the header. A shared fixed
-              width sized for the max case (3 buttons) keeps every row's grid
-              identical regardless of how many buttons it actually renders. */}
-          <div className="flex items-center justify-end gap-2 w-80">
+              width sized for the max case keeps every row's grid identical
+              regardless of how many buttons it actually renders.
+
+              22rem: the original three inline buttons (Remind · Receipt ·
+              Collect Rest) at 20rem, plus the 32px overflow menu and its gap.
+              Anything added from here belongs in that menu, not in the row —
+              this width grew from 20 to 29rem in one afternoon before the menu
+              existed, and every growth shifts Amount and Status. */}
+          <div className="flex items-center justify-end gap-2 w-[22rem]">
             {actionButtons}
           </div>
         </div>
@@ -1678,7 +1851,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       </div>
                       <div className="text-right shrink-0">
                         <p className="text-sm font-semibold">{formatCurrency(p.amount)}</p>
-                        <p className={`text-xs ${statusConfig[p.status].color}`}>{statusConfig[p.status].label}</p>
+                        <p className={`text-xs ${statusConfig[displayStatus(p)].color}`}>{statusConfig[displayStatus(p)].label}</p>
                       </div>
                       {p.status === "paid" && (
                         <Button
@@ -2226,6 +2399,111 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         </DialogContent>
       </Dialog>
 
+      {/* Document preview — stays in the app, no tab hop */}
+      <Dialog open={!!docPreview} onOpenChange={(o) => !o && closeDocPreview()}>
+        {/* Width is derived from the document, not fixed: the dialog is exactly
+            as wide as the page is at 70vh tall, so the whole slip is visible at
+            once with no zooming and no letterboxing around a narrow receipt in a
+            wide box.
+            BOTH terms are viewport units on purpose. An earlier version paired
+            max-w-fit here (width from the children) with min(100%, …) on the
+            frame (width from the parent) — neither had a definite size, the
+            circular reference collapsed, and the dialog rendered as a small box
+            on desktop. Mobile hid it because 92vw gave the dialog a definite
+            width to resolve against. */}
+        <DialogContent
+          className="w-auto max-w-none"
+          style={{ width: `min(92vw, calc(70vh * ${docPreview?.ratio ?? 250 / 364} + 3rem))` }}
+        >
+          <DialogHeader>
+            <DialogTitle>{docPreview?.title}</DialogTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">{docPreview?.subtitle}</p>
+          </DialogHeader>
+
+          {/* width, not height, is the driver — with a fixed height the derived
+              width stayed wider than the dialog on a phone and the page spilled
+              out to the right. min() takes whichever limit is tighter: the
+              document's natural width at 70vh on a desktop, or the dialog's own
+              width on a narrow screen. Height then follows from the ratio, so
+              the page always fits both axes. */}
+          <div
+            className="rounded-xl border border-sidebar-border bg-background/60 overflow-hidden mx-auto max-w-full"
+            style={{
+              aspectRatio: `${docPreview?.ratio ?? 250 / 364}`,
+              width: `min(100%, calc(70vh * ${docPreview?.ratio ?? 250 / 364}))`,
+              maxHeight: "70vh",
+            }}
+          >
+            {docPreview?.error ? (
+              <div className="h-full flex flex-col items-center justify-center gap-2 px-6 text-center">
+                <AlertTriangle className="w-8 h-8 text-amber/70" />
+                <p className="text-sm text-foreground">Could not show this document</p>
+                <p className="text-xs text-muted-foreground max-w-sm">{docPreview.error}</p>
+              </div>
+            ) : docPreview?.url ? (
+              // #toolbar=0&navpanes=0: desktop Chrome/Edge wrap an embedded PDF
+              // in their own viewer — a grey toolbar across the top and a
+              // thumbnail side panel — which is chrome nobody asked for inside a
+              // dialog that already has a header and its own buttons. Mobile
+              // browsers render none of it, which is why only the web view looked
+              // wrong. view=Fit fits the WHOLE page — FitH fits only the width,
+              // which is what left the bottom of the slip cut off.
+              <iframe
+                src={`${docPreview.url}#toolbar=0&navpanes=0&scrollbar=0&view=Fit`}
+                title={docPreview.title}
+                className="w-full h-full border-0"
+              />
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center gap-3">
+                <Loader2 className="w-6 h-6 animate-spin text-amber" />
+                <p className="text-xs text-muted-foreground">Preparing document…</p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="flex gap-2">
+            {/* Kept as an escape hatch: some mobile browsers will not render a
+                PDF in an iframe, and printing wants the real page anyway. */}
+            {docPreview?.href && (
+              <Button variant="outline" onClick={() => window.open(docPreview.href!, "_blank", "noopener,noreferrer")}>
+                Open in new tab
+              </Button>
+            )}
+            <Button onClick={closeDocPreview}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Undo — shows exactly what is being reversed before it happens */}
+      <Dialog open={!!undoTarget} onOpenChange={(o) => !o && setUndoTarget(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Undo last payment?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="rounded-lg border border-sidebar-border bg-background/50 px-4 py-3">
+              <p className="text-sm font-medium text-foreground">{undoTarget?.tenant?.full_name}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{undoTarget?.for_month}</p>
+              <p className="text-lg font-bold text-foreground mt-1">
+                {formatCurrency(Number(undoTarget?.amount_paid ?? 0))}
+                <span className="text-xs font-normal text-muted-foreground"> collected so far</span>
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              This reverses the most recent payment on this bill and puts it back as it was. Record
+              it again with the correct amount. The undo is written to the activity log.
+            </p>
+          </div>
+          <DialogFooter className="flex gap-2">
+            <Button variant="outline" onClick={() => setUndoTarget(null)} disabled={undoing}>Cancel</Button>
+            <Button onClick={handleUndo} disabled={undoing} className="gap-1.5">
+              {undoing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Undo2 className="w-3.5 h-3.5" />}
+              {undoing ? "Undoing…" : "Undo payment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Post-Payment WhatsApp Receipt Dialog */}
       <Dialog open={!!postPaymentWa} onOpenChange={(o) => !o && setPostPaymentWa(null)}>
         <DialogContent className="sm:max-w-sm">
@@ -2251,6 +2529,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           </div>
           <DialogFooter className="flex gap-2">
             <Button variant="outline" onClick={() => setPostPaymentWa(null)}>Skip</Button>
+            <Button
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => {
+                if (postPaymentWa) openReceiptPreview(postPaymentWa.payment, postPaymentWa.installmentId);
+              }}
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Preview
+            </Button>
             <Button
               disabled={sendingWa === postPaymentWa?.payment.id}
               onClick={async () => {

@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { billLinkForPayment } from "@/lib/bill-link";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
 import { requireOwnerOrAbove, requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
@@ -598,8 +599,16 @@ export async function getTenantTimeline(
           lateFee: lateFeeVal > 0 ? lateFeeVal : undefined,
           paymentId: p.id,
         });
-      } else if (p.status === "partially_paid") {
+      } else if (p.status === "partially_paid" && Number(p.amount_paid ?? 0) > 0.009) {
         // Fallback for the same reason as above — no installment rows recorded.
+        //
+        // Guarded on money actually held. A REVERSED payment stays at
+        // partially_paid with amount_paid = 0 (that collected status is what
+        // stops the monthly sync re-pricing a historical bill), and without this
+        // guard the timeline invented an "Rs. 0 received (partial)" event — a
+        // collection that never happened, dated at bill creation, carrying a
+        // working View Receipt link. The bill correctly falls through to the
+        // pending branch instead.
         const methodLabel =
           p.payment_method
             ? p.payment_method.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())
@@ -627,7 +636,16 @@ export async function getTenantTimeline(
           sub: p.for_month,
           forMonth: p.for_month,
         });
-      } else if (p.status === "pending" || p.status === "overdue") {
+      } else if (
+        p.status === "pending" ||
+        p.status === "overdue" ||
+        // A reversed payment: stored as partially_paid but holding nothing, so
+        // it belongs here with the unpaid bills. Without this it would match no
+        // branch at all and the bill would disappear from the timeline entirely
+        // — money owed with no entry, which is worse than the phantom it
+        // replaces.
+        (p.status === "partially_paid" && Number(p.amount_paid ?? 0) <= 0.009)
+      ) {
         // Use billing month start as the date — more meaningful than created_at —
         // EXCEPT for the tenant's first billing month, where the month start can
         // predate their actual check-in (e.g. joined the 14th, month starts the 1st),
@@ -812,6 +830,52 @@ export async function getTenantTimeline(
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * The link for an UNCOLLECTED bill, so it can be previewed before it is sent.
+ *
+ * createInvoiceLink deliberately refuses a bill with nothing collected — there
+ * is no receipt for money that has not arrived. But /r/<token> renders that same
+ * bill as an INVOICE, and that invoice is what a payment reminder sends. This
+ * returns it through billLinkForPayment, the very helper the reminder uses, so
+ * what the operator previews is byte-for-byte what the tenant will receive
+ * rather than a second document that could drift from it.
+ */
+export async function previewBillLinkAction(
+  paymentId: string
+): Promise<{ url?: string; error?: string }> {
+  try {
+    const hostelId = await resolveShareLinkHostelId();
+
+    // Ownership probe FIRST, exactly as createInvoiceLink does below.
+    // billLinkForPayment never reads hms_payments — it scopes only its reuse
+    // lookup by hostel_id and then inserts {payment_id, hostel_id}
+    // unconditionally through the admin client. Without this check, a manager or
+    // partner at branch A could pass a payment id from branch B and be handed a
+    // permanent public link rendering that member's name, phone, room and
+    // itemised charges under branch A's letterhead.
+    const admin = createAdminClient();
+    const { data: owned } = await admin
+      .from("hms_payments")
+      .select("id")
+      .eq("id", paymentId)
+      .eq("hostel_id", hostelId)
+      .maybeSingle();
+    if (!owned) return { error: "Payment not found in this branch." };
+
+    const url = await billLinkForPayment(paymentId, hostelId);
+    if (!url) return { error: "Could not build a preview link for this bill." };
+    // Relative, not the absolute SITE_URL billLinkForPayment returns: the client
+    // fetches this for the in-app preview, and connect-src 'self' blocks a
+    // cross-origin fetch on stage or any preview deploy. The absolute form stays
+    // for the outbound WhatsApp and email callers.
+    const token = url.split("/r/")[1] ?? "";
+    return { url: token ? `/r/${token}` : url };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "An unexpected error occurred." };
   }
 }
 

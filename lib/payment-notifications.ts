@@ -1,6 +1,6 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendOwnerPaymentAlertEmail } from "@/lib/email";
+import { sendOwnerPaymentAlertEmail, sendOwnerPaymentUndoneEmail } from "@/lib/email";
 import { formatMonthLong } from "@/lib/utils";
 
 // Deliberately NOT a server action and not under app/actions. A server action is
@@ -129,5 +129,80 @@ export async function notifyOwnerPaymentRecorded(args: {
     });
   } catch (err) {
     console.error("[payment-alert] failed for payment", args.paymentId, err);
+  }
+}
+
+/**
+ * Tells the branch owner a payment was reversed.
+ *
+ * Unlike the payment alert this fires for EVERY actor, the owner included.
+ * Recording money is routine; un-recording it is not, and the installment row
+ * is gone afterwards — hms_activity_log is super-admin-only, so this email is
+ * the owner's only visibility into it.
+ *
+ * Never throws, for the same reason as notifyOwnerPaymentRecorded: the reversal
+ * is already committed and a mail failure must not report it as an error.
+ */
+export async function notifyOwnerPaymentUndone(args: {
+  paymentId: string;
+  amountReversed: number;
+  actorName: string;
+  actorRole: "Owner" | "Manager" | "Partner";
+}): Promise<void> {
+  try {
+    const admin = createAdminClient();
+
+    const { data: payment } = await admin
+      .from("hms_payments")
+      .select("id, hostel_id, tenant_id, for_month, amount, late_fee, amount_paid")
+      .eq("id", args.paymentId)
+      .maybeSingle();
+    if (!payment) return;
+
+    const [{ data: hostel }, { data: tenant }] = await Promise.all([
+      admin.from("hms_hostels").select("name, owner_id").eq("id", payment.hostel_id).maybeSingle(),
+      admin
+        .from("hms_tenants")
+        .select("full_name, room:hms_rooms(room_number)")
+        .eq("id", payment.tenant_id)
+        .eq("hostel_id", payment.hostel_id)
+        .maybeSingle(),
+    ]);
+    if (!hostel) return;
+
+    let ownerEmail: string | null = null;
+    const { data: profile } = await admin
+      .from("hms_profiles")
+      .select("email")
+      .eq("id", hostel.owner_id)
+      .maybeSingle();
+    if (profile?.email) ownerEmail = profile.email as string;
+    if (!ownerEmail) {
+      const {
+        data: { user },
+      } = await admin.auth.admin.getUserById(hostel.owner_id);
+      if (user?.email) ownerEmail = user.email;
+    }
+    if (!ownerEmail || ownerEmail.endsWith(SYNTHETIC_DOMAIN)) return;
+
+    const remaining = Math.max(
+      0,
+      Number(payment.amount ?? 0) + Number(payment.late_fee ?? 0) - Number(payment.amount_paid ?? 0)
+    );
+    const room = Array.isArray(tenant?.room) ? tenant.room[0] : tenant?.room;
+
+    await sendOwnerPaymentUndoneEmail({
+      ownerEmail,
+      hostelName: hostel.name as string,
+      tenantName: (tenant?.full_name as string) ?? "A member",
+      roomNumber: (room as { room_number?: string } | null)?.room_number ?? null,
+      amountReversed: args.amountReversed,
+      forMonth: formatMonthLong(payment.for_month as string),
+      remainingBalance: remaining,
+      undoneByName: args.actorName,
+      undoneByRole: args.actorRole,
+    });
+  } catch (err) {
+    console.error("[payment-undo-alert] failed for payment", args.paymentId, err);
   }
 }

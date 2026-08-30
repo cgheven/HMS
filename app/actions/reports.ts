@@ -1,6 +1,7 @@
 "use server";
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { effectivePaymentStatus } from "@/lib/payment-calc";
 import { createClient } from "@/lib/supabase/server";
 import { capitalize, getMonthRange } from "@/lib/utils";
 import { pktYearMonth } from "@/lib/pkt-time";
@@ -580,7 +581,9 @@ export async function getReportData(
     tenantName: p.tenant?.full_name ?? "Unknown",
     forMonth: p.for_month,
     amount: Math.max(0, Number(p.amount) + Number(p.late_fee || 0) - Number(p.amount_paid ?? 0)),
-    status: p.status,
+    // The UI prints this enum directly. A reversed bill holds nothing, so
+    // "Partially_paid" here would contradict the Payments page's "Pending".
+    status: effectivePaymentStatus(p as { status: string; amount_paid?: number | null }),
   }));
 
   // Occupancy by room type
@@ -614,7 +617,7 @@ export async function getReportData(
       unitsConsumed: Number(p.ac_units_consumed || 0),
       acCharge: Number(p.ac_charge || 0),
       forMonth: p.for_month,
-      status: p.status,
+      status: effectivePaymentStatus(p as { status: string; amount_paid?: number | null }),
     };
   }).sort((a, b) => b.unitsConsumed - a.unitsConsumed);
 
@@ -634,6 +637,12 @@ export async function getReportData(
 
   const methodMap: Record<string, { count: number; amount: number }> = {};
   collectedPayments.forEach((p) => {
+    // Skip rows holding no money. A REVERSED payment stays at partially_paid
+    // with amount_paid = 0 and its payment_method cleared, so it survived into
+    // this breakdown as a phantom transaction — counted as one payment, bucketed
+    // into Cash by the `?? "cash"` default below, and exported to the
+    // accountant as a Rs 0 cash line.
+    if (Number(p.amount_paid ?? 0) <= 0.009) return;
     const m = p.payment_method ?? "cash";
     if (!methodMap[m]) methodMap[m] = { count: 0, amount: 0 };
     methodMap[m].count += 1;
@@ -651,6 +660,10 @@ export async function getReportData(
   // A partial payment is a real transaction (method + date) — include it here
   // showing what was actually received, not the full bill amount.
   const paidPaymentsList = collectedPayments
+    // Same rule as the method breakdown: a reversed payment holds nothing and is
+    // not a transaction, so it must not appear in the transaction list or its
+    // export with a blank date and method.
+    .filter((p) => Number(p.amount_paid ?? 0) > 0.009)
     .map((p) => {
       const roomsRaw = p.tenant?.hms_rooms;
       const roomEntry = Array.isArray(roomsRaw) ? roomsRaw[0] : roomsRaw;

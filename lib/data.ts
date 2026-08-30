@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getMonthRange, formatDateInput } from "@/lib/utils";
 import { pktYearMonth, pktTodayDateString } from "@/lib/pkt-time";
 import { calcDailyRent } from "@/lib/daily-billing";
+import { effectivePaymentStatus } from "@/lib/payment-calc";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { feedbackBucket, VERDICT_LABEL } from "@/lib/feedback-options";
 import type {
@@ -290,7 +291,10 @@ export async function getDashboardData() {
     name: p.tenant?.full_name ?? "Unknown",
     // Remaining balance, not the full amount — a partially_paid row already had some collected.
     amount: Math.max(0, Number(p.amount) - Number(p.amount_paid ?? 0)),
-    status: p.status,
+    // A reversed payment holds nothing but is stored as partially_paid, so the
+    // raw enum would badge it "Partially paid" next to its full outstanding
+    // amount — the same bill reads "Pending" on the Payments page.
+    status: effectivePaymentStatus(p as unknown as { status: string; amount_paid?: number | null }),
   }));
 
   type ActiveTenantRow = {
@@ -433,7 +437,10 @@ export async function getTenants() {
   for (const p of currentMonthPayments ?? []) {
     if (!p.tenant_id) continue;
     currentMonthPaymentByTenant[p.tenant_id] = {
-      status: p.status,
+      // A reversed payment sits at partially_paid holding nothing; badging it
+      // "Partially paid" beside its full outstanding amount reads as though part
+      // of it was collected. Same rule the payments page applies.
+      status: effectivePaymentStatus(p as { status: string; amount_paid?: number | null }),
       remaining: Math.max(0, Number(p.amount) - Number(p.amount_paid ?? 0)),
     };
   }

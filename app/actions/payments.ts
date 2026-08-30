@@ -18,7 +18,8 @@ import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { unstable_rethrow } from "next/navigation";
 import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation";
-import { notifyOwnerPaymentRecorded } from "@/lib/payment-notifications";
+import { notifyOwnerPaymentRecorded, notifyOwnerPaymentUndone } from "@/lib/payment-notifications";
+import { performPaymentUndo } from "@/lib/payment-undo";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
@@ -551,6 +552,11 @@ export async function markPaymentPaidAction(
       .eq("id", input.paymentId)
       .eq("hostel_id", hostelId) // double-check ownership
       .eq("referral_percent", existingPayment.referral_percent ?? 0)
+      // Also pin amount_paid: the referral guard catches a re-priced bill but not
+      // a re-COLLECTED one. An undo landing between this action's read and its
+      // write moves amount_paid, and without this the collection would settle
+      // against a total that no longer exists.
+      .eq("amount_paid", previousAmountPaid)
       .select("*, tenant:hms_tenants(full_name, room_id, phone)")
       .maybeSingle();
 
@@ -642,6 +648,75 @@ export async function markPaymentPaidAction(
 // ---------------------------------------------------------------------------
 // markPaymentWaivedAction
 // ---------------------------------------------------------------------------
+
+/**
+ * Undoes the most recent payment recorded against a bill.
+ *
+ * The remedy for a mistyped amount: put the bill back exactly as it was, then
+ * record it again correctly. Deliberately NOT an "edit the amount" action —
+ * editing means recomputing a chain of installments and re-firing the pricing
+ * trigger on a settled bill, where this reuses a restore the data already
+ * contains.
+ */
+export async function undoLastPaymentAction(
+  paymentId: string
+): Promise<{ undone?: { amount: number; forMonth: string; tenantName: string | null }; error?: string }> {
+  try {
+    const profile = await requireOwnerOrPartnerTier("standard");
+    const hostelId = await resolveHostelId();
+    const ctx = await getAuthContext();
+    // Admin client: partners have no write RLS grant on hms_payments, the same
+    // reason recordPaymentAsPartner uses it.
+    const admin = createAdminClient();
+
+    const result = await performPaymentUndo(admin, paymentId, hostelId);
+    if (result.error || !result.undone) return { error: result.error ?? "Could not undo this payment." };
+
+    if (ctx?.user) {
+      await logActivity({
+        hostel_id: hostelId,
+        actor_id: ctx.user.id,
+        action: "payment.undo",
+        entity: "payment",
+        entity_id: paymentId,
+        meta: {
+          tenant_name: result.undone.tenantName,
+          amount: result.undone.amount,
+          for_month: result.undone.forMonth,
+          undone_by_name: profile.full_name ?? null,
+          undone_by_role: profile.role ?? null,
+          // The installment row is deleted, so this meta is the only surviving
+          // record of what was reversed.
+          installment_id: result.undone.installmentId,
+          payment_method: result.undone.paymentMethod,
+          receipt_number: result.undone.receiptNumber,
+          payment_date: result.undone.paymentDate,
+          restored_amount_paid: result.undone.restoredAmountPaid,
+        },
+      });
+    }
+
+    // Every undo is reported, the owner's own included — un-recording money is
+    // not routine, and the audit log is visible only to super admins.
+    after(() =>
+      notifyOwnerPaymentUndone({
+        paymentId,
+        amountReversed: result.undone!.amount,
+        actorName: profile.full_name ?? "The owner",
+        actorRole: profile.role === "partner" ? "Partner" : "Owner",
+      })
+    );
+
+    revalidatePath("/payments");
+    revalidatePath("/dashboard");
+    revalidatePath("/reports");
+    revalidatePath("/tenants");
+    return { undone: result.undone };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 export async function markPaymentWaivedAction(
   paymentId: string

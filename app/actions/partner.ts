@@ -360,6 +360,11 @@ export async function recordPaymentAsPartner(
       // stored NET of the discount — so an unguarded update would settle the
       // tenant against a total that no longer exists.
       .eq("referral_percent", existingPayment.referral_percent ?? 0)
+      // Also pin amount_paid: the referral guard catches a re-priced bill but not
+      // a re-COLLECTED one. An undo landing between this action's read and its
+      // write moves amount_paid, and without this the collection would settle
+      // against a total that no longer exists.
+      .eq("amount_paid", previousAmountPaid)
       .select("*, tenant:hms_tenants(full_name, room_id, phone)")
       .maybeSingle();
 

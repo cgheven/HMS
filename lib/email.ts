@@ -884,6 +884,63 @@ export async function sendOwnerPaymentAlertEmail(data: OwnerPaymentAlertEmailDat
   });
 }
 
+interface OwnerPaymentUndoneEmailData {
+  ownerEmail: string;
+  hostelName: string;
+  tenantName: string;
+  roomNumber?: string | null;
+  amountReversed: number;
+  forMonth: string;
+  remainingBalance: number;
+  undoneByName: string;
+  undoneByRole: "Owner" | "Manager" | "Partner";
+}
+
+/**
+ * Tells the owner that a recorded payment was REVERSED.
+ *
+ * Sent for every undo including the owner's own, which is the opposite of the
+ * payment alert. Recording money is routine; un-recording it is not, and the
+ * installment row is deleted — so without this email the only trace lives in
+ * hms_activity_log, which is readable by super admins alone. An owner would
+ * have no way to see that a collection they were told about had been erased.
+ */
+export async function sendOwnerPaymentUndoneEmail(data: OwnerPaymentUndoneEmailData): Promise<void> {
+  const who = esc(cap(data.undoneByName, 64));
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Payment reversed</h2>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
+      ${who} (${data.undoneByRole}) undid a recorded payment at
+      <strong style="color:#f59e0b;">${esc(cap(data.hostelName, 64))}</strong>.
+      The bill is now unpaid for that amount.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      ${row("Member", esc(cap(data.tenantName, 80)))}
+      ${data.roomNumber ? row("Room", esc(cap(data.roomNumber, 32))) : ""}
+      ${row("Amount reversed", `<span style="color:#f87171;font-weight:700;">Rs ${data.amountReversed.toLocaleString()}</span>`)}
+      ${row("For", esc(cap(data.forMonth, 32)))}
+      ${row("Now outstanding", `<span style="color:#f59e0b;font-weight:700;">Rs ${data.remainingBalance.toLocaleString()}</span>`)}
+      ${row("Reversed by", `${who} · ${data.undoneByRole}`)}
+    </table>
+    <div style="margin:24px 0 0;">
+      <a href="${SITE_URL}/payments"
+         style="display:inline-block;background:#f59e0b;color:#18181b;font-weight:600;font-size:14px;padding:11px 20px;border-radius:8px;text-decoration:none;">
+        Open Payments
+      </a>
+    </div>
+    <p style="margin:20px 0 0;font-size:12px;color:#71717a;">
+      If this was a correction, the payment should be recorded again with the right amount.
+    </p>
+  `;
+
+  await sendOrThrow({
+    from: FROM,
+    subject: `Payment reversed at ${hdr(cap(data.hostelName, 64))}`,
+    to: data.ownerEmail,
+    html: baseHtml("Payment Reversed", body),
+  });
+}
+
 interface OwnerDailySummaryEmailData {
   ownerEmail: string;
   ownerName: string | null;

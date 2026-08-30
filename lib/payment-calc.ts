@@ -251,3 +251,31 @@ export function shouldRemindToday(dueDay: number, todayDayOfMonth: number): bool
   if (daysPastDue % 3 !== 0) return false;
   return daysPastDue / 3 < MAX_REMINDERS_PER_MONTH;
 }
+
+/**
+ * Has money actually been collected against this bill right now?
+ *
+ * An UNDONE payment leaves the row at status 'partially_paid' with
+ * amount_paid = 0. That collected status is deliberate — a 'pending' row is
+ * re-priced at today's rates by the pricing trigger and by
+ * ensureMonthlyPaymentRows, which would rewrite a historical bill (a Rs 14,366
+ * August bill became Rs 21,366 on stage after the tenant's rent rose). But it
+ * means `status` is no longer a safe proxy for "money arrived", and every place
+ * that treated it as one — receipts, WhatsApp messages, chip counts, the
+ * reconciliation breakdown — read a reversed payment as a real one.
+ *
+ * Use this instead of comparing status wherever the question is about money.
+ */
+export function hasCollected(p: { amount_paid?: number | string | null }): boolean {
+  return Number(p.amount_paid ?? 0) > 0.009;
+}
+
+/**
+ * The status to SHOW and to COUNT BY, as opposed to the one stored.
+ *
+ * A partially_paid row holding nothing reads as unpaid to a human, so it is
+ * reported as 'pending'. Everything else passes through untouched.
+ */
+export function effectivePaymentStatus<T extends string>(p: { status: T; amount_paid?: number | string | null }): T {
+  return p.status === ("partially_paid" as T) && !hasCollected(p) ? ("pending" as T) : p.status;
+}
