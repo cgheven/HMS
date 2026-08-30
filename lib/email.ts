@@ -3,7 +3,18 @@ import { Resend } from "resend";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import { siteUrl } from "@/lib/site-url";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Resend's constructor THROWS on a falsy key, at MODULE level. This module is
+// now in the import graph of all three payment-recording server actions (via
+// lib/payment-notifications.ts), so a throw here would 500 them before any of
+// their own code runs — a missing env var would fail a collection, not just a
+// notification. Degrade to a placeholder instead: every send then returns
+// { data: null, error } and no-ops silently, which is the correct behaviour for
+// an environment that is deliberately not wired for mail.
+const RESEND_KEY = process.env.RESEND_API_KEY;
+if (!RESEND_KEY) {
+  console.error("[email] RESEND_API_KEY is not set — every email send will no-op.");
+}
+const resend = new Resend(RESEND_KEY || "re_00000000_0000000000000000000000");
 
 // Verified sender — configure RESEND_FROM_EMAIL in env (must match a verified Resend domain)
 const FROM = process.env.RESEND_FROM_EMAIL ?? "Pulse HMS <noreply@yourpulse.io>";
@@ -703,9 +714,14 @@ interface PaymentReceiptEmailData {
   tenantEmail: string;
   tenantName: string;
   hostelName: string;
+  /** Cumulative received against this bill, not just this transaction. */
   amountPaid: number;
   forMonth: string;
   receiptUrl: string;
+  /** True when the bill is settled in full after this payment. */
+  paidInFull: boolean;
+  /** Still owed on this bill. Zero when settled. */
+  remainingBalance: number;
 }
 
 /**
@@ -722,13 +738,31 @@ interface PaymentReceiptEmailData {
  */
 export async function sendPaymentReceiptEmail(data: PaymentReceiptEmailData): Promise<void> {
   const body = `
-    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Payment received</h2>
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">
+      ${data.paidInFull ? "Payment received" : "Partial payment received"}
+    </h2>
     <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
       Assalam o Alaikum ${esc(data.tenantName)}, we have received your payment for
-      <strong style="color:#f59e0b;">${esc(data.forMonth)}</strong>.
+      <strong style="color:#f59e0b;">${esc(data.forMonth)}</strong>.${
+        data.paidInFull
+          ? ""
+          : ` <strong style="color:#f59e0b;">Rs ${data.remainingBalance.toLocaleString()}</strong> is still outstanding on this bill.`
+      }
     </p>
     <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
-      ${row("Amount Received", `<span style="color:#4ade80;font-weight:700;">Rs ${data.amountPaid.toLocaleString()}</span>`)}
+      ${row(
+        "Status",
+        data.paidInFull
+          ? `<span style="color:#4ade80;font-weight:700;">Paid in full</span>`
+          : `<span style="color:#f59e0b;font-weight:700;">Partial payment</span>`
+      )}
+      ${row(
+        data.paidInFull ? "Amount Received" : "Received so far",
+        `<span style="color:#4ade80;font-weight:700;">Rs ${data.amountPaid.toLocaleString()}</span>`
+      )}
+      ${data.remainingBalance > 0
+        ? row("Remaining", `<span style="color:#f59e0b;font-weight:700;">Rs ${data.remainingBalance.toLocaleString()}</span>`)
+        : ""}
       ${row("For", esc(data.forMonth))}
       ${row("Hostel", esc(data.hostelName))}
     </table>
@@ -743,11 +777,172 @@ export async function sendPaymentReceiptEmail(data: PaymentReceiptEmailData): Pr
     </p>
   `;
 
-  await resend.emails.send({
+  // Throws on an API failure so the caller's catch logs it. The only caller
+  // (lib/whatsapp-payment-confirmation.ts) already wraps this in try/catch and
+  // continues to the WhatsApp send regardless.
+  await sendOrThrow({
     from: FROM,
     to: data.tenantEmail,
-    subject: `Payment received — ${data.forMonth} — ${data.hostelName}`,
+    subject: data.paidInFull
+      ? `Payment received — ${hdr(data.forMonth)} — ${hdr(cap(data.hostelName, 64))}`
+      : `Partial payment received — ${hdr(data.forMonth)} — ${hdr(cap(data.hostelName, 64))}`,
     html: baseHtml("Payment Received", body),
+  });
+}
+
+// ─── Payment recorded by staff (owner alert) ────────────────────────────────
+
+// resend.emails.send() RESOLVES with { data: null, error } on an API failure —
+// it does not reject. Calling it bare means a rejected send (bad key, unverified
+// domain, 429) is indistinguishable from a delivered one, which is exactly how
+// a stage run reported "sent: 1" while the mail never left. Surface it instead:
+// the callers here already wrap sends in try/catch and count failures.
+async function sendOrThrow(payload: Parameters<typeof resend.emails.send>[0]): Promise<void> {
+  const { error } = await resend.emails.send(payload);
+  if (error) {
+    throw new Error(`[resend] ${error.name ?? "send failed"}: ${error.message ?? String(error)}`);
+  }
+}
+
+// Every string in the alert below is typed by the very person being reported —
+// a manager types the room number, a partner types the tenant name — and none of
+// the write paths bound their length. Cap before escaping so a 10,000-character
+// name cannot push the rest of the email out of view.
+function cap(s: string | null | undefined, n: number): string {
+  return (s ?? "").slice(0, n);
+}
+
+interface OwnerPaymentAlertEmailData {
+  ownerEmail: string;
+  hostelName: string;
+  tenantName: string;
+  roomNumber?: string | null;
+  amountReceived: number;
+  paymentMethod: string;
+  forMonth: string;
+  remainingBalance: number;
+  /** True when the bill is settled in full after this transaction. */
+  paidInFull: boolean;
+  recordedByName: string;
+  /** A code literal at the call site, never a string read from the database. */
+  recordedByRole: "Manager" | "Partner";
+}
+
+/**
+ * Payment alert to the OWNER, sent only when someone OTHER than the owner
+ * recorded the collection.
+ *
+ * Deliberately carries no /r/<token> receipt link. That route is an
+ * unauthenticated GET with write side effects, and its tokens are permanent and
+ * unrevocable — putting one in a second inbox creates a copy of a bearer
+ * credential that can be forwarded or prefetched by a mail scanner. The owner
+ * already has authenticated access, so the CTA points at /payments instead.
+ *
+ * Also excluded: CNIC, tenant phone/email, the actor's uuid, the manager's
+ * synthetic login address, and the collector's free-text notes.
+ */
+export async function sendOwnerPaymentAlertEmail(data: OwnerPaymentAlertEmailData): Promise<void> {
+  const who = esc(cap(data.recordedByName, 64));
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Payment recorded</h2>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
+      ${who} (${data.recordedByRole}) recorded a payment at
+      <strong style="color:#f59e0b;">${esc(cap(data.hostelName, 64))}</strong>.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      ${row("Member", esc(cap(data.tenantName, 80)))}
+      ${data.roomNumber ? row("Room", esc(cap(data.roomNumber, 32))) : ""}
+      ${row(
+        "Status",
+        data.paidInFull
+          ? `<span style="color:#4ade80;font-weight:700;">Paid in full</span>`
+          : `<span style="color:#f59e0b;font-weight:700;">Partial payment</span>`
+      )}
+      ${row("Amount Received", `<span style="color:#4ade80;font-weight:700;">Rs ${data.amountReceived.toLocaleString()}</span>`)}
+      ${data.remainingBalance > 0
+        ? row("Remaining", `<span style="color:#f59e0b;font-weight:700;">Rs ${data.remainingBalance.toLocaleString()}</span>`)
+        : ""}
+      ${row("Method", esc(cap(data.paymentMethod, 32)))}
+      ${row("For", esc(cap(data.forMonth, 32)))}
+      ${row("Recorded by", `${who} · ${data.recordedByRole}`)}
+    </table>
+    <div style="margin:24px 0 0;">
+      <a href="${SITE_URL}/payments"
+         style="display:inline-block;background:#f59e0b;color:#18181b;font-weight:600;font-size:14px;padding:11px 20px;border-radius:8px;text-decoration:none;">
+        Open Payments
+      </a>
+    </div>
+  `;
+
+  await sendOrThrow({
+    from: FROM,
+    // No amount and no member name in the subject — subjects surface on lock
+    // screens and in the Resend dashboard.
+    subject: `Payment recorded at ${hdr(cap(data.hostelName, 64))}`,
+    to: data.ownerEmail,
+    html: baseHtml("Payment Recorded", body),
+  });
+}
+
+interface OwnerDailySummaryEmailData {
+  ownerEmail: string;
+  ownerName: string | null;
+  branchName: string;
+  date: string;
+  collection: number;
+  kitchen: number;
+  staff: number;
+  bills: number;
+  other: number;
+}
+
+/**
+ * End-of-day summary to the OWNER, by email, for EVERY branch.
+ *
+ * The WhatsApp version of this is gated on hms_hostels.whatsapp_enabled, true
+ * for 4 of 15 branches. Email is deliberately NOT gated — see
+ * sendOwnerDailySummaryEmails in lib/owner-daily-summary.ts. One email per
+ * branch, matching the WhatsApp shape exactly so a client on both channels sees
+ * the same message twice rather than two different reports.
+ */
+export async function sendOwnerDailySummaryEmail(data: OwnerDailySummaryEmailData): Promise<void> {
+  const spent = data.kitchen + data.staff + data.bills + data.other;
+  const net = data.collection - spent;
+  const money = (n: number) => `Rs ${Math.round(n).toLocaleString()}`;
+
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Today at ${esc(cap(data.branchName, 64))}</h2>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
+      ${data.ownerName ? `${esc(cap(data.ownerName, 64))}, here` : "Here"} is
+      <strong style="color:#f59e0b;">${esc(data.date)}</strong> in full.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      ${row("Collected", `<span style="color:#4ade80;font-weight:700;">${money(data.collection)}</span>`)}
+      ${row("Kitchen", money(data.kitchen))}
+      ${row("Staff", money(data.staff))}
+      ${row("Bills", money(data.bills))}
+      ${row("Other expenses", money(data.other))}
+      ${row(
+        "Net",
+        `<span style="color:${net >= 0 ? "#4ade80" : "#f87171"};font-weight:700;">${net < 0 ? "−" : ""}${money(Math.abs(net))}</span>`
+      )}
+    </table>
+    <div style="margin:24px 0 0;">
+      <a href="${SITE_URL}/reports"
+         style="display:inline-block;background:#f59e0b;color:#18181b;font-weight:600;font-size:14px;padding:11px 20px;border-radius:8px;text-decoration:none;">
+        Open Reports
+      </a>
+    </div>
+    <p style="margin:20px 0 0;font-size:12px;color:#71717a;">
+      Cash in and out for the day. Figures come from the same sources the Reports page totals.
+    </p>
+  `;
+
+  await sendOrThrow({
+    from: FROM,
+    subject: `Daily summary — ${hdr(cap(data.branchName, 64))} — ${hdr(data.date)}`,
+    to: data.ownerEmail,
+    html: baseHtml("Daily Summary", body),
   });
 }
 

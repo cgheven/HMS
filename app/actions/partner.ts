@@ -1,10 +1,14 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
+import { logActivity } from "@/lib/audit";
+import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation";
+import { notifyOwnerPaymentRecorded } from "@/lib/payment-notifications";
 import { performTenantCheckout } from "@/lib/tenant-checkout";
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
@@ -256,6 +260,9 @@ export async function recordPaymentAsPartner(
   try {
     const hostelId = await requirePartnerHostelId("standard");
     const admin = createAdminClient();
+    // requirePartnerHostelId returns only the id, but getAuthContext is React
+    // cache()d and already resolved inside that guard — this costs no query.
+    const ctx = await getAuthContext();
 
     const VALID_METHODS = new Set(["cash", "bank_transfer", "jazzcash", "easypaisa", "sadapay", "other"]);
     if (!VALID_METHODS.has(method)) return { error: "Invalid payment method." };
@@ -297,6 +304,9 @@ export async function recordPaymentAsPartner(
       payment_method: method,
       payment_date: new Date().toISOString().slice(0, 10),
       ...(notes?.trim() ? { notes: notes.trim() } : {}),
+      // Inside THIS payload — see the comment in payments.ts on the pricing
+      // trigger a follow-up UPDATE would re-fire.
+      recorded_by: ctx?.user?.id ?? null,
     };
 
     if (isAcTier && acUnitsConsumed !== undefined) {
@@ -373,9 +383,45 @@ export async function recordPaymentAsPartner(
       payment_method: method,
       payment_date: new Date().toISOString().slice(0, 10),
       notes: notes?.trim() || null,
+      recorded_by: ctx?.user?.id ?? null,
     }).select("id").single();
     if (installmentErr) {
       console.error("[recordPaymentAsPartner] Failed to record payment installment:", installmentErr.message);
+    }
+
+    if (ctx?.user) {
+      // Same audit gap the manager path had — a partner collection left no
+      // payment.paid row at all.
+      await logActivity({
+        hostel_id: hostelId,
+        actor_id: ctx.user.id,
+        action: "payment.paid",
+        entity: "payment",
+        entity_id: existingPayment.id as string,
+        meta: {
+          tenant_name: (updated as { tenant?: { full_name?: string } })?.tenant?.full_name ?? null,
+          amount,
+          for_month: month,
+          method,
+          recorded_by_name: ctx.profile?.full_name ?? null,
+          recorded_by_role: "partner",
+        },
+      });
+
+      const actorId = ctx.user.id;
+      const actorName = ctx.profile?.full_name ?? "A partner";
+      // The money is committed. Neither send may throw into the catch below.
+      after(() => sendPaymentConfirmation(existingPayment.id as string));
+      // The partner's free-text notes are deliberately NOT forwarded.
+      after(() =>
+        notifyOwnerPaymentRecorded({
+          paymentId: existingPayment.id as string,
+          amountReceived: amount,
+          actorUserId: actorId,
+          actorName,
+          actorRole: "Partner",
+        })
+      );
     }
 
     revalidatePath("/payments");

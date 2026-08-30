@@ -2,12 +2,15 @@
 
 import { randomBytes } from "crypto"
 import { revalidatePath } from "next/cache"
+import { after } from "next/server"
 import { unstable_rethrow } from "next/navigation"
 import { requireOwnerOrAbove } from "@/lib/auth"
 import { getAuthContext } from "@/lib/data"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { requireManagerPermission } from "@/lib/manager-auth"
 import { logActivity } from "@/lib/audit"
+import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation"
+import { notifyOwnerPaymentRecorded } from "@/lib/payment-notifications"
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
 import { computeACSegmentBilling, deriveOpeningReading } from "@/lib/ac-billing"
@@ -1141,6 +1144,13 @@ export async function recordPaymentAsManager(
   method: string,
   month: string,
   acUnitsConsumed?: number,
+  // Managers run the hostel day to day, so they record a collection with the
+  // same fields an owner does. Validated here exactly as markPaymentPaidAction
+  // validates them — a field the UI offers must never be silently dropped.
+  date?: string,
+  lateFee?: number,
+  receiptNumber?: string,
+  notes?: string,
 ): Promise<{ payment?: Payment; installmentId?: string; error: string | null }> {
   try {
     const ctx = await requireManagerPermission("collect_payments")
@@ -1153,6 +1163,24 @@ export async function recordPaymentAsManager(
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return { error: "Invalid month." }
     const currentMonth = new Date().toISOString().slice(0, 7)
     if (month !== currentMonth) return { error: "Payments can only be recorded for the current month." }
+
+    const paymentDate = date ?? new Date().toISOString().slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(paymentDate)) return { error: "Invalid payment date." }
+    // Shape alone is not enough. `month` is pinned to the current month above, so
+    // a payment_date outside it is a typo — and one that lands silently: the
+    // daily summary and the reports both select on payment_date, so a
+    // mis-keyed year drops the collection out of every figure the owner reads.
+    if (paymentDate.slice(0, 7) !== month) {
+      return { error: "Payment date must fall within the month being paid." }
+    }
+    const newLateFee = lateFee ?? 0
+    if (!Number.isFinite(newLateFee) || newLateFee < 0) {
+      return { error: "Late fee must be a non-negative number." }
+    }
+    // numeric(10,2) on the column — a value past this overflows in Postgres
+    // rather than being rejected in the UI.
+    if (newLateFee > 99999999) return { error: "Late fee is too large." }
+    const receiptNo = (receiptNumber ?? "").trim().slice(0, 64) || null
 
     // Verify tenant belongs to the active hostel and get their package tier
     const { data: tenant } = await admin
@@ -1186,7 +1214,16 @@ export async function recordPaymentAsManager(
     let newAcCharge = Number(existingPayment.ac_charge ?? 0)
     const updatePayload: Record<string, unknown> = {
       payment_method: method,
-      payment_date: new Date().toISOString().slice(0, 10),
+      payment_date: paymentDate,
+      late_fee: newLateFee,
+      // Unconditional, matching markPaymentPaidAction: managers now render the
+      // identical dialog, so clearing a field must clear the column rather than
+      // leave the old value in place.
+      receipt_number: receiptNo,
+      notes: notes?.trim() || null,
+      // Inside THIS payload — a follow-up UPDATE would re-fire the pricing
+      // trigger on a just-settled bill. See the same comment in payments.ts.
+      recorded_by: ctx.manager.supabase_user_id ?? null,
     }
 
     if (isAcTier && acUnitsConsumed !== undefined) {
@@ -1213,7 +1250,10 @@ export async function recordPaymentAsManager(
     // stays fixed here; only the AC charge can shift, if a fresh meter reading
     // was entered above. This mirrors what the DB trigger will recompute.
     const nonAcPortion = Number(existingPayment.amount) - Number(existingPayment.ac_charge ?? 0)
-    const fullAmountDue = nonAcPortion + newAcCharge + Number(existingPayment.late_fee ?? 0)
+    // The late fee being recorded NOW, not the one already on the row — the
+    // owner path does the same, and using the stale value would let a manager
+    // add a late fee that never entered the amount due.
+    const fullAmountDue = nonAcPortion + newAcCharge + newLateFee
     const previousAmountPaid = Number(existingPayment.amount_paid ?? 0)
     const remainingBefore = Math.max(0, fullAmountDue - previousAmountPaid)
 
@@ -1260,12 +1300,52 @@ export async function recordPaymentAsManager(
       amount_before: previousAmountPaid,
       amount_after: newAmountPaid,
       total_due: fullAmountDue,
+      late_fee: newLateFee,
       payment_method: method,
-      payment_date: new Date().toISOString().slice(0, 10),
+      payment_date: paymentDate,
+      notes: notes?.trim() || null,
+      receipt_number: receiptNo,
+      recorded_by: ctx.manager.supabase_user_id ?? null,
     }).select("id").single()
     if (installmentErr) {
       console.error("[recordPaymentAsManager] Failed to record payment installment:", installmentErr.message)
     }
+
+    // Closes the audit gap: every one of the 408 existing payment.paid rows was
+    // written by the owner path, so a manager's collection left no trace here.
+    // logActivity swallows its own errors, so it cannot fail the payment.
+    if (ctx.manager.supabase_user_id) {
+      await logActivity({
+        hostel_id: hostelId,
+        actor_id: ctx.manager.supabase_user_id,
+        action: "payment.paid",
+        entity: "payment",
+        entity_id: existingPayment.id as string,
+        meta: {
+          tenant_name: (updated as { tenant?: { full_name?: string } })?.tenant?.full_name ?? null,
+          amount,
+          for_month: month,
+          method,
+          recorded_by_name: ctx.manager.name,
+          recorded_by_role: "manager",
+        },
+      })
+    }
+
+    // The money is committed. Neither send may throw into the catch below,
+    // which would report a successful collection as an error.
+    after(() => sendPaymentConfirmation(existingPayment.id as string));
+    after(() =>
+      notifyOwnerPaymentRecorded({
+        paymentId: existingPayment.id as string,
+        amountReceived: amount,
+        // Non-null for any manager who can reach here: recording a payment
+        // requires a login, and a login requires supabase_user_id.
+        actorUserId: ctx.manager.supabase_user_id as string,
+        actorName: ctx.manager.name,
+        actorRole: "Manager",
+      })
+    );
 
     revalidatePath("/portal/payments")
     revalidatePath("/payments")

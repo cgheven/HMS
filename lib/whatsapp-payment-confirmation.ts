@@ -30,7 +30,7 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<void> 
     const { data: payment } = await admin
       .from("hms_payments")
       .select(
-        "id, hostel_id, tenant_id, for_month, amount_paid, status, tenant:hms_tenants(full_name, phone, email), hostel:hms_hostels(name, whatsapp_enabled)"
+        "id, hostel_id, tenant_id, for_month, amount, late_fee, amount_paid, status, tenant:hms_tenants(full_name, phone, email), hostel:hms_hostels(name, whatsapp_enabled)"
       )
       .eq("id", paymentId)
       .maybeSingle();
@@ -84,6 +84,10 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<void> 
     // affect the payment, which is already recorded.
     if (tenantEmail) {
       try {
+        const remaining = Math.max(
+          0,
+          Number(payment.amount ?? 0) + Number(payment.late_fee ?? 0) - Number(payment.amount_paid ?? 0)
+        );
         await sendPaymentReceiptEmail({
           tenantEmail,
           tenantName: tenant?.full_name ?? "there",
@@ -91,6 +95,10 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<void> 
           amountPaid: Number(payment.amount_paid ?? 0),
           forMonth: formatMonthLong(payment.for_month as string),
           receiptUrl,
+          // Status off the stored value, not inferred from the balance — a
+          // waived bill also reaches zero remaining without being settled.
+          paidInFull: payment.status === "paid",
+          remainingBalance: remaining,
         });
       } catch (err) {
         console.error(`[payment-confirmation] receipt email failed for payment ${paymentId}:`, err);

@@ -446,6 +446,8 @@ export interface Payment {
   referral_discount?: number;
   /** TRIGGER-OWNED. The percent the discount was computed from, pinned on a collected bill so it can be re-derived off a rent that later moved. */
   referral_percent?: number;
+  /** auth.users id of whoever recorded the most recent installment. */
+  recorded_by?: string | null;
   payment_package_tier?: PackageTier | null;
   /** Nights billed for a daily-rate tenant. null/undefined = not a daily row, or billed before migration 099. */
   billed_days?: number | null;

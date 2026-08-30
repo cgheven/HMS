@@ -271,10 +271,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // Owners (no partnerTier, no managerPermissions) short-circuit on the first
   // operand exactly as before — this stays true for them unconditionally.
   const canRecordPayment = isManager ? canCollect : (!partnerTier || partnerTier !== "read_only");
-  // Managers get the same reduced dialog as partners: the manager write action
-  // has no late-fee / receipt-number / back-dating override, so those inputs are
-  // hidden rather than silently dropped.
-  const hideOverrides = isPartner || isManager;
+  // Partners still get the reduced dialog — recordPaymentAsPartner has no
+  // late-fee / receipt-number / date parameter, so showing those inputs would
+  // accept values the server then drops. Managers run the hostel day to day and
+  // recordPaymentAsManager takes all three, so they get the owner's dialog.
+  const hideOverrides = isPartner;
   const router = useRouter();
   const [selectedMonth, setSelectedMonth] = useState(initialMonth);
   const [payments, setPayments] = useState<Payment[]>(initialPayments);
@@ -541,6 +542,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         markForm.method,
         markDialog.for_month,
         isAcTier ? parseFloat(markForm.ac_units_consumed) : undefined,
+        markForm.date,
+        parseFloat(markForm.late_fee) || 0,
+        markForm.receipt_number,
+        markForm.notes,
       );
       if (result.error) {
         setSaving(false);

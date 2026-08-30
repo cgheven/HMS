@@ -1,17 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { pktTodayDateString } from "@/lib/pkt-time";
-import { sendOwnerDailySummaries } from "@/lib/owner-daily-summary";
+import {
+  computeDailyFigures,
+  sendOwnerDailySummaries,
+  sendOwnerDailySummaryEmails,
+} from "@/lib/owner-daily-summary";
 
 export const maxDuration = 300;
 
 /**
- * Daily WhatsApp summary to each hostel OWNER, one message per branch, so they
- * can see the day's collection, expenses and net without opening the app.
+ * Daily summary to each hostel OWNER, one message per branch, so they can see
+ * the day's collection, expenses and net without opening the app.
  *
- * Same CRON_SECRET auth as the other cron routes, and the same
- * hms_hostels.whatsapp_enabled gate — a branch without WhatsApp granted sends
- * nothing.
+ * Two channels off one computation. EMAIL goes to every branch. WhatsApp keeps
+ * the hms_hostels.whatsapp_enabled gate — a branch without WhatsApp granted
+ * sends no WhatsApp, but still gets the email.
+ *
+ * Same CRON_SECRET auth as the other cron routes.
  *
  * Scheduled 18:30 UTC = 23:30 PKT (Pakistan is UTC+5, no daylight saving), so
  * it reports TODAY: collections are entered through the evening, and by half
@@ -34,8 +40,19 @@ export async function GET(request: NextRequest) {
 
   try {
     const admin = createAdminClient();
-    const result = await sendOwnerDailySummaries(admin, date);
-    return NextResponse.json({ date, ...result });
+    // Figures once, two channels — so the two can never quote different numbers.
+    const figures = await computeDailyFigures(admin, date);
+    // allSettled, not all: a Meta outage must not discard the email result.
+    const [whatsapp, email] = await Promise.allSettled([
+      sendOwnerDailySummaries(figures, date),
+      sendOwnerDailySummaryEmails(admin, figures, date),
+    ]);
+    return NextResponse.json({
+      date,
+      branches: figures.length,
+      whatsapp: whatsapp.status === "fulfilled" ? whatsapp.value : { error: String(whatsapp.reason) },
+      email: email.status === "fulfilled" ? email.value : { error: String(email.reason) },
+    });
   } catch (err) {
     console.error("[owner-daily-summary] failed:", err);
     return NextResponse.json(

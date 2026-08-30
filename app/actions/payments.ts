@@ -15,8 +15,10 @@
  */
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { unstable_rethrow } from "next/navigation";
 import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation";
+import { notifyOwnerPaymentRecorded } from "@/lib/payment-notifications";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
@@ -305,9 +307,17 @@ export async function markPaymentPaidAction(
     // Recording collection is day-to-day work. Partners reach this through
     // recordPaymentAsPartner instead, but the guard belongs here regardless —
     // this action is a directly-callable RPC endpoint like any other.
-    await requireOwnerOrPartnerTier("standard");
+    // The role is read off the PROFILE, never inferred from which action ran: a
+    // standard-tier partner passes this same guard and can call this endpoint
+    // directly, so gating the owner alert on the file would let exactly the
+    // person it watches opt out of it.
+    const profile = await requireOwnerOrPartnerTier("standard");
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
+    // Pulled up from below so recorded_by can go inside the single UPDATE.
+    // getAuthContext is React cache()d — the guard above already resolved it,
+    // so this costs no extra round trip.
+    const ctx = await getAuthContext();
 
     // --- Validate payment method ---
     if (!VALID_METHODS.has(input.method)) {
@@ -498,6 +508,12 @@ export async function markPaymentPaidAction(
       status: (isFullyPaid ? "paid" : "partially_paid") as PaymentStatus,
       payment_method: input.method as PaymentMethod,
       payment_date: input.date,
+      // Inside THIS payload, never a follow-up UPDATE: hms_payments carries a
+      // BEFORE UPDATE trigger that re-derives amount/food/AC from live tenant
+      // state, so a second write would re-price a just-settled bill, skip the
+      // referral_percent concurrency guard below, and bump updated_at (which
+      // invalidates the cached receipt PDF).
+      recorded_by: ctx?.user?.id ?? null,
       late_fee: lateFee,
       notes: input.notes || null,
       receipt_number: input.receiptNumber,
@@ -564,6 +580,9 @@ export async function markPaymentPaidAction(
       payment_date: input.date,
       notes: input.notes || null,
       receipt_number: input.receiptNumber,
+      // The durable attribution. hms_payments.recorded_by is overwritten by
+      // whoever collects the next installment against the same bill.
+      recorded_by: ctx?.user?.id ?? null,
     }).select("id").single();
     if (installmentErr) {
       // Non-fatal — the payment itself is already recorded correctly above.
@@ -571,7 +590,6 @@ export async function markPaymentPaidAction(
       console.error("[markPaymentPaidAction] Failed to record payment installment:", installmentErr.message);
     }
 
-    const ctx = await getAuthContext();
     if (ctx?.user) {
       await logActivity({
         hostel_id: hostelId,
@@ -588,10 +606,29 @@ export async function markPaymentPaidAction(
       });
     }
 
-    // Fire-and-forget: the collection is already committed, and a Meta outage
-    // must never fail a payment that was actually received. Sends nothing
-    // unless the branch has WhatsApp granted (off for every branch today).
-    void sendPaymentConfirmation(input.paymentId);
+    // after() rather than a floating promise: the collection is already
+    // committed, and a Meta or Resend outage must never fail a payment that was
+    // actually received — but a bare `void` races the serverless freeze and can
+    // be killed before it runs. Neither call may throw into the catch below:
+    // that would turn a successful collection into { error } on the operator's
+    // screen.
+    after(() => sendPaymentConfirmation(input.paymentId));
+
+    // A partner reaching this endpoint directly is still a non-owner
+    // collection, so the owner is told. An owner recording their own payment
+    // gets nothing.
+    if (profile.role === "partner" && ctx?.user) {
+      const actorId = ctx.user.id;
+      after(() =>
+        notifyOwnerPaymentRecorded({
+          paymentId: input.paymentId,
+          amountReceived: amountReceivedNow,
+          actorUserId: actorId,
+          actorName: profile.full_name ?? "A partner",
+          actorRole: "Partner",
+        })
+      );
+    }
 
     // The installment id lets the caller mint a receipt for THIS transaction
     // rather than the whole cumulative bill.
