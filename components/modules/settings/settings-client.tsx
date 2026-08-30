@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, useTransition } from "react";
-import { Building2, User, Save, Loader2, Globe, Clock, Phone, RefreshCw, Utensils, GitBranch, Plus, Check, ArrowRightLeft, Handshake, Eye, EyeOff, Trash2, X, Pencil, FormInput, MessageCircle, ShieldCheck } from "lucide-react";
+import { Building2, User, Save, Loader2, Globe, Clock, Phone, RefreshCw, Utensils, GitBranch, Plus, Check, ArrowRightLeft, Handshake, Eye, EyeOff, Trash2, X, Pencil, FormInput, MessageCircle, ShieldCheck, ChefHat } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -68,6 +68,10 @@ export function SettingsClient() {
   type OwnedHostel = Hostel & { is_primary: boolean };
   const [branches, setBranches] = useState<OwnedHostel[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
+  /** Which branch cooks for this one. "" means self-catered — the value every
+   *  branch has until an owner points it somewhere. */
+  const [kitchenGroupId, setKitchenGroupId] = useState<string>("");
+  const [savingKitchen, setSavingKitchen] = useState(false);
   const [switchingBranch, setSwitchingBranch] = useState<string | null>(null);
   const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -113,7 +117,7 @@ export function SettingsClient() {
   const [seaterForm, setSeaterForm] = useState<Record<string, { no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string }>>(
     Object.fromEntries(SEATER_CAPACITIES.map((c) => [c, { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" }]))
   );
-  const [customRows, setCustomRows] = useState<Array<{ id: string; name: string; no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string }>>([]);
+  const [customRows, setCustomRows] = useState<Array<{ id: string; name: string; no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string; includes_food: boolean }>>([]);
   const [savingPackage, setSavingPackage] = useState(false);
   const [packageLoaded, setPackageLoaded] = useState(false);
 
@@ -256,7 +260,7 @@ export function SettingsClient() {
       });
       const customData = (raw._custom ?? []) as Array<{
         id: string; name: string; no_ac: number; ac: number;
-        deposit_no_ac?: number; deposit_ac?: number;
+        deposit_no_ac?: number; deposit_ac?: number; includes_food?: boolean;
       }>;
       setCustomRows(customData.map((c) => ({
         id: c.id || crypto.randomUUID(),
@@ -265,6 +269,7 @@ export function SettingsClient() {
         ac: c.ac > 0 ? String(c.ac) : "",
         deposit_no_ac: (c.deposit_no_ac ?? 0) > 0 ? String(c.deposit_no_ac) : "",
         deposit_ac: (c.deposit_ac ?? 0) > 0 ? String(c.deposit_ac) : "",
+        includes_food: c.includes_food === true,
       })));
       setFoodAddonForm({
         breakfast: data.food_breakfast_rate > 0 ? String(data.food_breakfast_rate) : "",
@@ -290,7 +295,29 @@ export function SettingsClient() {
     setLoadingBranches(true);
     const { hostels: list } = await getOwnedHostels();
     setBranches(list);
+    setKitchenGroupId(list.find((b) => b.id === hostelId)?.kitchen_group_id ?? "");
     setLoadingBranches(false);
+  }
+
+  async function saveKitchenGroup(nextValue: string) {
+    if (!hostelId) return;
+    setSavingKitchen(true);
+    const supabase = createClient();
+    // Written on every member of the group, the host included, so membership can
+    // be read with one equality filter instead of "points at X or is X".
+    const { data, error } = await supabase
+      .from("hms_hostels")
+      .update({ kitchen_group_id: nextValue === "" ? null : nextValue })
+      .eq("id", hostelId)
+      .select("id");
+    setSavingKitchen(false);
+    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+    if (!data || data.length === 0) {
+      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
+      return;
+    }
+    setKitchenGroupId(nextValue);
+    toast({ title: nextValue === "" ? "Set to self-catered" : "Shared kitchen saved" });
   }
 
   async function fetchPartners(id: string) {
@@ -529,6 +556,7 @@ export function SettingsClient() {
         ac: parseFloat(c.ac) || 0,
         deposit_no_ac: parseFloat(c.deposit_no_ac) || 0,
         deposit_ac: parseFloat(c.deposit_ac) || 0,
+        includes_food: c.includes_food,
       }));
     }
     const seaterPayload: Record<string, { no_ac: number; ac: number; deposit_no_ac: number; deposit_ac: number }> = {};
@@ -881,7 +909,7 @@ export function SettingsClient() {
             <div className="rounded-lg border border-border overflow-hidden">
               {/* Header row */}
               {/* Header row — two column groups: Monthly Rent | Security Deposit */}
-              <div className="grid grid-cols-[1fr_90px_90px_90px_90px_32px] gap-px bg-border">
+              <div className="grid grid-cols-[1fr_90px_90px_90px_90px_64px_32px] gap-px bg-border">
                 <div className="bg-card px-3 py-2">
                   <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Package</span>
                 </div>
@@ -897,11 +925,14 @@ export function SettingsClient() {
                 <div className="bg-card px-2 py-2 text-center">
                   <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (AC)</span>
                 </div>
+                <div className="bg-card px-2 py-2 text-center">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Meals</span>
+                </div>
                 <div className="bg-card" />
               </div>
               {/* Predefined package rows */}
               {PACKAGE_TIER_CONFIGS.map((cfg) => (
-                <div key={cfg.tier} className="grid grid-cols-[1fr_90px_90px_90px_90px_32px] gap-px bg-border">
+                <div key={cfg.tier} className="grid grid-cols-[1fr_90px_90px_90px_90px_64px_32px] gap-px bg-border">
                   <div className="bg-card px-3 py-2.5">
                     <p className="text-sm font-medium leading-tight">{cfg.label}</p>
                     <p className="text-xs text-muted-foreground">{cfg.desc}</p>
@@ -962,12 +993,17 @@ export function SettingsClient() {
                       <span className="text-xs text-muted-foreground w-full text-center">—</span>
                     )}
                   </div>
+                  <div className="bg-card px-2 py-2 flex items-center justify-center">
+                    <span className={`text-xs ${cfg.tier === "space_only" ? "text-muted-foreground" : "text-emerald-400"}`}>
+                      {cfg.tier === "space_only" ? "—" : "✓"}
+                    </span>
+                  </div>
                   <div className="bg-card" />
                 </div>
               ))}
               {/* Custom package rows */}
               {customRows.map((row) => (
-                <div key={row.id} className="grid grid-cols-[1fr_90px_90px_90px_90px_32px] gap-px bg-border">
+                <div key={row.id} className="grid grid-cols-[1fr_90px_90px_90px_90px_64px_32px] gap-px bg-border">
                   <div className="bg-card px-2 py-2 flex items-center">
                     <Input
                       placeholder="Package name"
@@ -1008,6 +1044,15 @@ export function SettingsClient() {
                       className="h-7 text-xs text-center px-1"
                     />
                   </div>
+                  <div className="bg-card px-2 py-2 flex items-center justify-center">
+                    <input
+                      type="checkbox"
+                      checked={row.includes_food}
+                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, includes_food: e.target.checked } : r))}
+                      className="w-4 h-4 accent-emerald-500 cursor-pointer"
+                      title="This package includes meals"
+                    />
+                  </div>
                   <div className="bg-card flex items-center justify-center">
                     <button
                       type="button"
@@ -1023,7 +1068,7 @@ export function SettingsClient() {
               <div className="bg-card border-t border-border">
                 <button
                   type="button"
-                  onClick={() => setCustomRows((prev) => [...prev, { id: crypto.randomUUID(), name: "", no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" }])}
+                  onClick={() => setCustomRows((prev) => [...prev, { id: crypto.randomUUID(), name: "", no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "", includes_food: false }])}
                   disabled={!packageLoaded}
                   className="flex items-center gap-1.5 w-full px-3 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-white/[0.02] transition-colors disabled:opacity-40"
                 >
@@ -1416,6 +1461,49 @@ export function SettingsClient() {
           )}
         </CardContent>
       </Card>
+
+      {/* Shared Kitchen — only meaningful with more than one branch, so a
+          single-branch owner never sees a control they cannot use. */}
+      {branches.length > 1 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <ChefHat className="w-4 h-4 text-muted-foreground" />
+              <CardTitle className="text-base">Shared Kitchen</CardTitle>
+            </div>
+            <CardDescription>
+              If this branch&apos;s meals are cooked at another branch, say which one. The kitchen&apos;s
+              groceries and cook salaries are then split across every branch it feeds, in proportion
+              to how many people ate at each one.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Select
+              value={kitchenGroupId === "" ? "__self__" : kitchenGroupId}
+              onValueChange={(v) => saveKitchenGroup(v === "__self__" ? "" : v)}
+              disabled={savingKitchen || isPending}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Self-catered" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__self__">Self-catered — cooks its own food</SelectItem>
+                {branches.map((b) => (
+                  <SelectItem key={b.id} value={b.id}>
+                    {b.id === hostelId ? `${b.name} (this branch cooks for others)` : b.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Set this on <span className="text-foreground">every branch in the group</span>, the one
+              with the kitchen included — pick itself there. The split is an estimate: nobody weighs
+              the food leaving the kitchen, so how many people ate is the fairest driver available.
+              See Reports → Unit Cost.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Separator />
 

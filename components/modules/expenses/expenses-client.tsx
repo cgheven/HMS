@@ -19,8 +19,8 @@ import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
 import type { Expense, ExpenseCategory, PartnerTier, StaffPermission } from "@/types";
 
-const categories: ExpenseCategory[] = ["furniture", "repairs", "cleaning", "security", "utilities", "other"];
-const categoryColors: Record<ExpenseCategory, "info" | "warning" | "success" | "secondary" | "default" | "outline"> = { furniture: "info", repairs: "warning", cleaning: "success", security: "secondary", utilities: "default", other: "outline" };
+const categories: ExpenseCategory[] = ["furniture", "repairs", "cleaning", "security", "utilities", "groceries", "capital", "other"];
+const categoryColors: Record<ExpenseCategory, "info" | "warning" | "success" | "secondary" | "default" | "outline"> = { furniture: "info", repairs: "warning", cleaning: "success", security: "secondary", utilities: "default", groceries: "success", capital: "warning", other: "outline" };
 const emptyForm = { title: "", amount: "", category: "other" as ExpenseCategory, date: formatDateInput(new Date()), notes: "" };
 
 const QUICK_ITEMS: { label: string; category: ExpenseCategory }[] = [
@@ -52,6 +52,18 @@ const QUICK_ITEMS: { label: string; category: ExpenseCategory }[] = [
   { label: "Gas Cylinder",  category: "utilities" },
   { label: "UPS Battery",   category: "utilities" },
   { label: "Water Filter",  category: "utilities" },
+  // Groceries — mess spend. Counted as kitchen cost on the Reports tab, not as
+  // general running cost, so it still totals the same but lands in the right bucket.
+  { label: "Atta / Flour",  category: "groceries" },
+  { label: "Chicken",       category: "groceries" },
+  { label: "Sabzi",         category: "groceries" },
+  { label: "Daal / Chawal", category: "groceries" },
+  { label: "Oil / Ghee",    category: "groceries" },
+  { label: "Mess Payment",  category: "groceries" },
+  // Capital — one-off purchases, kept out of cost-per-person on the Reports tab
+  { label: "Construction",  category: "capital"   },
+  { label: "AC Unit",       category: "capital"   },
+  { label: "Renovation",    category: "capital"   },
   // Other
   { label: "Miscellaneous", category: "other"     },
 ];
@@ -62,6 +74,8 @@ const CHIP_STYLES: Record<ExpenseCategory, string> = {
   cleaning:  "bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20",
   security:  "bg-slate-500/10  border-slate-500/25  text-slate-400  hover:bg-slate-500/20",
   utilities: "bg-purple-500/10 border-purple-500/25 text-purple-400 hover:bg-purple-500/20",
+  groceries: "bg-lime-500/10   border-lime-500/25   text-lime-400   hover:bg-lime-500/20",
+  capital:   "bg-rose-500/10   border-rose-500/25   text-rose-400   hover:bg-rose-500/20",
   other:     "bg-white/5       border-white/10      text-muted-foreground hover:bg-white/10",
 };
 

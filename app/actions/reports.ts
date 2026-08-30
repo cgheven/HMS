@@ -13,6 +13,21 @@ import {
   enumerateMonths,
 } from "@/lib/report-math";
 import type { Profile } from "@/types";
+import {
+  mealCustomPackages,
+  unclassifiedCustomPackages,
+  isMealSubscriber,
+  sumTenantMonths,
+  payrollAccrued,
+  foodPricePerMonth,
+  allocateMealCost,
+  type UnitCostTenant,
+  type PayrollEmployee,
+  type PackagePrices,
+  type MealCostResult,
+  type FoodPriceBasis,
+  type KitchenGroupBranch,
+} from "@/lib/unit-economics";
 
 // Per-day snapshot for the "Today" tab — one entry per date that had any
 // activity (an expense/kitchen row, a payment, a join, or a checkout) within
@@ -290,6 +305,31 @@ export interface ReportData {
     }[];
   };
 
+  // Unit economics — what one resident costs, and what one meal subscriber
+  // costs. Every figure here is an ESTIMATE and is labelled as one in the UI:
+  // the inputs are hand-entered expense rows, and for a shared kitchen the
+  // split across branches is allocated rather than measured.
+  unitCost: {
+    /** Resident-months across the period, not a head count on any single day. */
+    tenantMonths: number;
+    activeTenants: number;
+    /** Cash out for the period MINUS anything filed as `capital`. Buying beds
+     *  is not what it costs to run the hostel this month. */
+    operatingCost: number;
+    capitalExcluded: number;
+    costPerPerson: number;
+    perPersonBySource: { bills: number; staff: number; expenses: number; kitchen: number };
+    meal: MealCostResult | null;
+    /** Named, ordered problems with the underlying data. Empty means the
+     *  numbers above are as good as this app can make them. */
+    warnings: { code: string; message: string }[];
+    /** Custom packages flagged as including meals, and any still unclassified.
+     *  An unclassified package is counted as not-food, so saying which ones they
+     *  are is the difference between a low number and a wrong one. */
+    mealCustomPackages: { id: string; name: string }[];
+    unclassifiedCustomPackages: { id: string; name: string }[];
+  };
+
   // Daily snapshot — standard for every client. Deliberately scoped to the
   // CURRENT calendar month, not the report's selected date range — "today"
   // wouldn't mean anything for a "Last Month" or "12 Months" view. One entry
@@ -313,7 +353,7 @@ export async function getReportData(
   // Verify ownership
   const { data: hostelRow } = await admin
     .from("hms_hostels")
-    .select("id, name, owner_id, slug")
+    .select("id, name, owner_id, slug, kitchen_group_id")
     .eq("id", hostelId)
     .single();
 
@@ -345,6 +385,8 @@ export async function getReportData(
     roomsRes,
     billsRes,
     agingRes,
+    packageConfigRes,
+    employeesRes,
   ] = await Promise.all([
     admin
       .from("hms_payments")
@@ -381,7 +423,7 @@ export async function getReportData(
       .lte("advance_date", fullEnd),
     admin
       .from("hms_tenants")
-      .select("id, full_name, phone, type, check_in, check_out, is_active, package_tier, hms_rooms(room_number)")
+      .select("id, full_name, phone, type, check_in, check_out, is_active, package_tier, custom_package_id, hms_rooms(room_number, has_ac)")
       .eq("hostel_id", hostelId),
     admin
       .from("hms_rooms")
@@ -401,6 +443,18 @@ export async function getReportData(
       .eq("hostel_id", hostelId)
       .in("status", ["pending", "overdue", "partially_paid"])
       .lte("for_month", currentMonthKey),
+    // Food pricing. Read here rather than inside the unit-cost block so it joins
+    // the existing fan-out instead of adding a round trip after it.
+    admin
+      .from("hms_package_configs")
+      .select("food_monthly_rate, package_prices")
+      .eq("hostel_id", hostelId)
+      .maybeSingle(),
+    admin
+      .from("hms_employees")
+      .select("id, role, monthly_salary, join_date, status")
+      .eq("hostel_id", hostelId)
+      .eq("status", "active"),
   ]);
 
   type PaymentRow = {
@@ -438,7 +492,8 @@ export async function getReportData(
     check_out: string | null;
     is_active: boolean;
     package_tier: string;
-    hms_rooms: { room_number: string } | { room_number: string }[] | null;
+    custom_package_id: string | null;
+    hms_rooms: { room_number: string; has_ac: boolean } | { room_number: string; has_ac: boolean }[] | null;
   };
   const tenants = (tenantsRes.data ?? []) as unknown as TenantWithRoomRow[];
   const rooms = roomsRes.data ?? [];
@@ -727,6 +782,289 @@ export async function getReportData(
   const pendingSalariesTotal = salaryRows
     .filter((r) => r.status !== "paid")
     .reduce((s, r) => s + r.amount, 0);
+
+  // ── Unit economics ─────────────────────────────────────────────────────────
+  // Cost per resident, and cost per meal subscriber.
+  //
+  // Everything below is on a COST-INCURRED basis, not cash-out: bills and
+  // salaries count for the period they belong to whether or not they have been
+  // handed over yet. A per-person cost that jumped because a bill was paid late
+  // would say nothing about the hostel. This deliberately differs from
+  // `grandTotal` above, which answers the other question — what left the bank.
+  const capitalExcluded = expenses
+    .filter((e) => e.category === "capital")
+    .reduce((sum, e) => sum + Number(e.amount), 0);
+
+  // Mess spend typed into General Expenses. It moves to the kitchen bucket below
+  // rather than being left as general running cost — the total is unchanged, but
+  // a branch that logs its groceries here instead of on the Kitchen page stops
+  // reporting a kitchen cost of zero.
+  const groceriesInExpenses = expenses
+    .filter((e) => e.category === "groceries")
+    .reduce((sum, e) => sum + Number(e.amount), 0);
+
+  const unitTenants: UnitCostTenant[] = tenants.map((t) => {
+    const r = Array.isArray(t.hms_rooms) ? t.hms_rooms[0] : t.hms_rooms;
+    return {
+      id: t.id,
+      full_name: t.full_name,
+      check_in: t.check_in,
+      check_out: t.check_out,
+      is_active: t.is_active,
+      package_tier: t.package_tier,
+      custom_package_id: t.custom_package_id,
+      room_has_ac: !!r?.has_ac,
+    };
+  });
+
+  const packageConfig = packageConfigRes.data as
+    | { food_monthly_rate: unknown; package_prices: unknown }
+    | null;
+  const packagePrices = (packageConfig?.package_prices ?? {}) as PackagePrices;
+  const foodMonthlyRate = Number(packageConfig?.food_monthly_rate ?? 0) || 0;
+
+  const mealPackages = mealCustomPackages(packagePrices);
+  const unclassifiedPackages = unclassifiedCustomPackages(packagePrices);
+  const mealPackageIds = new Set(mealPackages.map((p) => p.id));
+  const isSubscriber = (t: UnitCostTenant) => isMealSubscriber(t, mealPackageIds);
+
+  const tenantMonths = sumTenantMonths(unitTenants, monthKeys);
+  const subscriberMonthsHere = sumTenantMonths(unitTenants, monthKeys, isSubscriber);
+
+  const employees = (employeesRes.data ?? []) as unknown as PayrollEmployee[];
+  const cooksHere = employees.filter((e) => e.role === "cook").length;
+  const isCook = (e: PayrollEmployee) => e.role === "cook";
+  const cookAccruedHere = payrollAccrued(employees, monthKeys, isCook);
+
+  // Food revenue, tenant by tenant, remembering the weakest source it had to
+  // fall back on — the headline is only as trustworthy as its worst input.
+  const BASIS_RANK: Record<FoodPriceBasis, number> = { billed: 0, configured: 1, derived: 2, unknown: 3 };
+  const foodChargeByTenant = new Map<string, number>();
+  for (const pmt of payments) {
+    const charge = Number(pmt.food_charge ?? 0) || 0;
+    if (charge > 0) foodChargeByTenant.set(pmt.tenant_id, (foodChargeByTenant.get(pmt.tenant_id) ?? 0) + charge);
+  }
+
+  let foodRevenue = 0;
+  let unpricedSubscriberMonths = 0;
+  let weakestBasis: FoodPriceBasis = "billed";
+  for (const t of unitTenants) {
+    if (!isSubscriber(t)) continue;
+    const months = sumTenantMonths([t], monthKeys);
+    if (months <= 0) continue;
+    const billedTotal = foodChargeByTenant.get(t.id) ?? null;
+    const { amount, basis } = foodPricePerMonth(
+      t,
+      packagePrices,
+      foodMonthlyRate,
+      billedTotal === null ? null : billedTotal / months
+    );
+    if (basis === "unknown") {
+      unpricedSubscriberMonths += months;
+    } else {
+      foodRevenue += amount * months;
+    }
+    if (BASIS_RANK[basis] > BASIS_RANK[weakestBasis]) weakestBasis = basis;
+  }
+
+  const selfBranch: KitchenGroupBranch = {
+    hostelId,
+    name: hostelRow.name,
+    isHost: true,
+    isCurrent: true,
+    subscriberMonths: subscriberMonthsHere,
+    cooks: cooksHere,
+    groceries: totalsBySource.kitchen + groceriesInExpenses,
+    cookSalaries: cookAccruedHere,
+  };
+
+  let groupBranches: KitchenGroupBranch[] = [selfBranch];
+
+  // Only a branch that has actually been put in a kitchen group pays for these
+  // queries. Self-catered branches — every production branch today — reuse the
+  // rows already fetched above and add no round trips at all.
+  const groupId = (hostelRow as { kitchen_group_id?: string | null }).kitchen_group_id ?? null;
+  if (groupId) {
+    // `id.eq` as well as `kitchen_group_id.eq`, so the branch that owns the
+    // kitchen is in the group even when nobody remembered to point it at
+    // itself. Without that, a half-configured group reads as self-catered and
+    // silently drops the very kitchen it was set up to share.
+    //
+    // Scoped to this hostel's owner, and NOT optional. Everything below runs on
+    // the admin client, which does not re-check access — and a full-tier partner
+    // can write hms_hostels under RLS. Without this filter, pointing
+    // kitchen_group_id at any hostel id would read back that branch's name,
+    // grocery spend, cook count and tenant numbers. A shared kitchen only ever
+    // spans one owner's branches, so the safe rule is also the correct one.
+    const { data: siblings } = await admin
+      .from("hms_hostels")
+      .select("id, name")
+      .eq("owner_id", hostelRow.owner_id)
+      .or(`kitchen_group_id.eq.${groupId},id.eq.${groupId}`);
+
+    const siblingIds = (siblings ?? []).map((h) => h.id).filter((id) => id !== hostelId);
+    if (siblingIds.length > 0) {
+      const [sibTenantsRes, sibKitchenRes, sibGroceryRes, sibEmployeesRes, sibConfigRes] = await Promise.all([
+        admin
+          .from("hms_tenants")
+          .select("id, hostel_id, full_name, check_in, check_out, is_active, package_tier, custom_package_id, hms_rooms(has_ac)")
+          .in("hostel_id", siblingIds),
+        admin
+          .from("hms_kitchen_expenses")
+          .select("hostel_id, amount")
+          .in("hostel_id", siblingIds)
+          .gte("date", fullStart)
+          .lte("date", fullEnd),
+        admin
+          .from("hms_expenses")
+          .select("hostel_id, amount")
+          .in("hostel_id", siblingIds)
+          .eq("category", "groceries")
+          .gte("date", fullStart)
+          .lte("date", fullEnd),
+        admin
+          .from("hms_employees")
+          .select("hostel_id, role, monthly_salary, join_date, status")
+          .in("hostel_id", siblingIds)
+          .eq("status", "active"),
+        admin
+          .from("hms_package_configs")
+          .select("hostel_id, package_prices")
+          .in("hostel_id", siblingIds),
+      ]);
+
+      const sibTenants = (sibTenantsRes.data ?? []) as unknown as (UnitCostTenant & {
+        hostel_id: string;
+        hms_rooms: { has_ac: boolean } | { has_ac: boolean }[] | null;
+      })[];
+      const sibKitchen = sibKitchenRes.data ?? [];
+      const sibGrocery = sibGroceryRes.data ?? [];
+      const sibEmployees = (sibEmployeesRes.data ?? []) as unknown as (PayrollEmployee & { hostel_id: string })[];
+      const sibConfigs = (sibConfigRes.data ?? []) as { hostel_id: string; package_prices: unknown }[];
+
+      for (const sib of siblings ?? []) {
+        if (sib.id === hostelId) continue;
+        // Each branch classifies its OWN custom packages — "Space + Meals" at
+        // one branch is a different row from the same name at another.
+        const sibMealIds = new Set(
+          mealCustomPackages(
+            (sibConfigs.find((c) => c.hostel_id === sib.id)?.package_prices ?? {}) as PackagePrices
+          ).map((pkg) => pkg.id)
+        );
+        const mine = sibTenants
+          .filter((t) => t.hostel_id === sib.id)
+          .map((t) => {
+            const r = Array.isArray(t.hms_rooms) ? t.hms_rooms[0] : t.hms_rooms;
+            return { ...t, room_has_ac: !!r?.has_ac };
+          });
+        groupBranches.push({
+          hostelId: sib.id,
+          name: sib.name,
+          isHost: sib.id === groupId,
+          isCurrent: false,
+          subscriberMonths: sumTenantMonths(mine, monthKeys, (t) => isMealSubscriber(t, sibMealIds)),
+          cooks: sibEmployees.filter((e) => e.hostel_id === sib.id && e.role === "cook").length,
+          groceries:
+            sibKitchen
+              .filter((k) => k.hostel_id === sib.id)
+              .reduce((sum, k) => sum + Number(k.amount), 0) +
+            sibGrocery
+              .filter((g) => g.hostel_id === sib.id)
+              .reduce((sum, g) => sum + Number(g.amount), 0),
+          cookSalaries: payrollAccrued(
+            sibEmployees.filter((e) => e.hostel_id === sib.id),
+            monthKeys,
+            isCook
+          ),
+        });
+      }
+      groupBranches = groupBranches.map((b) => (b.hostelId === hostelId ? { ...b, isHost: hostelId === groupId } : b));
+    }
+  }
+
+  const meal: MealCostResult | null =
+    groupBranches.reduce((sum, b) => sum + b.subscriberMonths, 0) > 0
+      ? allocateMealCost(groupBranches, hostelId, foodRevenue, unpricedSubscriberMonths, weakestBasis)
+      : null;
+
+  // Kitchen cost here is this branch's ALLOCATED share, not what it happens to
+  // have paid. A branch that hosts the kitchen buys all the groceries for the
+  // group and a branch that is fed buys none, so charging each what it spent
+  // made cost-per-resident wrong at both — and made this card disagree with the
+  // meal card directly above it about who pays for the food.
+  //
+  // Cook payroll moves into that same figure, so it is subtracted from staff:
+  // counting it in both would inflate the total by a cook's salary.
+  const staffAccrued = payrollAccrued(employees, monthKeys);
+  const operatingBySource = {
+    bills: totalsBySource.bills,
+    staff: staffAccrued - cookAccruedHere,
+    expenses: totalsBySource.expenses - capitalExcluded - groceriesInExpenses,
+    kitchen: meal
+      ? meal.allocatedCost
+      : totalsBySource.kitchen + groceriesInExpenses + cookAccruedHere,
+  };
+  const operatingCost =
+    operatingBySource.bills + operatingBySource.staff + operatingBySource.expenses + operatingBySource.kitchen;
+
+  const unitWarnings: { code: string; message: string }[] = [];
+  if (tenantMonths <= 0) {
+    unitWarnings.push({ code: "no_residents", message: "No resident-months in this period, so there is nothing to divide by." });
+  }
+  if (meal && meal.kitchenCost === 0) {
+    unitWarnings.push({
+      code: "no_kitchen_cost",
+      message:
+        meal.mode === "shared"
+          ? "No kitchen spend or cook salary recorded anywhere in this kitchen group this period, so meal cost reads as zero."
+          : "People on meals here, but no kitchen spend and no cook salary for this period, so meal cost reads as zero. Mess spend counts here whether it is entered on the Kitchen page or filed as Groceries on the Expenses page.",
+    });
+  }
+  if (meal && meal.mode === "self" && meal.subscriberMonths > 0 && selfBranch.cooks === 0) {
+    unitWarnings.push({
+      code: "no_cook",
+      message:
+        "People on meals here, but no cook on this branch's payroll. If another branch cooks for this one, name it under Settings → Shared Kitchen and its cost will be split in.",
+    });
+  }
+  if (meal && meal.unpricedSubscriberMonths > 0) {
+    unitWarnings.push({
+      code: "unpriced_food",
+      message: `${meal.unpricedSubscriberMonths.toFixed(1)} person-months on meals have no price that separates food from rent, so meal revenue is a floor, not a total. A food rate under Settings → Package Pricing closes the gap.`,
+    });
+  }
+  if (unclassifiedPackages.length > 0) {
+    unitWarnings.push({
+      code: "unclassified_package",
+      message: `${unclassifiedPackages.map((pkg) => pkg.name).join(", ")} — no meals setting yet, so anyone on ${unclassifiedPackages.length === 1 ? "it" : "them"} is counted as not eating. Tick or clear Meals in Settings → Package Pricing.`,
+    });
+  }
+  if (capitalExcluded === 0 && operatingBySource.expenses > 0) {
+    unitWarnings.push({
+      code: "no_capital_split",
+      message: "Nothing is filed as Capital this period, so every general expense is being treated as monthly running cost. One-off purchases — beds, AC units, construction — raise cost per person while they sit in that bucket.",
+    });
+  }
+
+  const perHead = (n: number) => (tenantMonths > 0 ? n / tenantMonths : 0);
+
+  const unitCost: ReportData["unitCost"] = {
+    tenantMonths,
+    activeTenants: tenants.filter((t) => t.is_active).length,
+    operatingCost,
+    capitalExcluded,
+    costPerPerson: perHead(operatingCost),
+    perPersonBySource: {
+      bills: perHead(operatingBySource.bills),
+      staff: perHead(operatingBySource.staff),
+      expenses: perHead(operatingBySource.expenses),
+      kitchen: perHead(operatingBySource.kitchen),
+    },
+    meal,
+    warnings: unitWarnings,
+    mealCustomPackages: mealPackages.map((pkg) => ({ id: pkg.id, name: pkg.name })),
+    unclassifiedCustomPackages: unclassifiedPackages.map((pkg) => ({ id: pkg.id, name: pkg.name })),
+  };
 
   // ── Receivables aging ──────────────────────────────────────────────────────
   // "How late" is derived from for_month vs the current month: the DB has no
@@ -1091,6 +1429,7 @@ export async function getReportData(
         formerDebtorsOwed: formerDebtorList.reduce((s, d) => s + d.owed, 0),
         topDebtors,
       },
+      unitCost,
       dailyExpenseDetails,
     },
     error: null,

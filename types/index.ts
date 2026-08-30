@@ -7,7 +7,7 @@ export type VisitPurpose = "education" | "employment" | "job_interview" | "exam"
 export type RoomStatus = "available" | "occupied" | "maintenance";
 export type BillStatus = "paid" | "unpaid" | "overdue";
 export type BillCategory = "electricity" | "water" | "internet" | "gas" | "maintenance" | "other";
-export type ExpenseCategory = "furniture" | "repairs" | "cleaning" | "security" | "utilities" | "other";
+export type ExpenseCategory = "furniture" | "repairs" | "cleaning" | "security" | "utilities" | "capital" | "groceries" | "other";
 export type MealType = "breakfast" | "lunch" | "dinner";
 export type PaymentStatus = "paid" | "pending" | "overdue" | "waived" | "partially_paid";
 export type PaymentMethod = "cash" | "bank_transfer" | "jazzcash" | "easypaisa" | "sadapay" | "other";
@@ -216,6 +216,10 @@ export interface Hostel {
   payment_methods: PaymentMethodAccount[];
   reminder_template: string | null;
   whatsapp_enabled: boolean;
+  /** Branch whose kitchen cooks for this one, set to the host branch's own id on
+   *  every member of the group including the host. NULL = self-catered, which is
+   *  every branch until an owner says otherwise. */
+  kitchen_group_id: string | null;
   /** Per-branch entitlement for tenant referral links. Super Admin only — a DB
    *  trigger rejects any write to this column that carries a user session. */
   referral_enabled: boolean;

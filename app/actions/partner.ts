@@ -397,7 +397,7 @@ export async function addExpenseAsPartner(
     const hostelId = await requirePartnerHostelId("standard");
     const admin = createAdminClient();
 
-    const VALID_CATEGORIES = new Set(["furniture", "repairs", "cleaning", "security", "utilities", "other"]);
+    const VALID_CATEGORIES = new Set(["furniture", "repairs", "cleaning", "security", "utilities", "capital", "groceries", "other"]);
     if (!VALID_CATEGORIES.has(category)) return { error: "Invalid expense category." };
     if (!Number.isFinite(amount) || amount <= 0) return { error: "Amount must be greater than 0." };
     if (!description?.trim()) return { error: "Description is required." };

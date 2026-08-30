@@ -5,6 +5,7 @@ import {
   BarChart3, TrendingUp, Users, AlertTriangle, Banknote, BedDouble,
   Download, FileSpreadsheet, RefreshCw, Zap, CreditCard,
   Receipt, BookOpen, Search, ExternalLink, Loader2, ShieldCheck, CalendarClock,
+  Calculator,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -21,6 +22,7 @@ import { getReportData, getLedgerTenants, type ReportData, type LedgerTenantRow 
 import { getTenantTimeline, createInvoiceLink, createInstallmentReceiptLink, type TimelineEvent } from "@/app/actions/tenants";
 import { EventIcon, eventDotColor } from "@/components/modules/tenants/tenant-timeline";
 import { DailyExpensesSection } from "./daily-expenses-section";
+import { UnitCostTab } from "./unit-cost-tab";
 import type { RevenueMonth, AgingBucket } from "@/types";
 
 const RevenueChart = dynamic(() => import("./revenue-chart").then((m) => m.RevenueChart), {
@@ -189,34 +191,32 @@ export function ReportsClient(props: Props) {
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-serif font-normal tracking-tight">Reports</h1>
           <p className="text-muted-foreground text-sm mt-1">Professional financial & operational analytics</p>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex gap-2 w-full sm:w-auto">
           {/* Export buttons */}
           {d && (
             <>
               <Button
                 variant="outline"
-                size="sm"
                 onClick={handleExportPDF}
                 disabled={!!exporting}
-                className="gap-1.5 h-8 text-xs"
+                className="gap-2 flex-1 sm:flex-none"
               >
-                {exporting === "pdf" ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                {exporting === "pdf" ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                 PDF
               </Button>
               <Button
                 variant="outline"
-                size="sm"
                 onClick={handleExportExcel}
                 disabled={!!exporting}
-                className="gap-1.5 h-8 text-xs"
+                className="gap-2 flex-1 sm:flex-none"
               >
-                {exporting === "xlsx" ? <RefreshCw className="w-3 h-3 animate-spin" /> : <FileSpreadsheet className="w-3 h-3" />}
+                {exporting === "xlsx" ? <RefreshCw className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />}
                 Excel
               </Button>
             </>
@@ -298,6 +298,7 @@ export function ReportsClient(props: Props) {
             <TabsTrigger value="occupancy"><BedDouble className="w-3.5 h-3.5" /> Occupancy</TabsTrigger>
             <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> AC Analytics</TabsTrigger>
             <TabsTrigger value="expenses"><Receipt className="w-3.5 h-3.5" /> Expenses</TabsTrigger>
+            <TabsTrigger value="unitcost"><Calculator className="w-3.5 h-3.5" /> Unit Cost <span className="ml-1 rounded px-1 py-px text-[9px] font-semibold uppercase tracking-wide bg-amber-500/15 text-amber-400">Beta</span></TabsTrigger>
             <TabsTrigger value="ledger"><BookOpen className="w-3.5 h-3.5" /> Member Ledger</TabsTrigger>
           </TabsList>
 
@@ -651,6 +652,11 @@ export function ReportsClient(props: Props) {
           {/* ── EXPENSES TAB ─────────────────────────────────────────────── */}
           <TabsContent value="expenses" className="space-y-6 mt-4">
             <ExpenseReportTab data={d} period={currentRange.label} />
+          </TabsContent>
+
+          {/* ── UNIT COST TAB ────────────────────────────────────────────── */}
+          <TabsContent value="unitcost" className="space-y-6 mt-4">
+            <UnitCostTab data={d} period={currentRange.label} />
           </TabsContent>
 
           {/* ── MEMBER LEDGER TAB ────────────────────────────────────────── */}
