@@ -15,7 +15,7 @@ import { performPaymentUndo } from "@/lib/payment-undo"
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
 import { computeACSegmentBilling, deriveOpeningReading, latestReadingBefore } from "@/lib/ac-billing"
-import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge } from "@/lib/payment-calc"
+import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge } from "@/lib/payment-calc"
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
 import { pktYearMonth } from "@/lib/pkt-time"
@@ -367,7 +367,7 @@ export async function applyRoomACUnitsAsManager(
       // later arrivals for a month they were not there.
       admin
         .from("hms_tenants")
-        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
+        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading, ac_maintenance")
         .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
         .eq("is_active", true)
@@ -407,7 +407,11 @@ export async function applyRoomACUnitsAsManager(
     const foodRate = Number(config?.food_monthly_rate ?? 0)
     // Room is already verified has_ac = true above, so AC maintenance applies
     // unconditionally here — same reasoning as applyRoomACUnitsAction.
-    const acMaintenanceCharge = Number(config?.ac_maintenance_rate ?? 0)
+    // Per tenant, not a flat branch rate — matching applyRoomACUnitsAction. A
+    // tenant may have opted out (hms_tenants.ac_maintenance = 0), and widening
+    // this action to non-AC rooms above made the divergence reachable there:
+    // the manager would have written the branch rate where the owner writes 0.
+    const acMaintenanceRate = Number(config?.ac_maintenance_rate ?? 0)
 
     const eligible = allTenants ?? []
 
@@ -438,7 +442,20 @@ export async function applyRoomACUnitsAsManager(
       // refusing on that would block a first vacant recording for any month that
       // already has a legacy row — and tell the operator tenants were billed
       // when none were.
-      if (existingReading && Number(existingReading.tenant_count ?? 0) > 0) {
+      // A checkout breakpoint is equally good evidence that the month had
+      // occupants, and it exists even when nobody ran the month-end Apply — the
+      // case tenant_count alone misses: two tenants leave on the 3rd, each
+      // charged at the door, and the room reads empty for the rest of the month.
+      const { data: checkoutRows, error: checkoutErr } = await admin
+        .from("hms_room_ac_checkout_readings")
+        .select("id")
+        .eq("room_id", roomId)
+        .eq("for_month", forMonth)
+        .limit(1);
+      if (checkoutErr) {
+        return { error: "Could not confirm whether this room was occupied this month. Try again." };
+      }
+      if ((existingReading && Number(existingReading.tenant_count ?? 0) > 0) || (checkoutRows ?? []).length > 0) {
         return {
           
           error:
@@ -526,6 +543,11 @@ export async function applyRoomACUnitsAsManager(
         const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0
         const addonFoodCharge = config ? calcFoodAddonCharge(t, config) : 0
         const foodCharge = tierFoodCharge + addonFoodCharge
+        const acMaintenanceCharge = computeAcMaintenanceCharge(
+          true,
+          acMaintenanceRate,
+          (t as { ac_maintenance?: number | null }).ac_maintenance,
+        )
         const depositCharge = computeDepositCharge(
           { check_in: t.check_in, security_deposit: t.security_deposit, deposit_collected_amount: t.deposit_collected_amount ?? 0 },
           currentMonth

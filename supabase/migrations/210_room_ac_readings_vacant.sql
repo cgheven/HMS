@@ -1,5 +1,11 @@
 -- A meter reading taken while the room had no tenant.
 --
+-- DEPLOY ORDER MATTERS. lib/data.ts and lib/portal-data.ts both SELECT
+-- recorded_while_vacant, and PostgREST answers an unknown column with 42703 —
+-- which lib/data.ts folds into readErr and rethrows, taking the whole Payments
+-- page down for every branch. Apply this before the application code, exactly
+-- as migrations 204 and 207 document for the same reason.
+--
 -- Empty rooms could not be metered at all: the AC tab listed only rooms with an
 -- active tenant, and both server actions threw "No active tenants found in this
 -- room." So consumption by staff, a guest, or lights left on simply had nowhere

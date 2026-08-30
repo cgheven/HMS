@@ -2011,9 +2011,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 // of July must not be labelled "Empty" in July merely because it
                 // stands empty now. Live occupancy answers only for a month with
                 // no reading yet.
-                const monthWasVacant = saved
-                  ? (saved.recorded_while_vacant ?? Number(saved.tenant_count ?? 0) === 0)
-                  : acTenantCount === 0;
+                // Both must agree. The saved row alone is not enough: a room
+                // recorded vacant on the 5th and moved into on the 10th would
+                // keep the "Empty" pill for the rest of the month, and — worse —
+                // suppress the "re-apply to bill the tenants above" prompt that
+                // exists to catch exactly a present-but-unbilled tenant.
+                const monthWasVacant =
+                  acTenantCount === 0 &&
+                  (saved ? (saved.recorded_while_vacant ?? Number(saved.tenant_count ?? 0) === 0) : true);
                 const totalTenants = acTenantCount;
                 const midMonthJoiners = tenants.filter(
                   t => t.room_id === room.id && t.is_active && t.check_in.startsWith(selectedMonth)
@@ -2296,10 +2301,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           {unassignedUnits > 0 && (
                             <div className="flex items-center gap-2 text-xs">
                               <span className="text-amber/70 flex-1 min-w-0 truncate">
-                                {monthWasVacant
-                                  ? "Nobody in the room — hostel's own cost"
-                                  : unbilled.length > 0
-                                    ? "Unassigned — re-apply to bill the tenants above"
+                                {unbilled.length > 0
+                                  ? "Unassigned — re-apply to bill the tenants above"
+                                  : monthWasVacant
+                                    ? "Nobody in the room — hostel's own cost"
                                     : "Unassigned (pre-occupancy) · hostel absorbs"}
                               </span>
                               <span className="tabular-nums text-amber/70">{unassignedUnits} units</span>
@@ -2308,7 +2313,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                                   here at the tenant recovery rate would read as a second cost.
                                   There is also nobody to bill, so "re-apply" is not an action
                                   the operator can take. */}
-                              {!monthWasVacant && (
+                              {(!monthWasVacant || unbilled.length > 0) && (
                                 <>
                                   <span className="text-muted-foreground/40">·</span>
                                   <span className="tabular-nums text-amber/70">{formatCurrency(unassignedCharge)}</span>

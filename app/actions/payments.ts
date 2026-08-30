@@ -952,6 +952,19 @@ export async function applyRoomACUnitsAction(
     // protects the NEXT tenant: without a reading for the vacant month they are
     // billed from whenever the room was last read, inheriting units consumed
     // before they arrived.
+    //
+    // SCOPE, decided deliberately: that protection spans MONTHS, not mid-month.
+    // A room empty through August and let in September opens September at
+    // August's reading — the case this feature exists for. A room empty on the
+    // 1st and let on the 12th is NOT covered: the month-end Apply derives its
+    // opening from the previous month and bills the joiner for the vacant units
+    // too, overwriting this row.
+    //
+    // Covering that properly means seeding join breakpoints into
+    // computeACSegmentBilling so the vacant slice is assigned to nobody —
+    // surgery on the billing maths, for a case the operator can already handle
+    // by entering the tenant's joining meter reading at check-in. Recorded as a
+    // known limitation rather than risking the arithmetic every branch depends on.
     if (eligible.length === 0) {
       // Vacancy must be judged over the MONTH, not from today's roster, and the
       // check must not depend on where a tenant lives NOW.
@@ -972,7 +985,20 @@ export async function applyRoomACUnitsAction(
       // refusing on that would block a first vacant recording for any month that
       // already has a legacy row — and tell the operator tenants were billed
       // when none were.
-      if (existingReading && Number(existingReading.tenant_count ?? 0) > 0) {
+      // A checkout breakpoint is equally good evidence that the month had
+      // occupants, and it exists even when nobody ran the month-end Apply — the
+      // case tenant_count alone misses: two tenants leave on the 3rd, each
+      // charged at the door, and the room reads empty for the rest of the month.
+      const { data: checkoutRows, error: checkoutErr } = await supabase
+        .from("hms_room_ac_checkout_readings")
+        .select("id")
+        .eq("room_id", roomId)
+        .eq("for_month", forMonth)
+        .limit(1);
+      if (checkoutErr) {
+        return { success: false, error: "Could not confirm whether this room was occupied this month. Try again." };
+      }
+      if ((existingReading && Number(existingReading.tenant_count ?? 0) > 0) || (checkoutRows ?? []).length > 0) {
         return {
           success: false,
           error:
