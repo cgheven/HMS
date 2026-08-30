@@ -353,12 +353,14 @@ export async function applyRoomACUnitsAsManager(
     const prevMonthStr = getPrevMonth(forMonth)
 
     // Verify room, get config, fetch previous month reading, active tenants, join readings, and checkout readings in parallel
-    const [{ data: room }, { data: branch }, { data: config }, { data: prevRecord }, { data: priorReadings }, { data: allTenants, error: allTenantsErr }, { data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
+    const [{ data: room }, { data: branch }, { data: config }, { data: prevRecord }, { data: existingReading },
+      { data: priorReadings }, { data: allTenants, error: allTenantsErr }, { data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
       admin.from("hms_rooms").select("id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       admin.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).maybeSingle(),
       admin.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).maybeSingle(),
       admin.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
       // Vacant-path fallback only — see applyRoomACUnitsAction.
+      admin.from("hms_room_ac_readings").select("tenant_count, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", forMonth).maybeSingle(),
       admin.from("hms_room_ac_readings").select("meter_reading, for_month").eq("room_id", roomId).eq("hostel_id", hostelId).lt("for_month", forMonth).not("meter_reading", "is", null).order("for_month", { ascending: false }).limit(6),
       // Scoped to tenants who had moved in by the month being billed — see
       // applyRoomACUnitsAction for why a back-dated apply otherwise charges
@@ -417,25 +419,30 @@ export async function applyRoomACUnitsAsManager(
     // writes no payment row and moves no money, so it is strictly less
     // privileged than the occupied Apply that permission already allows.
     if (eligible.length === 0) {
-      // Vacancy must be judged over the MONTH, not from today's roster.
-      // `eligible` is is_active only, so a room whose tenants all checked out
-      // mid-month looks empty now even though they were billed for it. Applying
-      // there would rewrite the month's stored row to tenant_count 0 and flag it
-      // hostel-borne while their charges still stand — the card would then read
-      // "0 tenants billed" for a month three people paid for.
-      const { data: billedThisMonth } = await admin
-        .from("hms_payments")
-        .select("id, tenant:hms_tenants!inner(room_id)")
-        .eq("hostel_id", hostelId)
-        .eq("for_month", forMonth)
-        .gt("ac_charge", 0)
-        .eq("tenant.room_id", roomId)
-        .limit(1);
-      if ((billedThisMonth ?? []).length > 0) {
+      // Vacancy must be judged over the MONTH, not from today's roster, and the
+      // check must not depend on where a tenant lives NOW.
+      //
+      // The obvious test — "does any payment for this month carry an AC charge,
+      // joined on the tenant's room" — fails open twice: a tenant moved to
+      // another room since (room_changed is a supported event) no longer joins
+      // to this room, and a winter month where the meter did not move leaves
+      // every ac_charge at 0. Both would let a vacant apply rewrite a month that
+      // tenants were genuinely billed for.
+      //
+      // The stored reading row answers it directly and needs no join: if this
+      // room already has a row for this month that was written by the occupied
+      // path, that month had occupants. Re-recording a month that was itself
+      // recorded vacant stays allowed.
+      // tenant_count is the evidence; the flag adds nothing when it is 0. Every
+      // reading written before migration 210 defaults the flag to false, so also
+      // refusing on that would block a first vacant recording for any month that
+      // already has a legacy row — and tell the operator tenants were billed
+      // when none were.
+      if (existingReading && Number(existingReading.tenant_count ?? 0) > 0) {
         return {
           
           error:
-            "This room was occupied earlier this month and AC has already been billed for it. A vacant reading would overwrite that record — record the reading once the month has closed, or correct the tenants' charges instead.",
+            "This room was occupied earlier this month and its reading has already been applied to tenants. A vacant reading would overwrite that record — record it once the month has closed, or correct the tenants' charges instead.",
         };
       }
 

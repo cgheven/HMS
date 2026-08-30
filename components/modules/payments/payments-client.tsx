@@ -93,7 +93,7 @@ interface Props {
   /** Every month's room readings, not just the one on screen — the AC tab derives
    *  the selected month and the preceding one from this, so stepping months needs
    *  no round trip. */
-  acReadings?: { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null }[];
+  acReadings?: { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null; recorded_while_vacant?: boolean | null }[];
   /** Latest WhatsApp status per tenant id — drives the delivery tick. */
   lastWhatsApp?: Record<string, { status: string; error_code: number | null; created_at: string }>;
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
@@ -1024,6 +1024,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             description: `${derivedUnits} unit${derivedUnits === 1 ? "" : "s"} with nobody in the room. Charged to no tenant, and the meter now carries forward for whoever moves in next.`,
           });
           await syncMonth(selectedMonth);
+          // router.refresh() as well: syncMonth only replaces payment state, and
+          // the AC readings arrive as a PROP from getPaymentsPageData. Without
+          // this the card still reads "No reading for this month yet" straight
+          // after a successful save, which reads as failure.
+          router.refresh();
           return;
         }
 
@@ -1064,10 +1069,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
   // Occupancy per room, computed once rather than re-scanned inside each card.
   const acRoomMeta = useMemo(() => {
-    const m = new Map<string, { occupied: boolean; activeTenants: TenantRow[] }>();
+    const m = new Map<string, { occupied: boolean }>();
     for (const r of acRooms) {
-      const active = tenants.filter(t => t.room_id === r.id && t.is_active);
-      m.set(r.id, { occupied: active.length > 0, activeTenants: active });
+      m.set(r.id, { occupied: tenants.some(t => t.room_id === r.id && t.is_active) });
     }
     return m;
   }, [acRooms, tenants]);
@@ -1936,12 +1940,24 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               <span className="text-xs text-muted-foreground">— enter total units consumed per room for {selectedMonth}</span>
               {acRooms.length > 1 && (
                 <div className="ml-auto">
-                  <Select value={acRoomFilter} onValueChange={setAcRoomFilter}>
+                  <Select
+                    value={acRoomFilter}
+                    onValueChange={(v) => {
+                      setAcRoomFilter(v);
+                      // Widen the occupancy filter if the chosen room is hidden by
+                      // it, rather than showing an empty panel with no explanation.
+                      if (v !== "all" && !(acRoomMeta.get(v)?.occupied ?? false)) setAcOccupancy("all");
+                    }}
+                  >
                     <SelectTrigger className="h-7 w-40 text-xs">
                       <SelectValue placeholder="All Rooms" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All Rooms</SelectItem>
+                      {/* The Select lists every metered room while the default chip
+                          shows only occupied ones, so choosing an empty room used to
+                          render a blank panel. Widen the occupancy filter to match
+                          what was asked for. */}
                       {acRooms.map(r => (
                         <SelectItem key={r.id} value={r.id}>Room {r.room_number}</SelectItem>
                       ))}
@@ -1982,9 +1998,22 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               })}
             </div>
             <div className="space-y-2">
+              {filteredAcRooms.length === 0 && (
+                <p className="text-xs text-muted-foreground/70 py-6 text-center">
+                  No rooms match this filter.
+                </p>
+              )}
               {filteredAcRooms.map(room => {
                 const saved = acReadings.find(r => r.room_id === room.id);
                 const acTenantCount = tenants.filter(t => t.room_id === room.id && t.is_active).length;
+                // The card shows a CHOSEN MONTH, but acTenantCount counts tenants
+                // active today. A saved row therefore decides: a room occupied all
+                // of July must not be labelled "Empty" in July merely because it
+                // stands empty now. Live occupancy answers only for a month with
+                // no reading yet.
+                const monthWasVacant = saved
+                  ? (saved.recorded_while_vacant ?? Number(saved.tenant_count ?? 0) === 0)
+                  : acTenantCount === 0;
                 const totalTenants = acTenantCount;
                 const midMonthJoiners = tenants.filter(
                   t => t.room_id === room.id && t.is_active && t.check_in.startsWith(selectedMonth)
@@ -2008,7 +2037,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-medium">Room {room.room_number}</span>
-                          {acTenantCount > 0 ? (
+                          {!monthWasVacant ? (
                             <span className="text-xs text-amber">
                               {acTenantCount} of {totalTenants} billed for AC
                             </span>
@@ -2210,7 +2239,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       // genuine pre-occupancy usage and someone simply missing.
                       const unbilled = rows.filter(r => r.units === 0);
                       const billedRows = allRows.filter(r => r.units > 0);
-                      if (allRows.length === 0) return null;
+                      // A genuinely vacant room has no tenant rows at all, so this
+                      // block used to return null and the recorded units appeared
+                      // nowhere on the card. Render the one line that says where
+                      // they went instead.
+                      if (allRows.length === 0) {
+                        const vacantUnits = Math.round(Number(saved?.total_units ?? 0) * 100) / 100;
+                        if (!saved || vacantUnits <= 0) return null;
+                        return (
+                          <div className="pt-2 mt-2 border-t border-white/5 flex items-center gap-2 text-xs">
+                            <span className="text-amber/70 flex-1 min-w-0 truncate">Nobody in the room — hostel&apos;s own cost</span>
+                            <span className="tabular-nums text-amber/70">{vacantUnits} units</span>
+                          </div>
+                        );
+                      }
                       const assignedUnits = Math.round(allRows.reduce((s, r) => s + r.units, 0) * 100) / 100;
                       const assignedCharge = allRows.reduce((s, r) => s + r.charge, 0);
                       const unassignedUnits = Math.max(0, saved.total_units - assignedUnits);
@@ -2248,10 +2290,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               <span className="tabular-nums text-rose-400/80">{formatCurrency(0)}</span>
                             </div>
                           ))}
+                          {/* A genuinely vacant room has no tenant rows at all, so the
+                              allocation list above is empty and the units would show
+                              nowhere. Say plainly where they went. */}
                           {unassignedUnits > 0 && (
                             <div className="flex items-center gap-2 text-xs">
                               <span className="text-amber/70 flex-1 min-w-0 truncate">
-                                {acTenantCount === 0
+                                {monthWasVacant
                                   ? "Nobody in the room — hostel's own cost"
                                   : unbilled.length > 0
                                     ? "Unassigned — re-apply to bill the tenants above"
@@ -2263,7 +2308,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                                   here at the tenant recovery rate would read as a second cost.
                                   There is also nobody to bill, so "re-apply" is not an action
                                   the operator can take. */}
-                              {acTenantCount > 0 && (
+                              {!monthWasVacant && (
                                 <>
                                   <span className="text-muted-foreground/40">·</span>
                                   <span className="tabular-nums text-amber/70">{formatCurrency(unassignedCharge)}</span>

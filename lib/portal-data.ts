@@ -157,7 +157,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
       .maybeSingle(),
     // All months — see getPaymentsPageData() for why this is not month-scoped.
     admin.from("hms_room_ac_readings")
-      .select("room_id, for_month, total_units, meter_reading, per_unit_rate, tenant_count")
+      .select("room_id, for_month, total_units, meter_reading, per_unit_rate, tenant_count, recorded_while_vacant")
       .eq("hostel_id", hostelId),
     admin.from("hms_room_ac_join_readings")
       .select("room_id, tenant_id, units_at_join, for_month")

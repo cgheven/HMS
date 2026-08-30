@@ -986,7 +986,7 @@ export async function getPaymentsPageData(forMonth: string) {
     // so the whole history of a large hostel is still a few hundred small rows;
     // revisit with a date bound only if that stops being true.
     supabase.from("hms_room_ac_readings")
-      .select("room_id, for_month, total_units, meter_reading, per_unit_rate, tenant_count, meter_photo")
+      .select("room_id, for_month, total_units, meter_reading, per_unit_rate, tenant_count, meter_photo, recorded_while_vacant")
       .eq("hostel_id", hostelId),
     supabase.from("hms_room_ac_join_readings")
       .select("room_id, tenant_id, units_at_join, for_month")

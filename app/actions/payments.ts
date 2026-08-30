@@ -878,6 +878,7 @@ export async function applyRoomACUnitsAction(
       { data: room },
       { data: pkgConfig },
       { data: prevRecord },
+      { data: existingReading },
       { data: priorReadings },
       { data: allTenants, error: allTenantsErr },
       { data: branch },
@@ -890,6 +891,7 @@ export async function applyRoomACUnitsAction(
       // exactly-previous-month rule has nothing to offer it. Occupied rooms
       // keep the strict rule — loosening it globally would turn a room last
       // read three months ago into one large catch-up bill.
+      supabase.from("hms_room_ac_readings").select("tenant_count, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", forMonth).maybeSingle(),
       supabase.from("hms_room_ac_readings").select("meter_reading, for_month").eq("room_id", roomId).eq("hostel_id", hostelId).lt("for_month", forMonth).not("meter_reading", "is", null).order("for_month", { ascending: false }).limit(6),
       // `.lt("check_in", ...)` matters for any back-dated apply: without it the
       // eligible set is "whoever lives in this room now", so closing an earlier
@@ -951,25 +953,30 @@ export async function applyRoomACUnitsAction(
     // billed from whenever the room was last read, inheriting units consumed
     // before they arrived.
     if (eligible.length === 0) {
-      // Vacancy must be judged over the MONTH, not from today's roster.
-      // `eligible` is is_active only, so a room whose tenants all checked out
-      // mid-month looks empty now even though they were billed for it. Applying
-      // there would rewrite the month's stored row to tenant_count 0 and flag it
-      // hostel-borne while their charges still stand — the card would then read
-      // "0 tenants billed" for a month three people paid for.
-      const { data: billedThisMonth } = await supabase
-        .from("hms_payments")
-        .select("id, tenant:hms_tenants!inner(room_id)")
-        .eq("hostel_id", hostelId)
-        .eq("for_month", forMonth)
-        .gt("ac_charge", 0)
-        .eq("tenant.room_id", roomId)
-        .limit(1);
-      if ((billedThisMonth ?? []).length > 0) {
+      // Vacancy must be judged over the MONTH, not from today's roster, and the
+      // check must not depend on where a tenant lives NOW.
+      //
+      // The obvious test — "does any payment for this month carry an AC charge,
+      // joined on the tenant's room" — fails open twice: a tenant moved to
+      // another room since (room_changed is a supported event) no longer joins
+      // to this room, and a winter month where the meter did not move leaves
+      // every ac_charge at 0. Both would let a vacant apply rewrite a month that
+      // tenants were genuinely billed for.
+      //
+      // The stored reading row answers it directly and needs no join: if this
+      // room already has a row for this month that was written by the occupied
+      // path, that month had occupants. Re-recording a month that was itself
+      // recorded vacant stays allowed.
+      // tenant_count is the evidence; the flag adds nothing when it is 0. Every
+      // reading written before migration 210 defaults the flag to false, so also
+      // refusing on that would block a first vacant recording for any month that
+      // already has a legacy row — and tell the operator tenants were billed
+      // when none were.
+      if (existingReading && Number(existingReading.tenant_count ?? 0) > 0) {
         return {
           success: false,
           error:
-            "This room was occupied earlier this month and AC has already been billed for it. A vacant reading would overwrite that record — record the reading once the month has closed, or correct the tenants' charges instead.",
+            "This room was occupied earlier this month and its reading has already been applied to tenants. A vacant reading would overwrite that record — record it once the month has closed, or correct the tenants' charges instead.",
         };
       }
 
