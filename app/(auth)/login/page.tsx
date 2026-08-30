@@ -2,7 +2,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Eye, EyeOff, Loader2, Home } from "lucide-react";
+import Image from "next/image";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -73,17 +74,25 @@ export default function LoginPage() {
       </div>
 
       <div className="w-full max-w-sm relative animate-fade-up">
-        <div className="flex flex-col items-center mb-8">
-          <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-amber/10 border border-amber/20 mb-5">
-            <Home className="w-6 h-6 text-amber" />
+        {/* Same horizontal lockup as the sidebar. Centred above the card so the
+            brand, the form and the button share one vertical axis — a corner
+            logo has no header to belong to on a page this empty. */}
+        <div className="flex items-center justify-center gap-3 mb-8">
+          <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-amber/10 border border-amber/20 overflow-hidden shrink-0">
+            <Image src="/logo-mark.jpg" alt="Pulse" width={48} height={48} priority className="w-full h-full object-cover" />
           </div>
-          <h1 className="font-serif text-3xl text-foreground tracking-tight">HMS</h1>
-          <p className="text-muted-foreground text-sm mt-1">Hostel Management System</p>
+          <div>
+            <p className="text-foreground font-bold text-lg tracking-tight leading-none">Pulse</p>
+            <p className="text-amber/70 text-[10px] mt-1 font-semibold tracking-[0.15em] uppercase">Pulse of Your Business</p>
+          </div>
         </div>
 
         <div className="rounded-2xl border border-sidebar-border bg-card p-8 shadow-2xl">
           <div className="mb-6">
-            <h2 className="text-xl font-semibold text-foreground">Welcome back</h2>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">
+              Hostel Management System
+            </p>
+            <h2 className="text-xl font-semibold text-foreground mt-2">Welcome back</h2>
             <p className="text-sm text-muted-foreground mt-1">Sign in to your account</p>
           </div>
 
@@ -244,6 +253,7 @@ export default function LoginPage() {
             Contact your administrator for access.
           </p>
         </div>
+
       </div>
     </div>
   );
