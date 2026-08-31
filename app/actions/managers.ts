@@ -421,35 +421,20 @@ export async function applyRoomACUnitsAsManager(
     // writes no payment row and moves no money, so it is strictly less
     // privileged than the occupied Apply that permission already allows.
     if (eligible.length === 0) {
-      // Vacancy must be judged over the MONTH, not from today's roster, and the
-      // check must not depend on where a tenant lives NOW.
+      // Was anyone LIVING here in this month? Not "is anyone here now" — a room
+      // whose tenants left on the 20th is empty today but was occupied all
+      // month, and letting a vacant apply rewrite it would write a month those
+      // tenants were genuinely billed for off as hostel cost.
       //
-      // The obvious test — "does any payment for this month carry an AC charge,
-      // joined on the tenant's room" — fails open twice: a tenant moved to
-      // another room since (room_changed is a supported event) no longer joins
-      // to this room, and a winter month where the meter did not move leaves
-      // every ac_charge at 0. Both would let a vacant apply rewrite a month that
-      // tenants were genuinely billed for.
-      //
-      // The stored reading row answers it directly and needs no join: if this
-      // room already has a row for this month that was written by the occupied
-      // path, that month had occupants. Re-recording a month that was itself
-      // recorded vacant stays allowed.
-      // tenant_count is the evidence; the flag adds nothing when it is 0. Every
-      // reading written before migration 210 defaults the flag to false, so also
-      // refusing on that would block a first vacant recording for any month that
-      // already has a legacy row — and tell the operator tenants were billed
-      // when none were.
-      // Did anyone LIVE here in this month? That is the real question, and both
-      // earlier proxies only approximated it. tenant_count on a stored row is
-      // set only if someone already ran Apply; a checkout breakpoint exists only
-      // if the operator happened to type a closing reading. Two tenants leaving
-      // on the 31st with the box blank, and no month-end Apply, slipped through
-      // both — and their month was written off as hostel cost.
-      //
-      // A residency-window query answers it for anyone still recorded against
-      // this room, including departed tenants. It cannot see someone who has
-      // since been moved to another room — the history check below covers that.
+      // Three signals, because each alone has a blind spot:
+      //   - the residency window catches anyone still recorded against this
+      //     room, departed tenants included;
+      //   - the per-room join/checkout breakpoints catch a tenant who has since
+      //     been MOVED to another room, since hms_tenants.room_id follows them
+      //     but a breakpoint is written against the room and never moves;
+      //   - a stored reading with tenant_count > 0 catches a month someone
+      //     already billed through the occupied path.
+      // Anything found means occupied, and every query fails closed.
       const monthStart = `${forMonth}-01`;
       const [vy, vm] = forMonth.split("-").map(Number);
       const nextMonthStart = vm === 12 ? `${vy + 1}-01-01` : `${vy}-${String(vm + 1).padStart(2, "0")}-01`;
@@ -464,10 +449,6 @@ export async function applyRoomACUnitsAsManager(
       if (livedHereErr) {
         return { error: "Could not confirm whether this room was occupied this month. Try again." };
       }
-      // A room change rewrites hms_tenants.room_id, so the residency query above
-      // cannot see someone who occupied this room and has since moved. The
-      // per-room AC history can: a join or checkout breakpoint is written
-      // against the ROOM and never moves.
       const [{ data: joinRows, error: joinErr }, { data: checkoutRows, error: coErr }] = await Promise.all([
         admin.from("hms_room_ac_join_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
         admin.from("hms_room_ac_checkout_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
@@ -672,10 +653,11 @@ export async function applyRoomACUnitsAsManager(
           per_unit_rate: perUnitRate,
           // Includes departures that shared the meter — see applyRoomACUnitsAction.
           tenant_count: eligible.length + departedCounted,
-        // Asserted in both directions, exactly as tenant_count is: a month first
-        // recorded while vacant and later billed to a tenant must not stay flagged
-        // as hostel-borne. PostgREST upsert only sets the columns it is given.
-        recorded_while_vacant: false,
+          // Asserted in both directions, exactly as tenant_count is: a month first
+          // recorded while vacant and later billed to a tenant must not stay
+          // flagged as hostel-borne. A PostgREST upsert only sets the columns it
+          // is given, so leaving it out would leave the stale flag standing.
+          recorded_while_vacant: false,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "room_id,for_month" }

@@ -2053,15 +2053,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-medium">Room {room.room_number}</span>
-                          {!monthWasVacant ? (
-                            <span className="text-xs text-amber">
-                              {acTenantCount} of {totalTenants} billed for AC
-                            </span>
-                          ) : (
+                          {monthWasVacant ? (
                             <>
                               <span className="text-xs px-2 py-0.5 rounded-full bg-amber/10 text-amber border border-amber/20">Empty</span>
                               <span className="text-xs text-muted-foreground/60">units recorded, charged to nobody</span>
                             </>
+                          ) : acTenantCount > 0 ? (
+                            <span className="text-xs text-amber">
+                              {acTenantCount} of {totalTenants} billed for AC
+                            </span>
+                          ) : (
+                            // Empty NOW but lived in during the month on screen —
+                            // tenants left mid-month and were billed at checkout.
+                            // Neither "Empty" nor "0 of 0 billed for AC" is true.
+                            <span className="text-xs text-muted-foreground/60">Vacated this month — billed at checkout</span>
                           )}
                         </div>
                         {saved ? (
