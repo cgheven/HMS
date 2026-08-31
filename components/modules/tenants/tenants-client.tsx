@@ -4584,13 +4584,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     })()}
                     {checkoutACContext?.currentMonthReading != null && (
                       checkoutACContext.currentMonthVacant ? (
-                        // The box below is deliberately EMPTY here: this month's
-                        // reading was taken while the room stood empty, before
-                        // this tenant was in it, so it is their opening and not
-                        // their departure reading. Saying "auto-filled" over an
-                        // empty box was worse than the pre-fill it replaced.
+                        // The box below is deliberately EMPTY here: this reading
+                        // was taken while the room stood empty, before this tenant
+                        // arrived, so it is not their departure reading. Saying
+                        // "auto-filled" over an empty box was worse than the
+                        // pre-fill it replaced.
+                        //
+                        // It asserts nothing about the OPENING. The dialog and the
+                        // server both rank the previous month's reading first, and
+                        // the line above may already be showing a different number
+                        // for that field — claiming this one "is the opening" put
+                        // two contradictory openings on the same screen. The second
+                        // sentence appears only where there is a box to act on.
                         <p className="text-xs text-amber/80">
-                          This month&apos;s reading ({checkoutACContext.currentMonthReading.toLocaleString()}) was taken while the room was empty, so it is the opening — enter the meter as it reads today.
+                          This month&apos;s reading ({checkoutACContext.currentMonthReading.toLocaleString()}) was recorded while the room stood empty, so it is not this tenant&apos;s departure reading — enter the meter as it reads now.
+                          {checkoutACContext.prevMonthReading == null && ` If this tenant should not pay for the empty period, set the opening above to ${checkoutACContext.currentMonthReading.toLocaleString()}.`}
                         </p>
                       ) : (
                         <p className="text-xs text-emerald-400/80">

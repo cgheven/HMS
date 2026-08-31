@@ -186,7 +186,7 @@ export async function syncMonthAction(
 
     const { data: payments, error: fetchErr } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
       .order("created_at", { ascending: false });
@@ -557,7 +557,7 @@ export async function markPaymentPaidAction(
       // write moves amount_paid, and without this the collection would settle
       // against a total that no longer exists.
       .eq("amount_paid", previousAmountPaid)
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .maybeSingle();
 
     if (error) throw new Error(error.message);
@@ -791,7 +791,7 @@ export async function loadHistoryAction(forMonth: string): Promise<{ payments?: 
 
     const { data, error } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .eq("hostel_id", hostelId)
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false });
@@ -1087,7 +1087,10 @@ export async function applyRoomACUnitsAction(
       }
 
       revalidatePath("/payments");
-      // The dashboard's AC-units tile sums total_units, which this just changed.
+      // Not for the AC-units tile — that query now excludes vacant rows, so this
+      // is the one write that deliberately does NOT move it. Kept because the
+      // dashboard reads this table for other figures and a stale page after a
+      // successful save reads as a failure.
       revalidatePath("/dashboard");
       return { success: true, derivedUnits: vacantUnits, vacant: true };
     }

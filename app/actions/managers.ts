@@ -1409,7 +1409,7 @@ export async function recordPaymentAsManager(
       .eq("amount_paid", previousAmountPaid)
       // Return the updated row so the caller can drive the post-payment receipt
       // dialog, matching recordPaymentAsPartner.
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .maybeSingle()
 
     if (error) return { error: error.message }
