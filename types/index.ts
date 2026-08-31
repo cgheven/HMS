@@ -488,7 +488,7 @@ export interface Payment {
   /** discount_percent here is the tenant's LIVE standing concession, so the Pay
    *  dialog quotes the percent the trigger will actually price an unfrozen row
    *  at — the row's own copy is whatever it was last priced with. */
-  tenant?: { full_name: string; room_id: string | null; phone?: string | null; check_in?: string; joining_meter_reading?: number | null; discount_percent?: number | null } | null;
+  tenant?: { full_name: string; room_id: string | null; phone?: string | null; check_in?: string; joining_meter_reading?: number | null; discount_percent?: number | null; billing_type?: "monthly" | "daily" } | null;
 }
 
 export interface CheckoutPaymentSettlement {

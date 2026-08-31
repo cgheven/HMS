@@ -189,7 +189,7 @@ export async function syncMonthAction(
 
     const { data: payments, error: fetchErr } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent, billing_type)")
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
       .order("created_at", { ascending: false });
@@ -490,6 +490,13 @@ export async function markPaymentPaidAction(
     // settle the bill against a total the database then refuses to write. On an
     // uncollected bill the tenant record is authoritative — exactly what the
     // trigger reads — and the manual percentage is whatever was just typed.
+    // Daily bills carry no rent discount (migration 212 enforces it — the daily
+    // gross-restore cannot distinguish a discounted amount from a gross one and
+    // re-takes the discount on every later write). Refused here too, so a direct
+    // server-action call cannot set what the dialog does not offer.
+    if (manualDiscountPercent != null && tenantData.billing_type !== "monthly") {
+      throw new Error("Discounts apply to monthly rent, so they cannot be given on a nightly bill.");
+    }
     const discountPercent = wasCollected
       ? Number(existingPayment.discount_percent ?? 0)
       : combinedDiscountPercent(tenantData.discount_percent, manualDiscountPercent);
@@ -596,7 +603,7 @@ export async function markPaymentPaidAction(
       // write moves amount_paid, and without this the collection would settle
       // against a total that no longer exists.
       .eq("amount_paid", previousAmountPaid)
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent, billing_type)")
       .maybeSingle();
 
     if (error) throw new Error(error.message);
@@ -830,7 +837,7 @@ export async function loadHistoryAction(forMonth: string): Promise<{ payments?: 
 
     const { data, error } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent, billing_type)")
       .eq("hostel_id", hostelId)
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false });

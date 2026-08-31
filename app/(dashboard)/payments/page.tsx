@@ -77,6 +77,11 @@ export default async function PaymentsPage() {
     const differs = (a: number, b: number) => Math.abs(a - b) > 0.01;
     return (
       differs(splitPaymentCharges(row).rent, want.baseRent) ||
+      // A concession granted or removed mid-month changes nothing but hms_tenants,
+      // so without this the pending row keeps its old price: the list and the
+      // reminders quote the wrong figure, and checkout quotes one number at the
+      // door while the trigger settles at another.
+      differs(Number(row.discount_percent ?? 0), Number(t.discount_percent ?? 0)) ||
       differs(Number(row.food_charge ?? 0), want.foodCharge) ||
       differs(Number(row.security_deposit_charge ?? 0), want.depositCharge) ||
       differs(Number(row.registration_fee_charge ?? 0), want.registrationFeeCharge) ||

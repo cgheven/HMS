@@ -295,9 +295,16 @@ export async function recordPaymentAsPartner(
     // Verify tenant belongs to the active branch and get their package tier
     const { data: tenant } = await admin
       .from("hms_tenants")
-      .select("hostel_id, package_tier, discount_percent")
+      .select("hostel_id, package_tier, discount_percent, billing_type")
       .eq("id", tenantId)
       .maybeSingle();
+
+    // Daily bills carry no rent discount — migration 212 enforces it in the
+    // database; refused here too so a direct call cannot set what the dialog
+    // does not offer.
+    if (manualDiscountPercent != null && tenant?.billing_type !== "monthly") {
+      return { error: "Discounts apply to monthly rent, so they cannot be given on a nightly bill." };
+    }
 
     if (!tenant || tenant.hostel_id !== hostelId) {
       return { error: "Tenant not found in your active branch." };
@@ -410,7 +417,7 @@ export async function recordPaymentAsPartner(
       // write moves amount_paid, and without this the collection would settle
       // against a total that no longer exists.
       .eq("amount_paid", previousAmountPaid)
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent, billing_type)")
       .maybeSingle();
 
     if (error) return { error: error.message };

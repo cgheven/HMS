@@ -202,6 +202,11 @@ function previewDiscount(p: Payment, manualPercentRaw: string) {
   // undone payment leaves the row partially_paid at zero collected and is
   // deliberately included: the bill reopens still discounted.
   const frozen = p.status === "paid" || p.status === "partially_paid";
+  // Daily bills carry no rent discount — migration 212 enforces it, because the
+  // daily gross-restore cannot tell a discounted amount from a gross one and
+  // re-takes the discount on every later write. Offering the field would be an
+  // input that silently does nothing.
+  const daily = p.tenant?.billing_type === "daily";
   const typed = parseFloat(manualPercentRaw);
   const manual = Number.isFinite(typed) ? typed : 0;
   // The TENANT's live standing discount, not the row's stored copy. A pending
@@ -210,9 +215,15 @@ function previewDiscount(p: Payment, manualPercentRaw: string) {
   // the counter while the trigger settles at 15%. On a frozen row the stored
   // percent IS the answer — it is pinned, and the tenant's current setting no
   // longer applies to it.
+  // NULL on the tenant means the concession was REMOVED, not unknown — clearing
+  // the field on the member form stores NULL by design. Falling back to the
+  // row's stale percent quoted the old discounted total, the desk collected it,
+  // and the server booked it as a PART payment while the client toasted success.
+  // Every payment source that reaches this component selects the tenant's
+  // percent, so there is nothing left for the fallback to rescue.
   const alreadyPercent = frozen
     ? Number(p.discount_percent ?? 0)
-    : Number(p.tenant?.discount_percent ?? p.discount_percent ?? 0);
+    : Number(p.tenant?.discount_percent ?? 0);
   const totalPercent = frozen ? alreadyPercent : combinedDiscountPercent(alreadyPercent, manual);
   const discount = computeRentDiscount(charges.rent, totalPercent, charges.referralDiscount);
   // charges.discount is what the stored (net) amount already has taken out of
@@ -221,6 +232,7 @@ function previewDiscount(p: Payment, manualPercentRaw: string) {
   const total = Math.max(0, Number(p.amount ?? 0) + charges.discount - discount);
   return {
     frozen,
+    daily,
     rent: charges.rent,
     alreadyPercent,
     totalPercent,
@@ -2694,6 +2706,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               // A reservation bills only the deposit and registration fee, and a
               // rent-only discount on a bill with no rent is a silent no-op.
               if (preview.rent <= 0) return null;
+              if (preview.daily) {
+                return (
+                  <p className="text-xs text-muted-foreground/70">
+                    Discounts apply to monthly rent, so they cannot be given on a nightly bill. Adjust the nightly
+                    rate on the member instead.
+                  </p>
+                );
+              }
               if (preview.frozen) {
                 // Always say something. Returning null when the pinned percent is
                 // 0 left an operator staring at a dialog with no discount field
