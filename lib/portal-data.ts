@@ -121,7 +121,7 @@ export async function getManagerTenants() {
 export async function getManagerPaymentsPageData(forMonth: string) {
   const scope = await resolveManagerHostel();
   if (!scope) {
-    return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, meterAllRooms: false, acReadings: [], acJoinReadings: [], waitingTenantIds: [] };
+    return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, meterAllRooms: false, acReadings: [], acCheckoutReadings: [], acJoinReadings: [], waitingTenantIds: [] };
   }
 
   const { hostelId } = scope;
@@ -134,6 +134,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     packageConfig,
     { data: hostel },
     { data: acReadings, error: acReadingsErr },
+    { data: acCheckoutReadings, error: acCheckoutErr },
     { data: acJoinReadings, error: acJoinErr },
     { data: waitingTenants, error: waitingErr },
   ] = await Promise.all([
@@ -157,7 +158,14 @@ export async function getManagerPaymentsPageData(forMonth: string) {
       .maybeSingle(),
     // All months — see getPaymentsPageData() for why this is not month-scoped.
     admin.from("hms_room_ac_readings")
-      .select("room_id, for_month, total_units, meter_reading, per_unit_rate, tenant_count")
+      .select("room_id, for_month, total_units, meter_reading, per_unit_rate, tenant_count, recorded_while_vacant")
+      .eq("hostel_id", hostelId),
+    // Absolute meter values written against the ROOM at each checkout. The card
+    // needs them to resolve a previous month that was recorded while the room was
+    // empty and then let — see effectivePrevReading — or "Previous month ended
+    // at" and the unit preview would disagree with the figure Apply uses.
+    admin.from("hms_room_ac_checkout_readings")
+      .select("room_id, for_month, meter_reading")
       .eq("hostel_id", hostelId),
     admin.from("hms_room_ac_join_readings")
       .select("room_id, tenant_id, units_at_join, for_month")
@@ -175,7 +183,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
   // manager an empty tenant list beside non-zero money tiles. Failing loudly is
   // the only outcome that cannot be mistaken for "nobody lives here".
   const readErr =
-    paymentsErr ?? tenantsErr ?? roomsErr ?? acReadingsErr ?? acJoinErr ?? waitingErr;
+    paymentsErr ?? tenantsErr ?? roomsErr ?? acReadingsErr ?? acCheckoutErr ?? acJoinErr ?? waitingErr;
   if (readErr) {
     throw new Error(`Payments page could not load for ${forMonth}: ${readErr.message}`);
   }
@@ -193,7 +201,8 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     paymentMethods: h?.payment_methods ?? [],
     reminderTemplate: h?.reminder_template ?? null,
     meterAllRooms: h?.meter_all_rooms ?? false,
-    acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[],
+    acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; recorded_while_vacant?: boolean | null }[],
+    acCheckoutReadings: (acCheckoutReadings ?? []) as { room_id: string; for_month: string; meter_reading: number | null }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     waitingTenantIds: (waitingTenants ?? []).map((t) => t.id as string),
   };

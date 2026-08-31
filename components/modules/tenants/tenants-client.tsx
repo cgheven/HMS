@@ -715,6 +715,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     prevMonthUnits: number | null;
     currentMonthReading: number | null;
     currentMonthUnits: number | null;
+    /** That reading was taken while the room stood empty — an opening, not this
+     *  tenant's departure reading. */
+    currentMonthVacant?: boolean;
     perUnitRate: number;
     activeTenantCount: number;
     priorCheckoutUnits: number[];
@@ -1728,7 +1731,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           // that's already on file. Only when the operator hasn't already
           // typed something themselves, so re-fetching on a date edit doesn't
           // clobber a value they just entered.
-          setCheckoutACReading((prev) => (prev === "" && ctx.currentMonthReading != null) ? String(ctx.currentMonthReading) : prev);
+          // Never from a reading taken while the room was empty: that number
+          // predates this tenant, and pre-filling it as their departure reading
+          // hands the operator a plausible wrong figure to accept. It still
+          // serves as the OPENING below — which is what it actually is.
+          setCheckoutACReading((prev) => (prev === "" && ctx.currentMonthReading != null && !ctx.currentMonthVacant) ? String(ctx.currentMonthReading) : prev);
 
           // Same treatment for the OPENING reading. It was shown only as a
           // placeholder, so the operator saw a greyed-out number in an empty box
@@ -4576,9 +4583,28 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       );
                     })()}
                     {checkoutACContext?.currentMonthReading != null && (
-                      <p className="text-xs text-emerald-400/80">
-                        Auto-filled from this month&apos;s AC Units entry ({checkoutACContext.currentMonthReading.toLocaleString()}) — edit below if the meter has moved since.
-                      </p>
+                      checkoutACContext.currentMonthVacant ? (
+                        // The box below is deliberately EMPTY here: this reading
+                        // was taken while the room stood empty, before this tenant
+                        // arrived, so it is not their departure reading. Saying
+                        // "auto-filled" over an empty box was worse than the
+                        // pre-fill it replaced.
+                        //
+                        // It asserts nothing about the OPENING. The dialog and the
+                        // server both rank the previous month's reading first, and
+                        // the line above may already be showing a different number
+                        // for that field — claiming this one "is the opening" put
+                        // two contradictory openings on the same screen. The second
+                        // sentence appears only where there is a box to act on.
+                        <p className="text-xs text-amber/80">
+                          This month&apos;s reading ({checkoutACContext.currentMonthReading.toLocaleString()}) was recorded while the room stood empty, so it is not this tenant&apos;s departure reading — enter the meter as it reads now.
+                          {checkoutACContext.prevMonthReading == null && ` If this tenant should not pay for the empty period, set the opening above to ${checkoutACContext.currentMonthReading.toLocaleString()}.`}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-emerald-400/80">
+                          Auto-filled from this month&apos;s AC Units entry ({checkoutACContext.currentMonthReading.toLocaleString()}) — edit below if the meter has moved since.
+                        </p>
+                      )
                     )}
                     <input
                       id="checkout-ac-reading"

@@ -191,7 +191,11 @@ export async function getDashboardData() {
     supabase.from("hms_salary_advances").select("balance").eq("hostel_id", hostelId).gt("balance", 0),
     supabase.from("hms_payments").select("id,amount,amount_paid,late_fee,status,tenant:hms_tenants(full_name)").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).in("status", ["pending", "overdue", "partially_paid"]),
     supabase.from("hms_payments").select("for_month,amount,amount_paid,status").eq("hostel_id", hostelId).gte("for_month", ranges[0].monthKey).lte("for_month", ranges[5].monthKey),
-    supabase.from("hms_room_ac_readings").select("total_units").eq("hostel_id", hostelId).eq("for_month", currentMonthKey),
+    // Billed units only. Empty-room readings are the hostel's own consumption and
+    // carry no charge, so folding them in would raise this tile while AC Collected
+    // and AC Pending — both from hms_payments.ac_charge — stayed put, and no
+    // dashboard number should move because a feature was added.
+    supabase.from("hms_room_ac_readings").select("total_units").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).eq("recorded_while_vacant", false),
     // Waiting-list members holding a reservation deposit. Deliberately a
     // separate query rather than relaxing the is_waiting filter above: that
     // result also drives expected revenue and the tenant headcount, and a
@@ -952,7 +956,7 @@ export async function updatePaymentCharges(
 
 export async function getPaymentsPageData(forMonth: string) {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, meterAllRooms: false, acReadings: [], acJoinReadings: [], waitingTenantIds: [] };
+  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, meterAllRooms: false, acReadings: [], acCheckoutReadings: [], acJoinReadings: [], waitingTenantIds: [] };
   const { supabase, hostelId, hostel } = ctx;
 
   const [
@@ -961,6 +965,7 @@ export async function getPaymentsPageData(forMonth: string) {
     { data: rooms, error: roomsErr },
     packageConfig,
     { data: acReadings, error: acReadingsErr },
+    { data: acCheckoutReadings, error: acCheckoutErr },
     { data: acJoinReadings, error: acJoinErr },
     { data: waitingTenants, error: waitingErr },
     { data: waMessages },
@@ -986,7 +991,14 @@ export async function getPaymentsPageData(forMonth: string) {
     // so the whole history of a large hostel is still a few hundred small rows;
     // revisit with a date bound only if that stops being true.
     supabase.from("hms_room_ac_readings")
-      .select("room_id, for_month, total_units, meter_reading, per_unit_rate, tenant_count, meter_photo")
+      .select("room_id, for_month, total_units, meter_reading, per_unit_rate, tenant_count, meter_photo, recorded_while_vacant")
+      .eq("hostel_id", hostelId),
+    // Absolute meter values written against the ROOM at each checkout. The card
+    // needs them to resolve a previous month that was recorded while the room was
+    // empty and then let — see effectivePrevReading — or "Previous month ended
+    // at" and the unit preview would disagree with the figure Apply uses.
+    supabase.from("hms_room_ac_checkout_readings")
+      .select("room_id, for_month, meter_reading")
       .eq("hostel_id", hostelId),
     supabase.from("hms_room_ac_join_readings")
       .select("room_id, tenant_id, units_at_join, for_month")
@@ -1036,7 +1048,7 @@ export async function getPaymentsPageData(forMonth: string) {
   // shipped as a silent blank four times in this repo; the first symptom of a
   // missing column must never be a plausible-looking screen.
   const readErr =
-    paymentsErr ?? tenantsErr ?? roomsErr ?? acReadingsErr ?? acJoinErr ?? waitingErr;
+    paymentsErr ?? tenantsErr ?? roomsErr ?? acReadingsErr ?? acCheckoutErr ?? acJoinErr ?? waitingErr;
   if (readErr) {
     throw new Error(`Payments page could not load for ${forMonth}: ${readErr.message}`);
   }
@@ -1053,7 +1065,8 @@ export async function getPaymentsPageData(forMonth: string) {
     reminderTemplate: hostel?.reminder_template ?? null,
     autoReminderEnabled: hostel?.whatsapp_enabled ?? false,
     meterAllRooms: hostel?.meter_all_rooms ?? false,
-    acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null }[],
+    acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null; recorded_while_vacant?: boolean | null }[],
+    acCheckoutReadings: (acCheckoutReadings ?? []) as { room_id: string; for_month: string; meter_reading: number | null }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     // Newest first from the query, so the FIRST row seen per tenant is the
     // latest — no sorting or comparison needed.

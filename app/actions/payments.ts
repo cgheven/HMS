@@ -33,7 +33,7 @@ import {
 } from "@/lib/payment-calc";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 import { logActivity } from "@/lib/audit";
-import { computeACSegmentBilling, deriveOpeningReading } from "@/lib/ac-billing";
+import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore } from "@/lib/ac-billing";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ export async function syncMonthAction(
 
     const { data: payments, error: fetchErr } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
       .order("created_at", { ascending: false });
@@ -557,7 +557,7 @@ export async function markPaymentPaidAction(
       // write moves amount_paid, and without this the collection would settle
       // against a total that no longer exists.
       .eq("amount_paid", previousAmountPaid)
-      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .maybeSingle();
 
     if (error) throw new Error(error.message);
@@ -791,7 +791,7 @@ export async function loadHistoryAction(forMonth: string): Promise<{ payments?: 
 
     const { data, error } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
       .eq("hostel_id", hostelId)
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false });
@@ -837,6 +837,8 @@ export async function applyRoomACUnitsAction(
   lockedStale?: { name: string; units: number; charge: number }[];
   derivedUnits?: number;
   prevMonthReading?: number;
+  /** Reading recorded with no tenant in the room — units are the hostel's own cost. */
+  vacant?: boolean;
   currentReading?: number;
 }> {
   try {
@@ -875,12 +877,37 @@ export async function applyRoomACUnitsAction(
       { data: room },
       { data: pkgConfig },
       { data: prevRecord },
+      { data: prevMonthCheckouts },
+      { data: existingReading },
+      { data: priorReadings },
       { data: allTenants, error: allTenantsErr },
       { data: branch },
     ] = await Promise.all([
       supabase.from("hms_rooms").select("id, hostel_id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).single(),
-      supabase.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      supabase.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      // Last month's checkout readings. Consulted only when last month's row was
+      // recorded while the room was EMPTY — see effectivePrevReading: such a row
+      // is a snapshot, not a month-end close, and a guest who came and went after
+      // it left the real closing figure here instead.
+      adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr),
+      // This month's own row, if one exists: a stored tenant_count > 0 means the
+      // occupied path already billed this month, which the vacant guard refuses.
+      //
+      // adminDb for the same reason as the guard's other signals: the SELECT
+      // policy on this table (migration 045) covers hms_hostels.owner_id and
+      // hms_partnerships but has no hms_owner_hostels arm, while branch access
+      // itself resolves through exactly that junction. On a multi-owner branch a
+      // narrowed read returns [] — the guard would pass on evidence it could not
+      // see, and the carry-forward below would find no earlier reading. Both are
+      // re-scoped to hostelId in the query itself, so nothing widens.
+      adminDb.from("hms_room_ac_readings").select("tenant_count").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", forMonth).maybeSingle(),
+      // Every earlier reading, newest first. Consulted ONLY on the vacant path
+      // below: an empty room may legitimately have skipped a month, and the
+      // exactly-previous-month rule has nothing to offer it. Occupied rooms
+      // keep the strict rule — loosening it globally would turn a room last
+      // read three months ago into one large catch-up bill.
+      adminDb.from("hms_room_ac_readings").select("meter_reading, for_month").eq("room_id", roomId).eq("hostel_id", hostelId).lt("for_month", forMonth).not("meter_reading", "is", null).order("for_month", { ascending: false }).limit(6),
       // `.lt("check_in", ...)` matters for any back-dated apply: without it the
       // eligible set is "whoever lives in this room now", so closing an earlier
       // month would split it across tenants who had not moved in yet. Applying
@@ -921,8 +948,159 @@ export async function applyRoomACUnitsAction(
 
     // ── Find all active tenants in this room ─────────────────────
     const eligible = allTenants ?? [];
-    if (eligible.length === 0)
-      throw new Error("No active tenants found in this room.");
+
+    // ── Vacant room: record the reading, charge nobody ────────────
+    //
+    // This RETURNS. It must never fall through to the code below, which is
+    // entirely a per-tenant payment writer — and in particular to the
+    // stale-charge sweeper, which selects every payment row for the month
+    // joined on tenant.room_id with no is_active filter. With an empty eligible
+    // set, every tenant who lived here this month would look "stale" and have a
+    // legitimate, already-billed AC charge silently zeroed.
+    //
+    // The units are the hostel's own cost: staff sleeping in the room, a guest,
+    // or lights left on. No payment row is written and no rupee figure is stored
+    // anywhere — the electricity is already captured in full as a utility bill,
+    // and recording money here as well would double-count it.
+    //
+    // Recording it also keeps the meter chain unbroken, which is the part that
+    // protects the NEXT tenant: without a reading for the vacant month they are
+    // billed from whenever the room was last read, inheriting units consumed
+    // before they arrived.
+    //
+    // SCOPE, decided deliberately: that protection spans MONTHS, not mid-month.
+    // A room empty through August and let in September opens September at
+    // August's reading — the case this feature exists for. A room empty on the
+    // 1st and let on the 12th is NOT covered: the month-end Apply derives its
+    // opening from the previous month and bills the joiner for the vacant units
+    // too, overwriting this row.
+    //
+    // Covering that properly means seeding join breakpoints into
+    // computeACSegmentBilling so the vacant slice is assigned to nobody —
+    // surgery on the billing maths, for a case the operator can already handle
+    // by entering the tenant's joining meter reading at check-in. Recorded as a
+    // known limitation rather than risking the arithmetic every branch depends on.
+    if (eligible.length === 0) {
+      // Was anyone LIVING here in this month? Not "is anyone here now" — a room
+      // whose tenants left on the 20th is empty today but was occupied all
+      // month, and letting a vacant apply rewrite it would write a month those
+      // tenants were genuinely billed for off as hostel cost.
+      //
+      // Three signals, because each alone has a blind spot:
+      //   - the residency window catches anyone still recorded against this
+      //     room, departed tenants included;
+      //   - the per-room join/checkout breakpoints catch a tenant who has since
+      //     been MOVED to another room, since hms_tenants.room_id follows them
+      //     but a breakpoint is written against the room and never moves — but
+      //     ONLY where such a breakpoint exists. A whole-month resident with no
+      //     join or checkout reading, moved out before the month was ever
+      //     applied, is not detected: room_id keeps no history and the
+      //     room_changed event stores labels, not ids, so there is no fourth
+      //     signal to consult. The month is then recorded as hostel cost;
+      //   - a stored reading with tenant_count > 0 catches a month someone
+      //     already billed through the occupied path.
+      // Anything found means occupied, and every query fails closed.
+      const storedPrevForVacant = effectivePrevReading(prevRecord, prevMonthCheckouts);
+      const monthStart = `${forMonth}-01`;
+      const [vy, vm] = forMonth.split("-").map(Number);
+      const nextMonthStart = vm === 12 ? `${vy + 1}-01-01` : `${vy}-${String(vm + 1).padStart(2, "0")}-01`;
+      const { data: livedHere, error: livedHereErr } = await adminDb
+        .from("hms_tenants")
+        .select("id")
+        .eq("hostel_id", hostelId)
+        .eq("room_id", roomId)
+        .lt("check_in", nextMonthStart)
+        .or(`check_out.is.null,check_out.gte.${monthStart}`)
+        .limit(1);
+      if (livedHereErr) {
+        return { success: false, error: "Could not confirm whether this room was occupied this month. Try again." };
+      }
+      // adminDb, not the RLS client: the join-readings SELECT policy is narrower
+      // than the checkout one (migration 171 widened checkout with an
+      // hms_owner_hostels arm; 046 never got the same), and under RLS a narrowed
+      // read returns [] — the guard would then pass on evidence it could not see.
+      const [{ data: joinRows, error: joinErr }, { data: checkoutRows, error: coErr }] = await Promise.all([
+        adminDb.from("hms_room_ac_join_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
+        adminDb.from("hms_room_ac_checkout_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
+      ]);
+      if (joinErr || coErr) {
+        return { success: false, error: "Could not confirm whether this room was occupied this month. Try again." };
+      }
+
+      if (
+        (livedHere ?? []).length > 0 ||
+        (joinRows ?? []).length > 0 ||
+        (checkoutRows ?? []).length > 0 ||
+        (existingReading && Number(existingReading.tenant_count ?? 0) > 0)
+      ) {
+        return {
+          success: false, error:
+            "This room was occupied during this month, so its units belong to those tenants. Record the reading through the normal Apply once they are billed, or correct their charges instead.",
+        };
+      }
+
+      const vacantOpening =
+        storedPrevForVacant != null
+          ? storedPrevForVacant
+          : openingReading != null && Number.isFinite(Number(openingReading))
+            ? Math.round(Number(openingReading))
+            : latestReadingBefore(priorReadings ?? [], forMonth);
+
+      if (vacantOpening == null) {
+        // Refuse rather than assume 0. An empty room has no tenant to derive an
+        // opening from, and defaulting to zero would record the entire absolute
+        // meter reading as this month's consumption.
+        return {
+          success: false,
+          error:
+            "This room has no earlier meter reading, so there is nothing to measure this month's units against. Enter the opening reading for the start of the month.",
+        };
+      }
+
+      const vacantUnits = Math.round(Number(meterReading)) - vacantOpening;
+      if (vacantUnits < 0) {
+        return { success: false, error: `Reading ${meterReading} is below the opening reading ${vacantOpening}.` };
+      }
+
+      const { error: vacantErr } = await adminDb.from("hms_room_ac_readings").upsert(
+        {
+          hostel_id: hostelId,
+          room_id: roomId,
+          for_month: forMonth,
+          meter_reading: Math.round(Number(meterReading)),
+          total_units: vacantUnits,
+          per_unit_rate: perUnitRate,
+          tenant_count: 0,
+          recorded_while_vacant: true,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "room_id,for_month" }
+      );
+      if (vacantErr) throw new Error(vacantErr.message);
+
+      // Attributed like every occupied reading. This row sets the next tenant's
+      // opening baseline, so "who entered it, and when" matters at least as much
+      // here as it does for a reading that bills someone.
+      const vacantCtx = await getAuthContext();
+      if (vacantCtx?.user) {
+        await logActivity({
+          hostel_id: hostelId,
+          actor_id: vacantCtx.user.id,
+          action: "ac_reading.submit",
+          entity: "ac_reading",
+          entity_id: roomId,
+          meta: { for_month: forMonth, meter_reading: Math.round(Number(meterReading)), total_units: vacantUnits, tenant_count: 0, vacant: true },
+        });
+      }
+
+      revalidatePath("/payments");
+      // Not for the AC-units tile — that query now excludes vacant rows, so this
+      // is the one write that deliberately does NOT move it. Kept because the
+      // dashboard reads this table for other figures and a stale page after a
+      // successful save reads as a failure.
+      revalidatePath("/dashboard");
+      return { success: true, derivedUnits: vacantUnits, vacant: true };
+    }
 
     // ── Derive consumption from cumulative meter readings ─────────
     // No prev-month record and no explicit opening reading typed in? Fall back
@@ -931,8 +1109,9 @@ export async function applyRoomACUnitsAction(
     // reading the operator would otherwise have to look up and retype here.
     const derivedOpening = deriveOpeningReading(eligible, forMonth);
 
-    const prevReading = prevRecord?.meter_reading != null
-      ? Math.round(Number(prevRecord.meter_reading))
+    const storedPrev = effectivePrevReading(prevRecord, prevMonthCheckouts);
+    const prevReading = storedPrev != null
+      ? storedPrev
       : (openingReading != null ? Math.round(Number(openingReading)) : (derivedOpening ?? 0));
 
     if (reading < prevReading)
@@ -1162,6 +1341,11 @@ export async function applyRoomACUnitsAction(
           // Departed tenants paid their share at checkout; omitting them made the
           // panel read "4 tenants billed" for a month that was divided by five.
           tenant_count: eligible.length + departedCounted,
+          // Asserted in both directions, exactly as tenant_count is: a month first
+          // recorded while vacant and later billed to a tenant must not stay
+          // flagged as hostel-borne. A PostgREST upsert only sets the columns it
+          // is given, so leaving it out would leave the stale flag standing.
+          recorded_while_vacant: false,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "room_id,for_month" }
@@ -1247,10 +1431,11 @@ export async function saveACJoinReadingAction(
 
     // Fetch room, tenant, prev month reading, and roommates' move-in readings in parallel
     const prevMonthStr = getPrevMonth(forMonth);
-    const [{ data: room }, { data: tenant }, { data: prevRecord }, { data: roommates }] = await Promise.all([
+    const [{ data: room }, { data: tenant }, { data: prevRecord }, { data: prevMonthCheckouts }, { data: roommates }] = await Promise.all([
       supabase.from("hms_rooms").select("id").eq("id", roomId).eq("hostel_id", hostelId).single(),
       supabase.from("hms_tenants").select("id, package_tier, room_id, is_active").eq("id", tenantId).eq("hostel_id", hostelId).single(),
-      adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr),
       supabase.from("hms_tenants").select("check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", roomId).eq("is_active", true),
     ]);
 
@@ -1264,8 +1449,13 @@ export async function saveACJoinReadingAction(
     const derivedOpening = deriveOpeningReading(roommates ?? [], forMonth);
 
     // Derive relative units from cumulative meter readings
-    const prevReading = prevRecord?.meter_reading != null
-      ? Math.round(Number(prevRecord.meter_reading))
+      // effectivePrevReading, exactly as Apply uses: units_at_join is an OFFSET
+      // from the month's opening, so anchoring it to a different baseline than the
+      // one that bills the month puts a tenant's breakpoint past the month end and
+      // hands their whole share to a roommate.
+    const storedPrev = effectivePrevReading(prevRecord, prevMonthCheckouts);
+    const prevReading = storedPrev != null
+      ? storedPrev
       : (openingReading != null ? Math.round(Number(openingReading)) : (derivedOpening ?? 0));
 
     if (joinReading < prevReading)
