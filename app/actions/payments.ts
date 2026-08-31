@@ -839,7 +839,6 @@ export async function applyRoomACUnitsAction(
   prevMonthReading?: number;
   /** Reading recorded with no tenant in the room — units are the hostel's own cost. */
   vacant?: boolean;
-  hostelBorneUnits?: number;
   currentReading?: number;
 }> {
   try {
@@ -992,9 +991,9 @@ export async function applyRoomACUnitsAction(
       // on the 31st with the box blank, and no month-end Apply, slipped through
       // both — and their month was written off as hostel cost.
       //
-      // A residency-window query answers it directly and ignores is_active, so
-      // it holds for departed tenants and for a tenant moved to another room
-      // since.
+      // A residency-window query answers it for anyone still recorded against
+      // this room, including departed tenants. It cannot see someone who has
+      // since been moved to another room — the history check below covers that.
       const monthStart = `${forMonth}-01`;
       const [vy, vm] = forMonth.split("-").map(Number);
       const nextMonthStart = vm === 12 ? `${vy + 1}-01-01` : `${vy}-${String(vm + 1).padStart(2, "0")}-01`;
@@ -1009,7 +1008,21 @@ export async function applyRoomACUnitsAction(
       if (livedHereErr) {
         return { success: false, error: "Could not confirm whether this room was occupied this month. Try again." };
       }
-      if ((livedHere ?? []).length > 0 || (existingReading && Number(existingReading.tenant_count ?? 0) > 0)) {
+      // A room change rewrites hms_tenants.room_id, so the residency query above
+      // cannot see someone who occupied this room and has since moved. The
+      // per-room AC history can: a join or checkout breakpoint is written
+      // against the ROOM and never moves.
+      const [{ data: joinRows }, { data: checkoutRows }] = await Promise.all([
+        supabase.from("hms_room_ac_join_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
+        supabase.from("hms_room_ac_checkout_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
+      ]);
+
+      if (
+        (livedHere ?? []).length > 0 ||
+        (joinRows ?? []).length > 0 ||
+        (checkoutRows ?? []).length > 0 ||
+        (existingReading && Number(existingReading.tenant_count ?? 0) > 0)
+      ) {
         return {
           success: false, error:
             "This room was occupied during this month, so its units belong to those tenants. Record the reading through the normal Apply once they are billed, or correct their charges instead.",
@@ -1049,6 +1062,7 @@ export async function applyRoomACUnitsAction(
           per_unit_rate: perUnitRate,
           tenant_count: 0,
           recorded_while_vacant: true,
+          updated_at: new Date().toISOString(),
         },
         { onConflict: "room_id,for_month" }
       );
@@ -1072,7 +1086,7 @@ export async function applyRoomACUnitsAction(
       revalidatePath("/payments");
       // The dashboard's AC-units tile sums total_units, which this just changed.
       revalidatePath("/dashboard");
-      return { success: true, derivedUnits: vacantUnits, vacant: true, hostelBorneUnits: vacantUnits };
+      return { success: true, derivedUnits: vacantUnits, vacant: true };
     }
 
     // ── Derive consumption from cumulative meter readings ─────────

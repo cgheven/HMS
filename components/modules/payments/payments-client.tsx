@@ -1946,7 +1946,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       setAcRoomFilter(v);
                       // Widen the occupancy filter if the chosen room is hidden by
                       // it, rather than showing an empty panel with no explanation.
-                      if (v !== "all" && !(acRoomMeta.get(v)?.occupied ?? false)) setAcOccupancy("all");
+                      // Any explicit pick, either direction: choosing an occupied
+                      // room while the Empty chip was active hit the same dead end.
+                      if (v !== "all") setAcOccupancy("all");
                     }}
                   >
                     <SelectTrigger className="h-7 w-40 text-xs">
@@ -2016,9 +2018,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 // keep the "Empty" pill for the rest of the month, and — worse —
                 // suppress the "re-apply to bill the tenants above" prompt that
                 // exists to catch exactly a present-but-unbilled tenant.
-                const monthWasVacant =
-                  acTenantCount === 0 &&
-                  (saved ? (saved.recorded_while_vacant ?? Number(saved.tenant_count ?? 0) === 0) : true);
+                // "Was this room occupied in the month on screen?" — answered from
+                // the month's own data, not today's roster. Without the second
+                // clause, a room whose tenants left on the 20th showed the Empty
+                // pill for a month they lived through, and a room let on the 5th of
+                // NEXT month showed as occupied for this one.
+                const [nmY, nmM] = selectedMonth.split("-").map(Number);
+                const nextMonthStart = nmM === 12 ? `${nmY + 1}-01-01` : `${nmY}-${String(nmM + 1).padStart(2, "0")}-01`;
+                const someoneLivedHereThisMonth =
+                  tenants.some(t => t.room_id === room.id && t.check_in < nextMonthStart) ||
+                  payments.some(p => p.for_month === selectedMonth && p.tenant?.room_id === room.id);
+                const monthWasVacant = saved
+                  ? (saved.recorded_while_vacant ?? Number(saved.tenant_count ?? 0) === 0)
+                  : !someoneLivedHereThisMonth;
                 const totalTenants = acTenantCount;
                 const midMonthJoiners = tenants.filter(
                   t => t.room_id === room.id && t.is_active && t.check_in.startsWith(selectedMonth)

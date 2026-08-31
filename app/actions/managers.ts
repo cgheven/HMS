@@ -15,7 +15,7 @@ import { performPaymentUndo } from "@/lib/payment-undo"
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
 import { computeACSegmentBilling, deriveOpeningReading, latestReadingBefore } from "@/lib/ac-billing"
-import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge } from "@/lib/payment-calc"
+import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge } from "@/lib/payment-calc"
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
 import { pktYearMonth } from "@/lib/pkt-time"
@@ -332,7 +332,7 @@ export async function applyRoomACUnitsAsManager(
   forMonth: string,
   meterReading: number,
   openingReading?: number,
-): Promise<{ error: string | null; eligibleCount?: number; perTenantUnits?: number; perTenantCharge?: number; derivedUnits?: number; prevMonthReading?: number; currentReading?: number; vacant?: boolean; hostelBorneUnits?: number }> {
+): Promise<{ error: string | null; eligibleCount?: number; perTenantUnits?: number; perTenantCharge?: number; derivedUnits?: number; prevMonthReading?: number; currentReading?: number; vacant?: boolean }> {
   try {
     const ctx = await requireManagerPermission("collect_payments")
     const hostelId = ctx.activeHostel.id
@@ -353,10 +353,9 @@ export async function applyRoomACUnitsAsManager(
     const prevMonthStr = getPrevMonth(forMonth)
 
     // Verify room, get config, fetch previous month reading, active tenants, join readings, and checkout readings in parallel
-    const [{ data: room }, { data: branch }, { data: config }, { data: prevRecord }, { data: existingReading },
+    const [{ data: room }, { data: config }, { data: prevRecord }, { data: existingReading },
       { data: priorReadings }, { data: allTenants, error: allTenantsErr }, { data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
       admin.from("hms_rooms").select("id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
-      admin.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).maybeSingle(),
       admin.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).maybeSingle(),
       admin.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
       // Vacant-path fallback only — see applyRoomACUnitsAction.
@@ -367,7 +366,7 @@ export async function applyRoomACUnitsAsManager(
       // later arrivals for a month they were not there.
       admin
         .from("hms_tenants")
-        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading, ac_maintenance")
+        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
         .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
         .eq("is_active", true)
@@ -394,11 +393,14 @@ export async function applyRoomACUnitsAsManager(
     if (allTenantsErr) return { error: `Could not read this room's tenants: ${allTenantsErr.message}` }
 
     if (!room) return { error: "Room not found." }
-    // has_ac is the physical fact; meter_all_rooms is the billing rule. The
-    // owner path (applyRoomACUnitsAction) was updated for branches that meter
-    // every room and this one was not — so on Continental, which meters all 51
-    // rooms, a manager could not record a reading for a non-AC room at all.
-    if (!room.has_ac && !branch?.meter_all_rooms) return { error: "This room does not have AC." }
+    // NOTE: the owner path (applyRoomACUnitsAction) also accepts a non-AC room on
+    // a branch with meter_all_rooms, and this one does not. That divergence
+    // pre-dates this feature and is deliberately left alone here — widening it
+    // pulled in the whole AC-maintenance question (does a metered non-AC room owe
+    // maintenance, and whose answer is right, this path's or the generator's?),
+    // which is a product decision, not a side effect of letting empty rooms be
+    // metered. Logged for its own change.
+    if (!room.has_ac) return { error: "This room does not have AC." }
 
     const perUnitRate = Number(config?.ac_per_unit_rate ?? 0)
     if (perUnitRate <= 0) {
@@ -407,14 +409,7 @@ export async function applyRoomACUnitsAsManager(
     const foodRate = Number(config?.food_monthly_rate ?? 0)
     // Room is already verified has_ac = true above, so AC maintenance applies
     // unconditionally here — same reasoning as applyRoomACUnitsAction.
-    // Widening this action to non-AC rooms above made the hardcoded "this room
-    // has AC" assumption reachable: a room with no air conditioner would have
-    // been charged the branch AC-maintenance rate. Pass the room's real flag so
-    // such a room gets 0. Deliberately still a flat rate per room rather than
-    // per tenant — the owner path honours each tenant's opt-out and this one
-    // does not, but changing that here would move money on OCCUPIED rooms,
-    // which is outside this feature. Logged as a separate divergence.
-    const acMaintenanceCharge = computeAcMaintenanceCharge(!!room.has_ac, Number(config?.ac_maintenance_rate ?? 0), null)
+    const acMaintenanceCharge = Number(config?.ac_maintenance_rate ?? 0)
 
     const eligible = allTenants ?? []
 
@@ -452,9 +447,9 @@ export async function applyRoomACUnitsAsManager(
       // on the 31st with the box blank, and no month-end Apply, slipped through
       // both — and their month was written off as hostel cost.
       //
-      // A residency-window query answers it directly and ignores is_active, so
-      // it holds for departed tenants and for a tenant moved to another room
-      // since.
+      // A residency-window query answers it for anyone still recorded against
+      // this room, including departed tenants. It cannot see someone who has
+      // since been moved to another room — the history check below covers that.
       const monthStart = `${forMonth}-01`;
       const [vy, vm] = forMonth.split("-").map(Number);
       const nextMonthStart = vm === 12 ? `${vy + 1}-01-01` : `${vy}-${String(vm + 1).padStart(2, "0")}-01`;
@@ -469,7 +464,21 @@ export async function applyRoomACUnitsAsManager(
       if (livedHereErr) {
         return { error: "Could not confirm whether this room was occupied this month. Try again." };
       }
-      if ((livedHere ?? []).length > 0 || (existingReading && Number(existingReading.tenant_count ?? 0) > 0)) {
+      // A room change rewrites hms_tenants.room_id, so the residency query above
+      // cannot see someone who occupied this room and has since moved. The
+      // per-room AC history can: a join or checkout breakpoint is written
+      // against the ROOM and never moves.
+      const [{ data: joinRows }, { data: checkoutRows }] = await Promise.all([
+        admin.from("hms_room_ac_join_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
+        admin.from("hms_room_ac_checkout_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
+      ]);
+
+      if (
+        (livedHere ?? []).length > 0 ||
+        (joinRows ?? []).length > 0 ||
+        (checkoutRows ?? []).length > 0 ||
+        (existingReading && Number(existingReading.tenant_count ?? 0) > 0)
+      ) {
         return {
           error:
             "This room was occupied during this month, so its units belong to those tenants. Record the reading through the normal Apply once they are billed, or correct their charges instead.",
@@ -502,6 +511,7 @@ export async function applyRoomACUnitsAsManager(
           per_unit_rate: perUnitRate,
           tenant_count: 0,
           recorded_while_vacant: true,
+          updated_at: new Date().toISOString(),
         },
         { onConflict: "room_id,for_month" },
       )
@@ -521,7 +531,7 @@ export async function applyRoomACUnitsAsManager(
       revalidatePath("/portal/payments")
       revalidatePath("/payments")
       revalidatePath("/dashboard")
-      return { error: null, derivedUnits: vacantUnits, vacant: true, hostelBorneUnits: vacantUnits }
+      return { error: null, derivedUnits: vacantUnits, vacant: true }
     }
 
     // No prev-month record and no explicit opening reading typed in? Fall back
