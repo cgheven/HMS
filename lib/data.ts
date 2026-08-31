@@ -1053,7 +1053,7 @@ export async function getPaymentsPageData(forMonth: string) {
     reminderTemplate: hostel?.reminder_template ?? null,
     autoReminderEnabled: hostel?.whatsapp_enabled ?? false,
     meterAllRooms: hostel?.meter_all_rooms ?? false,
-    acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null }[],
+    acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null; recorded_while_vacant?: boolean | null }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     // Newest first from the query, so the FIRST row seen per tenant is the
     // latest — no sorting or comparison needed.

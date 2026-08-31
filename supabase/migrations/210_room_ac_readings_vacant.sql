@@ -1,10 +1,21 @@
 -- A meter reading taken while the room had no tenant.
 --
--- DEPLOY ORDER MATTERS. lib/data.ts and lib/portal-data.ts both SELECT
--- recorded_while_vacant, and PostgREST answers an unknown column with 42703 —
--- which lib/data.ts folds into readErr and rethrows, taking the whole Payments
--- page down for every branch. Apply this before the application code, exactly
--- as migrations 204 and 207 document for the same reason.
+-- DEPLOY ORDER MATTERS, and the page load is the lesser half of it.
+--
+-- lib/data.ts and lib/portal-data.ts both SELECT recorded_while_vacant, and
+-- PostgREST answers an unknown column with 42703 — which lib/data.ts folds into
+-- readErr and rethrows, taking the whole Payments page down for every branch.
+--
+-- Worse: the OCCUPIED path now sends recorded_while_vacant in its reading
+-- upsert, and that upsert deliberately runs LAST — after every tenant's payment
+-- row is written, after the stale-charge sweep, after the reopen logic. Ship the
+-- code first and an owner pressing Apply bills every tenant, reopens settled
+-- bills, then fails on the unknown column and never writes the reading. They see
+-- a red toast on a month that was in fact billed, and a card still saying "no
+-- reading for this month yet".
+--
+-- Additive with a default, so it is safe to apply well ahead of the code. Apply
+-- it first, exactly as migrations 204 and 207 document for the same reason.
 --
 -- Empty rooms could not be metered at all: the AC tab listed only rooms with an
 -- active tenant, and both server actions threw "No active tenants found in this

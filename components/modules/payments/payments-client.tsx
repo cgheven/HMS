@@ -970,9 +970,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     // recent earlier reading. Occupied rooms keep the strict previous-month
     // rule: loosening it for them would turn a room last read three months ago
     // into one large catch-up bill.
-    // Occupancy computed inline rather than from acRoomMeta: this callback is
-    // declared above that memo.
-    const isEmpty = !tenants.some(t => t.room_id === roomId && t.is_active);
+    // Gated on the SELECTED MONTH, not today: a room empty all of August is what
+    // this fallback exists for, and "is it empty right now" gets that wrong the
+    // moment someone moves in. Inline rather than from acRoomMeta because this
+    // callback is declared above that memo.
+    const [fbY, fbM] = selectedMonth.split("-").map(Number);
+    const fbNextMonthStart = fbM === 12 ? `${fbY + 1}-01-01` : `${fbY}-${String(fbM + 1).padStart(2, "0")}-01`;
+    const isEmpty = !tenants.some(t => t.room_id === roomId && t.check_in < fbNextMonthStart);
     if (!isEmpty) return null;
     // allAcReadings, NOT acReadings: the latter is already filtered to the
     // selected month (line 322), so feeding it to a "strictly before this month"
@@ -1063,9 +1067,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // arrived. has_ac is the physical fact; meterAllRooms is the billing rule.
   const acRooms = useMemo(() => {
     return rooms
-      .filter(r => r.has_ac || meterAllRooms)
+      // A manager's action still refuses a non-AC room even on a meter-all-rooms
+      // branch — a pre-existing divergence deliberately left alone. Offering
+      // those rooms to a manager is a dead end, and this change would otherwise
+      // have multiplied them by adding every empty one.
+      .filter(r => r.has_ac || (meterAllRooms && !isManager))
       .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
-  }, [rooms, meterAllRooms]);
+  }, [rooms, meterAllRooms, isManager]);
 
   // Occupancy per room, computed once rather than re-scanned inside each card.
   const acRoomMeta = useMemo(() => {
@@ -2008,29 +2016,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               {filteredAcRooms.map(room => {
                 const saved = acReadings.find(r => r.room_id === room.id);
                 const acTenantCount = tenants.filter(t => t.room_id === room.id && t.is_active).length;
-                // The card shows a CHOSEN MONTH, but acTenantCount counts tenants
-                // active today. A saved row therefore decides: a room occupied all
-                // of July must not be labelled "Empty" in July merely because it
-                // stands empty now. Live occupancy answers only for a month with
-                // no reading yet.
-                // Both must agree. The saved row alone is not enough: a room
-                // recorded vacant on the 5th and moved into on the 10th would
-                // keep the "Empty" pill for the rest of the month, and — worse —
-                // suppress the "re-apply to bill the tenants above" prompt that
-                // exists to catch exactly a present-but-unbilled tenant.
-                // "Was this room occupied in the month on screen?" — answered from
-                // the month's own data, not today's roster. Without the second
-                // clause, a room whose tenants left on the 20th showed the Empty
-                // pill for a month they lived through, and a room let on the 5th of
-                // NEXT month showed as occupied for this one.
+                // Was this room occupied in the MONTH ON SCREEN? Today's roster
+                // cannot answer that — a room whose tenants left on the 20th is
+                // empty now but was lived in all month, and a room let on the 5th
+                // of next month is occupied now but was empty in this one. So the
+                // month's own data answers it, and the stored row must agree:
+                // either signal alone has been wrong in one direction or the other.
                 const [nmY, nmM] = selectedMonth.split("-").map(Number);
                 const nextMonthStart = nmM === 12 ? `${nmY + 1}-01-01` : `${nmY}-${String(nmM + 1).padStart(2, "0")}-01`;
                 const someoneLivedHereThisMonth =
                   tenants.some(t => t.room_id === room.id && t.check_in < nextMonthStart) ||
                   payments.some(p => p.for_month === selectedMonth && p.tenant?.room_id === room.id);
-                const monthWasVacant = saved
-                  ? (saved.recorded_while_vacant ?? Number(saved.tenant_count ?? 0) === 0)
-                  : !someoneLivedHereThisMonth;
+                const monthWasVacant =
+                  (saved ? (saved.recorded_while_vacant ?? Number(saved.tenant_count ?? 0) === 0) : true) &&
+                  !someoneLivedHereThisMonth;
                 const totalTenants = acTenantCount;
                 const midMonthJoiners = tenants.filter(
                   t => t.room_id === room.id && t.is_active && t.check_in.startsWith(selectedMonth)

@@ -1012,10 +1012,18 @@ export async function applyRoomACUnitsAction(
       // cannot see someone who occupied this room and has since moved. The
       // per-room AC history can: a join or checkout breakpoint is written
       // against the ROOM and never moves.
-      const [{ data: joinRows }, { data: checkoutRows }] = await Promise.all([
-        supabase.from("hms_room_ac_join_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
-        supabase.from("hms_room_ac_checkout_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
+      // adminDb, not the RLS client: these two exist solely to catch the case the
+      // residency query cannot see, and the join-readings SELECT policy is
+      // narrower than the checkout one (migration 171 widened checkout with an
+      // hms_owner_hostels arm; 046 never got the same). Under RLS a narrowed read
+      // returns [] and the guard would pass on evidence it simply could not see.
+      const [{ data: joinRows, error: joinErr }, { data: checkoutRows, error: coErr }] = await Promise.all([
+        adminDb.from("hms_room_ac_join_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
+        adminDb.from("hms_room_ac_checkout_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
       ]);
+      if (joinErr || coErr) {
+        return { success: false, error: "Could not confirm whether this room was occupied this month. Try again." };
+      }
 
       if (
         (livedHere ?? []).length > 0 ||

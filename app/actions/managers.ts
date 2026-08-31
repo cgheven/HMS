@@ -468,10 +468,13 @@ export async function applyRoomACUnitsAsManager(
       // cannot see someone who occupied this room and has since moved. The
       // per-room AC history can: a join or checkout breakpoint is written
       // against the ROOM and never moves.
-      const [{ data: joinRows }, { data: checkoutRows }] = await Promise.all([
+      const [{ data: joinRows, error: joinErr }, { data: checkoutRows, error: coErr }] = await Promise.all([
         admin.from("hms_room_ac_join_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
         admin.from("hms_room_ac_checkout_readings").select("id").eq("room_id", roomId).eq("for_month", forMonth).limit(1),
-      ]);
+      ])
+      if (joinErr || coErr) {
+        return { error: "Could not confirm whether this room was occupied this month. Try again." }
+      }
 
       if (
         (livedHere ?? []).length > 0 ||

@@ -193,7 +193,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     paymentMethods: h?.payment_methods ?? [],
     reminderTemplate: h?.reminder_template ?? null,
     meterAllRooms: h?.meter_all_rooms ?? false,
-    acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number }[],
+    acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; recorded_while_vacant?: boolean | null }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     waitingTenantIds: (waitingTenants ?? []).map((t) => t.id as string),
   };
