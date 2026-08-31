@@ -1210,14 +1210,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     return base;
   }, [historyBase, historyStatusFilter]);
 
-  const filteredAcRooms = useMemo(() => {
-    const occFiltered =
+  // The rooms the current chip admits. The Select lists exactly these, so the
+  // dropdown can never offer a room the chip has filtered out.
+  const occupancyAcRooms = useMemo(
+    () =>
       acOccupancy === "all"
         ? acRooms
-        : acRooms.filter(r => (acRoomMeta.get(r.id)?.occupied ?? false) === (acOccupancy === "occupied"));
-    if (acRoomFilter === "all") return occFiltered;
-    return occFiltered.filter(r => r.id === acRoomFilter);
-  }, [acRooms, acRoomFilter, acOccupancy, acRoomMeta]);
+        : acRooms.filter(r => (acRoomMeta.get(r.id)?.occupied ?? false) === (acOccupancy === "occupied")),
+    [acRooms, acOccupancy, acRoomMeta]
+  );
+
+  const filteredAcRooms = useMemo(() => {
+    if (acRoomFilter === "all") return occupancyAcRooms;
+    return occupancyAcRooms.filter(r => r.id === acRoomFilter);
+  }, [occupancyAcRooms, acRoomFilter]);
 
   // Split so the chips can count the rows they would actually reveal. Counting
   // the whole month regardless of the room and AC filters read as a bug: Room 5
@@ -2008,29 +2014,18 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               <Zap className="w-4 h-4 text-amber" />
               <h3 className="text-sm font-semibold">AC Billing</h3>
               <span className="text-xs text-muted-foreground">— enter total units consumed per room for {selectedMonth}</span>
-              {acRooms.length > 1 && (
+              {occupancyAcRooms.length > 1 && (
                 <div className="ml-auto">
-                  <Select
-                    value={acRoomFilter}
-                    onValueChange={(v) => {
-                      setAcRoomFilter(v);
-                      // Widen the occupancy filter if the chosen room is hidden by
-                      // it, rather than showing an empty panel with no explanation.
-                      // Any explicit pick, either direction: choosing an occupied
-                      // room while the Empty chip was active hit the same dead end.
-                      if (v !== "all") setAcOccupancy("all");
-                    }}
-                  >
+                  <Select value={acRoomFilter} onValueChange={setAcRoomFilter}>
                     <SelectTrigger className="h-7 w-40 text-xs">
                       <SelectValue placeholder="All Rooms" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All Rooms</SelectItem>
-                      {/* The Select lists every metered room while the default chip
-                          shows only occupied ones, so choosing an empty room used to
-                          render a blank panel. Widen the occupancy filter to match
-                          what was asked for. */}
-                      {acRooms.map(r => (
+                      {/* occupancyAcRooms, not acRooms: listing every metered room
+                          while the Occupied chip was active offered empty rooms in a
+                          dropdown that had just been told to hide them. */}
+                      {occupancyAcRooms.map(r => (
                         <SelectItem key={r.id} value={r.id}>Room {r.room_number}</SelectItem>
                       ))}
                     </SelectContent>
