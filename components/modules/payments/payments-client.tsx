@@ -2107,7 +2107,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                             {/* per_unit_rate is NOT NULL (migration 044) so it is stored
                                 regardless, but quoting a tenant recovery rate on a reading
                                 nobody was billed for invites the reader to multiply. */}
-                            {!savedVacant && ` · Rs ${saved.per_unit_rate}/unit · ${saved.tenant_count} tenants billed`}
+                            {!monthWasVacant && ` · Rs ${saved.per_unit_rate}/unit · ${saved.tenant_count} tenants billed`}
                           </p>
                         ) : (
                           <p className="text-xs text-muted-foreground/50 mt-0.5">No reading for this month yet</p>
@@ -2180,8 +2180,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               size="sm"
                               className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40 shrink-0"
                               variant="ghost"
-                              disabled={applyingAC === room.id || !currentInput || (isManager && !room.has_ac)}
-                              title={isManager && !room.has_ac ? "Only the owner can record units for a room not flagged as AC." : undefined}
+                              // Lived in this month but nobody billable now — every
+                              // tenant checked out mid-month. The server refuses
+                              // both paths here: the vacant branch sees their
+                              // residency, and the occupied branch has an empty
+                              // eligible set. Offering the button would be a
+                              // prominent action that can only ever fail.
+                              disabled={applyingAC === room.id || !currentInput || (isManager && !room.has_ac) || (someoneLivedHereThisMonth && acTenantCount === 0)}
+                              title={
+                                isManager && !room.has_ac
+                                  ? "Only the owner can record units for a room not flagged as AC."
+                                  : someoneLivedHereThisMonth && acTenantCount === 0
+                                    ? "Everyone who lived here this month has checked out — their AC was settled at the door, so there is nothing left to apply."
+                                    : undefined
+                              }
                               onClick={() => applyACUnits(room.id)}
                             >
                               {applyingAC === room.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
@@ -2273,7 +2285,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       // total for units consumed before those tenants arrived.
                       // That is precisely the harm this feature exists to prevent,
                       // and it was permanent, not transient.
-                      if (savedVacant) {
+                      // monthWasVacant, NOT savedVacant: the header two lines up
+                      // uses it, and keying the footer on the stored flag alone
+                      // made the same card say "1 of 1 billed for AC" above and
+                      // "Nobody in the room" below. It also swallowed the
+                      // "re-apply to bill the tenants above" prompt, which is the
+                      // only warning that a resident's units are unbilled.
+                      //
+                      // This does not reopen the round-7 defect: there the room is
+                      // re-let in a LATER month, and acRoomOccupiedInMonth is
+                      // month-aware — the new tenant's check_in is past the vacant
+                      // month and their rows for it carry no AC charge, so
+                      // monthWasVacant stays true and the short-circuit holds.
+                      if (monthWasVacant) {
                         const vacantUnits = Math.round(Number(saved.total_units ?? 0) * 100) / 100;
                         if (vacantUnits <= 0) return null;
                         return (

@@ -885,12 +885,14 @@ export async function applyRoomACUnitsAction(
       supabase.from("hms_rooms").select("id, hostel_id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).single(),
       supabase.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      // This month's own row, if one exists: a stored tenant_count > 0 means the
+      // occupied path already billed this month, which the vacant guard refuses.
+      supabase.from("hms_room_ac_readings").select("tenant_count").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", forMonth).maybeSingle(),
       // Every earlier reading, newest first. Consulted ONLY on the vacant path
       // below: an empty room may legitimately have skipped a month, and the
       // exactly-previous-month rule has nothing to offer it. Occupied rooms
       // keep the strict rule — loosening it globally would turn a room last
       // read three months ago into one large catch-up bill.
-      supabase.from("hms_room_ac_readings").select("tenant_count, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", forMonth).maybeSingle(),
       supabase.from("hms_room_ac_readings").select("meter_reading, for_month").eq("room_id", roomId).eq("hostel_id", hostelId).lt("for_month", forMonth).not("meter_reading", "is", null).order("for_month", { ascending: false }).limit(6),
       // `.lt("check_in", ...)` matters for any back-dated apply: without it the
       // eligible set is "whoever lives in this room now", so closing an earlier
@@ -982,7 +984,7 @@ export async function applyRoomACUnitsAction(
       const monthStart = `${forMonth}-01`;
       const [vy, vm] = forMonth.split("-").map(Number);
       const nextMonthStart = vm === 12 ? `${vy + 1}-01-01` : `${vy}-${String(vm + 1).padStart(2, "0")}-01`;
-      const { data: livedHere, error: livedHereErr } = await supabase
+      const { data: livedHere, error: livedHereErr } = await adminDb
         .from("hms_tenants")
         .select("id")
         .eq("hostel_id", hostelId)
