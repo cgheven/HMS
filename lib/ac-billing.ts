@@ -99,7 +99,7 @@ export function computeACSegmentBilling(params: {
   // the Set, leaving one segment [0,total] where they are present for the full range).
   // A tenant on the 1st with units_at_join=10 correctly assigns those 10 units to whoever came first.
   const manualJoinReadings = (joinReadingsRaw ?? []).filter(r =>
-    eligible.some(t => t.id === r.tenant_id)
+    eligible.some(t => t.id === r.tenant_id && joinedMidMonth(t.check_in, forMonth))
   );
 
   // Check-in captures a meter reading on the tenant, but only a hand-typed entry under
@@ -118,8 +118,7 @@ export function computeACSegmentBilling(params: {
     .filter(t =>
       !manualIds.has(t.id) &&                       // a typed entry is a correction — it wins
       t.joining_meter_reading != null &&
-      typeof t.check_in === "string" &&
-      t.check_in.slice(0, 7) === forMonth
+      joinedMidMonth(t.check_in, forMonth)
     )
     .map(t => ({
       tenant_id: t.id,
@@ -293,6 +292,25 @@ export function computeACSegmentBilling(params: {
 // newest arrival happens to have joined." Only falls back to a joiner's own
 // reading when literally no other data exists — in that case they define the
 // entire tracked window, so treating them as present for all of it is correct.
+/**
+ * Did this tenant arrive PART-WAY through the month?
+ *
+ * Checking in on the 1st is not a mid-month join: they were in the room from the
+ * first unit the meter counted, so they carry the whole month and need no
+ * breakpoint. Treating "check-in month equals this month" as mid-month put a
+ * day-one arrival under Mid-Month Joiners, auto-filled a reading from their
+ * move-in record, and then billed them for none of the month's units — the
+ * opposite of what a breakpoint is for.
+ *
+ * Where the room genuinely burned units before anyone arrived — an empty room
+ * metered under this feature — the OPENING reading is the lever for that, not a
+ * per-tenant breakpoint on someone who was there the whole time.
+ */
+export function joinedMidMonth(checkIn: string | null | undefined, forMonth: string): boolean {
+  if (typeof checkIn !== "string" || checkIn.slice(0, 7) !== forMonth) return false;
+  return Number(checkIn.slice(8, 10)) > 1;
+}
+
 export function deriveOpeningReading(
   tenants: { joining_meter_reading?: number | null; check_in?: string | null }[],
   forMonth?: string
@@ -301,7 +319,7 @@ export function deriveOpeningReading(
     t.joining_meter_reading != null ? Math.round(Number(t.joining_meter_reading)) : null;
 
   const preExisting = forMonth
-    ? tenants.filter(t => !(typeof t.check_in === "string" && t.check_in.slice(0, 7) === forMonth))
+    ? tenants.filter(t => !joinedMidMonth(t.check_in, forMonth))
     : tenants;
 
   const preferred = preExisting.map(toReading).filter((v): v is number => v != null);

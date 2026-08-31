@@ -34,7 +34,7 @@ import {
 } from "@/app/actions/payments";
 import { createInvoiceLink, createInstallmentReceiptLink, previewBillLinkAction } from "@/app/actions/tenants";
 import { recordPaymentAsPartner } from "@/app/actions/partner";
-import { deriveOpeningReading, latestReadingBefore } from "@/lib/ac-billing";
+import { deriveOpeningReading, joinedMidMonth, latestReadingBefore } from "@/lib/ac-billing";
 import {
   recordPaymentAsManager,
   applyRoomACUnitsAsManager,
@@ -2082,7 +2082,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 const monthWasVacant = savedVacant === true && !someoneLivedHereThisMonth;
                 const totalTenants = acTenantCount;
                 const midMonthJoiners = tenants.filter(
-                  t => t.room_id === room.id && t.is_active && t.check_in.startsWith(selectedMonth)
+                  t => t.room_id === room.id && t.is_active && joinedMidMonth(t.check_in, selectedMonth)
                 );
                 const prevMonthReading = prevMonthACReadings.find(r => r.room_id === room.id)?.meter_reading ?? null;
                 const hasPrevReading = prevMonthReading != null;
