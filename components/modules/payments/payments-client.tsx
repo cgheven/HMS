@@ -374,6 +374,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       setAcUnits(prev => {
         const next = { ...prev };
         acReadings.forEach(r => {
+          // Not for a month recorded while the room stood empty. hms_tenants.room_id
+          // keeps no history, so a tenant MOVED into this room later — whose
+          // check_in predates the vacant month — reads as having lived here that
+          // month. The card then offers the allocation view over a row written
+          // before they arrived, and a pre-filled reading puts "bill them for the
+          // empty period" one click away. The number is still on screen in the
+          // saved-reading line above, so nothing is hidden; re-applying such a
+          // month now takes a deliberately typed reading.
+          if (r.recorded_while_vacant) return;
           if (!next[r.room_id] && r.meter_reading != null) {
             next[r.room_id] = String(Math.round(r.meter_reading));
           }
@@ -2212,7 +2221,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                                   ? "Only the owner can record units for a room not flagged as AC."
                                   : someoneLivedHereThisMonth && acTenantCount === 0
                                     ? "Everyone who lived here this month has checked out — their AC was settled at the door, so there is nothing left to apply."
-                                    : undefined
+                                    : saved?.recorded_while_vacant && someoneLivedHereThisMonth
+                                      ? "This month was recorded with nobody in the room. Applying now bills its units to whoever is in the room today — check they actually lived here that month."
+                                      : undefined
                               }
                               onClick={() => applyACUnits(room.id)}
                             >
