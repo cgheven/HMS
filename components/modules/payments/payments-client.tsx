@@ -924,7 +924,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     const prevReading = prevMonthACReadings.find(r => r.room_id === roomId)?.meter_reading;
     // Falls back to whatever the Opening box is showing when the operator never
     // touched it, so Save can't silently bill against a different baseline.
-    const baselineOpening = openingBaselineFor(roomId);
+    const baselineOpening = openingBaselineFor(roomId).value;
     const rawOpening = acOpeningReadings[roomId] ?? (baselineOpening != null ? String(baselineOpening) : "");
     const openingReading = prevReading == null ? (rawOpening ? parseFloat(rawOpening) : undefined) : undefined;
 
@@ -957,13 +957,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // preferred the implied value for exactly this reason; the AC tab did not, so
   // the Opening box redrew from move-in readings on every load and looked like it
   // had thrown the edit away.
-  const openingBaselineFor = useCallback((roomId: string): number | null => {
+  const openingBaselineFor = useCallback((roomId: string): { value: number | null; carried: boolean } => {
     const savedRow = acReadings.find(r => r.room_id === roomId);
     if (savedRow && savedRow.meter_reading != null && savedRow.total_units != null) {
-      return Math.round(Number(savedRow.meter_reading)) - Math.round(Number(savedRow.total_units));
+      return { value: Math.round(Number(savedRow.meter_reading)) - Math.round(Number(savedRow.total_units)), carried: false };
     }
     const derived = deriveOpeningReading(tenants.filter(t => t.room_id === roomId && t.is_active), selectedMonth);
-    if (derived != null) return derived;
+    if (derived != null) return { value: derived, carried: false };
 
     // Vacant rooms only. An empty room has no tenant to derive an opening from,
     // and may legitimately have skipped a month — so fall back to its most
@@ -977,19 +977,23 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     const [fbY, fbM] = selectedMonth.split("-").map(Number);
     const fbNextMonthStart = fbM === 12 ? `${fbY + 1}-01-01` : `${fbY}-${String(fbM + 1).padStart(2, "0")}-01`;
     const isEmpty = !tenants.some(t => t.room_id === roomId && t.check_in < fbNextMonthStart);
-    if (!isEmpty) return null;
+    if (!isEmpty) return { value: null, carried: false };
     // allAcReadings, NOT acReadings: the latter is already filtered to the
     // selected month (line 322), so feeding it to a "strictly before this month"
     // helper always yielded null. The box then rendered blank, and an operator
     // taking that at face value and typing 0 would send an explicit opening of
     // 0 — which wins over the server's own fallback and records the entire
     // absolute meter reading as one month's consumption.
-    return latestReadingBefore(
+    // carried: this is an earlier month's absolute meter reading, NOT anyone's
+    // move-in reading. Labelling it as one made an operator who knew no tenant
+    // ever recorded that number read it as corrupt data.
+    const value = latestReadingBefore(
       allAcReadings
         .filter(r => r.room_id === roomId)
         .map(r => ({ for_month: r.for_month, meter_reading: r.meter_reading ?? null })),
       selectedMonth
     );
+    return { value, carried: value != null };
   }, [acReadings, allAcReadings, tenants, selectedMonth]);
 
   async function applyACUnits(roomId: string) {
@@ -1002,7 +1006,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     // month against a baseline nobody chose — Room 3 sat on a saved opening of 0
     // while this resolved to 1, so a no-op Apply would have silently rebilled the
     // month at 62 units instead of 63.
-    const baselineOpening = openingBaselineFor(roomId);
+    const baselineOpening = openingBaselineFor(roomId).value;
     const rawOpening = acOpeningReadings[roomId] ?? (baselineOpening != null ? String(baselineOpening) : "");
     const openingReading = prevReading == null ? (rawOpening ? parseFloat(rawOpening) : undefined) : undefined;
 
@@ -1065,24 +1069,55 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // consumption by staff, a guest, or lights left on had nowhere to go — and the
   // meter chain broke, leaving the next tenant to inherit units used before they
   // arrived. has_ac is the physical fact; meterAllRooms is the billing rule.
+  // Which rooms had someone LIVING in them during the MONTH ON SCREEN — the one
+  // occupancy answer, used by the chips, the room list and each card alike.
+  // "Is anyone there right now" is a different question and gets this wrong in
+  // both directions: back-filling August in September files an empty-in-August
+  // room under Occupied, and a room whose tenants left on the 20th reads empty
+  // for a month it was lived in.
+  const acRoomOccupiedInMonth = useMemo(() => {
+    const [y, m] = selectedMonth.split("-").map(Number);
+    const monthStart = `${selectedMonth}-01`;
+    const nextMonthStart = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+    const occupied = new Set<string>();
+    for (const t of tenants) {
+      if (!t.room_id) continue;
+      if (t.check_in >= nextMonthStart) continue;
+      if (t.check_out && t.check_out < monthStart) continue;
+      occupied.add(t.room_id);
+    }
+    // A tenant BILLED for AC in this month lived here, even if they have since
+    // checked out or been moved to another room. The charge is the evidence: a
+    // zero row proves nothing, because stepping to a past month runs
+    // ensureMonthlyPaymentRows, which generates rows for tenants who only
+    // arrived later — and reading those as occupancy made a vacant month claim
+    // it had residents.
+    for (const p of payments) {
+      if (p.for_month !== selectedMonth) continue;
+      if (Number(p.ac_charge ?? 0) <= 0 && Number(p.ac_units_consumed ?? 0) <= 0) continue;
+      const rid = p.tenant?.room_id;
+      if (rid) occupied.add(rid);
+    }
+    return occupied;
+  }, [tenants, payments, selectedMonth]);
+
   const acRooms = useMemo(() => {
     return rooms
-      // A manager's action still refuses a non-AC room even on a meter-all-rooms
-      // branch — a pre-existing divergence deliberately left alone. Offering
-      // those rooms to a manager is a dead end, and this change would otherwise
-      // have multiplied them by adding every empty one.
-      .filter(r => r.has_ac || (meterAllRooms && !isManager))
+      .filter(r => r.has_ac || meterAllRooms)
+      // A manager's action refuses a non-AC room even on a meter-all-rooms
+      // branch — pre-existing, and deliberately left alone. But an OCCUPIED one
+      // still carries what a manager can genuinely do there: save a join
+      // reading, upload a meter photo, read the allocation. Only the empty ones
+      // go, where there is nothing to see and no action to take.
+      .filter(r => r.has_ac || !isManager || acRoomOccupiedInMonth.has(r.id))
       .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
-  }, [rooms, meterAllRooms, isManager]);
+  }, [rooms, meterAllRooms, isManager, acRoomOccupiedInMonth]);
 
-  // Occupancy per room, computed once rather than re-scanned inside each card.
   const acRoomMeta = useMemo(() => {
     const m = new Map<string, { occupied: boolean }>();
-    for (const r of acRooms) {
-      m.set(r.id, { occupied: tenants.some(t => t.room_id === r.id && t.is_active) });
-    }
+    for (const r of acRooms) m.set(r.id, { occupied: acRoomOccupiedInMonth.has(r.id) });
     return m;
-  }, [acRooms, tenants]);
+  }, [acRooms, acRoomOccupiedInMonth]);
 
   // Only include payments for currently active tenants. Checked-out tenants have
   // is_active=false so they're absent from the `tenants` prop — their payment rows
@@ -2016,20 +2051,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               {filteredAcRooms.map(room => {
                 const saved = acReadings.find(r => r.room_id === room.id);
                 const acTenantCount = tenants.filter(t => t.room_id === room.id && t.is_active).length;
-                // Was this room occupied in the MONTH ON SCREEN? Today's roster
-                // cannot answer that — a room whose tenants left on the 20th is
-                // empty now but was lived in all month, and a room let on the 5th
-                // of next month is occupied now but was empty in this one. So the
-                // month's own data answers it, and the stored row must agree:
-                // either signal alone has been wrong in one direction or the other.
-                const [nmY, nmM] = selectedMonth.split("-").map(Number);
-                const nextMonthStart = nmM === 12 ? `${nmY + 1}-01-01` : `${nmY}-${String(nmM + 1).padStart(2, "0")}-01`;
-                const someoneLivedHereThisMonth =
-                  tenants.some(t => t.room_id === room.id && t.check_in < nextMonthStart) ||
-                  payments.some(p => p.for_month === selectedMonth && p.tenant?.room_id === room.id);
-                const monthWasVacant =
-                  (saved ? (saved.recorded_while_vacant ?? Number(saved.tenant_count ?? 0) === 0) : true) &&
-                  !someoneLivedHereThisMonth;
+                const someoneLivedHereThisMonth = acRoomOccupiedInMonth.has(room.id);
+                // The STORED verdict, which only the server writes and only after
+                // its own guards passed. Null when no reading exists — genuinely
+                // unknown, and asserting vacancy from an absence is how the Empty
+                // pill ended up on months that were lived in.
+                const savedVacant = saved ? (saved.recorded_while_vacant ?? Number(saved.tenant_count ?? 0) === 0) : null;
+                const monthWasVacant = savedVacant === true && !someoneLivedHereThisMonth;
                 const totalTenants = acTenantCount;
                 const midMonthJoiners = tenants.filter(
                   t => t.room_id === room.id && t.is_active && t.check_in.startsWith(selectedMonth)
@@ -2041,7 +2069,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 // Once this month has been applied, the opening it used is the one that
                 // matters — read back out of the saved row. Only before any apply does
                 // the move-in-derived value stand in, and it is labelled as such below.
-                const derivedOpening = openingBaselineFor(room.id);
+                const { value: derivedOpening, carried: openingCarried } = openingBaselineFor(room.id);
                 const baseline = hasPrevReading ? prevMonthReading : (openingInput ? Number(openingInput) : derivedOpening);
                 const consumptionPreview = currentInput && baseline != null && Number.isFinite(Number(currentInput))
                   ? Math.max(0, Number(currentInput) - baseline)
@@ -2062,16 +2090,24 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                             <span className="text-xs text-amber">
                               {acTenantCount} of {totalTenants} billed for AC
                             </span>
-                          ) : (
+                          ) : someoneLivedHereThisMonth ? (
                             // Empty NOW but lived in during the month on screen —
                             // tenants left mid-month and were billed at checkout.
                             // Neither "Empty" nor "0 of 0 billed for AC" is true.
                             <span className="text-xs text-muted-foreground/60">Vacated this month — billed at checkout</span>
+                          ) : (
+                            // No reading and no trace of anyone: state that, rather
+                            // than claim a vacancy the server has not confirmed.
+                            <span className="text-xs text-muted-foreground/60">No tenants recorded for this month</span>
                           )}
                         </div>
                         {saved ? (
                           <p className="text-xs text-emerald-400 mt-0.5">
-                            Reading: {saved.meter_reading ?? "—"} · {saved.total_units} units consumed · Rs {saved.per_unit_rate}/unit · {saved.tenant_count} tenants billed
+                            Reading: {saved.meter_reading ?? "—"} · {saved.total_units} units consumed
+                            {/* per_unit_rate is NOT NULL (migration 044) so it is stored
+                                regardless, but quoting a tenant recovery rate on a reading
+                                nobody was billed for invites the reader to multiply. */}
+                            {!savedVacant && ` · Rs ${saved.per_unit_rate}/unit · ${saved.tenant_count} tenants billed`}
                           </p>
                         ) : (
                           <p className="text-xs text-muted-foreground/50 mt-0.5">No reading for this month yet</p>
@@ -2106,7 +2142,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           <p className="text-[10px] text-amber/60 mt-0.5">
                             {saved
                               ? `Opening ${derivedOpening} — the value this month was applied with`
-                              : `First reading — auto-using move-in reading ${derivedOpening} unless overridden below`}
+                              : openingCarried
+                                ? `Carrying forward the last recorded reading ${derivedOpening} unless overridden below`
+                                : `First reading — auto-using move-in reading ${derivedOpening} unless overridden below`}
                           </p>
                         ) : (
                           <p className="text-[10px] text-amber/60 mt-0.5">First reading — enter opening value below if needed</p>
@@ -2142,7 +2180,8 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               size="sm"
                               className="h-9 px-4 text-xs gap-1.5 bg-amber/10 text-amber border border-amber/25 hover:bg-amber/20 disabled:opacity-40 shrink-0"
                               variant="ghost"
-                              disabled={applyingAC === room.id || !currentInput}
+                              disabled={applyingAC === room.id || !currentInput || (isManager && !room.has_ac)}
+                              title={isManager && !room.has_ac ? "Only the owner can record units for a room not flagged as AC." : undefined}
                               onClick={() => applyACUnits(room.id)}
                             >
                               {applyingAC === room.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
@@ -2225,6 +2264,25 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
                     {/* Unit allocation per tenant — visible after Apply so the split is verifiable */}
                     {saved && !monthLoading && (() => {
+                      // The SERVER's verdict decides this footer, before anything
+                      // is derived from who sits in the room today. The allocation
+                      // below joins tenants on their CURRENT room, so the moment a
+                      // vacant month's room is re-let it acquires tenant rows for
+                      // that month — and the footer went on to print "not billed ·
+                      // 0 units", "re-apply to bill the tenants above" and a rupee
+                      // total for units consumed before those tenants arrived.
+                      // That is precisely the harm this feature exists to prevent,
+                      // and it was permanent, not transient.
+                      if (savedVacant) {
+                        const vacantUnits = Math.round(Number(saved.total_units ?? 0) * 100) / 100;
+                        if (vacantUnits <= 0) return null;
+                        return (
+                          <div className="pt-2 mt-2 border-t border-white/5 flex items-center gap-2 text-xs">
+                            <span className="text-amber/70 flex-1 min-w-0 truncate">Nobody in the room — hostel&apos;s own cost</span>
+                            <span className="tabular-nums text-amber/70">{vacantUnits} units</span>
+                          </div>
+                        );
+                      }
                       const acTenants = tenants.filter(t => t.room_id === room.id && t.is_active);
                       const monthRows = payments.filter(p => p.for_month === selectedMonth && p.tenant?.room_id === room.id);
                       const activeIds = new Set(acTenants.map(t => t.id));
@@ -2260,26 +2318,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       // genuine pre-occupancy usage and someone simply missing.
                       const unbilled = rows.filter(r => r.units === 0);
                       const billedRows = allRows.filter(r => r.units > 0);
-                      // A genuinely vacant room has no tenant rows at all, so this
-                      // block used to return null and the recorded units appeared
-                      // nowhere on the card. Render the one line that says where
-                      // they went instead.
-                      if (allRows.length === 0) {
-                        const vacantUnits = Math.round(Number(saved?.total_units ?? 0) * 100) / 100;
-                        // Only when the SERVER recorded the month as vacant. This
-                        // list joins on each tenant's CURRENT room, so moving a
-                        // tenant to another room empties it for a month they were
-                        // genuinely billed for — and the footer would then claim
-                        // their units went to nobody.
-                        const savedVacant = saved?.recorded_while_vacant ?? Number(saved?.tenant_count ?? 0) === 0;
-                        if (!saved || !savedVacant || vacantUnits <= 0) return null;
-                        return (
-                          <div className="pt-2 mt-2 border-t border-white/5 flex items-center gap-2 text-xs">
-                            <span className="text-amber/70 flex-1 min-w-0 truncate">Nobody in the room — hostel&apos;s own cost</span>
-                            <span className="tabular-nums text-amber/70">{vacantUnits} units</span>
-                          </div>
-                        );
-                      }
+                      if (allRows.length === 0) return null;
                       const assignedUnits = Math.round(allRows.reduce((s, r) => s + r.units, 0) * 100) / 100;
                       const assignedCharge = allRows.reduce((s, r) => s + r.charge, 0);
                       const unassignedUnits = Math.max(0, saved.total_units - assignedUnits);
@@ -2317,30 +2356,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               <span className="tabular-nums text-rose-400/80">{formatCurrency(0)}</span>
                             </div>
                           ))}
-                          {/* A genuinely vacant room has no tenant rows at all, so the
-                              allocation list above is empty and the units would show
-                              nowhere. Say plainly where they went. */}
                           {unassignedUnits > 0 && (
                             <div className="flex items-center gap-2 text-xs">
                               <span className="text-amber/70 flex-1 min-w-0 truncate">
                                 {unbilled.length > 0
                                   ? "Unassigned — re-apply to bill the tenants above"
-                                  : monthWasVacant
-                                    ? "Nobody in the room — hostel's own cost"
-                                    : "Unassigned (pre-occupancy) · hostel absorbs"}
+                                  : "Unassigned (pre-occupancy) · hostel absorbs"}
                               </span>
                               <span className="tabular-nums text-amber/70">{unassignedUnits} units</span>
-                              {/* No rupee figure when the room is empty: the electricity is
-                                  already captured in full as a utility bill, and restating it
-                                  here at the tenant recovery rate would read as a second cost.
-                                  There is also nobody to bill, so "re-apply" is not an action
-                                  the operator can take. */}
-                              {(!monthWasVacant || unbilled.length > 0) && (
-                                <>
-                                  <span className="text-muted-foreground/40">·</span>
-                                  <span className="tabular-nums text-amber/70">{formatCurrency(unassignedCharge)}</span>
-                                </>
-                              )}
+                              <span className="text-muted-foreground/40">·</span>
+                              <span className="tabular-nums text-amber/70">{formatCurrency(unassignedCharge)}</span>
                             </div>
                           )}
                           {overAssignedUnits > 0 && (

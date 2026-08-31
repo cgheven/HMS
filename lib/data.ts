@@ -191,7 +191,11 @@ export async function getDashboardData() {
     supabase.from("hms_salary_advances").select("balance").eq("hostel_id", hostelId).gt("balance", 0),
     supabase.from("hms_payments").select("id,amount,amount_paid,late_fee,status,tenant:hms_tenants(full_name)").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).in("status", ["pending", "overdue", "partially_paid"]),
     supabase.from("hms_payments").select("for_month,amount,amount_paid,status").eq("hostel_id", hostelId).gte("for_month", ranges[0].monthKey).lte("for_month", ranges[5].monthKey),
-    supabase.from("hms_room_ac_readings").select("total_units").eq("hostel_id", hostelId).eq("for_month", currentMonthKey),
+    // Billed units only. Empty-room readings are the hostel's own consumption and
+    // carry no charge, so folding them in would raise this tile while AC Collected
+    // and AC Pending — both from hms_payments.ac_charge — stayed put, and no
+    // dashboard number should move because a feature was added.
+    supabase.from("hms_room_ac_readings").select("total_units").eq("hostel_id", hostelId).eq("for_month", currentMonthKey).eq("recorded_while_vacant", false),
     // Waiting-list members holding a reservation deposit. Deliberately a
     // separate query rather than relaxing the is_waiting filter above: that
     // result also drives expected revenue and the tenant headcount, and a
