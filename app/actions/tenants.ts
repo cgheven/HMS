@@ -1554,6 +1554,7 @@ export async function getACCheckoutContextAction(
    *  checking out) — surfaced so the checkout dialog can default to it instead
    *  of leaving the operator to re-type a reading they already entered once. */
   currentMonthReading: number | null;
+  currentMonthVacant?: boolean;
   /** Total units that reading was actually split against. Combined with
    *  currentMonthReading, lets the checkout preview back out the EXACT opening
    *  baseline the AC Units tab used (reading - units) instead of re-deriving its
@@ -1602,7 +1603,7 @@ export async function getACCheckoutContextAction(
         .maybeSingle(),
       adminDb
         .from("hms_room_ac_readings")
-        .select("meter_reading, total_units")
+        .select("meter_reading, total_units, recorded_while_vacant")
         .eq("room_id", roomId)
         .eq("hostel_id", hostelId)
         .eq("for_month", checkoutMonth)
@@ -1655,6 +1656,12 @@ export async function getACCheckoutContextAction(
       prevMonthReading: prevRecord?.meter_reading != null ? Number(prevRecord.meter_reading) : null,
       prevMonthUnits: prevRecord?.total_units != null ? Number(prevRecord.total_units) : null,
       currentMonthReading: currentRecord?.meter_reading != null ? Number(currentRecord.meter_reading) : null,
+      // Taken while the room stood EMPTY, before this tenant was in it. Still
+      // usable as an opening — that is the whole point of recording it — but it
+      // is not this tenant's departure reading, and the dialog must not offer it
+      // as one. A short stay inside a month that began vacant is exactly the
+      // shape this feature creates.
+      currentMonthVacant: currentRecord?.recorded_while_vacant === true,
       currentMonthUnits: currentRecord?.total_units != null ? Number(currentRecord.total_units) : null,
       perUnitRate: Number(config?.ac_per_unit_rate ?? 0),
       activeTenantCount: (tenants ?? []).length + priorCheckoutUnits.length,
@@ -1681,6 +1688,7 @@ export async function getACCheckoutContextAction(
       prevMonthReading: null,
       prevMonthUnits: null,
       currentMonthReading: null,
+      currentMonthVacant: false,
       currentMonthUnits: null,
       perUnitRate: 0,
       activeTenantCount: 0,

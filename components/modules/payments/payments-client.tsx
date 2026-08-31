@@ -962,14 +962,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     if (savedRow && savedRow.meter_reading != null && savedRow.total_units != null) {
       return { value: Math.round(Number(savedRow.meter_reading)) - Math.round(Number(savedRow.total_units)), carried: false };
     }
-    const derived = deriveOpeningReading(tenants.filter(t => t.room_id === roomId && t.is_active), selectedMonth);
-    if (derived != null) return { value: derived, carried: false };
-
-    // Vacant rooms only. An empty room has no tenant to derive an opening from,
-    // and may legitimately have skipped a month — so fall back to its most
-    // recent earlier reading. Occupied rooms keep the strict previous-month
-    // rule: loosening it for them would turn a room last read three months ago
-    // into one large catch-up bill.
+    // The vacancy test runs FIRST. deriveOpeningReading takes the minimum
+    // joining_meter_reading of everyone active in the room, excluding only those
+    // whose check-in month equals this month — so a tenant arriving NEXT month
+    // is included, and back-filling an empty August would open it at a reading
+    // that tenant recorded in September. Half the vacancy's units then vanish,
+    // or Apply is refused outright as "below the opening reading".
+    //
     // Gated on the SELECTED MONTH, not today: a room empty all of August is what
     // this fallback exists for, and "is it empty right now" gets that wrong the
     // moment someone moves in. Inline rather than from acRoomMeta because this
@@ -977,7 +976,17 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     const [fbY, fbM] = selectedMonth.split("-").map(Number);
     const fbNextMonthStart = fbM === 12 ? `${fbY + 1}-01-01` : `${fbY}-${String(fbM + 1).padStart(2, "0")}-01`;
     const isEmpty = !tenants.some(t => t.room_id === roomId && t.check_in < fbNextMonthStart);
-    if (!isEmpty) return { value: null, carried: false };
+
+    const derived = deriveOpeningReading(tenants.filter(t => t.room_id === roomId && t.is_active), selectedMonth);
+    // Occupied rooms are untouched: isEmpty is false for every one of them, so
+    // they take the same deriveOpeningReading value they always did.
+    if (!isEmpty) return { value: derived, carried: false };
+
+    // An empty room has no tenant to derive an opening from, and may
+    // legitimately have skipped a month — so carry forward its most recent
+    // earlier reading. Occupied rooms keep the strict previous-month rule:
+    // loosening it for them would turn a room last read three months ago into
+    // one large catch-up bill.
     // allAcReadings, NOT acReadings: the latter is already filtered to the
     // selected month (line 322), so feeding it to a "strictly before this month"
     // helper always yielded null. The box then rendered blank, and an operator
@@ -993,7 +1002,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         .map(r => ({ for_month: r.for_month, meter_reading: r.meter_reading ?? null })),
       selectedMonth
     );
-    return { value, carried: value != null };
+    // derived only as a last resort here: on an empty room it can only come from
+    // a tenant who has not arrived yet, but a wrong-ish opening still beats the
+    // blank box that invites someone to type 0.
+    return value != null ? { value, carried: true } : { value: derived, carried: false };
   }, [acReadings, allAcReadings, tenants, selectedMonth]);
 
   async function applyACUnits(roomId: string) {
@@ -1086,17 +1098,23 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       if (t.check_out && t.check_out < monthStart) continue;
       occupied.add(t.room_id);
     }
-    // A tenant BILLED for AC in this month lived here, even if they have since
-    // checked out or been moved to another room. The charge is the evidence: a
-    // zero row proves nothing, because stepping to a past month runs
-    // ensureMonthlyPaymentRows, which generates rows for tenants who only
-    // arrived later — and reading those as occupancy made a vacant month claim
-    // it had residents.
+    // Departed tenants are gone from the roster above (it is active-only), so
+    // their month is read off their payment row instead. Keyed on RESIDENCY, not
+    // on an AC charge: checkout only charges AC on a has_ac room, so on a
+    // meter-all-rooms branch a metered non-AC room's leaver carries none, and
+    // the room then read as empty for a month it was lived in.
+    //
+    // check_in bounds it, and that bound is load-bearing: stepping to a past
+    // month runs ensureMonthlyPaymentRows, which generates rows for tenants who
+    // only arrived later — counting those made a genuinely vacant month claim it
+    // had residents.
     for (const p of payments) {
       if (p.for_month !== selectedMonth) continue;
-      if (Number(p.ac_charge ?? 0) <= 0 && Number(p.ac_units_consumed ?? 0) <= 0) continue;
       const rid = p.tenant?.room_id;
-      if (rid) occupied.add(rid);
+      if (!rid) continue;
+      const ci = p.tenant?.check_in;
+      if (ci && ci >= nextMonthStart) continue;
+      occupied.add(rid);
     }
     return occupied;
   }, [tenants, payments, selectedMonth]);

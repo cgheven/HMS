@@ -977,7 +977,12 @@ export async function applyRoomACUnitsAction(
       //     room, departed tenants included;
       //   - the per-room join/checkout breakpoints catch a tenant who has since
       //     been MOVED to another room, since hms_tenants.room_id follows them
-      //     but a breakpoint is written against the room and never moves;
+      //     but a breakpoint is written against the room and never moves — but
+      //     ONLY where such a breakpoint exists. A whole-month resident with no
+      //     join or checkout reading, moved out before the month was ever
+      //     applied, is not detected: room_id keeps no history and the
+      //     room_changed event stores labels, not ids, so there is no fourth
+      //     signal to consult. The month is then recorded as hostel cost;
       //   - a stored reading with tenant_count > 0 catches a month someone
       //     already billed through the occupied path.
       // Anything found means occupied, and every query fails closed.

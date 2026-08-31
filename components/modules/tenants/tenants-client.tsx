@@ -1728,7 +1728,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           // that's already on file. Only when the operator hasn't already
           // typed something themselves, so re-fetching on a date edit doesn't
           // clobber a value they just entered.
-          setCheckoutACReading((prev) => (prev === "" && ctx.currentMonthReading != null) ? String(ctx.currentMonthReading) : prev);
+          // Never from a reading taken while the room was empty: that number
+          // predates this tenant, and pre-filling it as their departure reading
+          // hands the operator a plausible wrong figure to accept. It still
+          // serves as the OPENING below — which is what it actually is.
+          setCheckoutACReading((prev) => (prev === "" && ctx.currentMonthReading != null && !ctx.currentMonthVacant) ? String(ctx.currentMonthReading) : prev);
 
           // Same treatment for the OPENING reading. It was shown only as a
           // placeholder, so the operator saw a greyed-out number in an empty box

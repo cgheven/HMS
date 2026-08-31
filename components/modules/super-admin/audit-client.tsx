@@ -59,7 +59,9 @@ function describeActivity(event: ActivityFeedEvent): string {
     case "complaint.create": return `Filed complaint "${m.title ?? ""}"`;
     case "payment.paid": return `Recorded a payment of ${formatCurrency(Number(m.amount ?? 0))}${m.tenant_name ? ` from ${m.tenant_name}` : ""}`;
     case "payment.undo": return `Undid a payment of ${formatCurrency(Number(m.amount ?? 0))}${m.tenant_name ? ` from ${m.tenant_name}` : ""}${m.undone_by_name ? ` (${m.undone_by_name})` : ""}`;
-    case "ac_reading.submit": return `Submitted an AC meter reading (${m.total_units ?? 0} units)`;
+    case "ac_reading.submit": return m.vacant
+      ? `Submitted an AC meter reading for an EMPTY room (${m.total_units ?? 0} units, charged to nobody)`
+      : `Submitted an AC meter reading (${m.total_units ?? 0} units)`;
     case "manager.invite": return `Invited manager "${m.name ?? ""}"`;
     default: return `${event.action} on ${event.entity}`;
   }
