@@ -407,11 +407,14 @@ export async function applyRoomACUnitsAsManager(
     const foodRate = Number(config?.food_monthly_rate ?? 0)
     // Room is already verified has_ac = true above, so AC maintenance applies
     // unconditionally here — same reasoning as applyRoomACUnitsAction.
-    // Per tenant, not a flat branch rate — matching applyRoomACUnitsAction. A
-    // tenant may have opted out (hms_tenants.ac_maintenance = 0), and widening
-    // this action to non-AC rooms above made the divergence reachable there:
-    // the manager would have written the branch rate where the owner writes 0.
-    const acMaintenanceRate = Number(config?.ac_maintenance_rate ?? 0)
+    // Widening this action to non-AC rooms above made the hardcoded "this room
+    // has AC" assumption reachable: a room with no air conditioner would have
+    // been charged the branch AC-maintenance rate. Pass the room's real flag so
+    // such a room gets 0. Deliberately still a flat rate per room rather than
+    // per tenant — the owner path honours each tenant's opt-out and this one
+    // does not, but changing that here would move money on OCCUPIED rooms,
+    // which is outside this feature. Logged as a separate divergence.
+    const acMaintenanceCharge = computeAcMaintenanceCharge(!!room.has_ac, Number(config?.ac_maintenance_rate ?? 0), null)
 
     const eligible = allTenants ?? []
 
@@ -442,24 +445,34 @@ export async function applyRoomACUnitsAsManager(
       // refusing on that would block a first vacant recording for any month that
       // already has a legacy row — and tell the operator tenants were billed
       // when none were.
-      // A checkout breakpoint is equally good evidence that the month had
-      // occupants, and it exists even when nobody ran the month-end Apply — the
-      // case tenant_count alone misses: two tenants leave on the 3rd, each
-      // charged at the door, and the room reads empty for the rest of the month.
-      const { data: checkoutRows, error: checkoutErr } = await admin
-        .from("hms_room_ac_checkout_readings")
+      // Did anyone LIVE here in this month? That is the real question, and both
+      // earlier proxies only approximated it. tenant_count on a stored row is
+      // set only if someone already ran Apply; a checkout breakpoint exists only
+      // if the operator happened to type a closing reading. Two tenants leaving
+      // on the 31st with the box blank, and no month-end Apply, slipped through
+      // both — and their month was written off as hostel cost.
+      //
+      // A residency-window query answers it directly and ignores is_active, so
+      // it holds for departed tenants and for a tenant moved to another room
+      // since.
+      const monthStart = `${forMonth}-01`;
+      const [vy, vm] = forMonth.split("-").map(Number);
+      const nextMonthStart = vm === 12 ? `${vy + 1}-01-01` : `${vy}-${String(vm + 1).padStart(2, "0")}-01`;
+      const { data: livedHere, error: livedHereErr } = await admin
+        .from("hms_tenants")
         .select("id")
+        .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
-        .eq("for_month", forMonth)
+        .lt("check_in", nextMonthStart)
+        .or(`check_out.is.null,check_out.gte.${monthStart}`)
         .limit(1);
-      if (checkoutErr) {
+      if (livedHereErr) {
         return { error: "Could not confirm whether this room was occupied this month. Try again." };
       }
-      if ((existingReading && Number(existingReading.tenant_count ?? 0) > 0) || (checkoutRows ?? []).length > 0) {
+      if ((livedHere ?? []).length > 0 || (existingReading && Number(existingReading.tenant_count ?? 0) > 0)) {
         return {
-          
           error:
-            "This room was occupied earlier this month and its reading has already been applied to tenants. A vacant reading would overwrite that record — record it once the month has closed, or correct the tenants' charges instead.",
+            "This room was occupied during this month, so its units belong to those tenants. Record the reading through the normal Apply once they are billed, or correct their charges instead.",
         };
       }
 
@@ -493,6 +506,17 @@ export async function applyRoomACUnitsAsManager(
         { onConflict: "room_id,for_month" },
       )
       if (vacantErr) return { error: vacantErr.message }
+
+      if (ctx.manager.supabase_user_id) {
+        await logActivity({
+          hostel_id: hostelId,
+          actor_id: ctx.manager.supabase_user_id,
+          action: "ac_reading.submit",
+          entity: "ac_reading",
+          entity_id: roomId,
+          meta: { for_month: forMonth, meter_reading: Math.round(Number(meterReading)), total_units: vacantUnits, tenant_count: 0, vacant: true, recorded_by_name: ctx.manager.name },
+        })
+      }
 
       revalidatePath("/portal/payments")
       revalidatePath("/payments")
@@ -543,11 +567,6 @@ export async function applyRoomACUnitsAsManager(
         const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0
         const addonFoodCharge = config ? calcFoodAddonCharge(t, config) : 0
         const foodCharge = tierFoodCharge + addonFoodCharge
-        const acMaintenanceCharge = computeAcMaintenanceCharge(
-          true,
-          acMaintenanceRate,
-          (t as { ac_maintenance?: number | null }).ac_maintenance,
-        )
         const depositCharge = computeDepositCharge(
           { check_in: t.check_in, security_deposit: t.security_deposit, deposit_collected_amount: t.deposit_collected_amount ?? 0 },
           currentMonth

@@ -2250,7 +2250,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       // they went instead.
                       if (allRows.length === 0) {
                         const vacantUnits = Math.round(Number(saved?.total_units ?? 0) * 100) / 100;
-                        if (!saved || vacantUnits <= 0) return null;
+                        // Only when the SERVER recorded the month as vacant. This
+                        // list joins on each tenant's CURRENT room, so moving a
+                        // tenant to another room empties it for a month they were
+                        // genuinely billed for — and the footer would then claim
+                        // their units went to nobody.
+                        const savedVacant = saved?.recorded_while_vacant ?? Number(saved?.tenant_count ?? 0) === 0;
+                        if (!saved || !savedVacant || vacantUnits <= 0) return null;
                         return (
                           <div className="pt-2 mt-2 border-t border-white/5 flex items-center gap-2 text-xs">
                             <span className="text-amber/70 flex-1 min-w-0 truncate">Nobody in the room — hostel&apos;s own cost</span>

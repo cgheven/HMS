@@ -265,7 +265,7 @@ export function computeACSegmentBilling(params: {
       tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
     } else {
       const assignedUnits = [...accumulated.values()].reduce((s, v) => s + v, 0);
-      // (assignment moved below — computed uniformly for every branch)
+      unassignedUnits = Math.max(0, round2(units - assignedUnits));
       if (assignedUnits === 0) {
         tenantBilling = eligible.map(t => ({ id: t.id, tenantUnits: 0, charge: 0 }));
       } else {
@@ -280,15 +280,6 @@ export function computeACSegmentBilling(params: {
       }
     }
   }
-
-  // Units the segmentation handed to nobody — consumption before the first
-  // joiner arrived, after the last one left, or the whole reading when the room
-  // was empty. Computed here rather than inside one branch: it was only ever
-  // assigned in the join-only branch, so the checkout-aware and equal-split
-  // branches always reported 0 however much was genuinely unallocated. The UI
-  // already labels this "hostel absorbs", and an empty room is its 100% case.
-  const assignedTotal = tenantBilling.reduce((sum, r) => sum + r.tenantUnits, 0);
-  unassignedUnits = Math.max(0, round2(units - assignedTotal));
 
   return { tenantBilling, proRatedCount, unassignedUnits, departedCounted: checkoutSegments.length };
 }

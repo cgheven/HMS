@@ -985,24 +985,34 @@ export async function applyRoomACUnitsAction(
       // refusing on that would block a first vacant recording for any month that
       // already has a legacy row — and tell the operator tenants were billed
       // when none were.
-      // A checkout breakpoint is equally good evidence that the month had
-      // occupants, and it exists even when nobody ran the month-end Apply — the
-      // case tenant_count alone misses: two tenants leave on the 3rd, each
-      // charged at the door, and the room reads empty for the rest of the month.
-      const { data: checkoutRows, error: checkoutErr } = await supabase
-        .from("hms_room_ac_checkout_readings")
+      // Did anyone LIVE here in this month? That is the real question, and both
+      // earlier proxies only approximated it. tenant_count on a stored row is
+      // set only if someone already ran Apply; a checkout breakpoint exists only
+      // if the operator happened to type a closing reading. Two tenants leaving
+      // on the 31st with the box blank, and no month-end Apply, slipped through
+      // both — and their month was written off as hostel cost.
+      //
+      // A residency-window query answers it directly and ignores is_active, so
+      // it holds for departed tenants and for a tenant moved to another room
+      // since.
+      const monthStart = `${forMonth}-01`;
+      const [vy, vm] = forMonth.split("-").map(Number);
+      const nextMonthStart = vm === 12 ? `${vy + 1}-01-01` : `${vy}-${String(vm + 1).padStart(2, "0")}-01`;
+      const { data: livedHere, error: livedHereErr } = await supabase
+        .from("hms_tenants")
         .select("id")
+        .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
-        .eq("for_month", forMonth)
+        .lt("check_in", nextMonthStart)
+        .or(`check_out.is.null,check_out.gte.${monthStart}`)
         .limit(1);
-      if (checkoutErr) {
+      if (livedHereErr) {
         return { success: false, error: "Could not confirm whether this room was occupied this month. Try again." };
       }
-      if ((existingReading && Number(existingReading.tenant_count ?? 0) > 0) || (checkoutRows ?? []).length > 0) {
+      if ((livedHere ?? []).length > 0 || (existingReading && Number(existingReading.tenant_count ?? 0) > 0)) {
         return {
-          success: false,
-          error:
-            "This room was occupied earlier this month and its reading has already been applied to tenants. A vacant reading would overwrite that record — record it once the month has closed, or correct the tenants' charges instead.",
+          success: false, error:
+            "This room was occupied during this month, so its units belong to those tenants. Record the reading through the normal Apply once they are billed, or correct their charges instead.",
         };
       }
 
@@ -1043,6 +1053,21 @@ export async function applyRoomACUnitsAction(
         { onConflict: "room_id,for_month" }
       );
       if (vacantErr) throw new Error(vacantErr.message);
+
+      // Attributed like every occupied reading. This row sets the next tenant's
+      // opening baseline, so "who entered it, and when" matters at least as much
+      // here as it does for a reading that bills someone.
+      const vacantCtx = await getAuthContext();
+      if (vacantCtx?.user) {
+        await logActivity({
+          hostel_id: hostelId,
+          actor_id: vacantCtx.user.id,
+          action: "ac_reading.submit",
+          entity: "ac_reading",
+          entity_id: roomId,
+          meta: { for_month: forMonth, meter_reading: Math.round(Number(meterReading)), total_units: vacantUnits, tenant_count: 0, vacant: true },
+        });
+      }
 
       revalidatePath("/payments");
       // The dashboard's AC-units tile sums total_units, which this just changed.
