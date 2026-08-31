@@ -1,7 +1,7 @@
 "use server";
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { effectivePaymentStatus } from "@/lib/payment-calc";
+import { effectivePaymentStatus, splitPaymentCharges, computeRentDiscount } from "@/lib/payment-calc";
 import { createClient } from "@/lib/supabase/server";
 import { capitalize, getMonthRange } from "@/lib/utils";
 import { pktYearMonth } from "@/lib/pkt-time";
@@ -252,6 +252,40 @@ export interface ReportData {
     paidAcTenants: number;
   };
 
+  // Rent discounts (migration 211). Two different questions, deliberately kept
+  // apart: who is on a standing concession right now (a forward-looking monthly
+  // commitment, read off the tenant), and what was actually given away on the
+  // bills in this period (money, read off the payment rows).
+  discountReport: {
+    standing: {
+      tenantId: string;
+      tenantName: string;
+      roomNumber: string | null;
+      monthlyRent: number;
+      percent: number;
+      /** Rupees off each month at the tenant's current rent. */
+      monthlyDiscount: number;
+    }[];
+    standingCount: number;
+    standingMonthlyTotal: number;
+    oneOff: {
+      paymentId: string;
+      tenantName: string;
+      roomNumber: string | null;
+      forMonth: string;
+      percent: number;
+      amount: number;
+    }[];
+    oneOffCount: number;
+    oneOffTotal: number;
+    /** Every rupee of rent discounted on bills in this period, standing and
+     *  one-off together — `amount` is stored net of this, so no revenue line
+     *  above includes it. */
+    totalGivenInPeriod: number;
+    /** Bills in the period carrying any discount at all. */
+    discountedBillCount: number;
+  };
+
   // Consolidated expense report — bills + staff salaries + general expenses + kitchen
   expenseReport: {
     rows: {
@@ -391,7 +425,7 @@ export async function getReportData(
   ] = await Promise.all([
     admin
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
+      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, discount_percent, manual_discount_percent, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
@@ -424,7 +458,7 @@ export async function getReportData(
       .lte("advance_date", fullEnd),
     admin
       .from("hms_tenants")
-      .select("id, full_name, phone, type, check_in, check_out, is_active, package_tier, custom_package_id, hms_rooms(room_number, has_ac)")
+      .select("id, full_name, phone, type, check_in, check_out, is_active, package_tier, custom_package_id, monthly_rent, discount_percent, hms_rooms(room_number, has_ac)")
       .eq("hostel_id", hostelId),
     admin
       .from("hms_rooms")
@@ -472,6 +506,9 @@ export async function getReportData(
     registration_fee_charge?: unknown;
     ac_maintenance_charge?: unknown;
     referral_discount?: unknown;
+    discount_amount?: unknown;
+    discount_percent?: unknown;
+    manual_discount_percent?: unknown;
     ac_units_consumed?: unknown;
     payment_package_tier: unknown;
     payment_method: string | null;
@@ -494,6 +531,8 @@ export async function getReportData(
     is_active: boolean;
     package_tier: string;
     custom_package_id: string | null;
+    monthly_rent: unknown;
+    discount_percent: unknown;
     hms_rooms: { room_number: string; has_ac: boolean } | { room_number: string; has_ac: boolean }[] | null;
   };
   const tenants = (tenantsRes.data ?? []) as unknown as TenantWithRoomRow[];
@@ -624,6 +663,80 @@ export async function getReportData(
   const totalAcRevenue = acPaidPayments.reduce((s, p) => s + Number(p.ac_charge || 0), 0);
   const totalAcTenants = acAllPayments.length;
   const paidAcTenants = acPaidPayments.length;
+
+  // Rent discounts. The standing list answers "who are we giving a concession
+  // to", so it is read off the LIVE tenant row and covers active tenants only —
+  // a former tenant's old concession is not an ongoing commitment.
+  const standingDiscountRows = tenants
+    .filter((t) => t.is_active && t.discount_percent !== null && Number(t.discount_percent) > 0)
+    .map((t) => {
+      const rent = Number(t.monthly_rent ?? 0);
+      const percent = Number(t.discount_percent ?? 0);
+      const r = t.hms_rooms;
+      return {
+        tenantId: t.id,
+        tenantName: t.full_name,
+        roomNumber: (Array.isArray(r) ? r[0] : r)?.room_number ?? null,
+        monthlyRent: rent,
+        percent,
+        monthlyDiscount: computeRentDiscount(rent, percent),
+      };
+    })
+    .sort((a, b) => b.monthlyDiscount - a.monthlyDiscount);
+
+  // COLLECTED bills only. A discount is a concession the moment it is taken off
+  // money that changed hands — an unpaid or waived bill has given nothing away
+  // yet. Counting every priced bill meant opening Reports on the 3rd showed a
+  // whole month of concessions as already granted, before anyone had paid.
+  const discountedBills = payments.filter(
+    (p) => Number(p.discount_amount || 0) > 0 && Number(p.amount_paid || 0) > 0
+  );
+
+  // The one-off share of a bill's discount. Only the COMBINED rupees are
+  // stored, so the standing part is recomputed the way the trigger computes it
+  // — off the bill's own gross rent and the standing percent pinned on the row
+  // (total minus manual) — and what is left over is the one-off. The two parts
+  // therefore always add back up to discount_amount rather than double-counting
+  // a month where both applied.
+  const oneOffDiscountRows = discountedBills
+    .filter((p) => Number(p.manual_discount_percent || 0) > 0)
+    .map((p) => {
+      const charges = splitPaymentCharges({
+        amount: Number(p.amount || 0),
+        food_charge: Number(p.food_charge || 0),
+        ac_charge: Number(p.ac_charge || 0),
+        security_deposit_charge: Number(p.security_deposit_charge || 0),
+        registration_fee_charge: Number(p.registration_fee_charge || 0),
+        ac_maintenance_charge: Number(p.ac_maintenance_charge || 0),
+        referral_discount: Number(p.referral_discount || 0),
+        discount_amount: Number(p.discount_amount || 0),
+      });
+      const manualPct = Number(p.manual_discount_percent || 0);
+      const standingPct = Math.max(0, Number(p.discount_percent || 0) - manualPct);
+      const standingPart = computeRentDiscount(charges.rent, standingPct, charges.referralDiscount);
+      const t = p.tenant;
+      const roomsRaw = t?.hms_rooms;
+      return {
+        paymentId: p.id,
+        tenantName: t?.full_name ?? "Unknown",
+        roomNumber: (Array.isArray(roomsRaw) ? roomsRaw[0] : roomsRaw)?.room_number ?? null,
+        forMonth: p.for_month,
+        percent: manualPct,
+        amount: Math.max(0, charges.discount - standingPart),
+      };
+    })
+    .sort((a, b) => (b.forMonth.localeCompare(a.forMonth) || b.amount - a.amount));
+
+  const discountReport = {
+    standing: standingDiscountRows,
+    standingCount: standingDiscountRows.length,
+    standingMonthlyTotal: standingDiscountRows.reduce((s, r) => s + r.monthlyDiscount, 0),
+    oneOff: oneOffDiscountRows,
+    oneOffCount: oneOffDiscountRows.length,
+    oneOffTotal: oneOffDiscountRows.reduce((s, r) => s + r.amount, 0),
+    totalGivenInPeriod: discountedBills.reduce((s, p) => s + Number(p.discount_amount || 0), 0),
+    discountedBillCount: discountedBills.length,
+  };
 
   // Payment method breakdown (reconciliation)
   const METHOD_LABELS: Record<string, string> = {
@@ -1420,6 +1533,7 @@ export async function getReportData(
       totalOccupied,
       acByRoom,
       acStats: { totalAcRevenue, totalAcTenants, paidAcTenants },
+      discountReport,
       roomOptions: rooms.map((r) => ({ id: r.id, roomNumber: r.room_number })).sort((a, b) => a.roomNumber.localeCompare(b.roomNumber)),
       paymentMethodBreakdown,
       paidPaymentsList,

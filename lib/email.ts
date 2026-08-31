@@ -722,6 +722,12 @@ interface PaymentReceiptEmailData {
   paidInFull: boolean;
   /** Still owed on this bill. Zero when settled. */
   remainingBalance: number;
+  /** Rent discount applied to this bill (migration 211), in rupees. The stored
+   *  amount is already net of it, so this is shown as a concession the tenant
+   *  received rather than as part of what they paid. Zero/absent prints nothing. */
+  discountAmount?: number;
+  /** Combined standing + one-off percent, for the label only. */
+  discountPercent?: number;
 }
 
 /**
@@ -762,6 +768,14 @@ export async function sendPaymentReceiptEmail(data: PaymentReceiptEmailData): Pr
       )}
       ${data.remainingBalance > 0
         ? row("Remaining", `<span style="color:#f59e0b;font-weight:700;">Rs ${data.remainingBalance.toLocaleString()}</span>`)
+        : ""}
+      ${(data.discountAmount ?? 0) > 0
+        ? row(
+            (data.discountPercent ?? 0) > 0
+              ? `Discount (${Math.round((data.discountPercent as number) * 100) / 100}%)`
+              : "Discount",
+            `<span style="color:#4ade80;font-weight:700;">&minus; Rs ${(data.discountAmount as number).toLocaleString()}</span>`
+          )
         : ""}
       ${row("For", esc(data.forMonth))}
       ${row("Hostel", esc(data.hostelName))}

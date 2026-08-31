@@ -139,7 +139,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     { data: waitingTenants, error: waitingErr },
   ] = await Promise.all([
     admin.from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent)")
       .eq("hostel_id", hostelId)
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false }),

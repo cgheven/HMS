@@ -30,7 +30,9 @@ import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
 import {
   VALID_TIERS, calcBaseRentServer, dailySnapshot, computeDepositCharge,
   computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeReferralDiscount,
+  computeRentDiscount, combinedDiscountPercent,
 } from "@/lib/payment-calc";
+import { validateDiscountPercent } from "@/lib/tenant-discount";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 import { logActivity } from "@/lib/audit";
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore } from "@/lib/ac-billing";
@@ -119,7 +121,7 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("hms_tenants")
-    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner, ac_maintenance")
+    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner, ac_maintenance, discount_percent")
     .eq("id", tenantId)
     .eq("hostel_id", hostelId) // ensures the tenant belongs to the owner's hostel
     .single();
@@ -148,6 +150,7 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
     food_lunch: boolean;
     food_dinner: boolean;
     ac_maintenance: number | null;
+    discount_percent: number | null;
   };
 }
 
@@ -186,7 +189,7 @@ export async function syncMonthAction(
 
     const { data: payments, error: fetchErr } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent)")
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
       .order("created_at", { ascending: false });
@@ -299,6 +302,10 @@ export interface MarkPaidInput {
       records a partial payment (status becomes "partially_paid" until the
       running total collected reaches the full amount). */
   amountReceived?: string;
+  /** One-off discount for THIS bill, as a percentage of rent (string from form
+      input). Omit/blank for none. It STACKS on the tenant's standing discount —
+      the trigger adds the two and clamps the sum to 100. */
+  discountPercent?: string;
 }
 
 export async function markPaymentPaidAction(
@@ -337,10 +344,22 @@ export async function markPaymentPaidAction(
     }
     assertNonNegativeFinite(lateFee, "late_fee");
 
+    // --- Validate the one-off discount percentage ---
+    // Absent or blank is "no manual discount" and is stored as NULL; an explicit
+    // 0 is an operator who deliberately recorded none. numeric(5,2) on the
+    // column, so anything finer than 2dp is a value Postgres would round anyway.
+    let manualDiscountPercent: number | null = null;
+    if (input.discountPercent !== undefined && input.discountPercent.trim() !== "") {
+      const parsedDiscount = parseFloat(input.discountPercent);
+      const discountError = validateDiscountPercent(parsedDiscount);
+      if (discountError) throw new Error(discountError);
+      manualDiscountPercent = Math.round(parsedDiscount * 100) / 100;
+    }
+
     // --- Fetch the existing payment row (ownership verified via hostel_id) ---
     const { data: existingPayment, error: fetchErr } = await supabase
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, amount_paid, food_charge, ac_charge, payment_package_tier, hostel_id, status, referral_discount, referral_percent")
+      .select("id, tenant_id, for_month, amount, amount_paid, food_charge, ac_charge, payment_package_tier, hostel_id, status, referral_discount, referral_percent, discount_percent")
       .eq("id", input.paymentId)
       .eq("hostel_id", hostelId) // RLS + explicit owner check
       .single();
@@ -465,15 +484,26 @@ export async function markPaymentPaidAction(
       : Number(rewardRow?.percent ?? 0);
     const referralDiscount = computeReferralDiscount(baseRent, referralPercent);
 
+    // The rent discount (migration 211) obeys the same freeze rule and for the
+    // same reason: the trigger pins a collected bill's discount PERCENT, so
+    // re-deriving it from the tenant's current standing discount here would
+    // settle the bill against a total the database then refuses to write. On an
+    // uncollected bill the tenant record is authoritative — exactly what the
+    // trigger reads — and the manual percentage is whatever was just typed.
+    const discountPercent = wasCollected
+      ? Number(existingPayment.discount_percent ?? 0)
+      : combinedDiscountPercent(tenantData.discount_percent, manualDiscountPercent);
+    const rentDiscount = computeRentDiscount(baseRent, discountPercent, referralDiscount);
+
     // --- Partial payment handling ---
     // amount_paid accumulates across however many installments it takes to settle
     // this month's bill. Omitting amountReceived (or entering the full remaining
     // balance) behaves exactly like before — a single full payment.
     const previousAmountPaid = Number(existingPayment.amount_paid ?? 0);
-    // newTotalAmount is GROSS; what the tenant actually owes is net of the
-    // discount. Without this subtraction every discounted bill would be recorded
-    // as short-paid and sit at partially_paid forever.
-    const fullAmountDue = newTotalAmount - referralDiscount + lateFee;
+    // newTotalAmount is GROSS; what the tenant actually owes is net of both
+    // discounts. Without these subtractions every discounted bill would be
+    // recorded as short-paid and sit at partially_paid forever.
+    const fullAmountDue = newTotalAmount - referralDiscount - rentDiscount + lateFee;
     const remainingBefore = Math.max(0, fullAmountDue - previousAmountPaid);
 
     let amountReceivedNow: number;
@@ -485,12 +515,16 @@ export async function markPaymentPaidAction(
       assertNonNegativeFinite(amountReceivedNow, "amount_received", 9_999_999.99);
       if (amountReceivedNow > remainingBefore + 0.01) {
         // A tenant handing over the pre-discount figure is the single most likely
-        // way to trip this, and the generic message never mentions the referral —
+        // way to trip this, and the generic message never mentions the discount —
         // leaving the person at the desk with a rejected payment and no
         // explanation. Name the discount and say what to do with the difference.
-        if (referralDiscount > 0 && amountReceivedNow <= remainingBefore + referralDiscount + 0.01) {
+        const discountTotal = referralDiscount + rentDiscount;
+        if (discountTotal > 0 && amountReceivedNow <= remainingBefore + discountTotal + 0.01) {
+          const label = referralDiscount > 0
+            ? (rentDiscount > 0 ? "referral and rent discount" : "referral discount")
+            : "discount";
           throw new Error(
-            `A Rs. ${referralDiscount.toLocaleString()} referral discount was applied to this bill. Collect Rs. ${remainingBefore.toLocaleString()} and return Rs. ${(amountReceivedNow - remainingBefore).toLocaleString()} to the tenant.`
+            `A Rs. ${discountTotal.toLocaleString()} ${label} was applied to this bill. Collect Rs. ${remainingBefore.toLocaleString()} and return Rs. ${(amountReceivedNow - remainingBefore).toLocaleString()} to the tenant.`
           );
         }
         throw new Error(
@@ -523,6 +557,11 @@ export async function markPaymentPaidAction(
       // the trigger re-derives the discount and stores amount net of it.
       amount: newTotalAmount,
       referral_discount: 0,
+      // The ONLY discount column the app writes. discount_percent and
+      // discount_amount are the trigger's — it adds this to the tenant's
+      // standing discount, clamps, and prices the row. On a collected bill it
+      // keeps the percentage the bill was collected with and ignores this.
+      manual_discount_percent: manualDiscountPercent,
       amount_paid: newAmountPaid,
       // Write back canonical food_charge/security_deposit_charge so any
       // previously corrupted row is corrected
@@ -557,7 +596,7 @@ export async function markPaymentPaidAction(
       // write moves amount_paid, and without this the collection would settle
       // against a total that no longer exists.
       .eq("amount_paid", previousAmountPaid)
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent)")
       .maybeSingle();
 
     if (error) throw new Error(error.message);
@@ -791,7 +830,7 @@ export async function loadHistoryAction(forMonth: string): Promise<{ payments?: 
 
     const { data, error } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent)")
       .eq("hostel_id", hostelId)
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false });

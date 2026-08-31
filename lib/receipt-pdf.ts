@@ -31,6 +31,12 @@ interface ReceiptPayment {
   referral_discount?: number;
   /** Percent the discount was computed at — label only, printed when known. */
   referral_percent?: number;
+  /** Standing (admission) + one-off rent discount in rupees, migration 211.
+   *  `amount` is stored net of it, so like referral_discount it prints as a
+   *  negative line against the GROSS rent above. */
+  discount_amount?: number | null;
+  /** Combined percent the rupees were derived from — label only. */
+  discount_percent?: number | null;
   is_checkout?: boolean;
   /** Seat-reservation deposit taken before move-in — no rent/food/AC on this receipt. */
   is_reservation?: boolean;
@@ -77,6 +83,12 @@ function encodePdfString(str: string): string {
 
 function pk(amount: number): string {
   return `Rs. ${amount.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+}
+
+// numeric(5,2) arrives as 10 or 10.5 — print 10, not 10.00, and never a
+// trailing ".50" on a whole percentage.
+function fmtPct(pct: number): string {
+  return String(Math.round(pct * 100) / 100);
 }
 
 function fmtDate(dateStr: string | null | undefined): string {
@@ -250,15 +262,20 @@ export function generateReceiptPDF(
   add(ML, isReservation ? "Details:" : "Breakdown:", 8, true); nl(12);
   // Food-inclusive package tiers bundle food into monthly_rent with no separate
   // food_charge (0), so this only itemizes food when it was billed as an add-on.
-  const { rent: baseRent, referralDiscount } = splitPaymentCharges(payment);
-  // The rent line above is GROSS while `payment.amount` is stored net, so this
-  // negative line is exactly what makes the itemisation add back up to the total.
-  // Deliberately anonymous: this PDF is served from a public token URL, and the
-  // reader does not need to know who they referred.
-  function addReferralDiscount(): void {
-    if (referralDiscount <= 0) return;
-    const pct = Number(payment.referral_percent ?? 0);
-    addKv(pct > 0 ? `Referral Discount (${pct}%)` : "Referral Discount", `-${pk(referralDiscount)}`); nl(12);
+  const { rent: baseRent, referralDiscount, discount: rentDiscount } = splitPaymentCharges(payment);
+  // The rent line above is GROSS while `payment.amount` is stored net, so these
+  // negative lines are exactly what makes the itemisation add back up to the
+  // total. The referral one is deliberately anonymous: this PDF is served from a
+  // public token URL, and the reader does not need to know who they referred.
+  function addDiscountLines(): void {
+    if (rentDiscount > 0) {
+      const pct = Number(payment.discount_percent ?? 0);
+      addKv(pct > 0 ? `Discount (${fmtPct(pct)}%)` : "Discount", `-${pk(rentDiscount)}`); nl(12);
+    }
+    if (referralDiscount > 0) {
+      const pct = Number(payment.referral_percent ?? 0);
+      addKv(pct > 0 ? `Referral Discount (${fmtPct(pct)}%)` : "Referral Discount", `-${pk(referralDiscount)}`); nl(12);
+    }
   }
   if (isReservation) {
     addKv("Seat Reservation Deposit", pk(payment.security_deposit_charge ?? payment.amount)); nl(12);
@@ -267,7 +284,7 @@ export function generateReceiptPDF(
       addKv("Registration Fee", pk(payment.registration_fee_charge!)); nl(12);
       add(ML, "(one-time, non-refundable)", 6, false); nl(10);
     }
-    addReferralDiscount();
+    addDiscountLines();
     add(ML, "This is not a monthly bill. Rent begins", 6, false); nl(8);
     add(ML, "from the date of joining.", 6, false); nl(10);
   }
@@ -332,7 +349,7 @@ export function generateReceiptPDF(
     // the only line that is taken off, so putting it anywhere in the middle
     // makes the column impossible to add down — the reader hits a subtraction,
     // then more additions, and has to backtrack to check the total.
-    addReferralDiscount();
+    addDiscountLines();
   }
   nl(2); addDash(); nl(10);
 

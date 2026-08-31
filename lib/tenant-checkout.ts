@@ -120,7 +120,7 @@ export async function performTenantCheckout(
 
       const { data: monthRow } = await adminDb
         .from("hms_payments")
-        .select("id, status, amount, amount_paid, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, referral_percent")
+        .select("id, status, amount, amount_paid, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, referral_percent, discount_percent, discount_amount")
         .eq("tenant_id", input.tenantId)
         .eq("hostel_id", hostelId)
         .eq("for_month", rentMonth)
@@ -203,9 +203,14 @@ export async function performTenantCheckout(
         // on a collected row, so the discount scales with the pro-rated rent
         // instead of handing back a full month's discount on a four-night stay.
         const referralPercent = Number(monthRow.referral_percent ?? 0);
+        // The rent discount is pinned on a collected row exactly as the referral
+        // percent is, so it applies to the re-priced rent too. Leaving it out of
+        // the clamp let a discounted daily bill be written BELOW what had already
+        // been collected, with the "refund the difference" warning never firing.
+        const rentDiscountPercent = Number(monthRow.discount_percent ?? 0);
         const proposedTotal = newBaseRent + extras;
         const { gross: clampedTotal, clamped, satisfiable } = clampGrossToCollected(
-          newBaseRent, extras, referralPercent, alreadyPaid
+          newBaseRent, extras, referralPercent, alreadyPaid, rentDiscountPercent
         );
         if (clamped) {
           repriceWarning = satisfiable
@@ -213,8 +218,10 @@ export async function performTenantCheckout(
               `${alreadyPaid.toLocaleString()} has already been collected. The bill was held at ` +
               `the amount already paid — refund the difference manually if one is due.`
             : `The final month cannot be re-priced above the ${alreadyPaid.toLocaleString()} ` +
-              `already collected while a ${referralPercent}% referral discount applies. ` +
-              `Refund the difference manually.`;
+              `already collected while ${[
+                referralPercent > 0 ? `a ${referralPercent}% referral discount` : null,
+                rentDiscountPercent > 0 ? `a ${rentDiscountPercent}% rent discount` : null,
+              ].filter(Boolean).join(" and ")} applies. Refund the difference manually.`;
         }
 
         const repriceFields = isDaily

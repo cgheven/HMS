@@ -12,7 +12,7 @@ import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
-import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge } from "@/lib/payment-calc";
+import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount } from "@/lib/payment-calc";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
@@ -1042,7 +1042,7 @@ export async function backfillTenantPaymentsAction(
     // Fetch tenant — verify it belongs to this hostel
     const { data: tenant, error: tenantErr } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, room_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, deposit_collected_amount, registration_fee, package_tier, billing_type, food_breakfast, food_lunch, food_dinner, ac_maintenance")
+      .select("id, full_name, hostel_id, room_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, deposit_collected_amount, registration_fee, package_tier, billing_type, food_breakfast, food_lunch, food_dinner, ac_maintenance, discount_percent")
       .eq("id", tenantId)
       .eq("hostel_id", hostelId)
       .single();
@@ -1116,6 +1116,17 @@ export async function backfillTenantPaymentsAction(
       // collected would overstate revenue in reports and the Member Ledger with
       // nothing on screen to reveal it. An outstanding due the owner can see and
       // clear is recoverable; silently fabricated income is not.
+      // amount is written GROSS and the trigger stores it NET, so the settled
+      // figure has to be the net one — otherwise every back-dated month of a
+      // discounted member is recorded as OVERPAID by the discount. Reports sum
+      // amount_paid for collected cash and `amount` for revenue, so the two
+      // would disagree by the discount on every such admission: money on the
+      // books that was never received.
+      const monthDiscount = isDaily
+        ? 0
+        : computeRentDiscount(baseRent, Number(tenant.discount_percent ?? 0));
+      const settledAmount = monthAmount - monthDiscount;
+
       const settlement = isDaily
         ? {
             status: "pending" as const,
@@ -1126,7 +1137,7 @@ export async function backfillTenantPaymentsAction(
           }
         : {
             status: "paid" as const,
-            amount_paid: monthAmount,
+            amount_paid: settledAmount,
             payment_method: "cash" as const,
             payment_date: lastDayOfMonth(month),
             receipt_number: genReceiptNumber(tenant.full_name, month),
@@ -1457,6 +1468,10 @@ export async function getCheckoutPendingPaymentAction(
     late_fee: number; ac_charge: number; ac_units_consumed: number | null;
     food_charge: number; security_deposit_charge: number;
     registration_fee_charge: number; ac_maintenance_charge: number;
+    /** Pinned on a collected row, so the checkout dialog must price the
+     *  pro-rated rent through them or it quotes a figure the server will not
+     *  settle at. */
+    discount_percent: number; referral_percent: number;
   } | null;
   error?: string;
 }> {
@@ -1474,7 +1489,7 @@ export async function getCheckoutPendingPaymentAction(
 
     const { data, error } = await adminDb
       .from("hms_payments")
-      .select("id, for_month, status, amount, amount_paid, late_fee, ac_charge, ac_units_consumed, food_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge")
+      .select("id, for_month, status, amount, amount_paid, late_fee, ac_charge, ac_units_consumed, food_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, discount_percent, referral_percent")
       .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId)
       // partially_paid included too — a genuine remaining balance (e.g. AC
@@ -1500,6 +1515,8 @@ export async function getCheckoutPendingPaymentAction(
         amount: Number(data.amount ?? 0),
         amount_paid: Number(data.amount_paid ?? 0),
         late_fee: Number(data.late_fee ?? 0),
+        discount_percent: Number(data.discount_percent ?? 0),
+        referral_percent: Number(data.referral_percent ?? 0),
         ac_charge: Number(data.ac_charge ?? 0),
         ac_units_consumed: data.ac_units_consumed != null ? Number(data.ac_units_consumed) : null,
         food_charge: Number(data.food_charge ?? 0),

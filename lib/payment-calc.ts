@@ -123,9 +123,11 @@ export function splitPaymentCharges(p: {
   registration_fee_charge?: number | null;
   ac_maintenance_charge?: number | null;
   referral_discount?: number | null;
+  discount_amount?: number | null;
 }): {
-  /** GROSS rent — what the tenant's rent actually is, before any referral
-   *  discount. The discount is added back because `amount` is stored net of it;
+  /** GROSS rent — what the tenant's rent actually is, before the referral
+   *  discount and before the standing/manual rent discount. Both are added back
+   *  because `amount` is stored net of them;
    *  without that, every screen that itemises a discounted bill would show a
    *  rent lower than the agreed rent and the line items would not sum to the
    *  total. Every caller wants gross here: the receipt prints rent and the
@@ -138,6 +140,10 @@ export function splitPaymentCharges(p: {
   registrationFee: number;
   acMaintenance: number;
   referralDiscount: number;
+  /** The manual/standing rent discount (migration 211) in rupees. Same posture
+   *  as referralDiscount: `amount` is stored net of it, so it is added back into
+   *  `rent` above and belongs on screen as its own negative line. */
+  discount: number;
   /** Everything that is neither rent nor metered AC — food, deposit, reg fee, AC maintenance. */
   otherCharges: number;
 } {
@@ -147,20 +153,26 @@ export function splitPaymentCharges(p: {
   const registrationFee = Math.max(0, Number(p.registration_fee_charge ?? 0));
   const acMaintenance = Math.max(0, Number(p.ac_maintenance_charge ?? 0));
   const referralDiscount = Math.max(0, Number(p.referral_discount ?? 0));
+  const discount = Math.max(0, Number(p.discount_amount ?? 0));
   const rent = Math.max(
     0,
-    Number(p.amount ?? 0) + referralDiscount - food - ac - deposit - registrationFee - acMaintenance
+    Number(p.amount ?? 0) + referralDiscount + discount
+      - food - ac - deposit - registrationFee - acMaintenance
   );
   return {
-    rent, food, ac, deposit, registrationFee, acMaintenance, referralDiscount,
+    rent, food, ac, deposit, registrationFee, acMaintenance, referralDiscount, discount,
     otherCharges: food + deposit + registrationFee + acMaintenance,
   };
 }
 
-/** The row's gross total — what the bill would be with no referral discount.
- *  `amount` is stored net, so this is the only correct way to recover gross. */
-export function grossAmountOf(p: { amount: number; referral_discount?: number | null }): number {
-  return Number(p.amount ?? 0) + Number(p.referral_discount ?? 0);
+/** The row's gross total — what the bill would be with no discount of either
+ *  kind. `amount` is stored net, so this is the only correct way to recover gross. */
+export function grossAmountOf(p: {
+  amount: number;
+  referral_discount?: number | null;
+  discount_amount?: number | null;
+}): number {
+  return Number(p.amount ?? 0) + Number(p.referral_discount ?? 0) + Number(p.discount_amount ?? 0);
 }
 
 // Mirrors the SQL in hms_recalculate_payment_amount exactly:
@@ -179,9 +191,43 @@ export function computeReferralDiscount(baseRent: number, percent: number): numb
   return Math.min(Math.round((rent * pct) / 100), Math.max(rent, 0));
 }
 
+// Mirrors the second discount block in hms_recalculate_payment_amount exactly:
+//   LEAST(round(v_base_rent * pct / 100.0), GREATEST(v_base_rent - v_referral_discount, 0))
+// Clamped to the rent the REFERRAL discount has not already taken, so the two
+// together can never exceed the rent and never reach food, metered AC, the
+// deposit, the registration fee or AC maintenance. The app previews this number
+// in the Pay dialog and then settles against it, so a disagreement with the
+// trigger shows up as a bill the operator cannot close.
+export function computeRentDiscount(baseRent: number, percent: number, referralDiscount = 0): number {
+  const rent = Number(baseRent) || 0;
+  const pct = Number(percent) || 0;
+  if (pct <= 0) return 0;
+  return Math.min(
+    Math.round((rent * pct) / 100),
+    Math.max(rent - (Number(referralDiscount) || 0), 0)
+  );
+}
+
+/** The tenant's standing discount plus the one-off typed on this bill, clamped
+ *  the way the trigger clamps them: each into 0..100, the sum to 100. */
+export function combinedDiscountPercent(standing?: number | null, manual?: number | null): number {
+  const clamp = (v: unknown) => Math.min(Math.max(Number(v ?? 0) || 0, 0), 100);
+  return Math.min(clamp(standing) + clamp(manual), 100);
+}
+
 /** What the tenant actually owes: gross components less the referral discount. */
-export function netFromBaseRent(baseRent: number, extras: number, percent: number): number {
-  return baseRent + extras - computeReferralDiscount(baseRent, percent);
+export function netFromBaseRent(
+  baseRent: number,
+  extras: number,
+  percent: number,
+  discountPercent = 0
+): number {
+  const referral = computeReferralDiscount(baseRent, percent);
+  // Mirrors the trigger exactly: the rent discount takes what the referral
+  // discount left, never more. Defaulting to 0 keeps every existing caller
+  // byte-identical.
+  const rent = computeRentDiscount(baseRent, discountPercent, referral);
+  return baseRent + extras - referral - rent;
 }
 
 /**
@@ -202,26 +248,32 @@ export function clampGrossToCollected(
   baseRent: number,
   extras: number,
   percent: number,
-  alreadyPaid: number
+  alreadyPaid: number,
+  discountPercent = 0
 ): { gross: number; clamped: boolean; satisfiable: boolean } {
   const proposedGross = baseRent + extras;
-  if (netFromBaseRent(baseRent, extras, percent) >= alreadyPaid) {
+  const net = (g: number) => netFromBaseRent(g - extras, extras, percent, discountPercent);
+  if (net(proposedGross) >= alreadyPaid) {
     return { gross: proposedGross, clamped: false, satisfiable: true };
   }
 
-  const denom = 1 - percent / 100;
+  // Both discounts come off the rent, so together they shrink it by at most
+  // their sum — and at 100% the net is `extras` however large the rent grows,
+  // which is the one case no gross can ever satisfy.
+  const combined = Math.min(percent + discountPercent, 100);
+  const denom = 1 - combined / 100;
   if (denom <= 0) {
     return { gross: proposedGross, clamped: true, satisfiable: extras >= alreadyPaid };
   }
 
-  // Closed-form inverse of net(g) = g - (g - extras) * percent/100, then nudged
-  // up for the rounding inside computeReferralDiscount, which can leave the
-  // exact solution a rupee short.
-  let gross = Math.max(proposedGross, Math.ceil((alreadyPaid - (extras * percent) / 100) / denom));
-  for (let i = 0; i < 4 && netFromBaseRent(gross - extras, extras, percent) < alreadyPaid; i++) {
-    gross += 1;
+  // net() is monotonic non-decreasing in g, so step toward it from the
+  // closed-form estimate. Each pass closes the remaining gap divided by the
+  // slope; the bound is a guard, not an expectation — it converges in one or two.
+  let gross = Math.max(proposedGross, Math.ceil((alreadyPaid - (extras * combined) / 100) / denom));
+  for (let i = 0; i < 64 && net(gross) < alreadyPaid; i++) {
+    gross += Math.max(1, Math.ceil((alreadyPaid - net(gross)) / denom));
   }
-  return { gross, clamped: true, satisfiable: true };
+  return { gross, clamped: true, satisfiable: net(gross) >= alreadyPaid };
 }
 
 export function tenantDueDay(checkIn: string, forMonth: string): number {
