@@ -104,19 +104,16 @@ export function computeACSegmentBilling(params: {
   // A tenant on the 1st with units_at_join=0 produces equal split (the duplicate 0 is deduplicated by
   // the Set, leaving one segment [0,total] where they are present for the full range).
   // A tenant on the 1st with units_at_join=10 correctly assigns those 10 units to whoever came first.
-  // The day-one rule applies ONLY to tenants who actually checked in this month.
-  // main had no month test here at all — a hand-typed row was a breakpoint for any
-  // eligible tenant, deliberately (see the comment above). ANDing needsBreakpoint
-  // in wholesale also dropped rows for EARLIER-month tenants, which has nothing to
-  // do with day-one arrivals and silently discarded an operator's explicit
-  // correction: edit a check-in date across a month boundary, re-apply, and the
-  // room re-splits with no warning.
+  // Unconditional, exactly as main: a typed row is an explicit correction and
+  // wins, as the line below says. The day-one rule belongs to the DERIVED
+  // breakpoints only — that is the bug it was written for, where a breakpoint
+  // nobody asked for was invented from the tenant's move-in reading. Applying it
+  // here instead threw away what an operator had deliberately entered, for a
+  // guest who really did arrive on the 1st after the room had already burned
+  // units. If such a row should ever be refused, refuse it at write time with a
+  // visible error, never silently at bill time.
   const manualJoinReadings = (joinReadingsRaw ?? []).filter(r =>
-    eligible.some(t =>
-      t.id === r.tenant_id &&
-      (!(typeof t.check_in === "string" && t.check_in.slice(0, 7) === forMonth) ||
-        needsBreakpoint(t.check_in, forMonth, openingIsMonthStart))
-    )
+    eligible.some(t => t.id === r.tenant_id)
   );
 
   // Check-in captures a meter reading on the tenant, but only a hand-typed entry under

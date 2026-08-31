@@ -1098,13 +1098,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // for a month it was lived in.
   const acRoomOccupiedInMonth = useMemo(() => {
     const [y, m] = selectedMonth.split("-").map(Number);
-    const monthStart = `${selectedMonth}-01`;
     const nextMonthStart = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
     const occupied = new Set<string>();
+    // Deliberately NO check_out bound, because the server has none: its eligible
+    // set is `is_active = true AND check_in < firstOfNextMonth`. The tenants prop
+    // is active-only, so a past check_out on an active row means a DAILY GUEST —
+    // the app stores their departure date while leaving them active until someone
+    // runs the Checkout dialog, which for daily guests routinely never happens.
+    // Excluding them told the operator the room was Empty while the server still
+    // saw an occupant, so Apply took the OCCUPIED path and billed that guest for
+    // a month they had already left.
     for (const t of tenants) {
       if (!t.room_id) continue;
       if (t.check_in >= nextMonthStart) continue;
-      if (t.check_out && t.check_out < monthStart) continue;
       occupied.add(t.room_id);
     }
     // Departed tenants are gone from the roster above (it is active-only), so
@@ -2083,18 +2089,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 const totalTenants = acTenantCount;
                 const prevMonthReading = prevMonthACReadings.find(r => r.room_id === room.id)?.meter_reading ?? null;
                 const hasPrevReading = prevMonthReading != null;
-                // hasPrevReading mirrors the server's openingIsMonthStart: without a
-                // previous-month reading the opening is some earlier tenant's move-in
-                // figure, "the month" may span several, and a day-one arrival still
-                // needs a breakpoint — so the box must stay available to correct it.
-                // Declared BEFORE this filter: the callback runs immediately, so
-                // reading it from the line below would throw on every render.
+                // Every arrival this month, as on main. A typed join reading is
+                // always honoured by the billing, so the box that shows and edits
+                // it must always be here — hiding it for a day-one arrival left a
+                // stored row silently affecting the split with no way to see or
+                // clear it.
                 const midMonthJoiners = tenants.filter(
-                  t =>
-                    t.room_id === room.id &&
-                    t.is_active &&
-                    t.check_in.startsWith(selectedMonth) &&
-                    (!hasPrevReading || joinedMidMonth(t.check_in, selectedMonth))
+                  t => t.room_id === room.id && t.is_active && t.check_in.startsWith(selectedMonth)
                 );
                 const currentInput = acUnits[room.id] ?? "";
                 const openingInput = acOpeningReadings[room.id] ?? "";
