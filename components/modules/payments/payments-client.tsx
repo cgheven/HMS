@@ -546,7 +546,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
   function openMarkPaid(p: Payment) {
     const tenantName = p.tenant?.full_name ?? "";
-    const remaining = Math.max(0, Number(p.amount) - Number(p.amount_paid ?? 0));
+    // From the PREVIEW, not the stored amount, so every figure in the dialog comes
+    // from one source. The stored amount can lag the tenant's live concession —
+    // ensureMonthlyPaymentRows only refreshes rows whose status is exactly
+    // 'pending', so an OVERDUE bill is never re-priced. It also keeps
+    // handleDiscountChange's `untouched` test honest: a mismatched prefill reads
+    // as a hand-typed partial, and the amount then stops following the percentage.
+    const remaining = previewDiscount(p, "").remaining;
     setMarkDialog(p);
     setMarkForm({
       method: "cash",
@@ -707,8 +713,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         toast({ title: "Error", description: result.error, variant: "destructive" });
         return;
       }
-      const remainingBefore = Math.max(0, preview.total + Number(markDialog.late_fee ?? 0) - Number(markDialog.amount_paid ?? 0));
-      const isPartial = amountReceived < remainingBefore - 0.01;
+      // The server's own verdict, matching the owner and partner branches. Deriving
+      // it from the client preview meant any disagreement between the two printed
+      // the wrong toast — success over a bill the server had left part-paid.
+      const isPartial = result.payment?.status === "partially_paid";
       toast({ title: isPartial ? "Partial payment recorded" : "Payment recorded! 🎉" });
       setMarkDialog(null);
       setSaving(false);
