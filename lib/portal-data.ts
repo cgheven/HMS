@@ -134,7 +134,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     packageConfig,
     { data: hostel },
     { data: acReadings, error: acReadingsErr },
-    { data: acCheckoutReadings },
+    { data: acCheckoutReadings, error: acCheckoutErr },
     { data: acJoinReadings, error: acJoinErr },
     { data: waitingTenants, error: waitingErr },
   ] = await Promise.all([
@@ -183,7 +183,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
   // manager an empty tenant list beside non-zero money tiles. Failing loudly is
   // the only outcome that cannot be mistaken for "nobody lives here".
   const readErr =
-    paymentsErr ?? tenantsErr ?? roomsErr ?? acReadingsErr ?? acJoinErr ?? waitingErr;
+    paymentsErr ?? tenantsErr ?? roomsErr ?? acReadingsErr ?? acCheckoutErr ?? acJoinErr ?? waitingErr;
   if (readErr) {
     throw new Error(`Payments page could not load for ${forMonth}: ${readErr.message}`);
   }

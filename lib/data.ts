@@ -965,7 +965,7 @@ export async function getPaymentsPageData(forMonth: string) {
     { data: rooms, error: roomsErr },
     packageConfig,
     { data: acReadings, error: acReadingsErr },
-    { data: acCheckoutReadings },
+    { data: acCheckoutReadings, error: acCheckoutErr },
     { data: acJoinReadings, error: acJoinErr },
     { data: waitingTenants, error: waitingErr },
     { data: waMessages },
@@ -1048,7 +1048,7 @@ export async function getPaymentsPageData(forMonth: string) {
   // shipped as a silent blank four times in this repo; the first symptom of a
   // missing column must never be a plausible-looking screen.
   const readErr =
-    paymentsErr ?? tenantsErr ?? roomsErr ?? acReadingsErr ?? acJoinErr ?? waitingErr;
+    paymentsErr ?? tenantsErr ?? roomsErr ?? acReadingsErr ?? acCheckoutErr ?? acJoinErr ?? waitingErr;
   if (readErr) {
     throw new Error(`Payments page could not load for ${forMonth}: ${readErr.message}`);
   }
