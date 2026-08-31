@@ -14,7 +14,7 @@ import { notifyOwnerPaymentRecorded, notifyOwnerPaymentUndone } from "@/lib/paym
 import { performPaymentUndo } from "@/lib/payment-undo"
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
-import { computeACSegmentBilling, deriveOpeningReading, latestReadingBefore } from "@/lib/ac-billing"
+import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore } from "@/lib/ac-billing"
 import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge } from "@/lib/payment-calc"
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
@@ -353,11 +353,13 @@ export async function applyRoomACUnitsAsManager(
     const prevMonthStr = getPrevMonth(forMonth)
 
     // Verify room, get config, fetch previous month reading, active tenants, join readings, and checkout readings in parallel
-    const [{ data: room }, { data: config }, { data: prevRecord }, { data: existingReading },
+    const [{ data: room }, { data: config }, { data: prevRecord }, { data: prevMonthCheckouts }, { data: existingReading },
       { data: priorReadings }, { data: allTenants, error: allTenantsErr }, { data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
       admin.from("hms_rooms").select("id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       admin.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).maybeSingle(),
-      admin.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      admin.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      // See effectivePrevReading — only consulted for a vacant-flagged prev row.
+      admin.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr),
       // Vacant-path fallback only — see applyRoomACUnitsAction.
       admin.from("hms_room_ac_readings").select("tenant_count").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", forMonth).maybeSingle(),
       admin.from("hms_room_ac_readings").select("meter_reading, for_month").eq("room_id", roomId).eq("hostel_id", hostelId).lt("for_month", forMonth).not("meter_reading", "is", null).order("for_month", { ascending: false }).limit(6),
@@ -474,9 +476,10 @@ export async function applyRoomACUnitsAsManager(
         };
       }
 
+      const storedPrevForVacant = effectivePrevReading(prevRecord, prevMonthCheckouts)
       const vacantOpening =
-        prevRecord?.meter_reading != null
-          ? Math.round(Number(prevRecord.meter_reading))
+        storedPrevForVacant != null
+          ? storedPrevForVacant
           : openingReading != null && Number.isFinite(Number(openingReading))
             ? Math.round(Number(openingReading))
             : latestReadingBefore(priorReadings ?? [], forMonth)
@@ -529,8 +532,9 @@ export async function applyRoomACUnitsAsManager(
     const derivedOpening = deriveOpeningReading(eligible, currentMonth)
 
     // Derive consumption from cumulative meter readings
-    const prevReading = prevRecord?.meter_reading != null
-      ? Math.round(Number(prevRecord.meter_reading))
+    const storedPrev = effectivePrevReading(prevRecord, prevMonthCheckouts)
+    const prevReading = storedPrev != null
+      ? storedPrev
       : (openingReading != null ? Math.round(Number(openingReading)) : (derivedOpening ?? 0))
 
     if (reading < prevReading)

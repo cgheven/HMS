@@ -33,7 +33,7 @@ import {
 } from "@/lib/payment-calc";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 import { logActivity } from "@/lib/audit";
-import { computeACSegmentBilling, deriveOpeningReading, latestReadingBefore } from "@/lib/ac-billing";
+import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore } from "@/lib/ac-billing";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -877,6 +877,7 @@ export async function applyRoomACUnitsAction(
       { data: room },
       { data: pkgConfig },
       { data: prevRecord },
+      { data: prevMonthCheckouts },
       { data: existingReading },
       { data: priorReadings },
       { data: allTenants, error: allTenantsErr },
@@ -884,7 +885,12 @@ export async function applyRoomACUnitsAction(
     ] = await Promise.all([
       supabase.from("hms_rooms").select("id, hostel_id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       supabase.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).single(),
-      supabase.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      supabase.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      // Last month's checkout readings. Consulted only when last month's row was
+      // recorded while the room was EMPTY — see effectivePrevReading: such a row
+      // is a snapshot, not a month-end close, and a guest who came and went after
+      // it left the real closing figure here instead.
+      adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr),
       // This month's own row, if one exists: a stored tenant_count > 0 means the
       // occupied path already billed this month, which the vacant guard refuses.
       //
@@ -994,6 +1000,7 @@ export async function applyRoomACUnitsAction(
       //   - a stored reading with tenant_count > 0 catches a month someone
       //     already billed through the occupied path.
       // Anything found means occupied, and every query fails closed.
+      const storedPrevForVacant = effectivePrevReading(prevRecord, prevMonthCheckouts);
       const monthStart = `${forMonth}-01`;
       const [vy, vm] = forMonth.split("-").map(Number);
       const nextMonthStart = vm === 12 ? `${vy + 1}-01-01` : `${vy}-${String(vm + 1).padStart(2, "0")}-01`;
@@ -1033,8 +1040,8 @@ export async function applyRoomACUnitsAction(
       }
 
       const vacantOpening =
-        prevRecord?.meter_reading != null
-          ? Math.round(Number(prevRecord.meter_reading))
+        storedPrevForVacant != null
+          ? storedPrevForVacant
           : openingReading != null && Number.isFinite(Number(openingReading))
             ? Math.round(Number(openingReading))
             : latestReadingBefore(priorReadings ?? [], forMonth);
@@ -1102,8 +1109,9 @@ export async function applyRoomACUnitsAction(
     // reading the operator would otherwise have to look up and retype here.
     const derivedOpening = deriveOpeningReading(eligible, forMonth);
 
-    const prevReading = prevRecord?.meter_reading != null
-      ? Math.round(Number(prevRecord.meter_reading))
+    const storedPrev = effectivePrevReading(prevRecord, prevMonthCheckouts);
+    const prevReading = storedPrev != null
+      ? storedPrev
       : (openingReading != null ? Math.round(Number(openingReading)) : (derivedOpening ?? 0));
 
     if (reading < prevReading)

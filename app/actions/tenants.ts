@@ -16,7 +16,7 @@ import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanc
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
-import { deriveOpeningReading } from "@/lib/ac-billing";
+import { deriveOpeningReading, effectivePrevReading } from "@/lib/ac-billing";
 import { sendWelcomeMessageNow, type WelcomeSendResult } from "@/lib/whatsapp-welcome-action";
 import { sendSeatReservedConfirmation } from "@/lib/whatsapp-seat-reserved";
 import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, CheckoutSettlement, TenantEventType, TenantFeedback } from "@/types";
@@ -1593,14 +1593,23 @@ export async function getACCheckoutContextAction(
     const prevDate = new Date(y, m - 2, 1);
     const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
 
-    const [{ data: prevRecord }, { data: currentRecord }, { data: config }, { data: tenants }, { data: priorCheckouts }, { data: joinRows }] = await Promise.all([
+    const [{ data: prevRecord }, { data: prevMonthCheckouts }, { data: currentRecord }, { data: config }, { data: tenants }, { data: priorCheckouts }, { data: joinRows }] = await Promise.all([
       adminDb
         .from("hms_room_ac_readings")
-        .select("meter_reading, total_units")
+        .select("meter_reading, total_units, recorded_while_vacant")
         .eq("room_id", roomId)
         .eq("hostel_id", hostelId)
         .eq("for_month", prevMonth)
         .maybeSingle(),
+      // See effectivePrevReading. This dialog must resolve the previous month
+      // exactly as performTenantCheckout does, or the quote at the door differs
+      // from the amount actually settled.
+      adminDb
+        .from("hms_room_ac_checkout_readings")
+        .select("meter_reading")
+        .eq("room_id", roomId)
+        .eq("hostel_id", hostelId)
+        .eq("for_month", prevMonth),
       adminDb
         .from("hms_room_ac_readings")
         .select("meter_reading, total_units, recorded_while_vacant")
@@ -1653,7 +1662,7 @@ export async function getACCheckoutContextAction(
     const derivedOpening = deriveOpeningReading(tenants ?? [], checkoutMonth);
 
     return {
-      prevMonthReading: prevRecord?.meter_reading != null ? Number(prevRecord.meter_reading) : null,
+      prevMonthReading: effectivePrevReading(prevRecord, prevMonthCheckouts),
       prevMonthUnits: prevRecord?.total_units != null ? Number(prevRecord.total_units) : null,
       currentMonthReading: currentRecord?.meter_reading != null ? Number(currentRecord.meter_reading) : null,
       // Taken while the room stood EMPTY, before this tenant was in it. Still

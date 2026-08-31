@@ -34,7 +34,7 @@ import {
 } from "@/app/actions/payments";
 import { createInvoiceLink, createInstallmentReceiptLink, previewBillLinkAction } from "@/app/actions/tenants";
 import { recordPaymentAsPartner } from "@/app/actions/partner";
-import { deriveOpeningReading, joinedMidMonth, latestReadingBefore } from "@/lib/ac-billing";
+import { deriveOpeningReading, effectivePrevReading, joinedMidMonth, latestReadingBefore } from "@/lib/ac-billing";
 import {
   recordPaymentAsManager,
   applyRoomACUnitsAsManager,
@@ -96,6 +96,7 @@ interface Props {
   acReadings?: { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null; recorded_while_vacant?: boolean | null }[];
   /** Latest WhatsApp status per tenant id — drives the delivery tick. */
   lastWhatsApp?: Record<string, { status: string; error_code: number | null; created_at: string }>;
+  acCheckoutReadings?: { room_id: string; for_month: string; meter_reading: number | null }[];
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
   // Tenants currently on the waiting list — a payment row can outlive an
   // active tenant being edited back to waiting, so the headline stats below
@@ -269,9 +270,10 @@ function waTick(m: { status: string; error_code: number | null } | undefined):
   }
 }
 
+const NO_AC_CHECKOUTS: { room_id: string; for_month: string; meter_reading: number | null }[] = [];
 const NO_AC_READINGS: NonNullable<Props["acReadings"]> = [];
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, meterAllRooms = false, acReadings: allAcReadings = NO_AC_READINGS, acJoinReadings = [], lastWhatsApp = {}, partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, meterAllRooms = false, acReadings: allAcReadings = NO_AC_READINGS, acCheckoutReadings = NO_AC_CHECKOUTS, acJoinReadings = [], lastWhatsApp = {}, partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
   const isPartner = !!partnerTier;
   const isManager = !!managerPermissions;
   const canCollect = managerPermissions?.includes("collect_payments") ?? false;
@@ -323,10 +325,23 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     () => allAcReadings.filter(r => r.for_month === selectedMonth),
     [allAcReadings, selectedMonth]
   );
-  const prevMonthACReadings = useMemo(
-    () => allAcReadings.filter(r => r.for_month === prevMonthOf(selectedMonth)),
-    [allAcReadings, selectedMonth]
-  );
+  // Previous-month rows with the SAME correction the server applies: a row
+  // recorded while the room was empty is a snapshot, and if the room was then let
+  // and vacated inside that month, the departing tenant's checkout reading is the
+  // real closing figure. Without this the card would say "Previous month ended at
+  // 460" while Apply billed from 520.
+  const prevMonthACReadings = useMemo(() => {
+    const pm = prevMonthOf(selectedMonth);
+    return allAcReadings
+      .filter(r => r.for_month === pm)
+      .map(r => ({
+        ...r,
+        meter_reading: effectivePrevReading(
+          r,
+          acCheckoutReadings.filter(c => c.room_id === r.room_id && c.for_month === pm)
+        ),
+      }));
+  }, [allAcReadings, acCheckoutReadings, selectedMonth]);
   const [roomFilter, setRoomFilter] = useState<string>("all");
   const [msgFilter, setMsgFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<StatusChip>("all");

@@ -3,7 +3,7 @@ import "server-only";
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { calcDailyRent, countBillableNights, daysInMonth, proRateMonthlyRent } from "@/lib/daily-billing";
-import { computeACSegmentBilling, deriveOpeningReading, round2 } from "@/lib/ac-billing";
+import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, round2 } from "@/lib/ac-billing";
 import { clampGrossToCollected } from "@/lib/payment-calc";
 import { voidReferralRewardsForTenant } from "@/lib/referral-rewards";
 import { mintFeedbackToken } from "@/lib/tenant-feedback";
@@ -285,8 +285,10 @@ export async function performTenantCheckout(
       const prevDate = new Date(cy, cm - 2, 1);
       const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
 
-      const [{ data: prevRecord }, { data: pkgConfig }, { data: roomInfo }, { data: activeTenantsInRoom }, { data: priorCheckoutsData }, { data: joinRowsData }, { data: currentMonthRecord }, { data: ownPaymentRow }] = await Promise.all([
-        adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      const [{ data: prevRecord }, { data: prevMonthCheckouts }, { data: pkgConfig }, { data: roomInfo }, { data: activeTenantsInRoom }, { data: priorCheckoutsData }, { data: joinRowsData }, { data: currentMonthRecord }, { data: ownPaymentRow }] = await Promise.all([
+        adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+        // See effectivePrevReading — only consulted for a vacant-flagged prev row.
+        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", prevMonthStr),
         adminDb.from("hms_package_configs").select("ac_per_unit_rate").eq("hostel_id", hostelId).maybeSingle(),
         adminDb.from("hms_rooms").select("has_ac").eq("id", tenant.room_id).eq("hostel_id", hostelId).single(),
         adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", tenant.room_id).eq("is_active", true),
@@ -360,8 +362,9 @@ export async function performTenantCheckout(
           ? Math.round(Number(currentMonthRecord.meter_reading)) - Math.round(Number(currentMonthRecord.total_units))
           : null;
 
-        const prevReading = prevRecord?.meter_reading != null
-          ? Math.round(Number(prevRecord.meter_reading))
+        const storedPrev = effectivePrevReading(prevRecord, prevMonthCheckouts);
+        const prevReading = storedPrev != null
+          ? storedPrev
           : input.acOpeningReading != null
           ? Math.round(Number(input.acOpeningReading))
           : impliedCurrentOpening ?? (derivedOpening ?? 0);

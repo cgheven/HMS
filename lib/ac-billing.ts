@@ -369,6 +369,36 @@ export function deriveOpeningReading(
 }
 
 /**
+ * The previous month's TRUE closing reading.
+ *
+ * A row recorded while the room stood empty is a snapshot from the day it was
+ * taken, not a month-end close — and nothing updates it afterwards. Let the room
+ * in the same month and the departing tenant's checkout reading becomes the real
+ * closing figure, while the stored row stays frozen at the earlier number. The
+ * next month then opens too low and bills its first tenant for units the guest
+ * before them consumed.
+ *
+ * Checkout readings are absolute meter values written against the ROOM, so the
+ * highest one in that month is the last thing the meter is known to have read.
+ *
+ * Only ever raises the opening, and only for a vacant-flagged row — so it cannot
+ * touch a single reading that exists today: recorded_while_vacant arrived with
+ * migration 210 and is false on every pre-existing row.
+ */
+export function effectivePrevReading(
+  prevRow: { meter_reading?: number | string | null; recorded_while_vacant?: boolean | null } | null | undefined,
+  prevMonthCheckouts?: { meter_reading?: number | string | null }[] | null
+): number | null {
+  if (prevRow?.meter_reading == null) return null;
+  const stored = Math.round(Number(prevRow.meter_reading));
+  if (!prevRow.recorded_while_vacant) return stored;
+  const readings = (prevMonthCheckouts ?? [])
+    .map(r => (r.meter_reading != null ? Math.round(Number(r.meter_reading)) : null))
+    .filter((v): v is number => v != null && Number.isFinite(v));
+  return readings.length > 0 ? Math.max(stored, ...readings) : stored;
+}
+
+/**
  * The most recent reading STRICTLY BEFORE a given month, from rows already
  * fetched.
  *
