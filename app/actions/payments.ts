@@ -186,7 +186,7 @@ export async function syncMonthAction(
 
     const { data: payments, error: fetchErr } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in)")
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
       .order("created_at", { ascending: false });
@@ -557,7 +557,7 @@ export async function markPaymentPaidAction(
       // write moves amount_paid, and without this the collection would settle
       // against a total that no longer exists.
       .eq("amount_paid", previousAmountPaid)
-      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in)")
       .maybeSingle();
 
     if (error) throw new Error(error.message);
@@ -791,7 +791,7 @@ export async function loadHistoryAction(forMonth: string): Promise<{ payments?: 
 
     const { data, error } = await supabase
       .from("hms_payments")
-      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in)")
       .eq("hostel_id", hostelId)
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false });
@@ -887,13 +887,21 @@ export async function applyRoomACUnitsAction(
       supabase.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
       // This month's own row, if one exists: a stored tenant_count > 0 means the
       // occupied path already billed this month, which the vacant guard refuses.
-      supabase.from("hms_room_ac_readings").select("tenant_count").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", forMonth).maybeSingle(),
+      //
+      // adminDb for the same reason as the guard's other signals: the SELECT
+      // policy on this table (migration 045) covers hms_hostels.owner_id and
+      // hms_partnerships but has no hms_owner_hostels arm, while branch access
+      // itself resolves through exactly that junction. On a multi-owner branch a
+      // narrowed read returns [] — the guard would pass on evidence it could not
+      // see, and the carry-forward below would find no earlier reading. Both are
+      // re-scoped to hostelId in the query itself, so nothing widens.
+      adminDb.from("hms_room_ac_readings").select("tenant_count").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", forMonth).maybeSingle(),
       // Every earlier reading, newest first. Consulted ONLY on the vacant path
       // below: an empty room may legitimately have skipped a month, and the
       // exactly-previous-month rule has nothing to offer it. Occupied rooms
       // keep the strict rule — loosening it globally would turn a room last
       // read three months ago into one large catch-up bill.
-      supabase.from("hms_room_ac_readings").select("meter_reading, for_month").eq("room_id", roomId).eq("hostel_id", hostelId).lt("for_month", forMonth).not("meter_reading", "is", null).order("for_month", { ascending: false }).limit(6),
+      adminDb.from("hms_room_ac_readings").select("meter_reading, for_month").eq("room_id", roomId).eq("hostel_id", hostelId).lt("for_month", forMonth).not("meter_reading", "is", null).order("for_month", { ascending: false }).limit(6),
       // `.lt("check_in", ...)` matters for any back-dated apply: without it the
       // eligible set is "whoever lives in this room now", so closing an earlier
       // month would split it across tenants who had not moved in yet. Applying

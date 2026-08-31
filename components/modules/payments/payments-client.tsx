@@ -2104,19 +2104,21 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               <span className="text-xs px-2 py-0.5 rounded-full bg-amber/10 text-amber border border-amber/20">Empty</span>
                               <span className="text-xs text-muted-foreground/60">units recorded, charged to nobody</span>
                             </>
+                          ) : !someoneLivedHereThisMonth ? (
+                            // The month-aware set calls this room empty, so the
+                            // today-based head count below must not speak. Room
+                            // empty through August, let on 3 September, operator
+                            // back-fills August: the card sat under the Empty chip
+                            // headed "1 of 1 billed for AC".
+                            <span className="text-xs text-muted-foreground/60">No tenants recorded for this month</span>
                           ) : acTenantCount > 0 ? (
                             <span className="text-xs text-amber">
                               {acTenantCount} of {totalTenants} billed for AC
                             </span>
-                          ) : someoneLivedHereThisMonth ? (
-                            // Empty NOW but lived in during the month on screen —
-                            // tenants left mid-month and were billed at checkout.
-                            // Neither "Empty" nor "0 of 0 billed for AC" is true.
-                            <span className="text-xs text-muted-foreground/60">Vacated this month — billed at checkout</span>
                           ) : (
-                            // No reading and no trace of anyone: state that, rather
-                            // than claim a vacancy the server has not confirmed.
-                            <span className="text-xs text-muted-foreground/60">No tenants recorded for this month</span>
+                            // Lived in this month but empty now — everyone left
+                            // mid-month and was billed at the door.
+                            <span className="text-xs text-muted-foreground/60">Vacated this month — billed at checkout</span>
                           )}
                         </div>
                         {saved ? (

@@ -365,7 +365,7 @@ export async function recordPaymentAsPartner(
       // write moves amount_paid, and without this the collection would settle
       // against a total that no longer exists.
       .eq("amount_paid", previousAmountPaid)
-      .select("*, tenant:hms_tenants(full_name, room_id, phone)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in)")
       .maybeSingle();
 
     if (error) return { error: error.message };

@@ -715,6 +715,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     prevMonthUnits: number | null;
     currentMonthReading: number | null;
     currentMonthUnits: number | null;
+    /** That reading was taken while the room stood empty — an opening, not this
+     *  tenant's departure reading. */
+    currentMonthVacant?: boolean;
     perUnitRate: number;
     activeTenantCount: number;
     priorCheckoutUnits: number[];
@@ -4580,9 +4583,20 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       );
                     })()}
                     {checkoutACContext?.currentMonthReading != null && (
-                      <p className="text-xs text-emerald-400/80">
-                        Auto-filled from this month&apos;s AC Units entry ({checkoutACContext.currentMonthReading.toLocaleString()}) — edit below if the meter has moved since.
-                      </p>
+                      checkoutACContext.currentMonthVacant ? (
+                        // The box below is deliberately EMPTY here: this month's
+                        // reading was taken while the room stood empty, before
+                        // this tenant was in it, so it is their opening and not
+                        // their departure reading. Saying "auto-filled" over an
+                        // empty box was worse than the pre-fill it replaced.
+                        <p className="text-xs text-amber/80">
+                          This month&apos;s reading ({checkoutACContext.currentMonthReading.toLocaleString()}) was taken while the room was empty, so it is the opening — enter the meter as it reads today.
+                        </p>
+                      ) : (
+                        <p className="text-xs text-emerald-400/80">
+                          Auto-filled from this month&apos;s AC Units entry ({checkoutACContext.currentMonthReading.toLocaleString()}) — edit below if the meter has moved since.
+                        </p>
+                      )
                     )}
                     <input
                       id="checkout-ac-reading"
