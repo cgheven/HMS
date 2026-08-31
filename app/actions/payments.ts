@@ -1138,6 +1138,9 @@ export async function applyRoomACUnitsAction(
       units,
       perUnitRate,
       forMonth,
+      // See needsBreakpoint: a day-one arrival only forfeits their breakpoint
+      // when the opening genuinely is this month's start.
+      openingIsMonthStart: prevRecord?.meter_reading != null,
       joinReadingsRaw: (joinReadingsRaw ?? []).filter(r => eligible.some(t => t.id === r.tenant_id)),
       // Passed through unfiltered. A departure at exactly this reading has to
       // reach computeACSegmentBilling — it counts toward the divisor for the

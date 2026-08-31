@@ -90,16 +90,22 @@ export function computeACSegmentBilling(params: {
   perUnitRate: number;
   forMonth: string;
   joinReadingsRaw: ACJoinReadingRow[];
+  /** True only when prevReading came from the previous month's stored reading —
+   *  i.e. the opening really is this month's start. See needsBreakpoint. */
+  openingIsMonthStart?: boolean;
   checkoutReadingsRaw: ACCheckoutReadingRow[];
 }): ACSegmentBillingResult {
   const { eligible, prevReading, reading, units, perUnitRate, forMonth, joinReadingsRaw, checkoutReadingsRaw } = params;
+  // Absent means "not known to be the month's start", the conservative reading:
+  // breakpoints behave exactly as they did before this change.
+  const openingIsMonthStart = params.openingIsMonthStart === true;
 
   // Use join readings for ALL eligible tenants regardless of join date.
   // A tenant on the 1st with units_at_join=0 produces equal split (the duplicate 0 is deduplicated by
   // the Set, leaving one segment [0,total] where they are present for the full range).
   // A tenant on the 1st with units_at_join=10 correctly assigns those 10 units to whoever came first.
   const manualJoinReadings = (joinReadingsRaw ?? []).filter(r =>
-    eligible.some(t => t.id === r.tenant_id && joinedMidMonth(t.check_in, forMonth))
+    eligible.some(t => t.id === r.tenant_id && needsBreakpoint(t.check_in, forMonth, openingIsMonthStart))
   );
 
   // Check-in captures a meter reading on the tenant, but only a hand-typed entry under
@@ -118,7 +124,7 @@ export function computeACSegmentBilling(params: {
     .filter(t =>
       !manualIds.has(t.id) &&                       // a typed entry is a correction — it wins
       t.joining_meter_reading != null &&
-      joinedMidMonth(t.check_in, forMonth)
+      needsBreakpoint(t.check_in, forMonth, openingIsMonthStart)
     )
     .map(t => ({
       tenant_id: t.id,
@@ -311,6 +317,25 @@ export function joinedMidMonth(checkIn: string | null | undefined, forMonth: str
   return Number(checkIn.slice(8, 10)) > 1;
 }
 
+/**
+ * Does a tenant who arrived on the 1st still need a breakpoint?
+ *
+ * Only if the opening is NOT this month's start. With no previous-month reading
+ * the opening falls back to some earlier tenant's move-in figure, so "the month"
+ * can span May to August — and a 1 August arrival genuinely was absent for most
+ * of it. Dropping their breakpoint there charges them for units burned before
+ * they existed as a tenant, and no opening value fixes it, because the opening
+ * must stay low for the tenant who WAS there.
+ *
+ * openingIsMonthStart is true only when the previous month's reading row exists,
+ * which is the one case where "arrived on the 1st" really does mean "present
+ * from unit zero".
+ */
+function needsBreakpoint(checkIn: string | null | undefined, forMonth: string, openingIsMonthStart: boolean): boolean {
+  if (typeof checkIn !== "string" || checkIn.slice(0, 7) !== forMonth) return false;
+  return openingIsMonthStart ? joinedMidMonth(checkIn, forMonth) : true;
+}
+
 export function deriveOpeningReading(
   tenants: { joining_meter_reading?: number | null; check_in?: string | null }[],
   forMonth?: string
@@ -318,8 +343,14 @@ export function deriveOpeningReading(
   const toReading = (t: { joining_meter_reading?: number | null }): number | null =>
     t.joining_meter_reading != null ? Math.round(Number(t.joining_meter_reading)) : null;
 
+  // Deliberately the CHECK-IN MONTH, not joinedMidMonth: this set feeds a
+  // Math.min, so admitting a day-one arrival can only ever LOWER the opening and
+  // raise the month's total. A mistyped move-in reading (85 for 850) would
+  // collapse the baseline and bill every occupant for hundreds of phantom units.
+  // Excluding this month's arrivals quarantines that, and the day-one bug this
+  // file also fixes lives in the breakpoints, not here.
   const preExisting = forMonth
-    ? tenants.filter(t => !joinedMidMonth(t.check_in, forMonth))
+    ? tenants.filter(t => !(typeof t.check_in === "string" && t.check_in.slice(0, 7) === forMonth))
     : tenants;
 
   const preferred = preExisting.map(toReading).filter((v): v is number => v != null);

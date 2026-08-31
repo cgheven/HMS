@@ -603,6 +603,8 @@ export async function applyRoomACUnitsAsManager(
       units,
       perUnitRate,
       forMonth: currentMonth,
+      // See needsBreakpoint.
+      openingIsMonthStart: prevRecord?.meter_reading != null,
       joinReadingsRaw: (joinReadingsRaw ?? []).filter((r) => eligible.some((t) => t.id === r.tenant_id)),
       // Passed through unfiltered — see applyRoomACUnitsAction for why a
       // departure at exactly this reading must reach the billing function.

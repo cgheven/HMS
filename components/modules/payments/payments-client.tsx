@@ -2081,11 +2081,21 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 const savedVacant = saved ? (saved.recorded_while_vacant ?? Number(saved.tenant_count ?? 0) === 0) : null;
                 const monthWasVacant = savedVacant === true && !someoneLivedHereThisMonth;
                 const totalTenants = acTenantCount;
-                const midMonthJoiners = tenants.filter(
-                  t => t.room_id === room.id && t.is_active && joinedMidMonth(t.check_in, selectedMonth)
-                );
                 const prevMonthReading = prevMonthACReadings.find(r => r.room_id === room.id)?.meter_reading ?? null;
                 const hasPrevReading = prevMonthReading != null;
+                // hasPrevReading mirrors the server's openingIsMonthStart: without a
+                // previous-month reading the opening is some earlier tenant's move-in
+                // figure, "the month" may span several, and a day-one arrival still
+                // needs a breakpoint — so the box must stay available to correct it.
+                // Declared BEFORE this filter: the callback runs immediately, so
+                // reading it from the line below would throw on every render.
+                const midMonthJoiners = tenants.filter(
+                  t =>
+                    t.room_id === room.id &&
+                    t.is_active &&
+                    t.check_in.startsWith(selectedMonth) &&
+                    (!hasPrevReading || joinedMidMonth(t.check_in, selectedMonth))
+                );
                 const currentInput = acUnits[room.id] ?? "";
                 const openingInput = acOpeningReadings[room.id] ?? "";
                 // Once this month has been applied, the opening it used is the one that
