@@ -90,28 +90,14 @@ export function computeACSegmentBilling(params: {
   perUnitRate: number;
   forMonth: string;
   joinReadingsRaw: ACJoinReadingRow[];
-  /** True only when prevReading came from the previous month's stored reading —
-   *  i.e. the opening really is this month's start. See needsBreakpoint. */
-  openingIsMonthStart?: boolean;
   checkoutReadingsRaw: ACCheckoutReadingRow[];
 }): ACSegmentBillingResult {
   const { eligible, prevReading, reading, units, perUnitRate, forMonth, joinReadingsRaw, checkoutReadingsRaw } = params;
-  // Absent means "not known to be the month's start", the conservative reading:
-  // breakpoints behave exactly as they did before this change.
-  const openingIsMonthStart = params.openingIsMonthStart === true;
 
   // Use join readings for ALL eligible tenants regardless of join date.
   // A tenant on the 1st with units_at_join=0 produces equal split (the duplicate 0 is deduplicated by
   // the Set, leaving one segment [0,total] where they are present for the full range).
   // A tenant on the 1st with units_at_join=10 correctly assigns those 10 units to whoever came first.
-  // Unconditional, exactly as main: a typed row is an explicit correction and
-  // wins, as the line below says. The day-one rule belongs to the DERIVED
-  // breakpoints only — that is the bug it was written for, where a breakpoint
-  // nobody asked for was invented from the tenant's move-in reading. Applying it
-  // here instead threw away what an operator had deliberately entered, for a
-  // guest who really did arrive on the 1st after the room had already burned
-  // units. If such a row should ever be refused, refuse it at write time with a
-  // visible error, never silently at bill time.
   const manualJoinReadings = (joinReadingsRaw ?? []).filter(r =>
     eligible.some(t => t.id === r.tenant_id)
   );
@@ -132,7 +118,8 @@ export function computeACSegmentBilling(params: {
     .filter(t =>
       !manualIds.has(t.id) &&                       // a typed entry is a correction — it wins
       t.joining_meter_reading != null &&
-      needsBreakpoint(t.check_in, forMonth, openingIsMonthStart)
+      typeof t.check_in === "string" &&
+      t.check_in.slice(0, 7) === forMonth
     )
     .map(t => ({
       tenant_id: t.id,
@@ -306,44 +293,6 @@ export function computeACSegmentBilling(params: {
 // newest arrival happens to have joined." Only falls back to a joiner's own
 // reading when literally no other data exists — in that case they define the
 // entire tracked window, so treating them as present for all of it is correct.
-/**
- * Did this tenant arrive PART-WAY through the month?
- *
- * Checking in on the 1st is not a mid-month join: they were in the room from the
- * first unit the meter counted, so they carry the whole month and need no
- * breakpoint. Treating "check-in month equals this month" as mid-month put a
- * day-one arrival under Mid-Month Joiners, auto-filled a reading from their
- * move-in record, and then billed them for none of the month's units — the
- * opposite of what a breakpoint is for.
- *
- * Where the room genuinely burned units before anyone arrived — an empty room
- * metered under this feature — the OPENING reading is the lever for that, not a
- * per-tenant breakpoint on someone who was there the whole time.
- */
-export function joinedMidMonth(checkIn: string | null | undefined, forMonth: string): boolean {
-  if (typeof checkIn !== "string" || checkIn.slice(0, 7) !== forMonth) return false;
-  return Number(checkIn.slice(8, 10)) > 1;
-}
-
-/**
- * Does a tenant who arrived on the 1st still need a breakpoint?
- *
- * Only if the opening is NOT this month's start. With no previous-month reading
- * the opening falls back to some earlier tenant's move-in figure, so "the month"
- * can span May to August — and a 1 August arrival genuinely was absent for most
- * of it. Dropping their breakpoint there charges them for units burned before
- * they existed as a tenant, and no opening value fixes it, because the opening
- * must stay low for the tenant who WAS there.
- *
- * openingIsMonthStart is true only when the previous month's reading row exists,
- * which is the one case where "arrived on the 1st" really does mean "present
- * from unit zero".
- */
-function needsBreakpoint(checkIn: string | null | undefined, forMonth: string, openingIsMonthStart: boolean): boolean {
-  if (typeof checkIn !== "string" || checkIn.slice(0, 7) !== forMonth) return false;
-  return openingIsMonthStart ? joinedMidMonth(checkIn, forMonth) : true;
-}
-
 export function deriveOpeningReading(
   tenants: { joining_meter_reading?: number | null; check_in?: string | null }[],
   forMonth?: string
@@ -351,12 +300,6 @@ export function deriveOpeningReading(
   const toReading = (t: { joining_meter_reading?: number | null }): number | null =>
     t.joining_meter_reading != null ? Math.round(Number(t.joining_meter_reading)) : null;
 
-  // Deliberately the CHECK-IN MONTH, not joinedMidMonth: this set feeds a
-  // Math.min, so admitting a day-one arrival can only ever LOWER the opening and
-  // raise the month's total. A mistyped move-in reading (85 for 850) would
-  // collapse the baseline and bill every occupant for hundreds of phantom units.
-  // Excluding this month's arrivals quarantines that, and the day-one bug this
-  // file also fixes lives in the breakpoints, not here.
   const preExisting = forMonth
     ? tenants.filter(t => !(typeof t.check_in === "string" && t.check_in.slice(0, 7) === forMonth))
     : tenants;

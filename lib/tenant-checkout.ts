@@ -418,8 +418,6 @@ export async function performTenantCheckout(
             units,
             perUnitRate,
             forMonth: checkoutMonth,
-            // See needsBreakpoint.
-            openingIsMonthStart: prevRecord?.meter_reading != null,
             joinReadingsRaw: (joinRowsData ?? []).map(j => ({
               tenant_id: j.tenant_id as string,
               units_at_join: Number(j.units_at_join),

@@ -2212,9 +2212,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           units: acReading - acPrev,
           perUnitRate: acRate,
           forMonth: checkoutDate.slice(0, 7),
-          // Must match performTenantCheckout exactly, or the door quote and the
-          // amount actually settled disagree.
-          openingIsMonthStart: checkoutACContext?.prevMonthReading != null,
           joinReadingsRaw: checkoutACContext?.joinReadingsRaw ?? [],
           // Same `<=` bound the server applies — the preview has to divide by the
           // exact head count the real checkout will. See lib/tenant-checkout.ts.

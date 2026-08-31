@@ -34,7 +34,7 @@ import {
 } from "@/app/actions/payments";
 import { createInvoiceLink, createInstallmentReceiptLink, previewBillLinkAction } from "@/app/actions/tenants";
 import { recordPaymentAsPartner } from "@/app/actions/partner";
-import { deriveOpeningReading, effectivePrevReading, joinedMidMonth, latestReadingBefore } from "@/lib/ac-billing";
+import { deriveOpeningReading, effectivePrevReading, latestReadingBefore } from "@/lib/ac-billing";
 import {
   recordPaymentAsManager,
   applyRoomACUnitsAsManager,

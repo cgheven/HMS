@@ -607,8 +607,6 @@ export async function applyRoomACUnitsAsManager(
       units,
       perUnitRate,
       forMonth: currentMonth,
-      // See needsBreakpoint.
-      openingIsMonthStart: prevRecord?.meter_reading != null,
       joinReadingsRaw: (joinReadingsRaw ?? []).filter((r) => eligible.some((t) => t.id === r.tenant_id)),
       // Passed through unfiltered — see applyRoomACUnitsAction for why a
       // departure at exactly this reading must reach the billing function.
@@ -714,10 +712,11 @@ export async function saveACJoinReadingAsManager(
     }
 
     const prevMonthStr = getPrevMonth(forMonth)
-    const [{ data: room }, { data: tenant }, { data: prevRecord }, { data: roommates }] = await Promise.all([
+    const [{ data: room }, { data: tenant }, { data: prevRecord }, { data: prevMonthCheckouts }, { data: roommates }] = await Promise.all([
       admin.from("hms_rooms").select("id").eq("id", roomId).eq("hostel_id", hostelId).single(),
       admin.from("hms_tenants").select("id").eq("id", tenantId).eq("hostel_id", hostelId).eq("room_id", roomId).single(),
-      admin.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      admin.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
+      admin.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr),
       admin.from("hms_tenants").select("check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", roomId).eq("is_active", true),
     ])
 
@@ -728,8 +727,13 @@ export async function saveACJoinReadingAsManager(
     // earliest known move-in reading rather than assuming the meter started at 0.
     const derivedOpening = deriveOpeningReading(roommates ?? [], forMonth)
 
-    const prevReading = prevRecord?.meter_reading != null
-      ? Math.round(Number(prevRecord.meter_reading))
+      // effectivePrevReading, exactly as Apply uses: units_at_join is an OFFSET
+      // from the month's opening, so anchoring it to a different baseline than the
+      // one that bills the month puts a tenant's breakpoint past the month end and
+      // hands their whole share to a roommate.
+    const storedPrev = effectivePrevReading(prevRecord, prevMonthCheckouts)
+    const prevReading = storedPrev != null
+      ? storedPrev
       : (openingReading != null ? Math.round(Number(openingReading)) : (derivedOpening ?? 0))
 
     if (joinReading < prevReading)
