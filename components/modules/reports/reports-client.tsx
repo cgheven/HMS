@@ -5,7 +5,7 @@ import {
   BarChart3, TrendingUp, Users, AlertTriangle, Banknote, BedDouble,
   Download, FileSpreadsheet, RefreshCw, Zap, CreditCard,
   Receipt, BookOpen, Search, ExternalLink, Loader2, ShieldCheck, CalendarClock,
-  Calculator,
+  Calculator, Percent,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -297,6 +297,7 @@ export function ReportsClient(props: Props) {
             <TabsTrigger value="reconciliation"><CreditCard className="w-3.5 h-3.5" /> Reconciliation</TabsTrigger>
             <TabsTrigger value="occupancy"><BedDouble className="w-3.5 h-3.5" /> Occupancy</TabsTrigger>
             <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> AC Analytics</TabsTrigger>
+            <TabsTrigger value="discounts"><Percent className="w-3.5 h-3.5" /> Discounts</TabsTrigger>
             <TabsTrigger value="expenses"><Receipt className="w-3.5 h-3.5" /> Expenses</TabsTrigger>
             <TabsTrigger value="unitcost"><Calculator className="w-3.5 h-3.5" /> Unit Cost <span className="ml-1 rounded px-1 py-px text-[9px] font-semibold uppercase tracking-wide bg-amber-500/15 text-amber-400">Beta</span></TabsTrigger>
             <TabsTrigger value="ledger"><BookOpen className="w-3.5 h-3.5" /> Member Ledger</TabsTrigger>
@@ -649,6 +650,11 @@ export function ReportsClient(props: Props) {
             <AcAnalyticsTab data={d} />
           </TabsContent>
 
+          {/* ── DISCOUNTS TAB ────────────────────────────────────────────── */}
+          <TabsContent value="discounts" className="space-y-6 mt-4">
+            <DiscountsTab data={d} />
+          </TabsContent>
+
           {/* ── EXPENSES TAB ─────────────────────────────────────────────── */}
           <TabsContent value="expenses" className="space-y-6 mt-4">
             <ExpenseReportTab data={d} period={currentRange.label} />
@@ -666,6 +672,126 @@ export function ReportsClient(props: Props) {
         </Tabs>
       )}
     </div>
+  );
+}
+
+// ── Discounts tab ────────────────────────────────────────────────────────────
+// Two questions that look alike and are not. The standing table is a forward
+// commitment read off the live tenant row — what next month already costs us.
+// The one-off table is history: rupees actually given away on bills inside the
+// selected period. Summing them together would be meaningless, so they are
+// never added up into a single headline.
+function DiscountsTab({ data: d }: { data: ReportData }) {
+  const dr = d.discountReport;
+
+  return (
+    <>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {[
+          { label: "On a Standing Discount", value: String(dr.standingCount), hint: "Active members", color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/20" },
+          { label: "Standing Cost / Month", value: formatCurrency(dr.standingMonthlyTotal), hint: "At current rents", color: "text-amber", bg: "bg-amber/10 border-amber/20" },
+          { label: "One-off Discounts", value: String(dr.oneOffCount), hint: `${formatCurrency(dr.oneOffTotal)} in ${d.label}`, color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
+          { label: "Given in Period", value: formatCurrency(dr.totalGivenInPeriod), hint: `Across ${dr.discountedBillCount} bill${dr.discountedBillCount !== 1 ? "s" : ""}`, color: "text-rose-400", bg: "bg-rose-500/10 border-rose-500/20" },
+        ].map(({ label, value, hint, color, bg }) => (
+          <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-5">
+            <div className={`flex items-center justify-center w-9 h-9 rounded-xl border ${bg} mb-3`}>
+              <Percent className={`w-4 h-4 ${color}`} />
+            </div>
+            <p className="text-xs text-muted-foreground">{label}</p>
+            <p className={`text-xl font-bold mt-0.5 ${color}`}>{value}</p>
+            <p className="text-[11px] text-muted-foreground mt-0.5">{hint}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-2xl border border-sidebar-border bg-card p-6">
+        <div className="flex items-baseline justify-between gap-3 flex-wrap mb-4">
+          <div>
+            <h2 className="text-sm font-semibold">Standing Discounts</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Active members billed at a reduced rent every month, until it is changed
+            </p>
+          </div>
+          {dr.standingCount > 0 && (
+            <span className="text-sm font-semibold text-amber">
+              {formatCurrency(dr.standingMonthlyTotal)} / month
+            </span>
+          )}
+        </div>
+        {dr.standing.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-muted-foreground font-medium border-b border-sidebar-border">
+                  <th className="text-left pb-2 pr-3">Member</th>
+                  <th className="text-left pb-2 pr-3">Room</th>
+                  <th className="text-right pb-2 pr-3">Full Rent</th>
+                  <th className="text-right pb-2 pr-3">Discount</th>
+                  <th className="text-right pb-2 pr-3">Off / Month</th>
+                  <th className="text-right pb-2">Billed</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-sidebar-border/50">
+                {dr.standing.map((r) => (
+                  <tr key={r.tenantId} className="hover:bg-white/[0.02]">
+                    <td className="py-2.5 pr-3 font-medium">{r.tenantName}</td>
+                    <td className="py-2.5 pr-3 text-muted-foreground">{r.roomNumber ? `Rm ${r.roomNumber}` : "—"}</td>
+                    <td className="py-2.5 pr-3 text-right text-muted-foreground tabular-nums">{formatCurrency(r.monthlyRent)}</td>
+                    <td className="py-2.5 pr-3 text-right text-purple-400 font-medium tabular-nums">{r.percent}%</td>
+                    <td className="py-2.5 pr-3 text-right text-rose-400 font-semibold tabular-nums">−{formatCurrency(r.monthlyDiscount)}</td>
+                    <td className="py-2.5 text-right font-semibold tabular-nums">{formatCurrency(Math.max(0, r.monthlyRent - r.monthlyDiscount))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground py-6 text-center">No member is on a standing discount.</p>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-sidebar-border bg-card p-6">
+        <div className="flex items-baseline justify-between gap-3 flex-wrap mb-4">
+          <div>
+            <h2 className="text-sm font-semibold">One-off Discounts</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Given on a single bill during {d.label} — separate from any standing discount on the same bill
+            </p>
+          </div>
+          {dr.oneOffCount > 0 && (
+            <span className="text-sm font-semibold text-rose-400">{formatCurrency(dr.oneOffTotal)}</span>
+          )}
+        </div>
+        {dr.oneOff.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-muted-foreground font-medium border-b border-sidebar-border">
+                  <th className="text-left pb-2 pr-3">Member</th>
+                  <th className="text-left pb-2 pr-3">Room</th>
+                  <th className="text-right pb-2 pr-3">Month</th>
+                  <th className="text-right pb-2 pr-3">Discount</th>
+                  <th className="text-right pb-2">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-sidebar-border/50">
+                {dr.oneOff.map((r) => (
+                  <tr key={r.paymentId} className="hover:bg-white/[0.02]">
+                    <td className="py-2.5 pr-3 font-medium">{r.tenantName}</td>
+                    <td className="py-2.5 pr-3 text-muted-foreground">{r.roomNumber ? `Rm ${r.roomNumber}` : "—"}</td>
+                    <td className="py-2.5 pr-3 text-right text-muted-foreground">{r.forMonth}</td>
+                    <td className="py-2.5 pr-3 text-right text-purple-400 font-medium tabular-nums">{r.percent}%</td>
+                    <td className="py-2.5 text-right text-rose-400 font-semibold tabular-nums">−{formatCurrency(r.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground py-6 text-center">No one-off discount was given in this period.</p>
+        )}
+      </div>
+    </>
   );
 }
 

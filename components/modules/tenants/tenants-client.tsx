@@ -27,6 +27,7 @@ import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDe
 import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling } from "@/lib/ac-billing";
 import { formatCnic, isValidCnic, normalizeCnic } from "@/lib/cnic";
+import { discountedRent } from "@/lib/tenant-discount";
 import { VISIT_PURPOSE_OPTIONS, VISIT_PURPOSE_LABELS, visitPurposeLabel } from "@/lib/visit-purpose";
 import { RELATIONSHIP_OPTIONS } from "@/types";
 import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, PaymentStatus, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory, VisitPurpose, MealTimes } from "@/types";
@@ -45,6 +46,7 @@ import { ReferralAdmissionBanner } from "@/components/modules/referrals/referral
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
 import QRCode from "qrcode";
+import { computeReferralDiscount, computeRentDiscount } from "@/lib/payment-calc";
 
 interface Props {
   hostelId: string | null;
@@ -251,7 +253,7 @@ const emptyForm = {
   room_id: "", bed_number: "",
   check_in: formatDateInput(new Date()),
   billing_type: "monthly" as "monthly" | "daily",
-  monthly_rent: "", daily_rate: "", check_out: "", security_deposit: "0",
+  monthly_rent: "", daily_rate: "", discount_percent: "", check_out: "", security_deposit: "0",
   registration_fee: "",
   ac_maintenance: "",
   vehicle_type: "", vehicle_number: "", vehicle_model: "",
@@ -441,6 +443,14 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
         {foodCharge > 0 && (
           <p className="text-xs text-amber flex items-center justify-end gap-0.5">
             <UtensilsCrossed className="w-2.5 h-2.5" />Food incl.
+          </p>
+        )}
+        {t.billing_type === "monthly" && (t.discount_percent ?? 0) > 0 && (
+          <p
+            className="text-xs text-emerald-400"
+            title={`Standing discount on rent — bills ${formatCurrency(discountedRent(t.monthly_rent, t.discount_percent!))}/month`}
+          >
+            {t.discount_percent}% off
           </p>
         )}
         {t.security_deposit > 0 && <p className="text-xs text-muted-foreground">Dep: {formatCurrency(t.security_deposit)}</p>}
@@ -691,7 +701,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [editing, setEditing] = useState<Tenant | null>(null);
   const [checkingOut, setCheckingOut] = useState<Tenant | null>(null);
   const [checkoutDate, setCheckoutDate] = useState(formatDateInput(new Date()));
-  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; registration_fee_charge: number; ac_maintenance_charge: number; late_fee: number } | null>(null);
+  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; registration_fee_charge: number; ac_maintenance_charge: number; late_fee: number; discount_percent: number; referral_percent: number } | null>(null);
   const [checkoutPaymentLoading, setCheckoutPaymentLoading] = useState(false);
   const [checkoutPaymentError, setCheckoutPaymentError] = useState<string | null>(null);
   const [checkoutPayAction, setCheckoutPayAction] = useState<"pay" | "waive">("pay");
@@ -852,6 +862,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     package_tier: "space_only",
     billing_type: "monthly",
     monthly_rent: 0,
+    discount_percent: null,
     daily_rate: 0,
     security_deposit: 0,
     registration_fee: 0,
@@ -1020,6 +1031,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       package_tier: tier,
       billing_type: "monthly",
       monthly_rent: matchedRoom ? getSuggestedRent(matchedRoom, tier, pkgPrices, seaterPrices, washroomPremium) : 0,
+      // Explicit, so approving a second applicant after a discounted one can
+      // never inherit their concession.
+      discount_percent: null,
       daily_rate: 0,
       security_deposit: matchedRoom
         ? getSuggestedDeposit(matchedRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
@@ -1216,6 +1230,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       billing_type: t.billing_type ?? "monthly",
       monthly_rent: t.monthly_rent.toString(),
       daily_rate: t.daily_rate?.toString() ?? "0",
+      discount_percent: t.discount_percent != null ? t.discount_percent.toString() : "",
       check_out: t.check_out ?? "",
       security_deposit: t.security_deposit?.toString() ?? "0",
       registration_fee: t.registration_fee?.toString() ?? "",
@@ -1346,6 +1361,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       toast({ title: "Invalid CNIC", description: "Format must be XXXXX-XXXXXXX-X (13 digits)", variant: "destructive" });
       return;
     }
+    if (form.billing_type === "monthly" && form.discount_percent.trim()) {
+      const pct = parseFloat(form.discount_percent);
+      // The owner path writes straight to Postgres from here, so without this the
+      // only thing standing in the way is the column's CHECK and the operator
+      // gets a constraint dump instead of a sentence.
+      if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+        toast({ title: "Invalid discount", description: "Discount must be a percentage between 0 and 100.", variant: "destructive" });
+        return;
+      }
+    }
     // Creates only — an owner editing an existing profile should not be
     // re-warned about a tenant they already accepted.
     if (!editing) {
@@ -1384,6 +1409,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       billing_type: form.billing_type,
       monthly_rent: form.billing_type === "monthly" ? parseFloat(form.monthly_rent) || 0 : 0,
       daily_rate: form.billing_type === "daily" ? parseFloat(form.daily_rate) || 0 : 0,
+      // Empty means NULL — no concession at all — not 0, so a tenant who has
+      // never been given one stays out of the "who is on a discount" reports.
+      discount_percent:
+        form.billing_type === "monthly" && form.discount_percent.trim()
+          ? parseFloat(form.discount_percent) || 0
+          : null,
       security_deposit: parseFloat(form.security_deposit) || 0,
       registration_fee: parseFloat(form.registration_fee) || 0,
       ac_maintenance: form.ac_maintenance.trim() === "" ? null : (parseFloat(form.ac_maintenance) || 0),
@@ -1786,6 +1817,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           id: payment.id,
           for_month: payment.for_month,
           status: payment.status,
+          discount_percent: payment.discount_percent,
+          referral_percent: payment.referral_percent,
           amount,
           amount_paid: payment.amount_paid,
           ac_charge: payment.ac_charge,
@@ -1855,11 +1888,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setActive((prev) => prev.filter((t) => t.id !== checkingOut.id));
     resetCheckoutState();
 
-    // Surface AC billing warning if the checkpoint record could not be stored
-    if (result.warning) {
-      toast({ title: "Warning", description: result.warning, variant: "destructive" });
-    }
-
     // Report what the server actually recorded, not what the dialog predicted — the
     // two silently disagreeing is the whole reason this flow was broken.
     const s = result.settlement;
@@ -1882,6 +1910,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       }
     } else {
       toast({ title: `${name} has been checked out`, description: settlementLines || undefined });
+    }
+
+    // AFTER the completion toast, deliberately. TOAST_LIMIT is 1 and ADD_TOAST
+    // slices, so a second toast REPLACES the first — raised before, this warning
+    // was evicted by the success message on every path that reaches one, which is
+    // every path. It is the only thing that tells an operator to hand money back,
+    // so it has to be the toast that survives.
+    if (result.warning) {
+      toast({ title: "Check the amount", description: result.warning, variant: "destructive" });
     }
 
     reload(); // refresh room occupancy counts in background
@@ -2122,8 +2159,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       checkoutPendingPayment.registration_fee_charge +
       checkoutPendingPayment.ac_maintenance_charge +
       checkoutPendingPayment.late_fee;
+    // storedBaseRent is NET — `amount` has the discounts already taken out of it —
+    // so comparing it against a GROSS pro-rated rent quoted the member more than
+    // the server settles at, and under-refunded their deposit by the same amount.
+    // Price the pro-rated rent through the same two percents the trigger pins.
     const storedBaseRent = Math.max(0, checkoutPendingPayment.amount - extras);
-    const discount = Math.max(0, storedBaseRent - proRatedRent);
+    const proRatedReferral = computeReferralDiscount(proRatedRent, checkoutPendingPayment.referral_percent);
+    const proRatedNet =
+      proRatedRent - proRatedReferral -
+      computeRentDiscount(proRatedRent, checkoutPendingPayment.discount_percent, proRatedReferral);
+    const discount = Math.max(0, storedBaseRent - proRatedNet);
     if (discount <= 0) return null;
 
     return { month, nights, totalDays, fullRent, proRatedRent, discount };
@@ -3401,6 +3446,34 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     );
                   })()}
                 </div>
+                {/* 126 of the members on production were admitted through this
+                    dialog rather than Add Member, so a concession agreed at
+                    admission has to be settable here too — otherwise the owner
+                    approves, then immediately edits. Monthly only: a nightly
+                    bill carries no rent discount. */}
+                {approveForm.billing_type === "monthly" && (
+                  <div className="space-y-1.5">
+                    <Label>Discount (%)</Label>
+                    <Input
+                      type="number" min="0" max="100" step="0.01" placeholder="0"
+                      value={approveForm.discount_percent ?? ""}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setApproveForm({ ...approveForm, discount_percent: raw.trim() === "" ? null : (parseFloat(raw) || 0) });
+                      }}
+                    />
+                    {(() => {
+                      const pct = Number(approveForm.discount_percent ?? 0);
+                      if (!(pct > 0) || pct > 100) return null;
+                      return (
+                        <p className="text-xs text-emerald-400">
+                          Effective rent: {formatCurrency(discountedRent(approveForm.monthly_rent || 0, pct))}/month
+                        </p>
+                      );
+                    })()}
+                    <p className="text-xs text-muted-foreground">Rent only — never food, AC or the deposit.</p>
+                  </div>
+                )}
                 <div className="space-y-1.5">
                   <Label>Security Deposit (PKR)</Label>
                   <Input
@@ -4249,6 +4322,25 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       </p>
                     );
                   })()}
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Discount (%)</Label>
+                  <Input
+                    type="number" min="0" max="100" step="0.01" placeholder="0"
+                    value={form.discount_percent}
+                    onChange={(e) => setForm({ ...form, discount_percent: e.target.value })}
+                  />
+                  {(() => {
+                    const pct = parseFloat(form.discount_percent);
+                    if (!(pct > 0) || pct > 100) return null;
+                    const rent = parseFloat(form.monthly_rent) || 0;
+                    return (
+                      <p className="text-xs text-emerald-400">
+                        Effective rent: {formatCurrency(discountedRent(rent, pct))}/month
+                      </p>
+                    );
+                  })()}
+                  <p className="text-xs text-muted-foreground">Rent only — never food, AC or the deposit.</p>
                 </div>
                 <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
                 {configAcMaintenance > 0 && (

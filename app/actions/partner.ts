@@ -10,11 +10,13 @@ import { logActivity } from "@/lib/audit";
 import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation";
 import { notifyOwnerPaymentRecorded } from "@/lib/payment-notifications";
 import { performTenantCheckout } from "@/lib/tenant-checkout";
+import { splitPaymentCharges, grossAmountOf, computeRentDiscount, combinedDiscountPercent } from "@/lib/payment-calc";
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { pktYearMonth } from "@/lib/pkt-time"
 import { isValidCnic, normalizeCnic } from "@/lib/cnic";
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
+import { validateDiscountPercent } from "@/lib/tenant-discount";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
 import { ensureAndSendReferralInvite } from "@/lib/whatsapp-referral-invite";
 import { detachReferralRewards } from "@/lib/referral-rewards";
@@ -57,6 +59,8 @@ export interface PartnerTenantPayload {
   billing_type: string;
   monthly_rent: number;
   daily_rate: number;
+  /** Standing discount on rent, 0..100, or null for none. Monthly billing only. */
+  discount_percent: number | null;
   security_deposit: number;
   registration_fee: number;
   vehicle_type: string | null;
@@ -92,6 +96,8 @@ function validateTenantPayload(payload: PartnerTenantPayload): string | null {
   if (payload.cnic && !isValidCnic(normalizeCnic(payload.cnic))) {
     return "Invalid CNIC format. Must be XXXXX-XXXXXXX-X.";
   }
+  const discountError = validateDiscountPercent(payload.discount_percent);
+  if (discountError) return discountError;
   return null;
 }
 
@@ -137,6 +143,9 @@ export async function addTenantAsPartner(
       billing_type: billingType,
       monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
       daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
+      // A daily tenant has no monthly rent to discount, so the column is NULL
+      // for them however the form arrived.
+      discount_percent: billingType === "monthly" ? (payload.discount_percent ?? null) : null,
       security_deposit: Number(payload.security_deposit) || 0,
       registration_fee: Number(payload.registration_fee) || 0,
       vehicle_type: payload.vehicle_type?.trim() || null,
@@ -256,6 +265,10 @@ export async function recordPaymentAsPartner(
   month: string,
   acUnitsConsumed?: number,
   notes?: string,
+  // A one-off discount on THIS bill, as a percentage of rent. Owners, managers
+  // and partners all get it — the three recording paths must never offer
+  // different fields for the same collection.
+  discountPercent?: number,
 ): Promise<{ payment?: Payment; installmentId?: string; error: string | null }> {
   try {
     const hostelId = await requirePartnerHostelId("standard");
@@ -271,12 +284,27 @@ export async function recordPaymentAsPartner(
     const currentMonth = new Date().toISOString().slice(0, 7);
     if (month !== currentMonth) return { error: "Payments can only be recorded for the current month." };
 
+    // undefined is "no manual discount", stored as NULL; an explicit 0 is an
+    // operator who deliberately recorded none. numeric(5,2) on the column.
+    const manualDiscountError = validateDiscountPercent(discountPercent ?? null);
+    if (manualDiscountError) return { error: manualDiscountError };
+    const manualDiscountPercent = discountPercent === undefined || discountPercent === null
+      ? null
+      : Math.round(discountPercent * 100) / 100;
+
     // Verify tenant belongs to the active branch and get their package tier
     const { data: tenant } = await admin
       .from("hms_tenants")
-      .select("hostel_id, package_tier")
+      .select("hostel_id, package_tier, discount_percent, billing_type")
       .eq("id", tenantId)
       .maybeSingle();
+
+    // Daily bills carry no rent discount — migration 212 enforces it in the
+    // database; refused here too so a direct call cannot set what the dialog
+    // does not offer.
+    if (manualDiscountPercent != null && tenant?.billing_type !== "monthly") {
+      return { error: "Discounts apply to monthly rent, so they cannot be given on a nightly bill." };
+    }
 
     if (!tenant || tenant.hostel_id !== hostelId) {
       return { error: "Tenant not found in your active branch." };
@@ -288,7 +316,7 @@ export async function recordPaymentAsPartner(
     // against it, mirroring the manager/owner recording flows exactly.
     const { data: existingPayment } = await admin
       .from("hms_payments")
-      .select("id, amount, amount_paid, late_fee, ac_charge, status, referral_percent")
+      .select("id, amount, amount_paid, late_fee, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, status, referral_percent, referral_discount, discount_percent, discount_amount")
       .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
@@ -329,10 +357,23 @@ export async function recordPaymentAsPartner(
       updatePayload.ac_charge = newAcCharge;
     }
 
-    // The bill's non-AC portion stays fixed here; only the AC charge can shift,
-    // if a fresh meter reading was entered above. Mirrors what the DB trigger recomputes.
-    const nonAcPortion = Number(existingPayment.amount) - Number(existingPayment.ac_charge ?? 0);
-    const fullAmountDue = nonAcPortion + newAcCharge + Number(existingPayment.late_fee ?? 0);
+    // The bill's non-AC portion stays fixed here; only the AC charge and the
+    // discount can shift. Worked in GROSS space — `amount` is stored net of both
+    // discounts, so the gross total has to be recovered before the new discount
+    // is taken, or applying one would compound on top of the one already baked
+    // into the stored figure. Mirrors recordPaymentAsManager exactly.
+    const charges = splitPaymentCharges(existingPayment);
+    const grossTotal = grossAmountOf(existingPayment) - Number(existingPayment.ac_charge ?? 0) + newAcCharge;
+    // Same freeze rule the trigger applies: a bill money has been collected
+    // against keeps the discount PERCENT it was collected with, and a manual
+    // percentage typed now is ignored. On an uncollected bill the tenant record
+    // is authoritative — it is what the trigger itself reads.
+    const wasCollected = existingPayment.status === "paid" || existingPayment.status === "partially_paid";
+    const discountPct = wasCollected
+      ? Number(existingPayment.discount_percent ?? 0)
+      : combinedDiscountPercent(tenant.discount_percent, manualDiscountPercent);
+    const rentDiscount = computeRentDiscount(charges.rent, discountPct, charges.referralDiscount);
+    const fullAmountDue = grossTotal - charges.referralDiscount - rentDiscount + Number(existingPayment.late_fee ?? 0);
     const previousAmountPaid = Number(existingPayment.amount_paid ?? 0);
     const remainingBefore = Math.max(0, fullAmountDue - previousAmountPaid);
 
@@ -346,6 +387,17 @@ export async function recordPaymentAsPartner(
     const isFullyPaid = newAmountPaid >= fullAmountDue - 0.01;
     updatePayload.status = isFullyPaid ? "paid" : "partially_paid";
     updatePayload.amount_paid = newAmountPaid;
+    // GROSS, declared as such by referral_discount: 0 — the trigger re-derives
+    // both discounts and stores amount net of them. Sending it (rather than
+    // leaving the stored net in place) is what keeps a DAILY row honest: the
+    // trigger rebuilds a daily tenant's rent by subtracting the charges from
+    // this figure, so a net one would shrink the rent by the discount on every
+    // write, and by the AC delta whenever a fresh meter reading lands here.
+    updatePayload.amount = grossTotal;
+    updatePayload.referral_discount = 0;
+    // The only discount column the app writes; discount_percent and
+    // discount_amount belong to the trigger.
+    updatePayload.manual_discount_percent = manualDiscountPercent;
 
     // Select the updated row back (same shape markPaymentPaidAction returns)
     // so the caller can drive the post-payment WhatsApp-receipt share dialog —
@@ -365,7 +417,7 @@ export async function recordPaymentAsPartner(
       // write moves amount_paid, and without this the collection would settle
       // against a total that no longer exists.
       .eq("amount_paid", previousAmountPaid)
-      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading)")
+      .select("*, tenant:hms_tenants(full_name, room_id, phone, check_in, joining_meter_reading, discount_percent, billing_type)")
       .maybeSingle();
 
     if (error) return { error: error.message };
@@ -540,6 +592,9 @@ export async function editTenantAsPartner(
       billing_type: billingType,
       monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
       daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
+      // A daily tenant has no monthly rent to discount, so the column is NULL
+      // for them however the form arrived.
+      discount_percent: billingType === "monthly" ? (payload.discount_percent ?? null) : null,
       security_deposit: Number(payload.security_deposit) || 0,
       registration_fee: Number(payload.registration_fee) || 0,
       vehicle_type: payload.vehicle_type?.trim() || null,

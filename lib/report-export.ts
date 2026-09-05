@@ -153,6 +153,63 @@ export async function exportReportPDF(data: ReportData, label: string): Promise<
     });
   }
 
+  // ---------- Discounts ----------
+  if (data.discountReport.standing.length > 0 || data.discountReport.oneOff.length > 0) {
+    y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
+    if (y > 220) { doc.addPage(); y = 16; }
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text("Rent Discounts", MARGIN, y);
+    y += 4;
+
+    if (data.discountReport.standing.length > 0) {
+      autoTable(doc, {
+        startY: y,
+        head: [["Member", "Room", "Full Rent", "Discount", "Off / Month", "Billed"]],
+        body: [
+          ...data.discountReport.standing.map((r) => [
+            r.tenantName,
+            r.roomNumber ?? "-",
+            pk(r.monthlyRent),
+            `${r.percent}%`,
+            pk(r.monthlyDiscount),
+            pk(Math.max(0, r.monthlyRent - r.monthlyDiscount)),
+          ]),
+          ["Total", "", "", "", pk(data.discountReport.standingMonthlyTotal), ""],
+        ],
+        margin: { left: MARGIN, right: MARGIN },
+        headStyles: { fillColor: [50, 50, 50] },
+        styles: { fontSize: 9 },
+      });
+      y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 6;
+    }
+
+    if (data.discountReport.oneOff.length > 0) {
+      if (y > 240) { doc.addPage(); y = 16; }
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.text("One-off Discounts", MARGIN, y);
+      y += 4;
+      autoTable(doc, {
+        startY: y,
+        head: [["Member", "Room", "Month", "Discount", "Amount"]],
+        body: [
+          ...data.discountReport.oneOff.map((r) => [
+            r.tenantName,
+            r.roomNumber ?? "-",
+            r.forMonth,
+            `${r.percent}%`,
+            pk(r.amount),
+          ]),
+          ["Total", "", "", "", pk(data.discountReport.oneOffTotal)],
+        ],
+        margin: { left: MARGIN, right: MARGIN },
+        headStyles: { fillColor: [50, 50, 50] },
+        styles: { fontSize: 9 },
+      });
+    }
+  }
+
   // ---------- Overdue ----------
   if (data.overduePayments.length > 0) {
     y = (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY + 8;
@@ -266,8 +323,44 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
   const wsAC = XLSX.utils.aoa_to_sheet(acRows);
   XLSX.utils.book_append_sheet(wb, wsAC, "AC Analytics");
 
+  // Sheet 5 — Discounts. Standing and one-off are stacked in one sheet but
+  // never summed together: one is a monthly commitment going forward, the other
+  // is money already given away inside the selected period.
+  const discountRows = [
+    ["Rent Discounts Summary"],
+    ["Members on a Standing Discount", data.discountReport.standingCount],
+    ["Standing Cost per Month (Rs.)", data.discountReport.standingMonthlyTotal],
+    ["One-off Discounts Given", data.discountReport.oneOffCount],
+    ["One-off Total (Rs.)", data.discountReport.oneOffTotal],
+    ["Total Discounted in Period (Rs.)", data.discountReport.totalGivenInPeriod],
+    ["Bills Carrying a Discount", data.discountReport.discountedBillCount],
+    [],
+    ["Standing Discounts"],
+    ["Member", "Room", "Full Rent (Rs.)", "Discount (%)", "Off per Month (Rs.)", "Billed (Rs.)"],
+    ...data.discountReport.standing.map((r) => [
+      r.tenantName,
+      r.roomNumber ?? "",
+      r.monthlyRent,
+      r.percent,
+      r.monthlyDiscount,
+      Math.max(0, r.monthlyRent - r.monthlyDiscount),
+    ]),
+    [],
+    ["One-off Discounts"],
+    ["Member", "Room", "Month", "Discount (%)", "Amount (Rs.)"],
+    ...data.discountReport.oneOff.map((r) => [
+      r.tenantName,
+      r.roomNumber ?? "",
+      r.forMonth,
+      r.percent,
+      r.amount,
+    ]),
+  ];
+  const wsDiscounts = XLSX.utils.aoa_to_sheet(discountRows);
+  XLSX.utils.book_append_sheet(wb, wsDiscounts, "Discounts");
+
   // Auto-size columns for all sheets
-  [wsOverview, wsRevenue, wsOccupancy, wsAC].forEach((ws) => {
+  [wsOverview, wsRevenue, wsOccupancy, wsAC, wsDiscounts].forEach((ws) => {
     const ref = ws["!ref"];
     if (!ref) return;
     const range = XLSX.utils.decode_range(ref);

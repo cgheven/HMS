@@ -349,6 +349,12 @@ export interface Tenant {
   custom_package_id: string | null;
   monthly_rent: number;
   daily_rate: number;
+  /** Standing discount agreed at admission, as a percentage of monthly rent
+   *  only — never food, metered AC, the deposit, the registration fee or AC
+   *  maintenance. NULL = none. Stored separately from monthly_rent so reports
+   *  can still say who is on a concession and at what rate. Monthly billing
+   *  only; a daily tenant always stores NULL. */
+  discount_percent: number | null;
   security_deposit: number;
   /**
    * The date the reservation deposit money was actually received. Prints on the
@@ -446,6 +452,21 @@ export interface Payment {
   referral_discount?: number;
   /** TRIGGER-OWNED. The percent the discount was computed from, pinned on a collected bill so it can be re-derived off a rent that later moved. */
   referral_percent?: number;
+  /**
+   * The one-off percentage an operator typed in the Pay dialog for THIS bill.
+   * The only discount column a caller may write; null = none. Ignored on a
+   * collected bill, whose discount the trigger pins to what it was collected with.
+   */
+  manual_discount_percent?: number | null;
+  /** TRIGGER-OWNED. The tenant's standing discount plus manual_discount_percent, clamped to 100. */
+  discount_percent?: number;
+  /**
+   * TRIGGER-OWNED. The rupee value of discount_percent against this bill's RENT
+   * — never food, metered AC, the deposit, the registration fee or AC
+   * maintenance. `amount` is stored NET of it, so use grossAmountOf() /
+   * splitPaymentCharges() rather than re-deriving gross by hand.
+   */
+  discount_amount?: number;
   /** auth.users id of whoever recorded the most recent installment. */
   recorded_by?: string | null;
   payment_package_tier?: PackageTier | null;
@@ -464,7 +485,10 @@ export interface Payment {
   is_reservation?: boolean;
   created_at: string;
   updated_at: string;
-  tenant?: { full_name: string; room_id: string | null; phone?: string | null; check_in?: string; joining_meter_reading?: number | null } | null;
+  /** discount_percent here is the tenant's LIVE standing concession, so the Pay
+   *  dialog quotes the percent the trigger will actually price an unfrozen row
+   *  at — the row's own copy is whatever it was last priced with. */
+  tenant?: { full_name: string; room_id: string | null; phone?: string | null; check_in?: string; joining_meter_reading?: number | null; discount_percent?: number | null; billing_type?: "monthly" | "daily" } | null;
 }
 
 export interface CheckoutPaymentSettlement {

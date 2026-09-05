@@ -7,6 +7,7 @@ import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { sendApplicationEmail } from "@/lib/email";
+import { validateDiscountPercent } from "@/lib/tenant-discount";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { checkTenantRedflagAction } from "@/app/actions/redflag";
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
@@ -281,6 +282,9 @@ export interface ConvertFormData {
   package_tier: string;
   billing_type: "monthly" | "daily";
   monthly_rent: number;
+  /** Standing rent concession agreed at admission. Null = none. Monthly only —
+   *  a nightly bill carries no rent discount (migration 212). */
+  discount_percent?: number | null;
   daily_rate: number;
   security_deposit: number;
   registration_fee?: number;
@@ -338,6 +342,12 @@ export async function convertToTenant(
   opts?: { ignoreRedflag?: boolean }
 ): Promise<ConvertToTenantResult> {
   const actor = await resolveApplicationActor("standard");
+
+  // Bounded here as on every other tenant write path, so a bad value comes back
+  // as a sentence rather than a Postgres constraint dump.
+  const discountError = validateDiscountPercent(extra.discount_percent ?? null);
+  if (discountError) return { error: discountError } as ConvertToTenantResult;
+
   const admin = createAdminClient();
 
   // Fetch application
@@ -390,6 +400,7 @@ export async function convertToTenant(
     check_in: extra.check_in,
     billing_type: extra.billing_type,
     monthly_rent: extra.billing_type === "monthly" ? extra.monthly_rent : 0,
+    discount_percent: extra.billing_type === "monthly" ? (extra.discount_percent ?? null) : null,
     daily_rate: extra.billing_type === "daily" ? extra.daily_rate : 0,
     security_deposit: extra.security_deposit,
     registration_fee: extra.registration_fee ?? 0,

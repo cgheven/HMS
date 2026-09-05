@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { calcDailyRent, countBillableNights, daysInMonth, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, round2 } from "@/lib/ac-billing";
 import { clampGrossToCollected } from "@/lib/payment-calc";
+import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
 import { voidReferralRewardsForTenant } from "@/lib/referral-rewards";
 import { mintFeedbackToken } from "@/lib/tenant-feedback";
 import { sendCheckoutMessage } from "@/lib/whatsapp-checkout";
@@ -66,6 +67,22 @@ export async function performTenantCheckout(
       throw new Error("Checkout date cannot be more than 7 days in the future");
     }
 
+    // Re-price the checkout month before Step 2 reads it, for the same reason the
+    // dialog does: editing a member writes only hms_tenants, so a rent or
+    // discount change leaves the pending row stale — while the trigger DOES
+    // re-price it on the settlement write below, which sends no `amount` key.
+    // Without this the settlement books amount_paid at the stale figure against
+    // an amount the trigger has just moved, leaving the row over- or under-paid
+    // with a 'paid' status that hides it from every outstanding list.
+    // Idempotent and pending-rows-only, so collected history is untouched.
+    // The same bound the dialog uses, from the module that owns the function it
+    // guards — this call CREATES rows for every active member with no check_in
+    // bound, so an out-of-range month either invents history or invents debts
+    // nobody has reached. Safe here regardless because of the 7-day rule above,
+    // but shared so the two cannot drift apart.
+    const syncMonth = syncableCheckoutMonth(input.checkoutDate.substring(0, 7));
+    if (syncMonth) await ensureMonthlyPaymentRows(adminDb, hostelId, syncMonth);
+
     // Step 2: Verify payment belongs to this tenant and hostel (prevents IDOR)
     let paymentAlreadySettled = false;
     let verifiedPayment: { id: string; tenant_id: string; hostel_id: string; status: string; for_month: string; amount: number | null; late_fee: number | null; amount_paid: number | null; ac_charge: number | null } | null = null;
@@ -120,7 +137,7 @@ export async function performTenantCheckout(
 
       const { data: monthRow } = await adminDb
         .from("hms_payments")
-        .select("id, status, amount, amount_paid, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, referral_percent")
+        .select("id, status, amount, amount_paid, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, referral_percent, discount_percent, discount_amount")
         .eq("tenant_id", input.tenantId)
         .eq("hostel_id", hostelId)
         .eq("for_month", rentMonth)
@@ -203,9 +220,14 @@ export async function performTenantCheckout(
         // on a collected row, so the discount scales with the pro-rated rent
         // instead of handing back a full month's discount on a four-night stay.
         const referralPercent = Number(monthRow.referral_percent ?? 0);
+        // The rent discount is pinned on a collected row exactly as the referral
+        // percent is, so it applies to the re-priced rent too. Leaving it out of
+        // the clamp let a discounted daily bill be written BELOW what had already
+        // been collected, with the "refund the difference" warning never firing.
+        const rentDiscountPercent = Number(monthRow.discount_percent ?? 0);
         const proposedTotal = newBaseRent + extras;
         const { gross: clampedTotal, clamped, satisfiable } = clampGrossToCollected(
-          newBaseRent, extras, referralPercent, alreadyPaid
+          newBaseRent, extras, referralPercent, alreadyPaid, rentDiscountPercent
         );
         if (clamped) {
           repriceWarning = satisfiable
@@ -213,8 +235,10 @@ export async function performTenantCheckout(
               `${alreadyPaid.toLocaleString()} has already been collected. The bill was held at ` +
               `the amount already paid — refund the difference manually if one is due.`
             : `The final month cannot be re-priced above the ${alreadyPaid.toLocaleString()} ` +
-              `already collected while a ${referralPercent}% referral discount applies. ` +
-              `Refund the difference manually.`;
+              `already collected while ${[
+                referralPercent > 0 ? `a ${referralPercent}% referral discount` : null,
+                rentDiscountPercent > 0 ? `a ${rentDiscountPercent}% rent discount` : null,
+              ].filter(Boolean).join(" and ")} applies. Refund the difference manually.`;
         }
 
         const repriceFields = isDaily
@@ -557,7 +581,7 @@ export async function performTenantCheckout(
 
     if (verifiedPayment && settleAction && !paymentAlreadySettled) {
       if (settleAction === "pay") {
-        const { error: payUpdateErr } = await adminDb
+        const { data: payRow, error: payUpdateErr } = await adminDb
           .from("hms_payments")
           .update({
             status: "paid" as PaymentStatus,
@@ -594,10 +618,38 @@ export async function performTenantCheckout(
             updated_at: new Date().toISOString(),
           })
           .eq("id", verifiedPayment.id)
-          .eq("hostel_id", hostelId);
+          .eq("hostel_id", hostelId)
+          .select("amount")
+          .maybeSingle();
 
         // SEC-F5: sanitize — do not propagate raw DB error strings to client
         if (payUpdateErr) throw new Error("Failed to record payment. Please try again.");
+
+        // The trigger re-prices this row on the way in and we send no `amount`
+        // key, so what it stored can differ from what the dialog quoted — the
+        // re-price above heals a PENDING row, but an overdue one is left alone
+        // by ensureMonthlyPaymentRows, and "leaving with money owed, granted a
+        // concession on the way out" is exactly this feature's flow. Say so
+        // rather than leave the operator with a settled row that silently
+        // disagrees with the cash in their hand.
+        // Like for like. `amount` never carries the late fee — the trigger's total
+        // is rent + food + AC + deposit + reg fee + AC maintenance minus the
+        // discounts, and stops — while grossDue adds it. Comparing them raw made
+        // this fire on EVERY checkout of a bill with a late fee, telling the
+        // operator to refund the fee they had just correctly collected, and
+        // teaching them to dismiss the one warning that matters.
+        const settledAmount = payRow
+          ? Number(payRow.amount ?? 0) + Number(verifiedPayment.late_fee ?? 0)
+          : grossDue;
+        if (Math.abs(settledAmount - grossDue) > 0.01) {
+          const diff = Math.abs(settledAmount - grossDue);
+          const notice = settledAmount < grossDue
+            ? `This bill re-priced to ${settledAmount.toLocaleString()} while checking out — ${grossDue.toLocaleString()} was quoted. Return ${diff.toLocaleString()} to the member.`
+            : `This bill re-priced to ${settledAmount.toLocaleString()} while checking out — ${grossDue.toLocaleString()} was quoted. ${diff.toLocaleString()} is still outstanding.`;
+          // Appended, not assigned: Step 2b may already have set a clamp notice,
+          // and an operator who needs both must see both.
+          repriceWarning = repriceWarning ? `${repriceWarning} ${notice}` : notice;
+        }
       } else if (settleAction === "waive") {
         const { error: waiveErr } = await adminDb
           .from("hms_payments")

@@ -12,7 +12,8 @@ import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
-import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge } from "@/lib/payment-calc";
+import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount, splitPaymentCharges } from "@/lib/payment-calc";
+import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
@@ -388,6 +389,9 @@ export interface TimelineEvent {
   method?: string;
   forMonth?: string;
   rentCharge?: number;
+  /** Rent discount plus referral discount, so the timeline itemisation adds up
+   *  the way the receipt for the same bill does. */
+  discountCharge?: number;
   foodCharge?: number;
   acCharge?: number;
   depositCharge?: number;
@@ -421,7 +425,7 @@ export async function getTenantTimeline(
       supabase
         .from("hms_payments")
         .select(
-          "id, for_month, amount, amount_paid, late_fee, payment_method, payment_date, status, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, payment_package_tier, created_at, is_reservation"
+          "id, for_month, amount, amount_paid, late_fee, payment_method, payment_date, status, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, discount_percent, payment_package_tier, created_at, is_reservation"
         )
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
@@ -515,11 +519,19 @@ export async function getTenantTimeline(
         // One event PER actual transaction, using each installment's own immutable
         // snapshot — a later top-up no longer collapses/erases an earlier one's
         // own date, method and amount into a single cumulative event.
-        const foodChargeVal = p.food_charge != null ? Number(p.food_charge) : 0;
-        const acChargeVal = p.ac_charge != null ? Number(p.ac_charge) : 0;
-        const depositChargeVal = p.security_deposit_charge != null ? Number(p.security_deposit_charge) : 0;
+        // splitPaymentCharges, not a hand-rolled subtraction: it returns GROSS
+        // rent and the discount separately, so a discounted month reads
+        // "Rent 22,000 · Discount 2,200" like the receipt for the same bill,
+        // instead of a bare 19,800 with nothing explaining the gap. The old
+        // expression also omitted registration_fee_charge and
+        // ac_maintenance_charge, overstating rent on any month carrying them.
+        const charges = splitPaymentCharges(p);
+        const foodChargeVal = charges.food;
+        const acChargeVal = charges.ac;
+        const depositChargeVal = charges.deposit;
         const lateFeeVal = Number(p.late_fee ?? 0);
-        const rentCharge = Number(p.amount) - foodChargeVal - acChargeVal - depositChargeVal;
+        const rentCharge = charges.rent;
+        const discountCharge = charges.discount + charges.referralDiscount;
 
         installments.forEach((inst) => {
           const methodLabel = inst.payment_method
@@ -552,6 +564,7 @@ export async function getTenantTimeline(
             // installment that actually completes the bill (mirrors the
             // fully-paid-only breakdown rule used elsewhere in the app).
             rentCharge: completesPayment ? rentCharge : undefined,
+            discountCharge: completesPayment && discountCharge > 0 ? discountCharge : undefined,
             foodCharge: completesPayment && foodChargeVal > 0 ? foodChargeVal : undefined,
             acCharge: completesPayment && acChargeVal > 0 ? acChargeVal : undefined,
             depositCharge: completesPayment && depositChargeVal > 0 ? depositChargeVal : undefined,
@@ -572,11 +585,19 @@ export async function getTenantTimeline(
         // Decompose the paid amount into its components — the receipt shows this
         // breakdown, and lumping it into one number here hides that the total
         // isn't just rent (and never includes the deposit, which is its own event).
-        const foodChargeVal = p.food_charge != null ? Number(p.food_charge) : 0;
-        const acChargeVal = p.ac_charge != null ? Number(p.ac_charge) : 0;
-        const depositChargeVal = p.security_deposit_charge != null ? Number(p.security_deposit_charge) : 0;
+        // splitPaymentCharges, not a hand-rolled subtraction: it returns GROSS
+        // rent and the discount separately, so a discounted month reads
+        // "Rent 22,000 · Discount 2,200" like the receipt for the same bill,
+        // instead of a bare 19,800 with nothing explaining the gap. The old
+        // expression also omitted registration_fee_charge and
+        // ac_maintenance_charge, overstating rent on any month carrying them.
+        const charges = splitPaymentCharges(p);
+        const foodChargeVal = charges.food;
+        const acChargeVal = charges.ac;
+        const depositChargeVal = charges.deposit;
         const lateFeeVal = Number(p.late_fee ?? 0);
-        const rentCharge = Number(p.amount) - foodChargeVal - acChargeVal - depositChargeVal;
+        const rentCharge = charges.rent;
+        const discountCharge = charges.discount + charges.referralDiscount;
         events.push({
           id: `payment-${p.id}`,
           type: "payment",
@@ -592,6 +613,7 @@ export async function getTenantTimeline(
           method: methodLabel,
           forMonth: p.for_month,
           rentCharge,
+          discountCharge: discountCharge > 0 ? discountCharge : undefined,
           foodCharge: foodChargeVal > 0 ? foodChargeVal : undefined,
           acCharge: acChargeVal > 0 ? acChargeVal : undefined,
           depositCharge: depositChargeVal > 0 ? depositChargeVal : undefined,
@@ -1042,7 +1064,7 @@ export async function backfillTenantPaymentsAction(
     // Fetch tenant — verify it belongs to this hostel
     const { data: tenant, error: tenantErr } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, room_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, deposit_collected_amount, registration_fee, package_tier, billing_type, food_breakfast, food_lunch, food_dinner, ac_maintenance")
+      .select("id, full_name, hostel_id, room_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, deposit_collected_amount, registration_fee, package_tier, billing_type, food_breakfast, food_lunch, food_dinner, ac_maintenance, discount_percent")
       .eq("id", tenantId)
       .eq("hostel_id", hostelId)
       .single();
@@ -1116,6 +1138,17 @@ export async function backfillTenantPaymentsAction(
       // collected would overstate revenue in reports and the Member Ledger with
       // nothing on screen to reveal it. An outstanding due the owner can see and
       // clear is recoverable; silently fabricated income is not.
+      // amount is written GROSS and the trigger stores it NET, so the settled
+      // figure has to be the net one — otherwise every back-dated month of a
+      // discounted member is recorded as OVERPAID by the discount. Reports sum
+      // amount_paid for collected cash and `amount` for revenue, so the two
+      // would disagree by the discount on every such admission: money on the
+      // books that was never received.
+      const monthDiscount = isDaily
+        ? 0
+        : computeRentDiscount(baseRent, Number(tenant.discount_percent ?? 0));
+      const settledAmount = monthAmount - monthDiscount;
+
       const settlement = isDaily
         ? {
             status: "pending" as const,
@@ -1126,7 +1159,7 @@ export async function backfillTenantPaymentsAction(
           }
         : {
             status: "paid" as const,
-            amount_paid: monthAmount,
+            amount_paid: settledAmount,
             payment_method: "cash" as const,
             payment_date: lastDayOfMonth(month),
             receipt_number: genReceiptNumber(tenant.full_name, month),
@@ -1448,6 +1481,7 @@ export async function recordReservationDepositAction(
 // getACCheckoutContextAction just above for the same underlying reason.
 // ---------------------------------------------------------------------------
 
+
 export async function getCheckoutPendingPaymentAction(
   tenantId: string,
   maxMonth: string,
@@ -1457,6 +1491,10 @@ export async function getCheckoutPendingPaymentAction(
     late_fee: number; ac_charge: number; ac_units_consumed: number | null;
     food_charge: number; security_deposit_charge: number;
     registration_fee_charge: number; ac_maintenance_charge: number;
+    /** Pinned on a collected row, so the checkout dialog must price the
+     *  pro-rated rent through them or it quotes a figure the server will not
+     *  settle at. */
+    discount_percent: number; referral_percent: number;
   } | null;
   error?: string;
 }> {
@@ -1472,9 +1510,21 @@ export async function getCheckoutPendingPaymentAction(
     }
     const adminDb = createAdminClient();
 
+    // Re-price the month before reading it. Editing a member writes only
+    // hms_tenants — there is no trigger on that table — so a rent or discount
+    // change made on /tenants leaves the pending row at the old price until
+    // something calls this. The checkout path never did, and the trigger DOES
+    // re-price on the settlement write, so the dialog quoted one figure and the
+    // database stored another: grant a 25% concession, click Checkout, and the
+    // member hands over 22,000 against a bill the row settles at 16,500.
+    // Idempotent, and it touches pending rows only, so collected history is
+    // untouched. Fixes the identical pre-existing hazard for a rent change.
+    const syncMonth = syncableCheckoutMonth(maxMonth);
+    if (syncMonth) await ensureMonthlyPaymentRows(adminDb, hostelId, syncMonth);
+
     const { data, error } = await adminDb
       .from("hms_payments")
-      .select("id, for_month, status, amount, amount_paid, late_fee, ac_charge, ac_units_consumed, food_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge")
+      .select("id, for_month, status, amount, amount_paid, late_fee, ac_charge, ac_units_consumed, food_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, discount_percent, referral_percent")
       .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId)
       // partially_paid included too — a genuine remaining balance (e.g. AC
@@ -1500,6 +1550,8 @@ export async function getCheckoutPendingPaymentAction(
         amount: Number(data.amount ?? 0),
         amount_paid: Number(data.amount_paid ?? 0),
         late_fee: Number(data.late_fee ?? 0),
+        discount_percent: Number(data.discount_percent ?? 0),
+        referral_percent: Number(data.referral_percent ?? 0),
         ac_charge: Number(data.ac_charge ?? 0),
         ac_units_consumed: data.ac_units_consumed != null ? Number(data.ac_units_consumed) : null,
         food_charge: Number(data.food_charge ?? 0),
