@@ -390,4 +390,4 @@ AS $function$
 
    RETURN new;
  END;
- $function$
+ $function$;
