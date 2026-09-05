@@ -292,6 +292,9 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
                             {(event.acCharge ?? 0) > 0 && (
                               <> · AC: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{formatCurrency(event.acCharge!)}</>
                             )}
+                            {(event.discountCharge ?? 0) > 0 && (
+                              <> · <span className="text-emerald-400">Discount: -{formatCurrency(event.discountCharge!)}</span></>
+                            )}
                             {(event.depositCharge ?? 0) > 0 && <> · Deposit: {formatCurrency(event.depositCharge!)}</>}
                             {(event.lateFee ?? 0) > 0 && <> · Late Fee: {formatCurrency(event.lateFee!)}</>}
                           </p>

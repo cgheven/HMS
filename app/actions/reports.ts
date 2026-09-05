@@ -425,7 +425,7 @@ export async function getReportData(
   ] = await Promise.all([
     admin
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, discount_percent, manual_discount_percent, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, hms_rooms(room_number))")
+      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, discount_percent, manual_discount_percent, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, discount_percent, hms_rooms(room_number))")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
@@ -514,7 +514,7 @@ export async function getReportData(
     payment_method: string | null;
     payment_date: string | null;
     receipt_number: string | null;
-    tenant: { full_name: string; phone: string | null; room_id: string | null; hms_rooms: { room_number: string } | { room_number: string }[] | null } | null;
+    tenant: { full_name: string; phone: string | null; room_id: string | null; discount_percent?: number | null; hms_rooms: { room_number: string } | { room_number: string }[] | null } | null;
   };
   const payments = ((paymentsRes.data ?? []) as unknown as PaymentRow[]);
   const expenses = expensesRes.data ?? [];
@@ -711,8 +711,24 @@ export async function getReportData(
         referral_discount: Number(p.referral_discount || 0),
         discount_amount: Number(p.discount_amount || 0),
       });
-      const manualPct = Number(p.manual_discount_percent || 0);
-      const standingPct = Math.max(0, Number(p.discount_percent || 0) - manualPct);
+      // The row stores the trigger's LEAST(standing + manual, 100) and the manual
+      // percent, but NOT the standing one — so subtracting manual from the total
+      // recovers standing only while the two did not clamp. Stack 60% standing
+      // with 60% one-off and the row holds 100: subtraction calls standing 40 and
+      // hands the other 60 points to the one-off column.
+      //
+      // The member's own concession is the better source, capped at what actually
+      // survived the clamp. It is exact whenever the concession has not been
+      // changed since, which is the ordinary case, and it degrades to the old
+      // subtraction when the member has no standing discount at all. Either way
+      // the two parts still sum to discount_amount — this only decides which
+      // table each rupee is reported under.
+      const totalPct = Number(p.discount_percent || 0);
+      const tenantStandingPct = Number(p.tenant?.discount_percent ?? NaN);
+      const standingPct = Number.isFinite(tenantStandingPct)
+        ? Math.min(tenantStandingPct, totalPct)
+        : Math.max(0, totalPct - Number(p.manual_discount_percent || 0));
+      const manualPct = Math.max(0, totalPct - standingPct);
       const standingPart = computeRentDiscount(charges.rent, standingPct, charges.referralDiscount);
       const t = p.tenant;
       const roomsRaw = t?.hms_rooms;

@@ -12,7 +12,7 @@ import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
-import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount } from "@/lib/payment-calc";
+import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount, splitPaymentCharges } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
@@ -389,6 +389,9 @@ export interface TimelineEvent {
   method?: string;
   forMonth?: string;
   rentCharge?: number;
+  /** Rent discount plus referral discount, so the timeline itemisation adds up
+   *  the way the receipt for the same bill does. */
+  discountCharge?: number;
   foodCharge?: number;
   acCharge?: number;
   depositCharge?: number;
@@ -422,7 +425,7 @@ export async function getTenantTimeline(
       supabase
         .from("hms_payments")
         .select(
-          "id, for_month, amount, amount_paid, late_fee, payment_method, payment_date, status, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, payment_package_tier, created_at, is_reservation"
+          "id, for_month, amount, amount_paid, late_fee, payment_method, payment_date, status, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, discount_percent, payment_package_tier, created_at, is_reservation"
         )
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
@@ -516,11 +519,19 @@ export async function getTenantTimeline(
         // One event PER actual transaction, using each installment's own immutable
         // snapshot — a later top-up no longer collapses/erases an earlier one's
         // own date, method and amount into a single cumulative event.
-        const foodChargeVal = p.food_charge != null ? Number(p.food_charge) : 0;
-        const acChargeVal = p.ac_charge != null ? Number(p.ac_charge) : 0;
-        const depositChargeVal = p.security_deposit_charge != null ? Number(p.security_deposit_charge) : 0;
+        // splitPaymentCharges, not a hand-rolled subtraction: it returns GROSS
+        // rent and the discount separately, so a discounted month reads
+        // "Rent 22,000 · Discount 2,200" like the receipt for the same bill,
+        // instead of a bare 19,800 with nothing explaining the gap. The old
+        // expression also omitted registration_fee_charge and
+        // ac_maintenance_charge, overstating rent on any month carrying them.
+        const charges = splitPaymentCharges(p);
+        const foodChargeVal = charges.food;
+        const acChargeVal = charges.ac;
+        const depositChargeVal = charges.deposit;
         const lateFeeVal = Number(p.late_fee ?? 0);
-        const rentCharge = Number(p.amount) - foodChargeVal - acChargeVal - depositChargeVal;
+        const rentCharge = charges.rent;
+        const discountCharge = charges.discount + charges.referralDiscount;
 
         installments.forEach((inst) => {
           const methodLabel = inst.payment_method
@@ -553,6 +564,7 @@ export async function getTenantTimeline(
             // installment that actually completes the bill (mirrors the
             // fully-paid-only breakdown rule used elsewhere in the app).
             rentCharge: completesPayment ? rentCharge : undefined,
+            discountCharge: completesPayment && discountCharge > 0 ? discountCharge : undefined,
             foodCharge: completesPayment && foodChargeVal > 0 ? foodChargeVal : undefined,
             acCharge: completesPayment && acChargeVal > 0 ? acChargeVal : undefined,
             depositCharge: completesPayment && depositChargeVal > 0 ? depositChargeVal : undefined,
@@ -573,11 +585,19 @@ export async function getTenantTimeline(
         // Decompose the paid amount into its components — the receipt shows this
         // breakdown, and lumping it into one number here hides that the total
         // isn't just rent (and never includes the deposit, which is its own event).
-        const foodChargeVal = p.food_charge != null ? Number(p.food_charge) : 0;
-        const acChargeVal = p.ac_charge != null ? Number(p.ac_charge) : 0;
-        const depositChargeVal = p.security_deposit_charge != null ? Number(p.security_deposit_charge) : 0;
+        // splitPaymentCharges, not a hand-rolled subtraction: it returns GROSS
+        // rent and the discount separately, so a discounted month reads
+        // "Rent 22,000 · Discount 2,200" like the receipt for the same bill,
+        // instead of a bare 19,800 with nothing explaining the gap. The old
+        // expression also omitted registration_fee_charge and
+        // ac_maintenance_charge, overstating rent on any month carrying them.
+        const charges = splitPaymentCharges(p);
+        const foodChargeVal = charges.food;
+        const acChargeVal = charges.ac;
+        const depositChargeVal = charges.deposit;
         const lateFeeVal = Number(p.late_fee ?? 0);
-        const rentCharge = Number(p.amount) - foodChargeVal - acChargeVal - depositChargeVal;
+        const rentCharge = charges.rent;
+        const discountCharge = charges.discount + charges.referralDiscount;
         events.push({
           id: `payment-${p.id}`,
           type: "payment",
@@ -593,6 +613,7 @@ export async function getTenantTimeline(
           method: methodLabel,
           forMonth: p.for_month,
           rentCharge,
+          discountCharge: discountCharge > 0 ? discountCharge : undefined,
           foodCharge: foodChargeVal > 0 ? foodChargeVal : undefined,
           acCharge: acChargeVal > 0 ? acChargeVal : undefined,
           depositCharge: depositChargeVal > 0 ? depositChargeVal : undefined,
