@@ -14,7 +14,8 @@ import { notifyOwnerPaymentRecorded, notifyOwnerPaymentUndone } from "@/lib/paym
 import { performPaymentUndo } from "@/lib/payment-undo"
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
-import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore } from "@/lib/ac-billing"
+import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore, round2 } from "@/lib/ac-billing"
+import { carriedTransferCharges } from "@/lib/ac-transfer"
 import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge, splitPaymentCharges, grossAmountOf, computeRentDiscount, combinedDiscountPercent } from "@/lib/payment-calc"
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
@@ -614,12 +615,22 @@ export async function applyRoomACUnitsAsManager(
       checkoutReadingsRaw: checkoutReadingsRaw ?? [],
     })
 
+    // See applyRoomACUnitsAction: a tenant who moved in mid-month still owes the
+    // room they left, and this write would otherwise overwrite that share away.
+    const carried = await carriedTransferCharges(
+      admin, hostelId, currentMonth, roomId, billing.map((b) => b.id)
+    )
+
     // Update each tenant's payment row for this month
     const updateResults = await Promise.all(
       billing.map(({ id, tenantUnits, charge }) =>
         admin
           .from("hms_payments")
-          .update({ ac_units_consumed: tenantUnits, ac_charge: charge, updated_at: new Date().toISOString() })
+          .update({
+            ac_units_consumed: round2(tenantUnits + (carried.get(id)?.units ?? 0)),
+            ac_charge: charge + (carried.get(id)?.charge ?? 0),
+            updated_at: new Date().toISOString(),
+          })
           .eq("tenant_id", id)
           .eq("for_month", currentMonth)
           .eq("hostel_id", hostelId)

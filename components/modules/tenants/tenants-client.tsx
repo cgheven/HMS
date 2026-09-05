@@ -6,7 +6,7 @@ import {
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, Eye,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
   FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check, UtensilsCrossed,
-  CalendarClock, CalendarX, MessageCircle, Car, Download, Printer,
+  CalendarClock, CalendarX, MessageCircle, Car, Download, Printer, Zap,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -34,7 +34,7 @@ import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplica
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction, getRoomTransferPreviewAction, transferTenantRoomAction, type RoomTransferPreview } from "@/app/actions/tenants";
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 import { addTenantAsManager, editTenantAsManager, checkoutTenantAsManager, giveTenantNoticeAsManager, cancelTenantNoticeAsManager } from "@/app/actions/managers";
 import { checkTenantRedflagAction } from "@/app/actions/redflag";
@@ -701,6 +701,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [editing, setEditing] = useState<Tenant | null>(null);
   const [checkingOut, setCheckingOut] = useState<Tenant | null>(null);
   const [checkoutDate, setCheckoutDate] = useState(formatDateInput(new Date()));
+  // Room transfer: when an EDIT changes the room and either side is metered, the
+  // meter has to be read on both sides at the moment of the move. Fetched when
+  // the room is picked so the fields can prefill and the operator sees what is
+  // being asked before they save.
+  const [transferPreview, setTransferPreview] = useState<RoomTransferPreview | null>(null);
+  const [transferFromReading, setTransferFromReading] = useState("");
+  const [transferToReading, setTransferToReading] = useState("");
+
   const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; registration_fee_charge: number; ac_maintenance_charge: number; late_fee: number; discount_percent: number; referral_percent: number } | null>(null);
   const [checkoutPaymentLoading, setCheckoutPaymentLoading] = useState(false);
   const [checkoutPaymentError, setCheckoutPaymentError] = useState<string | null>(null);
@@ -1515,6 +1523,41 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const prevRoomId = editing?.room_id;
     const newRoomId = payload.room_id;
 
+    // A move between metered rooms is a transfer, not a field edit: the meter has
+    // to be closed on the room being left and opened on the room being joined, and
+    // the member billed for what they used before they moved. Run it FIRST and
+    // stop on failure — the alternative is saving every other edited field and
+    // leaving the money side half-done with no way to tell.
+    const isMeteredTransfer = !!(editing && transferPreview && prevRoomId && newRoomId && prevRoomId !== newRoomId);
+    if (isMeteredTransfer) {
+      const parseReading = (v: string): number | null => {
+        const t = v.trim();
+        if (t === "") return null;
+        const n = parseFloat(t);
+        return Number.isFinite(n) ? n : null;
+      };
+      const res = await transferTenantRoomAction({
+        tenantId: editing!.id,
+        toRoomId: newRoomId!,
+        fromRoomReading: transferPreview!.fromMetered ? parseReading(transferFromReading) : null,
+        toRoomReading: transferPreview!.toMetered ? parseReading(transferToReading) : null,
+      });
+      if (!res.success) {
+        toast({ title: "Room transfer not saved", description: res.error, variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+      const r = res.result!;
+      if (r.warning) {
+        toast({ title: "Moved — one thing to finish", description: r.warning, variant: "destructive" });
+      } else if (r.closedMeter && r.closedCharge > 0) {
+        toast({
+          title: `Moved to room ${r.toRoomNumber}`,
+          description: `Room ${r.fromRoomNumber}: ${r.closedUnits} units (${formatCurrency(r.closedCharge)}) billed up to the move.`,
+        });
+      }
+    }
+
     let newTenantId: string | null = null;
     const { data: mutData, error } = editing
       ? await supabase.from("hms_tenants").update(payload).eq("id", editing.id).select("id").single()
@@ -1610,7 +1653,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     }
 
     if (ledgerTenantId) {
-      if (editing && prevRoomId !== newRoomId) {
+      // Skipped for a metered transfer: transferTenantRoomAction already wrote a
+      // richer room_changed event carrying the meter readings and the charge.
+      if (editing && prevRoomId !== newRoomId && !isMeteredTransfer) {
         const oldRoomLabel = prevRoomId ? rooms.find((r) => r.id === prevRoomId)?.room_number ?? "Unknown" : "None";
         const newRoomLabel = newRoomId ? rooms.find((r) => r.id === newRoomId)?.room_number ?? "Unknown" : "None";
         logTenantEvent({ tenantId: ledgerTenantId, eventType: "room_changed", fromValue: oldRoomLabel, toValue: newRoomLabel });
@@ -1634,8 +1679,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           status: newOccupied >= room.capacity ? "occupied" : "available",
         }).eq("id", newRoomId);
       }
-    } else if (editing && prevRoomId !== newRoomId) {
-      // Room changed — update both old and new
+    } else if (editing && prevRoomId !== newRoomId && !isMeteredTransfer) {
+      // Room changed — update both old and new.
+      // Skipped for a metered transfer: the server action already recounted both
+      // rooms from the tenant table, which is truth. Letting this run too would
+      // apply a second -1/+1 on top of a count that is already correct.
       if (prevRoomId) {
         const oldRoom = rooms.find((r) => r.id === prevRoomId);
         if (oldRoom) {
@@ -4025,6 +4073,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     const suggestedDeposit = tierDeposit > 0 ? String(tierDeposit) : (configSecurityDeposit > 0 ? String(configSecurityDeposit) : "");
                     const deposit = !form.security_deposit ? suggestedDeposit : form.security_deposit;
                     setForm({ ...form, room_id: v, monthly_rent: pkgSuggested || fallback || form.monthly_rent, security_deposit: deposit });
+
+                    // Only an EDIT can be a transfer — a new member has no room
+                    // to leave. Cleared first so a re-pick never shows the
+                    // previous destination's fields.
+                    setTransferPreview(null);
+                    setTransferFromReading("");
+                    setTransferToReading("");
+                    if (editing && v && editing.room_id && v !== editing.room_id) {
+                      getRoomTransferPreviewAction(editing.id, v).then((p) => {
+                        if (p.error || (!p.fromMetered && !p.toMetered)) return;
+                        setTransferPreview(p);
+                        if (p.fromLastReading != null) setTransferFromReading(String(p.fromLastReading));
+                        if (p.toLastReading != null) setTransferToReading(String(p.toLastReading));
+                      });
+                    }
                   }}>
                     <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
                     <SelectContent>
@@ -4040,6 +4103,62 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </Select>
                 </div>
                 <div className="space-y-1.5"><Label>Bed Number</Label><Input placeholder="A1" value={form.bed_number} onChange={(e) => setForm({ ...form, bed_number: e.target.value })} /></div>
+              </div>
+            )}
+
+            {/* Room transfer on a metered room. Shown only when a meter is
+                actually involved — a move between two unmetered rooms stays the
+                one-click change it has always been. Each side is asked for
+                independently: close the room being left, open the room being
+                joined, and only where there is a meter to read. */}
+            {transferPreview && (
+              <div className="rounded-xl border border-amber/25 bg-amber/[0.06] p-3 space-y-3">
+                <p className="text-xs font-medium text-amber flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 shrink-0" />
+                  {transferPreview.fromMetered && transferPreview.toMetered
+                    ? "Both rooms are metered — enter the readings at the time of the move"
+                    : transferPreview.fromMetered
+                      ? `Room ${transferPreview.fromRoomNumber} is metered — enter its reading at the time of the move`
+                      : `Room ${transferPreview.toRoomNumber} is metered — enter its reading at the time of the move`}
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {transferPreview.fromMetered && (
+                    <div className="space-y-1">
+                      <Label className="text-xs">Room {transferPreview.fromRoomNumber} meter now</Label>
+                      <Input
+                        type="number" min="0" max="999999" inputMode="numeric"
+                        value={transferFromReading}
+                        onChange={(e) => setTransferFromReading(e.target.value)}
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        {transferPreview.fromLastReading != null
+                          ? `Last recorded ${transferPreview.fromLastReading.toLocaleString()}`
+                          : "No earlier reading on file"}
+                      </p>
+                    </div>
+                  )}
+                  {transferPreview.toMetered && (
+                    <div className="space-y-1">
+                      <Label className="text-xs">Room {transferPreview.toRoomNumber} meter now</Label>
+                      <Input
+                        type="number" min="0" max="999999" inputMode="numeric"
+                        value={transferToReading}
+                        onChange={(e) => setTransferToReading(e.target.value)}
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        {transferPreview.toLastReading != null
+                          ? `Last recorded ${transferPreview.toLastReading.toLocaleString()}`
+                          : "No earlier reading on file"}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  {form.full_name || "This member"} pays room {transferPreview.fromRoomNumber ?? "—"}
+                  {transferPreview.fromMetered && transferFromReading ? ` up to ${Number(transferFromReading).toLocaleString()}` : ""}
+                  , and room {transferPreview.toRoomNumber}
+                  {transferPreview.toMetered && transferToReading ? ` from ${Number(transferToReading).toLocaleString()}` : ""} onward.
+                </p>
               </div>
             )}
 

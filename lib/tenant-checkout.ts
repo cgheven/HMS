@@ -6,6 +6,7 @@ import { calcDailyRent, countBillableNights, daysInMonth, proRateMonthlyRent } f
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, round2 } from "@/lib/ac-billing";
 import { clampGrossToCollected } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
+import { carriedTransferCharges } from "@/lib/ac-transfer";
 import { voidReferralRewardsForTenant } from "@/lib/referral-rewards";
 import { mintFeedbackToken } from "@/lib/tenant-feedback";
 import { sendCheckoutMessage } from "@/lib/whatsapp-checkout";
@@ -559,6 +560,22 @@ export async function performTenantCheckout(
     // Guarded on the row being the SAME month Step 3a computed AC for. When the
     // checkout month has no row yet, the settled row can be an earlier month —
     // subtracting that month's AC would silently drop a charge that is still owed.
+    // A tenant who moved rooms earlier this month already owes their share of the
+    // room they left, and it is sitting on this same payment row. Everything
+    // below overwrites ac_charge with the CURRENT room's share, so that earlier
+    // share is added back — it is money already earned in a room this checkout
+    // knows nothing about. Empty for the overwhelming majority who never moved.
+    const carriedAtCheckout = await carriedTransferCharges(
+      adminDb, hostelId, input.checkoutDate.substring(0, 7), tenant.room_id, [input.tenantId]
+    );
+    const carriedCharge = carriedAtCheckout.get(input.tenantId)?.charge ?? 0;
+    const carriedUnits = carriedAtCheckout.get(input.tenantId)?.units ?? 0;
+
+    // What the bill should show: this room's share plus anything carried. The
+    // readings row below keeps the room's own share alone — it records what this
+    // room metered, not what the tenant owes in total.
+    const acChargeForBill = acCheckoutRecord ? acCheckoutRecord.ac_charge + carriedCharge : 0;
+
     const supersededAcCharge =
       acCheckoutRecord && verifiedPayment?.for_month === input.checkoutDate.substring(0, 7)
         ? Number(verifiedPayment.ac_charge ?? 0)
@@ -568,7 +585,7 @@ export async function performTenantCheckout(
       ? Number(verifiedPayment.amount ?? 0)
         - supersededAcCharge
         + Number(verifiedPayment.late_fee ?? 0)
-        + (acCheckoutRecord?.ac_charge ?? 0)
+        + acChargeForBill
       : 0;
     // Net of anything already paid — a month that was settled before an AC charge
     // showed up at checkout only owes the AC charge, not the rent all over again.
@@ -605,14 +622,14 @@ export async function performTenantCheckout(
             amount_paid: Math.max(grossDue, Number(verifiedPayment.amount_paid ?? 0)),
             deposit_applied: depositApplied,
             ...(acCheckoutRecord ? {
-              ac_units_consumed: round2(acCheckoutRecord.tenant_unit_share),
-              ac_charge: acCheckoutRecord.ac_charge,
+              ac_units_consumed: round2(acCheckoutRecord.tenant_unit_share + carriedUnits),
+              ac_charge: acChargeForBill,
               // Add AC charge to base amount so PDF formula (monthlyRent = amount - ac_charge) stays correct
               // Same supersede rule as grossDue above — swap the old AC charge
               // out for the new one rather than stacking them. Monthly rows get
               // rebuilt by the migration-133 trigger anyway, but DAILY rows keep
               // the app-supplied amount, so stacking here persisted permanently.
-              amount: Number(verifiedPayment.amount ?? 0) - supersededAcCharge + acCheckoutRecord.ac_charge,
+              amount: Number(verifiedPayment.amount ?? 0) - supersededAcCharge + acChargeForBill,
             } : {}),
             ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
             updated_at: new Date().toISOString(),

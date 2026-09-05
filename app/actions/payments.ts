@@ -35,7 +35,8 @@ import {
 import { validateDiscountPercent } from "@/lib/tenant-discount";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 import { logActivity } from "@/lib/audit";
-import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore } from "@/lib/ac-billing";
+import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore, round2 } from "@/lib/ac-billing";
+import { carriedTransferCharges } from "@/lib/ac-transfer";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -1266,14 +1267,21 @@ export async function applyRoomACUnitsAction(
       await adminDb.from("hms_payments").insert(newRows);
     }
 
+    // A tenant who moved into this room part-way through the month still owes
+    // their share of the room they left. This write overwrites ac_charge, so
+    // without adding it back that earlier share would be silently erased.
+    const carried = await carriedTransferCharges(
+      adminDb, hostelId, forMonth, roomId, tenantBilling.map(t => t.id)
+    );
+
     // ── Update each eligible tenant's payment (admin client for writes) ──
     const updateResults = await Promise.all(
       tenantBilling.map(({ id, tenantUnits, charge }) =>
         adminDb
           .from("hms_payments")
           .update({
-            ac_units_consumed: tenantUnits,
-            ac_charge: charge,
+            ac_units_consumed: round2(tenantUnits + (carried.get(id)?.units ?? 0)),
+            ac_charge: charge + (carried.get(id)?.charge ?? 0),
             updated_at: new Date().toISOString(),
           })
           .eq("tenant_id", id)

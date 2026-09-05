@@ -14,6 +14,7 @@ import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
 import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount, splitPaymentCharges } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
+import { performRoomTransfer, isMeteredRoom, type RoomTransferResult } from "@/lib/room-transfer";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
@@ -692,12 +693,16 @@ export async function getTenantTimeline(
     // forward only; changes made before this table existed are not recoverable)
     for (const e of tenantEvents) {
       if (e.event_type === "room_changed") {
+        // A transfer off a metered room carries the meter evidence and the charge
+        // it produced. Without it the ledger shows a room change on one line and
+        // an unexplained AC charge on another, and nobody can connect them.
         events.push({
           id: `event-${e.id}`,
           type: "room_changed",
           date: e.created_at,
-          label: "Room changed",
-          sub: `${e.from_value ?? "None"} → ${e.to_value ?? "None"}`,
+          label: e.amount != null && Number(e.amount) > 0 ? "Room transferred" : "Room changed",
+          sub: [`${e.from_value ?? "None"} → ${e.to_value ?? "None"}`, e.notes].filter(Boolean).join(" · "),
+          ...(e.amount != null && Number(e.amount) > 0 ? { acCharge: Number(e.amount) } : {}),
         });
       } else if (e.event_type === "plan_changed") {
         const fromLabel = TIMELINE_TIER_LABELS[e.from_value ?? ""] ?? e.from_value ?? "Unknown";
@@ -2049,6 +2054,156 @@ export async function deleteTenantAction(
 
     revalidatePath("/tenants");
     return { success: true };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Room transfer — moving a member between rooms, settling the meter on both.
+//
+// Editing room_id directly is still what happens for a branch that meters
+// nothing; this path exists because a metered room needs the move recorded on
+// its meter, in both directions. See lib/room-transfer.ts for why.
+// ---------------------------------------------------------------------------
+
+export interface RoomTransferPreview {
+  fromRoomNumber: string | null;
+  toRoomNumber: string | null;
+  fromMetered: boolean;
+  toMetered: boolean;
+  /** Last reading known for each room, to prefill the two fields. */
+  fromLastReading: number | null;
+  toLastReading: number | null;
+  error?: string;
+}
+
+/** What the Edit Member dialog needs to decide whether to ask for meter
+ *  readings, and what to prefill them with. Read-only. */
+export async function getRoomTransferPreviewAction(
+  tenantId: string,
+  toRoomId: string
+): Promise<RoomTransferPreview> {
+  const empty: RoomTransferPreview = {
+    fromRoomNumber: null, toRoomNumber: null, fromMetered: false, toMetered: false,
+    fromLastReading: null, toLastReading: null,
+  };
+  try {
+    const mgr = await getManagerContext();
+    let hostelId: string;
+    if (mgr?.activeHostel) {
+      if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      hostelId = mgr.activeHostel.id;
+    } else {
+      await requireOwnerOrPartnerTier("full");
+      hostelId = await resolveHostelId();
+    }
+    const adminDb = createAdminClient();
+
+    const { data: tenant } = await adminDb
+      .from("hms_tenants").select("id, room_id").eq("id", tenantId).eq("hostel_id", hostelId).maybeSingle();
+    if (!tenant) return { ...empty, error: "Member not found." };
+
+    const [{ data: toRoom }, { data: fromRoom }, { data: hostel }] = await Promise.all([
+      adminDb.from("hms_rooms").select("id, room_number, has_ac").eq("id", toRoomId).eq("hostel_id", hostelId).maybeSingle(),
+      tenant.room_id
+        ? adminDb.from("hms_rooms").select("id, room_number, has_ac").eq("id", tenant.room_id).eq("hostel_id", hostelId).maybeSingle()
+        : Promise.resolve({ data: null }),
+      adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).single(),
+    ]);
+    if (!toRoom) return { ...empty, error: "Destination room not found." };
+
+    const meterAll = !!hostel?.meter_all_rooms;
+    const fromMetered = isMeteredRoom(fromRoom, meterAll);
+    const toMetered = isMeteredRoom(toRoom, meterAll);
+
+    // Prefill: the most recent reading this room has, whatever month it came
+    // from — the operator is standing at a meter that only ever goes up, so the
+    // last number on file is the closest starting guess.
+    const lastReadingFor = async (roomId: string | null | undefined): Promise<number | null> => {
+      if (!roomId) return null;
+      const [{ data: rd }, { data: co }] = await Promise.all([
+        adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId)
+          .eq("hostel_id", hostelId).not("meter_reading", "is", null)
+          .order("for_month", { ascending: false }).limit(1).maybeSingle(),
+        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId)
+          .eq("hostel_id", hostelId).order("for_month", { ascending: false })
+          .order("meter_reading", { ascending: false }).limit(1).maybeSingle(),
+      ]);
+      const a = rd?.meter_reading != null ? Math.round(Number(rd.meter_reading)) : null;
+      const b = co?.meter_reading != null ? Math.round(Number(co.meter_reading)) : null;
+      if (a == null) return b;
+      if (b == null) return a;
+      return Math.max(a, b);
+    };
+
+    const [fromLastReading, toLastReading] = await Promise.all([
+      fromMetered ? lastReadingFor(fromRoom?.id) : Promise.resolve(null),
+      toMetered ? lastReadingFor(toRoom.id) : Promise.resolve(null),
+    ]);
+
+    return {
+      fromRoomNumber: fromRoom?.room_number ?? null,
+      toRoomNumber: toRoom.room_number,
+      fromMetered,
+      toMetered,
+      fromLastReading,
+      toLastReading,
+    };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { ...empty, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function transferTenantRoomAction(input: {
+  tenantId: string;
+  toRoomId: string;
+  fromRoomReading?: number | null;
+  toRoomReading?: number | null;
+}): Promise<{ success: boolean; result?: RoomTransferResult; error?: string }> {
+  try {
+    // Same gate the room field already sits behind in the edit dialog: a manager
+    // with edit_members, or an owner / full-tier partner.
+    const mgr = await getManagerContext();
+    let hostelId: string;
+    if (mgr?.activeHostel) {
+      if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      hostelId = mgr.activeHostel.id;
+    } else {
+      await requireOwnerOrPartnerTier("full");
+      hostelId = await resolveHostelId();
+    }
+    const adminDb = createAdminClient();
+
+    const result = await performRoomTransfer(adminDb, hostelId, input);
+
+    // Ledger entry, with the meter evidence in the note — the Member Ledger is
+    // where an owner goes to answer "why was I charged for two rooms in March?".
+    const noteParts: string[] = [];
+    if (result.closedMeter) {
+      noteParts.push(
+        `Room ${result.fromRoomNumber} meter closed at transfer — ${result.closedUnits} units billed` +
+        (result.closedCharge > 0 ? ` (Rs ${result.closedCharge.toLocaleString()})` : "")
+      );
+    }
+    if (result.openedMeter) noteParts.push(`Room ${result.toRoomNumber} billing starts from the reading taken at the move`);
+    if (result.warning) noteParts.push(result.warning);
+
+    await adminDb.from("hms_tenant_events").insert({
+      hostel_id: hostelId,
+      tenant_id: input.tenantId,
+      event_type: "room_changed",
+      from_value: result.fromRoomNumber,
+      to_value: result.toRoomNumber,
+      amount: result.closedCharge > 0 ? result.closedCharge : null,
+      notes: noteParts.length > 0 ? noteParts.join(" | ") : null,
+    });
+
+    revalidatePath("/tenants");
+    revalidatePath("/payments");
+    return { success: true, result };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
