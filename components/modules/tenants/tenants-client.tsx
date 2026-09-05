@@ -34,7 +34,7 @@ import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplica
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction, getRoomTransferPreviewAction, transferTenantRoomAction, type RoomTransferPreview } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction, getRoomTransferPreviewAction, transferTenantRoomAction, type RoomTransferPreview, type RoomTransferResult } from "@/app/actions/tenants";
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 import { addTenantAsManager, editTenantAsManager, checkoutTenantAsManager, giveTenantNoticeAsManager, cancelTenantNoticeAsManager } from "@/app/actions/managers";
 import { checkTenantRedflagAction } from "@/app/actions/redflag";
@@ -706,10 +706,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   // the room is picked so the fields can prefill and the operator sees what is
   // being asked before they save.
   const [transferPreview, setTransferPreview] = useState<RoomTransferPreview | null>(null);
+  // Whether the "is this move metered?" question is still unanswered. Save is
+  // blocked while it is, because a null preview is indistinguishable from
+  // "nothing is metered here" and would silently perform a bare room change.
+  const [transferChecking, setTransferChecking] = useState(false);
+  // Guards against an out-of-order response when the room is picked twice
+  // quickly — only the latest request may write state.
+  const transferReqRef = useRef(0);
   const [transferFromReading, setTransferFromReading] = useState("");
   const [transferToReading, setTransferToReading] = useState("");
 
-  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; registration_fee_charge: number; ac_maintenance_charge: number; late_fee: number; discount_percent: number; referral_percent: number } | null>(null);
+  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; registration_fee_charge: number; ac_maintenance_charge: number; late_fee: number; discount_percent: number; referral_percent: number; carried_ac_charge?: number } | null>(null);
   const [checkoutPaymentLoading, setCheckoutPaymentLoading] = useState(false);
   const [checkoutPaymentError, setCheckoutPaymentError] = useState<string | null>(null);
   const [checkoutPayAction, setCheckoutPayAction] = useState<"pay" | "waive">("pay");
@@ -1470,8 +1477,62 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       setJoiningPhotoFile(null);
     };
 
+    // ── Room transfer, BEFORE the tier branches ─────────────────────────
+    // handleSave returns early for managers and for partners, so anything below
+    // those branches never runs for them. The meter panel has no role gate and
+    // the preview action serves managers explicitly, so leaving the transfer
+    // further down meant a manager typed both readings, saw "Tenant updated",
+    // and nothing was recorded — the exact silent misbilling this feature
+    // exists to remove. transferTenantRoomAction authorises all three tiers
+    // itself, so it runs here for everyone, and each tier's own room write is
+    // suppressed below because the move has already happened.
+    const prevRoomIdEarly = editing?.room_id;
+    const isMeteredTransfer = !!(editing && transferPreview && prevRoomIdEarly && payload.room_id && prevRoomIdEarly !== payload.room_id);
+    let transferOutcome: RoomTransferResult | null = null;
+    if (isMeteredTransfer) {
+      const parseReading = (v: string): number | null => {
+        const t = v.trim();
+        if (t === "") return null;
+        const n = parseFloat(t);
+        return Number.isFinite(n) ? n : null;
+      };
+      const res = await transferTenantRoomAction({
+        tenantId: editing!.id,
+        toRoomId: payload.room_id!,
+        fromRoomReading: transferPreview!.fromMetered ? parseReading(transferFromReading) : null,
+        toRoomReading: transferPreview!.toMetered ? parseReading(transferToReading) : null,
+      });
+      if (!res.success) {
+        toast({ title: "Room transfer not saved", description: res.error, variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+      transferOutcome = res.result!;
+    }
+
+    // Raised AFTER each tier's completion toast, deliberately. TOAST_LIMIT is 1
+    // and ADD_TOAST slices, so a later toast REPLACES an earlier one — raising
+    // this first meant "Tenant updated" evicted it every time, including the
+    // warning branch, which is the only place the operator is told to go finish
+    // the job under Mid-Month Joiners.
+    const announceTransfer = () => {
+      if (!transferOutcome) return;
+      if (transferOutcome.warning) {
+        toast({ title: "Moved — one thing left to finish", description: transferOutcome.warning, variant: "destructive" });
+      } else if (transferOutcome.closedMeter && transferOutcome.closedCharge > 0) {
+        toast({
+          title: `Moved to room ${transferOutcome.toRoomNumber}`,
+          description: `Room ${transferOutcome.fromRoomNumber}: ${transferOutcome.closedUnits} units (${formatCurrency(transferOutcome.closedCharge)}) billed up to the move.`,
+        });
+      }
+    };
+
     if (isManager) {
       // The action re-resolves the branch server-side, so hostel_id/is_active are dropped.
+      // room_id is left in the payload even after a transfer: the action reads
+      // the tenant's CURRENT room to decide whether the room changed, and the
+      // transfer has already moved them, so it correctly sees no change and
+      // neither logs a second room_changed event nor re-adjusts occupancy.
       const { hostel_id: _mHostelId, is_active: _mIsActive, ...managerPayload } = payload;
       const result = editing
         ? await editTenantAsManager(editing.id, managerPayload)
@@ -1487,6 +1548,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           : form.is_waiting ? "Added to waiting list" : "Tenant added",
       });
       await uploadStagedJoiningPhoto(editing ? editing.id : (result as { tenantId?: string }).tenantId);
+      announceTransfer();
       setDialogOpen(false);
       // Managers have no RLS grants, so the client-SDK reload() below would come back
       // empty and blank the list. A full reload re-runs the server page, which reads
@@ -1499,6 +1561,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       // The partner write action does everything the rest of this function
       // does client-side for an owner — insert/update, room occupancy,
       // ledger events, historical backfill — server-side in one call.
+      // Same as the manager branch: the transfer already moved them, so this
+      // action sees no room change and does not duplicate its side effects.
       const { hostel_id: _hostelId, is_active: _isActive, ...partnerPayload } = payload;
       const result = editing
         ? await editTenantAsPartner(editing.id, partnerPayload)
@@ -1514,49 +1578,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           : form.is_waiting ? "Added to waiting list" : "Tenant added",
       });
       await uploadStagedJoiningPhoto(editing ? editing.id : (result as { tenantId?: string }).tenantId);
+      announceTransfer();
       setDialogOpen(false);
       await reload();
       setSaving(false);
       return;
     }
 
-    const prevRoomId = editing?.room_id;
+    const prevRoomId = prevRoomIdEarly;
     const newRoomId = payload.room_id;
-
-    // A move between metered rooms is a transfer, not a field edit: the meter has
-    // to be closed on the room being left and opened on the room being joined, and
-    // the member billed for what they used before they moved. Run it FIRST and
-    // stop on failure — the alternative is saving every other edited field and
-    // leaving the money side half-done with no way to tell.
-    const isMeteredTransfer = !!(editing && transferPreview && prevRoomId && newRoomId && prevRoomId !== newRoomId);
-    if (isMeteredTransfer) {
-      const parseReading = (v: string): number | null => {
-        const t = v.trim();
-        if (t === "") return null;
-        const n = parseFloat(t);
-        return Number.isFinite(n) ? n : null;
-      };
-      const res = await transferTenantRoomAction({
-        tenantId: editing!.id,
-        toRoomId: newRoomId!,
-        fromRoomReading: transferPreview!.fromMetered ? parseReading(transferFromReading) : null,
-        toRoomReading: transferPreview!.toMetered ? parseReading(transferToReading) : null,
-      });
-      if (!res.success) {
-        toast({ title: "Room transfer not saved", description: res.error, variant: "destructive" });
-        setSaving(false);
-        return;
-      }
-      const r = res.result!;
-      if (r.warning) {
-        toast({ title: "Moved — one thing to finish", description: r.warning, variant: "destructive" });
-      } else if (r.closedMeter && r.closedCharge > 0) {
-        toast({
-          title: `Moved to room ${r.toRoomNumber}`,
-          description: `Room ${r.fromRoomNumber}: ${r.closedUnits} units (${formatCurrency(r.closedCharge)}) billed up to the move.`,
-        });
-      }
-    }
 
     let newTenantId: string | null = null;
     const { data: mutData, error } = editing
@@ -1734,6 +1764,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           ? "Added to waiting list"
           : "Tenant added",
     });
+    announceTransfer();
     setDialogOpen(false);
     await reload();
     setSaving(false);
@@ -1867,6 +1898,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           status: payment.status,
           discount_percent: payment.discount_percent,
           referral_percent: payment.referral_percent,
+          carried_ac_charge: payment.carried_ac_charge,
           amount,
           amount_paid: payment.amount_paid,
           ac_charge: payment.ac_charge,
@@ -2246,7 +2278,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // fresh AC belongs to a different month than this row's charge and the two
     // must not be swapped. Mirrors supersededAcCharge in lib/tenant-checkout.ts.
     const rowIsDepartureMonth = checkoutPendingPayment?.for_month === checkoutDate.slice(0, 7);
-    const supersededAc = rowIsDepartureMonth ? existingAcCharge : 0;
+    // Only the CURRENT room's part is superseded by the fresh estimate. After a
+    // transfer this column also holds the share of a room the member has already
+    // moved out of, which the server deliberately keeps (acChargeForBill in
+    // lib/tenant-checkout.ts adds it back). Superseding all of it quoted the
+    // door figure that much too low while the server settled the full amount.
+    const carriedAc = checkoutPendingPayment?.carried_ac_charge ?? 0;
+    const supersededAc = rowIsDepartureMonth ? Math.max(0, existingAcCharge - carriedAc) : 0;
     const rawPending = Math.max(0, (checkoutPendingPayment?.amount ?? 0) - supersededAc - alreadyPaid);
     const proRateDiscount = proRateActive ? (checkoutProRateInfo?.discount ?? 0) : 0;
     const basePending = Math.max(0, rawPending - proRateDiscount);
@@ -4081,12 +4119,27 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     setTransferFromReading("");
                     setTransferToReading("");
                     if (editing && v && editing.room_id && v !== editing.room_id) {
-                      getRoomTransferPreviewAction(editing.id, v).then((p) => {
-                        if (p.error || (!p.fromMetered && !p.toMetered)) return;
-                        setTransferPreview(p);
-                        if (p.fromLastReading != null) setTransferFromReading(String(p.fromLastReading));
-                        if (p.toLastReading != null) setTransferToReading(String(p.toLastReading));
-                      });
+                      const req = ++transferReqRef.current;
+                      setTransferChecking(true);
+                      getRoomTransferPreviewAction(editing.id, v)
+                        .then((p) => {
+                          if (req !== transferReqRef.current) return; // a later pick won
+                          if (p.error) {
+                            // Swallowing this used to leave the operator with no
+                            // panel and no warning — indistinguishable from an
+                            // unmetered move, which is how a metered one slipped
+                            // through as a bare room change.
+                            toast({ title: "Could not check the meters", description: p.error, variant: "destructive" });
+                            return;
+                          }
+                          if (!p.fromMetered && !p.toMetered) return; // genuinely nothing to meter
+                          setTransferPreview(p);
+                          if (p.fromLastReading != null) setTransferFromReading(String(p.fromLastReading));
+                          if (p.toLastReading != null) setTransferToReading(String(p.toLastReading));
+                        })
+                        .finally(() => {
+                          if (req === transferReqRef.current) setTransferChecking(false);
+                        });
                     }
                   }}>
                     <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
@@ -4671,8 +4724,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </span>
                 )}
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={saving || redflagChecking || !form.full_name || (!editing && (!form.father_name.trim() || !form.emergency_contact.trim() || !form.emergency_phone.trim())) || (!form.is_waiting && !form.check_in)}>
-                  {redflagChecking
+                <Button onClick={handleSave} disabled={saving || redflagChecking || transferChecking || !form.full_name || (!editing && (!form.father_name.trim() || !form.emergency_contact.trim() || !form.emergency_phone.trim())) || (!form.is_waiting && !form.check_in)}>
+                  {transferChecking
+                    ? "Checking meters…"
+                    : redflagChecking
                     ? "Checking…"
                     : saving
                     ? "Saving…"

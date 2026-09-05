@@ -15,6 +15,8 @@ import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
 import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount, splitPaymentCharges } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
 import { performRoomTransfer, isMeteredRoom, type RoomTransferResult } from "@/lib/room-transfer";
+export type { RoomTransferResult };
+import { carriedTransferCharges } from "@/lib/ac-transfer";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
@@ -1500,6 +1502,10 @@ export async function getCheckoutPendingPaymentAction(
      *  pro-rated rent through them or it quotes a figure the server will not
      *  settle at. */
     discount_percent: number; referral_percent: number;
+    /** AC already billed on this row for rooms the member MOVED OUT OF this
+     *  month. Not part of the current room's charge, so the checkout estimate
+     *  must not supersede it — see checkoutMath. */
+    carried_ac_charge: number;
   } | null;
   error?: string;
 }> {
@@ -1557,6 +1563,13 @@ export async function getCheckoutPendingPaymentAction(
         late_fee: Number(data.late_fee ?? 0),
         discount_percent: Number(data.discount_percent ?? 0),
         referral_percent: Number(data.referral_percent ?? 0),
+        carried_ac_charge: (
+          await carriedTransferCharges(
+            adminDb, hostelId, data.for_month as string,
+            (await adminDb.from("hms_tenants").select("room_id").eq("id", tenantId).maybeSingle()).data?.room_id ?? null,
+            [tenantId]
+          )
+        ).get(tenantId)?.charge ?? 0,
         ac_charge: Number(data.ac_charge ?? 0),
         ac_units_consumed: data.ac_units_consumed != null ? Number(data.ac_units_consumed) : null,
         food_charge: Number(data.food_charge ?? 0),

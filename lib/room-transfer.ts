@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, round2 } from "@/lib/ac-billing";
 import { carriedTransferCharges } from "@/lib/ac-transfer";
 import { pktTodayDateString } from "@/lib/pkt-time";
+import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
 
 export interface RoomTransferInput {
   tenantId: string;
@@ -135,6 +136,29 @@ export async function performRoomTransfer(
   let closedCharge = 0;
   let warning: string | undefined;
 
+  // These writes happen before the move itself, and there is no transaction
+  // across them. A failure after either one — most reachably the pricing
+  // trigger rejecting the payment update — would leave the member still in the
+  // old room while that room carries a departure row for them. The room's
+  // month-end Apply would then count them BOTH as present and as departed,
+  // reserving units for a departure that never happened. That is exactly the
+  // state alreadyLeft refuses to create on purpose, so it must not be created
+  // by accident either: anything written is undone before the error is rethrown.
+  const writtenClosing: string[] = [];
+  const writtenJoin: string[] = [];
+  const undoPartialWrites = async () => {
+    for (const rid of writtenClosing) {
+      await adminDb.from("hms_room_ac_checkout_readings").delete()
+        .eq("hostel_id", hostelId).eq("room_id", rid)
+        .eq("tenant_id", input.tenantId).eq("for_month", forMonth);
+    }
+    for (const rid of writtenJoin) {
+      await adminDb.from("hms_room_ac_join_readings").delete()
+        .eq("hostel_id", hostelId).eq("room_id", rid)
+        .eq("tenant_id", input.tenantId).eq("for_month", forMonth);
+    }
+  };
+
   // ── The room being LEFT: close the meter on this tenant ──────────────
   if (fromMetered && fromRoom) {
     if (input.fromRoomReading == null || !Number.isFinite(Number(input.fromRoomReading))) {
@@ -223,6 +247,7 @@ export async function performRoomTransfer(
       { onConflict: "room_id,for_month,tenant_id" }
     );
     if (brErr) throw new Error(`Could not record the closing meter reading: ${brErr.message}`);
+    writtenClosing.push(fromRoom.id);
   }
 
   // ── The room being JOINED: open the meter for this tenant ────────────
@@ -272,53 +297,90 @@ export async function performRoomTransfer(
         },
         { onConflict: "room_id,for_month,tenant_id" }
       );
-      if (jErr) throw new Error(`Could not record the opening meter reading: ${jErr.message}`);
+      if (jErr) {
+        await undoPartialWrites();
+        throw new Error(`Could not record the opening meter reading: ${jErr.message}`);
+      }
+      writtenJoin.push(toRoom.id);
     }
   }
 
-  // ── Charge the room they left, on this month's bill ──────────────────
-  // Only this path will ever bill it: the moment room_id changes below, that
-  // room's month-end Apply can no longer see this tenant.
-  if (closedCharge > 0 || closedUnits > 0) {
-    const { data: payRow } = await adminDb
-      .from("hms_payments")
-      .select("id, ac_charge, ac_units_consumed, status")
-      .eq("tenant_id", input.tenantId)
-      .eq("hostel_id", hostelId)
-      .eq("for_month", forMonth)
-      .maybeSingle();
+  try {
+    // ── Charge the room they left, on this month's bill ──────────────────
+    // Only this path will ever bill it: the moment room_id changes below, that
+    // room's month-end Apply can no longer see this tenant.
+    if (closedCharge > 0 || closedUnits > 0) {
+      let payRow = await readPayRow(adminDb, hostelId, forMonth, input.tenantId);
 
-    if (payRow) {
-      // Whatever this row already carries for THIS month splits into two parts:
-      // what earlier moves left behind (which stands), and what the room being
-      // left had already applied (which this closing reading supersedes — same
-      // window, later reading). Recomputing rather than adding keeps a repeated
-      // or corrected transfer from stacking charges.
-      const carried = await carriedTransferCharges(adminDb, hostelId, forMonth, fromRoom?.id ?? null, [input.tenantId]);
-      const priorCarriedCharge = carried.get(input.tenantId)?.charge ?? 0;
-      const priorCarriedUnits = carried.get(input.tenantId)?.units ?? 0;
+      // No row for this month yet — early in the month, or a member admitted days
+      // ago before anything created one. Relying on a later Apply to pick the
+      // charge up only works if the DESTINATION is metered and someone presses
+      // Apply for it; move to a non-metered room and the charge is simply lost.
+      // Create the row the same way both Apply paths self-heal a missing one.
+      if (!payRow) {
+        await ensureMonthlyPaymentRows(adminDb, hostelId, forMonth);
+        payRow = await readPayRow(adminDb, hostelId, forMonth, input.tenantId);
+      }
 
-      const { error: payErr } = await adminDb
-        .from("hms_payments")
-        .update({
-          ac_charge: priorCarriedCharge + closedCharge,
-          ac_units_consumed: round2(priorCarriedUnits + closedUnits),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", payRow.id);
-      if (payErr) throw new Error(`Could not bill the member for the room they left: ${payErr.message}`);
+      if (payRow) {
+        // Whatever this row already carries for THIS month splits into two parts:
+        // what earlier moves left behind (which stands), and what the room being
+        // left had already applied (which this closing reading supersedes — same
+        // window, later reading). Recomputing rather than adding keeps a repeated
+        // or corrected transfer from stacking charges.
+        const carried = await carriedTransferCharges(adminDb, hostelId, forMonth, fromRoom?.id ?? null, [input.tenantId]);
+        const priorCarriedCharge = carried.get(input.tenantId)?.charge ?? 0;
+        const priorCarriedUnits = carried.get(input.tenantId)?.units ?? 0;
+        const nextAcCharge = priorCarriedCharge + closedCharge;
+
+        const { error: payErr } = await adminDb
+          .from("hms_payments")
+          .update({
+            ac_charge: nextAcCharge,
+            ac_units_consumed: round2(priorCarriedUnits + closedUnits),
+            // Sent explicitly, exactly as checkout does. A MONTHLY row ignores it
+            // (the trigger rebuilds from monthly_rent), but a DAILY row keeps the
+            // app-supplied amount and derives rent by SUBTRACTING the charges from
+            // it — so leaving it out makes the trigger read the new AC charge as
+            // eating the rent, and it raises "payment amount is less than the sum
+            // of add-on charges" the moment the charge exceeds a few nights' rent.
+            amount: Math.max(0, Number(payRow.amount ?? 0) - Number(payRow.ac_charge ?? 0) + nextAcCharge),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", payRow.id);
+        if (payErr) throw new Error(`Could not bill the member for the room they left: ${payErr.message}`);
+
+        // A bill already settled before the move is now short by this charge. Left
+        // as 'paid' the balance is invisible: the Payments page shows it collected,
+        // "Collect Rest" never appears, and Total Due stops equalling Collected +
+        // Pending. Both Apply paths demote for exactly this reason. Demote only,
+        // never promote — closing a partially paid bill is the owner's call.
+        const after = await readPayRow(adminDb, hostelId, forMonth, input.tenantId);
+        if (
+          after && after.status === "paid" && after.amount_paid != null &&
+          Number(after.amount) + Number(after.late_fee ?? 0) - Number(after.amount_paid) > 0.01
+        ) {
+          await adminDb
+            .from("hms_payments")
+            .update({ status: "partially_paid", updated_at: new Date().toISOString() })
+            .eq("id", after.id);
+        }
+      }
     }
-    // No row for this month yet is fine: the monthly sync creates one, and the
-    // new room's Apply adds this charge back through carriedTransferCharges.
-  }
 
-  // ── The move itself ──────────────────────────────────────────────────
-  const { error: moveErr } = await adminDb
-    .from("hms_tenants")
-    .update({ room_id: input.toRoomId })
-    .eq("id", input.tenantId)
-    .eq("hostel_id", hostelId);
-  if (moveErr) throw new Error("Could not move the member to the new room.");
+    // ── The move itself ──────────────────────────────────────────────────
+    const { error: moveErr } = await adminDb
+      .from("hms_tenants")
+      .update({ room_id: input.toRoomId })
+      .eq("id", input.tenantId)
+      .eq("hostel_id", hostelId);
+    if (moveErr) throw new Error("Could not move the member to the new room.");
+
+  } catch (e) {
+    // The member has not moved, so nothing may be left claiming they did.
+    await undoPartialWrites();
+    throw e;
+  }
 
   // Occupancy counts on both rooms, recounted from truth rather than adjusted.
   for (const rid of [fromRoom?.id, toRoom.id].filter(Boolean) as string[]) {
@@ -348,6 +410,23 @@ export async function performRoomTransfer(
     openedMeter: toMetered && !warning,
     warning,
   };
+}
+
+async function readPayRow(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adminDb: SupabaseClient<any, any, any>,
+  hostelId: string,
+  forMonth: string,
+  tenantId: string
+) {
+  const { data } = await adminDb
+    .from("hms_payments")
+    .select("id, ac_charge, ac_units_consumed, status, amount, late_fee, amount_paid")
+    .eq("tenant_id", tenantId)
+    .eq("hostel_id", hostelId)
+    .eq("for_month", forMonth)
+    .maybeSingle();
+  return data;
 }
 
 function prevMonthOf(m: string): string {
