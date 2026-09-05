@@ -862,6 +862,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     package_tier: "space_only",
     billing_type: "monthly",
     monthly_rent: 0,
+    discount_percent: null,
     daily_rate: 0,
     security_deposit: 0,
     registration_fee: 0,
@@ -1030,6 +1031,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       package_tier: tier,
       billing_type: "monthly",
       monthly_rent: matchedRoom ? getSuggestedRent(matchedRoom, tier, pkgPrices, seaterPrices, washroomPremium) : 0,
+      // Explicit, so approving a second applicant after a discounted one can
+      // never inherit their concession.
+      discount_percent: null,
       daily_rate: 0,
       security_deposit: matchedRoom
         ? getSuggestedDeposit(matchedRoom, tier, pkgPrices, seaterPrices, configSecurityDeposit)
@@ -3438,6 +3442,34 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     );
                   })()}
                 </div>
+                {/* 126 of the members on production were admitted through this
+                    dialog rather than Add Member, so a concession agreed at
+                    admission has to be settable here too — otherwise the owner
+                    approves, then immediately edits. Monthly only: a nightly
+                    bill carries no rent discount. */}
+                {approveForm.billing_type === "monthly" && (
+                  <div className="space-y-1.5">
+                    <Label>Discount (%)</Label>
+                    <Input
+                      type="number" min="0" max="100" step="0.01" placeholder="0"
+                      value={approveForm.discount_percent ?? ""}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setApproveForm({ ...approveForm, discount_percent: raw.trim() === "" ? null : (parseFloat(raw) || 0) });
+                      }}
+                    />
+                    {(() => {
+                      const pct = Number(approveForm.discount_percent ?? 0);
+                      if (!(pct > 0) || pct > 100) return null;
+                      return (
+                        <p className="text-xs text-emerald-400">
+                          Effective rent: {formatCurrency(discountedRent(approveForm.monthly_rent || 0, pct))}/month
+                        </p>
+                      );
+                    })()}
+                    <p className="text-xs text-muted-foreground">Rent only — never food, AC or the deposit.</p>
+                  </div>
+                )}
                 <div className="space-y-1.5">
                   <Label>Security Deposit (PKR)</Label>
                   <Input
