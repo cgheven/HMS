@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { calcDailyRent, countBillableNights, daysInMonth, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, round2 } from "@/lib/ac-billing";
 import { clampGrossToCollected } from "@/lib/payment-calc";
+import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
 import { voidReferralRewardsForTenant } from "@/lib/referral-rewards";
 import { mintFeedbackToken } from "@/lib/tenant-feedback";
 import { sendCheckoutMessage } from "@/lib/whatsapp-checkout";
@@ -65,6 +66,16 @@ export async function performTenantCheckout(
     if (checkoutDateObj > maxFuture) {
       throw new Error("Checkout date cannot be more than 7 days in the future");
     }
+
+    // Re-price the checkout month before Step 2 reads it, for the same reason the
+    // dialog does: editing a member writes only hms_tenants, so a rent or
+    // discount change leaves the pending row stale — while the trigger DOES
+    // re-price it on the settlement write below, which sends no `amount` key.
+    // Without this the settlement books amount_paid at the stale figure against
+    // an amount the trigger has just moved, leaving the row over- or under-paid
+    // with a 'paid' status that hides it from every outstanding list.
+    // Idempotent and pending-rows-only, so collected history is untouched.
+    await ensureMonthlyPaymentRows(adminDb, hostelId, input.checkoutDate.substring(0, 7));
 
     // Step 2: Verify payment belongs to this tenant and hostel (prevents IDOR)
     let paymentAlreadySettled = false;
@@ -564,7 +575,7 @@ export async function performTenantCheckout(
 
     if (verifiedPayment && settleAction && !paymentAlreadySettled) {
       if (settleAction === "pay") {
-        const { error: payUpdateErr } = await adminDb
+        const { data: payRow, error: payUpdateErr } = await adminDb
           .from("hms_payments")
           .update({
             status: "paid" as PaymentStatus,
@@ -601,10 +612,27 @@ export async function performTenantCheckout(
             updated_at: new Date().toISOString(),
           })
           .eq("id", verifiedPayment.id)
-          .eq("hostel_id", hostelId);
+          .eq("hostel_id", hostelId)
+          .select("amount")
+          .maybeSingle();
 
         // SEC-F5: sanitize — do not propagate raw DB error strings to client
         if (payUpdateErr) throw new Error("Failed to record payment. Please try again.");
+
+        // The trigger re-prices this row on the way in and we send no `amount`
+        // key, so what it stored can differ from what the dialog quoted — the
+        // re-price above heals a PENDING row, but an overdue one is left alone
+        // by ensureMonthlyPaymentRows, and "leaving with money owed, granted a
+        // concession on the way out" is exactly this feature's flow. Say so
+        // rather than leave the operator with a settled row that silently
+        // disagrees with the cash in their hand.
+        const settledAmount = Number(payRow?.amount ?? grossDue);
+        if (Math.abs(settledAmount - grossDue) > 0.01) {
+          const diff = Math.abs(settledAmount - grossDue);
+          repriceWarning = settledAmount < grossDue
+            ? `This bill re-priced to ${settledAmount.toLocaleString()} while checking out — ${grossDue.toLocaleString()} was quoted. Return ${diff.toLocaleString()} to the member.`
+            : `This bill re-priced to ${settledAmount.toLocaleString()} while checking out — ${grossDue.toLocaleString()} was quoted. ${diff.toLocaleString()} is still outstanding.`;
+        }
       } else if (settleAction === "waive") {
         const { error: waiveErr } = await adminDb
           .from("hms_payments")

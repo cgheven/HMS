@@ -13,6 +13,7 @@ import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
 import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount } from "@/lib/payment-calc";
+import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
@@ -1486,6 +1487,17 @@ export async function getCheckoutPendingPaymentAction(
       hostelId = await resolveHostelId();
     }
     const adminDb = createAdminClient();
+
+    // Re-price the month before reading it. Editing a member writes only
+    // hms_tenants — there is no trigger on that table — so a rent or discount
+    // change made on /tenants leaves the pending row at the old price until
+    // something calls this. The checkout path never did, and the trigger DOES
+    // re-price on the settlement write, so the dialog quoted one figure and the
+    // database stored another: grant a 25% concession, click Checkout, and the
+    // member hands over 22,000 against a bill the row settles at 16,500.
+    // Idempotent, and it touches pending rows only, so collected history is
+    // untouched. Fixes the identical pre-existing hazard for a rent change.
+    await ensureMonthlyPaymentRows(adminDb, hostelId, maxMonth);
 
     const { data, error } = await adminDb
       .from("hms_payments")
