@@ -6,6 +6,7 @@ import { calcDailyRent, countBillableNights, daysInMonth, proRateMonthlyRent } f
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, round2 } from "@/lib/ac-billing";
 import { clampGrossToCollected } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
+import { pktYearMonth } from "@/lib/pkt-time";
 import { voidReferralRewardsForTenant } from "@/lib/referral-rewards";
 import { mintFeedbackToken } from "@/lib/tenant-feedback";
 import { sendCheckoutMessage } from "@/lib/whatsapp-checkout";
@@ -75,7 +76,15 @@ export async function performTenantCheckout(
     // an amount the trigger has just moved, leaving the row over- or under-paid
     // with a 'paid' status that hides it from every outstanding list.
     // Idempotent and pending-rows-only, so collected history is untouched.
-    await ensureMonthlyPaymentRows(adminDb, hostelId, input.checkoutDate.substring(0, 7));
+    // Current month or later only — see syncableCheckoutMonth in app/actions/tenants.ts
+    // for why: this call CREATES rows for every active member of the branch with
+    // no check_in bound, so syncing a past month invents bills for people who had
+    // not joined yet and re-prices a historical month at today's rates.
+    const checkoutMonthKey = input.checkoutDate.substring(0, 7);
+    const { year: pktY, month: pktM } = pktYearMonth();
+    if (checkoutMonthKey >= `${pktY}-${String(pktM).padStart(2, "0")}`) {
+      await ensureMonthlyPaymentRows(adminDb, hostelId, checkoutMonthKey);
+    }
 
     // Step 2: Verify payment belongs to this tenant and hostel (prevents IDOR)
     let paymentAlreadySettled = false;
@@ -626,12 +635,23 @@ export async function performTenantCheckout(
         // concession on the way out" is exactly this feature's flow. Say so
         // rather than leave the operator with a settled row that silently
         // disagrees with the cash in their hand.
-        const settledAmount = Number(payRow?.amount ?? grossDue);
+        // Like for like. `amount` never carries the late fee — the trigger's total
+        // is rent + food + AC + deposit + reg fee + AC maintenance minus the
+        // discounts, and stops — while grossDue adds it. Comparing them raw made
+        // this fire on EVERY checkout of a bill with a late fee, telling the
+        // operator to refund the fee they had just correctly collected, and
+        // teaching them to dismiss the one warning that matters.
+        const settledAmount = payRow
+          ? Number(payRow.amount ?? 0) + Number(verifiedPayment.late_fee ?? 0)
+          : grossDue;
         if (Math.abs(settledAmount - grossDue) > 0.01) {
           const diff = Math.abs(settledAmount - grossDue);
-          repriceWarning = settledAmount < grossDue
+          const notice = settledAmount < grossDue
             ? `This bill re-priced to ${settledAmount.toLocaleString()} while checking out — ${grossDue.toLocaleString()} was quoted. Return ${diff.toLocaleString()} to the member.`
             : `This bill re-priced to ${settledAmount.toLocaleString()} while checking out — ${grossDue.toLocaleString()} was quoted. ${diff.toLocaleString()} is still outstanding.`;
+          // Appended, not assigned: Step 2b may already have set a clamp notice,
+          // and an operator who needs both must see both.
+          repriceWarning = repriceWarning ? `${repriceWarning} ${notice}` : notice;
         }
       } else if (settleAction === "waive") {
         const { error: waiveErr } = await adminDb

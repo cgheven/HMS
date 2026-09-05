@@ -1460,6 +1460,28 @@ export async function recordReservationDepositAction(
 // getACCheckoutContextAction just above for the same underlying reason.
 // ---------------------------------------------------------------------------
 
+/**
+ * The month the checkout path may safely re-price.
+ *
+ * ensureMonthlyPaymentRows CREATES rows for every active member of the branch,
+ * with no check_in bound, so syncing a PAST month invents bills for people who
+ * had not joined yet — and the checkout dialog re-runs on every keystroke in the
+ * date field, so a back-dated departure would fire it silently from an unrelated
+ * screen. Only the current month or later is worth healing: a departure
+ * back-dated further needs the departing member's own row read, not the whole
+ * branch re-priced.
+ *
+ * Returns null when the month is in the past or malformed (a scrubbed year in a
+ * date input produces things like "0202-08"), and the caller then simply skips
+ * the sync.
+ */
+function syncableCheckoutMonth(month: string): string | null {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return null;
+  const { year, month: m } = pktYearMonth();
+  const current = `${year}-${String(m).padStart(2, "0")}`;
+  return month >= current ? month : null;
+}
+
 export async function getCheckoutPendingPaymentAction(
   tenantId: string,
   maxMonth: string,
@@ -1497,7 +1519,8 @@ export async function getCheckoutPendingPaymentAction(
     // member hands over 22,000 against a bill the row settles at 16,500.
     // Idempotent, and it touches pending rows only, so collected history is
     // untouched. Fixes the identical pre-existing hazard for a rent change.
-    await ensureMonthlyPaymentRows(adminDb, hostelId, maxMonth);
+    const syncMonth = syncableCheckoutMonth(maxMonth);
+    if (syncMonth) await ensureMonthlyPaymentRows(adminDb, hostelId, syncMonth);
 
     const { data, error } = await adminDb
       .from("hms_payments")
