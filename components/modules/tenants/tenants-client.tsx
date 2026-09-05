@@ -1888,11 +1888,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setActive((prev) => prev.filter((t) => t.id !== checkingOut.id));
     resetCheckoutState();
 
-    // Surface AC billing warning if the checkpoint record could not be stored
-    if (result.warning) {
-      toast({ title: "Warning", description: result.warning, variant: "destructive" });
-    }
-
     // Report what the server actually recorded, not what the dialog predicted — the
     // two silently disagreeing is the whole reason this flow was broken.
     const s = result.settlement;
@@ -1915,6 +1910,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       }
     } else {
       toast({ title: `${name} has been checked out`, description: settlementLines || undefined });
+    }
+
+    // AFTER the completion toast, deliberately. TOAST_LIMIT is 1 and ADD_TOAST
+    // slices, so a second toast REPLACES the first — raised before, this warning
+    // was evicted by the success message on every path that reaches one, which is
+    // every path. It is the only thing that tells an operator to hand money back,
+    // so it has to be the toast that survives.
+    if (result.warning) {
+      toast({ title: "Check the amount", description: result.warning, variant: "destructive" });
     }
 
     reload(); // refresh room occupancy counts in background

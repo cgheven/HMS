@@ -5,8 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { calcDailyRent, countBillableNights, daysInMonth, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, round2 } from "@/lib/ac-billing";
 import { clampGrossToCollected } from "@/lib/payment-calc";
-import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
-import { pktYearMonth } from "@/lib/pkt-time";
+import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
 import { voidReferralRewardsForTenant } from "@/lib/referral-rewards";
 import { mintFeedbackToken } from "@/lib/tenant-feedback";
 import { sendCheckoutMessage } from "@/lib/whatsapp-checkout";
@@ -76,15 +75,13 @@ export async function performTenantCheckout(
     // an amount the trigger has just moved, leaving the row over- or under-paid
     // with a 'paid' status that hides it from every outstanding list.
     // Idempotent and pending-rows-only, so collected history is untouched.
-    // Current month or later only — see syncableCheckoutMonth in app/actions/tenants.ts
-    // for why: this call CREATES rows for every active member of the branch with
-    // no check_in bound, so syncing a past month invents bills for people who had
-    // not joined yet and re-prices a historical month at today's rates.
-    const checkoutMonthKey = input.checkoutDate.substring(0, 7);
-    const { year: pktY, month: pktM } = pktYearMonth();
-    if (checkoutMonthKey >= `${pktY}-${String(pktM).padStart(2, "0")}`) {
-      await ensureMonthlyPaymentRows(adminDb, hostelId, checkoutMonthKey);
-    }
+    // The same bound the dialog uses, from the module that owns the function it
+    // guards — this call CREATES rows for every active member with no check_in
+    // bound, so an out-of-range month either invents history or invents debts
+    // nobody has reached. Safe here regardless because of the 7-day rule above,
+    // but shared so the two cannot drift apart.
+    const syncMonth = syncableCheckoutMonth(input.checkoutDate.substring(0, 7));
+    if (syncMonth) await ensureMonthlyPaymentRows(adminDb, hostelId, syncMonth);
 
     // Step 2: Verify payment belongs to this tenant and hostel (prevents IDOR)
     let paymentAlreadySettled = false;

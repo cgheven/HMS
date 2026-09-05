@@ -1,4 +1,5 @@
 import "server-only";
+import { pktYearMonth } from "@/lib/pkt-time";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   VALID_TIERS, calcBaseRentServer, dailySnapshot, computeDepositCharge,
@@ -64,6 +65,41 @@ export function expectedChargesFor(
     registrationFeeCharge: computeRegistrationFeeCharge(t, month),
     acMaintenanceCharge: computeAcMaintenanceCharge(roomHasAc, acMaintenanceRate, t.ac_maintenance),
   };
+}
+
+/**
+ * The month the checkout path may safely re-price.
+ *
+ * ensureMonthlyPaymentRows CREATES rows for every active member of the branch,
+ * with no check_in bound, so syncing a PAST month invents bills for people who
+ * had not joined yet — and the checkout dialog re-runs on every keystroke in the
+ * date field, so a back-dated departure would fire it silently from an unrelated
+ * screen. Only the current month or later is worth healing: a departure
+ * back-dated further needs the departing member's own row read, not the whole
+ * branch re-priced.
+ *
+ * Bounded in BOTH directions. Below, because a past month invents history; above,
+ * because this action re-runs on every change of the date input — arrow the year
+ * segment up once, or type 2036 for 2026, and an unbounded sync would create a
+ * pending rent row for every member of the branch in a month nobody has reached.
+ * Nothing cleans those up, and the Member Ledger has no month bound, so they
+ * would show as real debts. The upper limit mirrors performTenantCheckout's own
+ * "no more than 7 days ahead" rule, which is the furthest a real departure can
+ * land.
+ *
+ * Returns null when the month is out of range or malformed (a scrubbed year in a
+ * date input produces things like "0202-08"), and the caller then simply skips
+ * the sync.
+ */
+export function syncableCheckoutMonth(month: string): string | null {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return null;
+  const { year, month: m } = pktYearMonth();
+  const current = `${year}-${String(m).padStart(2, "0")}`;
+  const ahead = new Date();
+  ahead.setDate(ahead.getDate() + 7);
+  const { year: aY, month: aM } = pktYearMonth(ahead);
+  const latest = `${aY}-${String(aM).padStart(2, "0")}`;
+  return month >= current && month <= latest ? month : null;
 }
 
 export async function ensureMonthlyPaymentRows(
