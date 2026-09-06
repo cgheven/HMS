@@ -472,26 +472,6 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }
   }, [acReadings]);
 
-  // Pre-populate join reading inputs — reconstruct absolute meter reading from relative + prev month
-  useEffect(() => {
-    // units_at_join is an offset from the month's own opening reading, so only
-    // rows for the month currently on screen can be reconstructed — prevMonthACReadings
-    // holds that one month's baseline and no other.
-    const forThisMonth = acJoinReadings.filter(r => r.for_month === selectedMonth);
-    if (forThisMonth.length === 0) return;
-    setJoinUnits(prev => {
-      const next = { ...prev };
-      forThisMonth.forEach(r => {
-        const k = `${r.tenant_id}_${r.for_month}`;
-        if (!(k in next)) {
-          const prevReading = prevMonthACReadings.find(pr => pr.room_id === r.room_id)?.meter_reading ?? 0;
-          next[k] = String(Math.round(Number(prevReading) + r.units_at_join));
-        }
-      });
-      return next;
-    });
-  }, [acJoinReadings, prevMonthACReadings, selectedMonth]);
-
   // All payment mutations go through Server Actions — not the browser Supabase client
   // Returns the freshly-synced rows so callers can read back the row they just
   // mutated (the manager write action doesn't echo it). Owners ignored the
@@ -1144,6 +1124,38 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     // blank box that invites someone to type 0.
     return value != null ? { value, carried: true } : { value: derived, carried: false };
   }, [acReadings, allAcReadings, tenants, selectedMonth]);
+
+  // Pre-populate join reading inputs — units_at_join is an OFFSET from the month's
+  // opening, so it has to be turned back into the absolute meter reading the
+  // operator actually typed.
+  //
+  // Declared here, below openingBaselineFor, because it needs it: the previous
+  // month's stored reading was the only baseline used, falling back to ZERO when
+  // there wasn't one. A room being metered for the first time — which is every
+  // room on a branch that has just started, and any room a member transfers into
+  // before it has ever been read — showed the raw offset as though it were a
+  // meter reading: someone who moved in at 9,300 was displayed as 300.
+  //
+  // Same resolution the card itself uses, so the box and the room header can no
+  // longer disagree: the previous month's reading if there is one, otherwise the
+  // derived opening. When neither exists the field is left alone and falls back
+  // to the tenant's own move-in reading, which is at least a number they typed.
+  useEffect(() => {
+    const forThisMonth = acJoinReadings.filter(r => r.for_month === selectedMonth);
+    if (forThisMonth.length === 0) return;
+    setJoinUnits(prev => {
+      const next = { ...prev };
+      forThisMonth.forEach(r => {
+        const k = `${r.tenant_id}_${r.for_month}`;
+        if (k in next) return;
+        const stored = prevMonthACReadings.find(pr => pr.room_id === r.room_id)?.meter_reading;
+        const opening = stored != null ? Math.round(Number(stored)) : openingBaselineFor(r.room_id).value;
+        if (opening == null) return;
+        next[k] = String(Math.round(opening + Number(r.units_at_join)));
+      });
+      return next;
+    });
+  }, [acJoinReadings, prevMonthACReadings, selectedMonth, openingBaselineFor]);
 
   async function applyACUnits(roomId: string) {
     if (!canRecordPayment) return;

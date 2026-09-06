@@ -1550,6 +1550,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         return;
       }
       transferOutcome = res.result!;
+      // The move owns joining_meter_reading from here on — it has just set it to
+      // the DESTINATION's meter. Every tier's save below sends the whole form,
+      // and the form still holds the value from the room they came from (the
+      // field is hidden during a move, not cleared), so leaving it in wrote the
+      // old room's meter straight back over it. The transfer's own suites never
+      // caught this: they call the action directly and never run the save that
+      // follows it.
+      delete (payload as { joining_meter_reading?: number | null }).joining_meter_reading;
     }
 
     // Raised AFTER each tier's completion toast, deliberately. TOAST_LIMIT is 1
