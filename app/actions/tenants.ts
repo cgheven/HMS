@@ -448,7 +448,13 @@ export async function getTenantTimeline(
         .select("meter_reading")
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
+        // Real departures only. A room transfer writes a row in the SAME shape,
+        // and a member who moved and left on the same day gives two rows with the
+        // same checkout_date — the sort was a coin flip and the ledger printed the
+        // meter of the room they had left weeks earlier as their departure reading.
+        .is("transferred_to_room_id", null)
         .order("checkout_date", { ascending: false })
+        .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle(),
       supabase
@@ -850,7 +856,11 @@ export async function getTenantTimeline(
       const dayA = new Date(a.date).toISOString().slice(0, 10);
       const dayB = new Date(b.date).toISOString().slice(0, 10);
       if (dayB !== dayA) return dayB < dayA ? -1 : 1;
-      return SAME_DAY_PRIORITY[a.type] - SAME_DAY_PRIORITY[b.type];
+      // Newest first WITHIN the day too. Days run newest-first, but this tie-break
+      // ran the other way, so a single day read bottom-up inside a list that reads
+      // top-down: a move, its payment and the checkout all landing on one day were
+      // printed in the exact reverse of the order the reader had just been taught.
+      return SAME_DAY_PRIORITY[b.type] - SAME_DAY_PRIORITY[a.type];
     });
 
     const feedback = (feedbackRes.data as TenantFeedback | null) ?? null;
@@ -2229,12 +2239,19 @@ export async function transferTenantRoomAction(input: {
     // where an owner goes to answer "why was I charged for two rooms in March?".
     const noteParts: string[] = [];
     if (result.closedMeter) {
+      // The readings, not just the outcome. This note is the whole answer to "why
+      // was I charged for two rooms in March?", and without the numbers the owner
+      // cannot check it against the meter or the AC Billing tab.
       noteParts.push(
-        `Room ${result.fromRoomNumber} meter closed at transfer — ${result.closedUnits} units billed` +
-        (result.closedCharge > 0 ? ` (Rs ${result.closedCharge.toLocaleString()})` : "")
+        `Room ${result.fromRoomNumber} meter closed at ${Math.round(Number(input.fromRoomReading))}` +
+        ` — ${result.closedUnits} units` +
+        (result.closedCharge > 0 ? ` (Rs ${result.closedCharge.toLocaleString()})` : "") +
+        ` charged up to the move`
       );
     }
-    if (result.openedMeter) noteParts.push(`Room ${result.toRoomNumber} billing starts from the reading taken at the move`);
+    if (result.openedMeter) {
+      noteParts.push(`Room ${result.toRoomNumber} billing starts at ${Math.round(Number(input.toRoomReading))}`);
+    }
     if (result.warning) noteParts.push(result.warning);
 
     await adminDb.from("hms_tenant_events").insert({
@@ -2244,7 +2261,7 @@ export async function transferTenantRoomAction(input: {
       from_value: result.fromRoomNumber,
       to_value: result.toRoomNumber,
       amount: result.closedCharge > 0 ? result.closedCharge : null,
-      notes: noteParts.length > 0 ? noteParts.join(" | ") : null,
+      notes: noteParts.length > 0 ? noteParts.join(" · ") : null,
     });
 
     revalidatePath("/tenants");
