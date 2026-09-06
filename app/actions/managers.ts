@@ -16,7 +16,7 @@ import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tena
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore, round2 } from "@/lib/ac-billing"
 import { carriedTransferCharges } from "@/lib/ac-transfer"
-import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge, splitPaymentCharges, grossAmountOf, computeRentDiscount, combinedDiscountPercent } from "@/lib/payment-calc"
+import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, splitPaymentCharges, grossAmountOf, computeRentDiscount, combinedDiscountPercent } from "@/lib/payment-calc"
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
 import { pktYearMonth } from "@/lib/pkt-time"
@@ -356,7 +356,8 @@ export async function applyRoomACUnitsAsManager(
 
     // Verify room, get config, fetch previous month reading, active tenants, join readings, and checkout readings in parallel
     const [{ data: room }, { data: config }, { data: prevRecord }, { data: prevMonthCheckouts }, { data: existingReading },
-      { data: priorReadings }, { data: allTenants, error: allTenantsErr }, { data: joinReadingsRaw }, { data: checkoutReadingsRaw }] = await Promise.all([
+      { data: priorReadings }, { data: allTenants, error: allTenantsErr }, { data: joinReadingsRaw }, { data: checkoutReadingsRaw },
+      { data: branch }] = await Promise.all([
       admin.from("hms_rooms").select("id, has_ac").eq("id", roomId).eq("hostel_id", hostelId).single(),
       admin.from("hms_package_configs").select("ac_per_unit_rate, food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate").eq("hostel_id", hostelId).maybeSingle(),
       admin.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
@@ -389,6 +390,8 @@ export async function applyRoomACUnitsAsManager(
         .eq("for_month", currentMonth)
         .eq("hostel_id", hostelId)
         .order("meter_reading", { ascending: true }),
+      // The BILLING rule, as distinct from the room's physical fact — see below.
+      admin.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).maybeSingle(),
     ])
 
     // A failed tenant query returns null, which falls through to "No active
@@ -397,23 +400,34 @@ export async function applyRoomACUnitsAsManager(
     if (allTenantsErr) return { error: `Could not read this room's tenants: ${allTenantsErr.message}` }
 
     if (!room) return { error: "Room not found." }
-    // NOTE: the owner path (applyRoomACUnitsAction) also accepts a non-AC room on
-    // a branch with meter_all_rooms, and this one does not. That divergence
-    // pre-dates this feature and is deliberately left alone here — widening it
-    // pulled in the whole AC-maintenance question (does a metered non-AC room owe
-    // maintenance, and whose answer is right, this path's or the generator's?),
-    // which is a product decision, not a side effect of letting empty rooms be
-    // metered. Logged for its own change.
-    if (!room.has_ac) return { error: "This room does not have AC." }
+    // has_ac is the PHYSICAL fact; meter_all_rooms is the BILLING rule. Same test
+    // the owner path uses, so the two tiers can no longer disagree about which
+    // rooms are billable.
+    //
+    // This used to refuse every non-AC room, which on a branch that meters all of
+    // them — Continental's three, where almost nothing is flagged has_ac — meant a
+    // manager could not bill electricity at all. It also broke the room-transfer
+    // correction, which re-splits the destination room through this function when
+    // a manager fixes a mistyped reading.
+    //
+    // The AC-maintenance question this refusal was standing in for is already
+    // answered, and not by the app: hms_recalculate_payment_amount re-derives the
+    // charge as "WHEN NOT v_room_has_ac THEN 0", whatever the app sends. So a
+    // metered room without AC owes no maintenance, and the code below now says the
+    // same thing instead of assuming otherwise.
+    if (!room.has_ac && !branch?.meter_all_rooms) {
+      return { error: "This room is not metered. Turn on \"Bill electricity to every room\" in Settings, or mark the room as having AC." }
+    }
 
     const perUnitRate = Number(config?.ac_per_unit_rate ?? 0)
     if (perUnitRate <= 0) {
       return { error: "AC per-unit rate is not configured. Ask the owner to set it in Settings → Packages." }
     }
     const foodRate = Number(config?.food_monthly_rate ?? 0)
-    // Room is already verified has_ac = true above, so AC maintenance applies
-    // unconditionally here — same reasoning as applyRoomACUnitsAction.
-    const acMaintenanceCharge = Number(config?.ac_maintenance_rate ?? 0)
+    // Keyed off the ROOM, matching the trigger. The room reaching this point no
+    // longer implies it has AC — a metered room on a meter_all_rooms branch has a
+    // meter and no air conditioner, and there is nothing to maintain.
+    const acMaintenanceCharge = computeAcMaintenanceCharge(room.has_ac, config?.ac_maintenance_rate, null)
 
     const eligible = allTenants ?? []
 

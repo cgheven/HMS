@@ -1883,11 +1883,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           // that's already on file. Only when the operator hasn't already
           // typed something themselves, so re-fetching on a date edit doesn't
           // clobber a value they just entered.
-          // Never from a reading taken while the room was empty: that number
-          // predates this tenant, and pre-filling it as their departure reading
-          // hands the operator a plausible wrong figure to accept. It still
-          // serves as the OPENING below — which is what it actually is.
-          setCheckoutACReading((prev) => (prev === "" && ctx.currentMonthReading != null && !ctx.currentMonthVacant) ? String(ctx.currentMonthReading) : prev);
+          // NOT pre-filled, deliberately. This used to default to the reading the
+          // AC Units tab had already applied for the room, on the reasoning that
+          // the operator often reads the meter and checks someone out the same
+          // day. That was harmless while the departure reading was discarded
+          // whenever it did not exceed what Apply had billed — it changed no
+          // money either way. It is not harmless now that the reading prices the
+          // departure: accepting the default records the member as present until
+          // the room's month-end reading, which for anyone who left earlier in
+          // the month is simply false, and bills them for units burned after they
+          // had gone. Same trap as the room-transfer panel's prefill, and the
+          // same answer — the number is shown underneath for reference, and the
+          // operator types what the meter read when they actually walked out.
 
           // Same treatment for the OPENING reading. It was shown only as a
           // placeholder, so the operator saw a greyed-out number in an empty box
@@ -5017,8 +5024,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           {checkoutACContext.prevMonthReading == null && ` If this tenant should not pay for the empty period, set the opening above to ${checkoutACContext.currentMonthReading.toLocaleString()}.`}
                         </p>
                       ) : (
-                        <p className="text-xs text-emerald-400/80">
-                          Auto-filled from this month&apos;s AC Units entry ({checkoutACContext.currentMonthReading.toLocaleString()}) — edit below if the meter has moved since.
+                        // States the room's figure without proposing it. The old
+                        // wording ("edit below if the meter has moved since") only
+                        // ever invited raising the number, when a departure reading
+                        // is almost always LOWER than the room's month-end one.
+                        <p className="text-xs text-muted-foreground">
+                          This room was read at {checkoutACContext.currentMonthReading.toLocaleString()} for the month. Enter the meter as it read when this member left — usually lower, if they left before the month ended.
                         </p>
                       )
                     )}

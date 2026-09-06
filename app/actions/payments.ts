@@ -987,10 +987,9 @@ export async function applyRoomACUnitsAction(
     const perUnitRate = Number(pkgConfig?.ac_per_unit_rate ?? 0);
     if (perUnitRate <= 0) throw new Error("AC per-unit rate is not configured. Set it in Settings → Packages.");
     const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
-    // This function only ever runs against a room already verified has_ac = true
-    // (line above), so the ROOM half of the test is settled for everyone here.
-    // The AMOUNT is not: each tenant may carry their own ac_maintenance override,
-    // so it is computed per tenant inside the loop below rather than hoisted.
+    // NOT settled by the check above: that now passes a metered room with no air
+    // conditioner, which owes no maintenance. Both the room test and the amount
+    // are applied per tenant below, since each may carry their own override.
     const acMaintenanceRate = Number(pkgConfig?.ac_maintenance_rate ?? 0);
 
     // ── Find all active tenants in this room ─────────────────────
@@ -1246,7 +1245,14 @@ export async function applyRoomACUnitsAction(
           forMonth
         );
         const acMaintenanceCharge = computeAcMaintenanceCharge(
-          true,
+          // The ROOM, not `true`. This was hard-coded when the function could only
+          // ever run against a has_ac room; letting meter_all_rooms branches bill
+          // every room made that false without anyone revisiting it. The trigger
+          // zeroes the charge for a non-AC room regardless, so a monthly row was
+          // corrected on the way in — but a DAILY row keeps the app's `amount` and
+          // derives base rent by SUBTRACTING the charges from it, so the phantom
+          // maintenance came straight back out of the rent.
+          room.has_ac,
           acMaintenanceRate,
           (t as { ac_maintenance?: number | null }).ac_maintenance
         );
