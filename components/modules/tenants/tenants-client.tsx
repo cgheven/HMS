@@ -4174,8 +4174,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           }
                           if (!p.fromMetered && !p.toMetered) return; // genuinely nothing to meter
                           setTransferPreview(p);
-                          if (p.fromLastReading != null) setTransferFromReading(String(p.fromLastReading));
-                          if (p.toLastReading != null) setTransferToReading(String(p.toLastReading));
+                          // Deliberately left EMPTY. These were prefilled with each
+                          // room's last recorded reading, which is the month's
+                          // OPENING — the one number that is never what the meter
+                          // says at the moment of the move. Pressing Save without
+                          // touching them was the path of least resistance and it
+                          // silently closed the old room at zero units and opened
+                          // the new one at offset zero, so the member paid nothing
+                          // where they had been and got billed in the new room for
+                          // everything burned before they arrived. Both figures are
+                          // still shown underneath each box for reference; the
+                          // operator is standing at the meter and has to type what
+                          // it reads. Save stays disabled until they do.
                         })
                         .finally(() => {
                           if (req === transferReqRef.current) setTransferChecking(false);
@@ -4228,6 +4238,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       <Label className="text-xs">Room {transferPreview.fromRoomNumber} meter now</Label>
                       <Input
                         type="number" min="0" max="999999" inputMode="numeric"
+                        placeholder="Read the meter now"
                         value={transferFromReading}
                         onChange={(e) => setTransferFromReading(e.target.value)}
                       />
@@ -4243,6 +4254,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       <Label className="text-xs">Room {transferPreview.toRoomNumber} meter now</Label>
                       <Input
                         type="number" min="0" max="999999" inputMode="numeric"
+                        placeholder="Read the meter now"
                         value={transferToReading}
                         onChange={(e) => setTransferToReading(e.target.value)}
                       />
