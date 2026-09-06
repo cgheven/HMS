@@ -4177,6 +4177,33 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     if (editing && v && editing.room_id && v !== editing.room_id) {
                       const req = ++transferReqRef.current;
                       setTransferChecking(true);
+                      // Draw the panel NOW from what the page already knows. Which
+                      // rooms are metered is a local fact — has_ac on the room, plus
+                      // the branch's meter_all_rooms — so waiting on the round trip
+                      // to render the two boxes left the operator staring at an
+                      // unchanged dialog for as long as the server took, with no
+                      // sign the room change had registered.
+                      //
+                      // Only three things genuinely need the server: each room's
+                      // last recorded reading (a hint), and whether the destination
+                      // has an opening for this month (which blocks the move). They
+                      // merge in below. Save stays disabled until they arrive, so
+                      // nothing can be submitted against a half-known panel.
+                      const fromRoomLocal = roomMap[editing.room_id];
+                      const toRoomLocal = roomMap[v];
+                      const fromMeteredLocal = !!(fromRoomLocal?.has_ac || meterAllRooms);
+                      const toMeteredLocal = !!(toRoomLocal?.has_ac || meterAllRooms);
+                      if (fromMeteredLocal || toMeteredLocal) {
+                        setTransferPreview({
+                          fromRoomNumber: fromRoomLocal?.room_number ?? null,
+                          toRoomNumber: toRoomLocal?.room_number ?? null,
+                          fromMetered: fromMeteredLocal,
+                          toMetered: toMeteredLocal,
+                          fromLastReading: null,
+                          toLastReading: null,
+                          toBlocked: null,
+                        });
+                      }
                       getRoomTransferPreviewAction(editing.id, v)
                         .then((p) => {
                           if (req !== transferReqRef.current) return; // a later pick won
@@ -4186,9 +4213,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                             // unmetered move, which is how a metered one slipped
                             // through as a bare room change.
                             toast({ title: "Could not check the meters", description: p.error, variant: "destructive" });
+                            setTransferPreview(null);
                             return;
                           }
-                          if (!p.fromMetered && !p.toMetered) return; // genuinely nothing to meter
+                          if (!p.fromMetered && !p.toMetered) {
+                            // The server disagrees with the local guess — clear the
+                            // panel rather than leave two boxes asking for readings
+                            // nothing will use.
+                            setTransferPreview(null);
+                            return;
+                          }
                           setTransferPreview(p);
                           // Deliberately left EMPTY. These were prefilled with each
                           // room's last recorded reading, which is the month's
@@ -4259,9 +4293,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         onChange={(e) => setTransferFromReading(e.target.value)}
                       />
                       <p className="text-[10px] text-muted-foreground">
-                        {transferPreview.fromLastReading != null
-                          ? `Last recorded ${transferPreview.fromLastReading.toLocaleString()}`
-                          : "No earlier reading on file"}
+                        {transferChecking
+                          ? "Checking the meter…"
+                          : transferPreview.fromLastReading != null
+                            ? `Last recorded ${transferPreview.fromLastReading.toLocaleString()}`
+                            : "No earlier reading on file"}
                       </p>
                     </div>
                   )}
@@ -4275,9 +4311,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         onChange={(e) => setTransferToReading(e.target.value)}
                       />
                       <p className="text-[10px] text-muted-foreground">
-                        {transferPreview.toLastReading != null
-                          ? `Last recorded ${transferPreview.toLastReading.toLocaleString()}`
-                          : "No earlier reading on file"}
+                        {transferChecking
+                          ? "Checking the meter…"
+                          : transferPreview.toLastReading != null
+                            ? `Last recorded ${transferPreview.toLastReading.toLocaleString()}`
+                            : "No earlier reading on file"}
                       </p>
                     </div>
                   )}
