@@ -392,6 +392,10 @@ export interface TimelineEvent {
   date: string; // ISO string for sorting
   label: string;
   sub?: string;
+  /** A second, denser line under `sub` — labelled fragments, same shape as the
+   *  payment breakdown. Keeps a move's meter evidence scannable instead of
+   *  folding it into a sentence nobody reads. */
+  detail?: string;
   amount?: number;
   method?: string;
   forMonth?: string;
@@ -503,9 +507,11 @@ export async function getTenantTimeline(
       type: "joined",
       date: tenant.check_in ?? tenant.created_at,
       label: "Checked in",
+      // "Checked in" already says a tenant joined the hostel. What the reader
+      // cannot see anywhere else is the meter it started from.
       sub: tenant.joining_meter_reading != null
-        ? `Tenant joined the hostel · AC meter at move-in: ${tenant.joining_meter_reading}`
-        : "Tenant joined the hostel",
+        ? `Meter at move-in: ${tenant.joining_meter_reading}`
+        : undefined,
     });
 
     // Check-out event
@@ -516,8 +522,8 @@ export async function getTenantTimeline(
         date: tenant.check_out,
         label: "Checked out",
         sub: checkoutReading?.meter_reading != null
-          ? `Tenant left the hostel · AC meter at checkout: ${checkoutReading.meter_reading}`
-          : "Tenant left the hostel",
+          ? `Meter at departure: ${checkoutReading.meter_reading}`
+          : undefined,
       });
     }
 
@@ -713,7 +719,8 @@ export async function getTenantTimeline(
           type: "room_changed",
           date: e.created_at,
           label: e.amount != null && Number(e.amount) > 0 ? "Room transferred" : "Room changed",
-          sub: [`${e.from_value ?? "None"} → ${e.to_value ?? "None"}`, e.notes].filter(Boolean).join(" · "),
+          sub: `${e.from_value ?? "None"} → ${e.to_value ?? "None"}`,
+          detail: e.notes ?? undefined,
           ...(e.amount != null && Number(e.amount) > 0 ? { acCharge: Number(e.amount) } : {}),
         });
       } else if (e.event_type === "plan_changed") {
@@ -2243,14 +2250,13 @@ export async function transferTenantRoomAction(input: {
       // was I charged for two rooms in March?", and without the numbers the owner
       // cannot check it against the meter or the AC Billing tab.
       noteParts.push(
-        `Room ${result.fromRoomNumber} meter closed at ${Math.round(Number(input.fromRoomReading))}` +
-        ` — ${result.closedUnits} units` +
-        (result.closedCharge > 0 ? ` (Rs ${result.closedCharge.toLocaleString()})` : "") +
-        ` charged up to the move`
+        `${result.fromRoomNumber} meter: ${Math.round(Number(input.fromRoomReading))}` +
+        ` · ${result.closedUnits} units` +
+        (result.closedCharge > 0 ? ` → Rs ${result.closedCharge.toLocaleString()}` : "")
       );
     }
     if (result.openedMeter) {
-      noteParts.push(`Room ${result.toRoomNumber} billing starts at ${Math.round(Number(input.toRoomReading))}`);
+      noteParts.push(`${result.toRoomNumber} meter: ${Math.round(Number(input.toRoomReading))}`);
     }
     if (result.warning) noteParts.push(result.warning);
 

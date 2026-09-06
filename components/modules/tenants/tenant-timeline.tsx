@@ -283,6 +283,9 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
                         {event.sub && (
                           <p className="text-xs text-muted-foreground mt-0.5">{event.sub}</p>
                         )}
+                        {event.detail && (
+                          <p className="mt-1 text-xs text-muted-foreground">{event.detail}</p>
+                        )}
                         {/* Breakdown for payment events — matches the receipt's itemization:
                             rent + food/AC, plus a one-time deposit line on the first month's bill. */}
                         {event.type === "payment" && (
