@@ -448,6 +448,7 @@ export async function performRoomTransfer(
   }
 
   // Occupancy counts on both rooms, recounted from truth rather than adjusted.
+  const stillOccupied = new Map<string, number>();
   for (const rid of [fromRoom?.id, toRoom.id].filter(Boolean) as string[]) {
     const { count } = await adminDb
       .from("hms_tenants")
@@ -455,6 +456,7 @@ export async function performRoomTransfer(
       .eq("hostel_id", hostelId)
       .eq("room_id", rid)
       .eq("is_active", true);
+    stillOccupied.set(rid, count ?? 0);
     const { data: r } = await adminDb.from("hms_rooms").select("capacity").eq("id", rid).maybeSingle();
     await adminDb
       .from("hms_rooms")
@@ -476,6 +478,12 @@ export async function performRoomTransfer(
       .select("meter_reading")
       .eq("hostel_id", hostelId).eq("room_id", room.id).eq("for_month", forMonth)
       .maybeSingle();
+    // Nobody left to re-split. The only person this room metered has gone, their
+    // share is on the breakpoint, and there is no roommate whose number could be
+    // wrong. Apply refuses this room anyway — a room that was lived in and is now
+    // empty is neither the vacant case nor the occupied one — so attempting it
+    // produced a warning that sent the operator to a button that would refuse too.
+    if ((stillOccupied.get(room.id) ?? 0) === 0) continue;
     if (rd?.meter_reading != null) {
       reapply.push({ roomId: room.id, roomNumber: room.room_number, reading: Math.round(Number(rd.meter_reading)) });
     }
