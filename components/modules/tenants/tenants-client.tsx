@@ -4937,17 +4937,63 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       // Reuse checkoutMath rather than recomputing — a second copy of this
                       // sum is how the summary drifted from what actually got charged.
                       const reading = Number(checkoutACReading);
+                      // Same ranking checkoutMath uses, including the opening backed
+                      // out of this month's Apply — a different one here quotes a
+                      // different number of units than the charge was derived from.
+                      const impliedOpening = (checkoutACContext?.currentMonthReading != null && checkoutACContext?.currentMonthUnits != null)
+                        ? checkoutACContext.currentMonthReading - checkoutACContext.currentMonthUnits
+                        : null;
                       const prev = checkoutACContext?.prevMonthReading
                         ?? (checkoutACOpeningReading.trim() !== "" ? Number(checkoutACOpeningReading) : null)
+                        ?? impliedOpening
                         ?? checkoutACContext?.derivedOpening
                         ?? 0;
                       const rate = checkoutACContext?.perUnitRate ?? 0;
                       const count = checkoutACContext?.activeTenantCount ?? 0;
-                      if (!checkoutACReading || !Number.isFinite(reading) || reading <= prev || rate <= 0 || count <= 0) return null;
+                      if (!checkoutACReading || !Number.isFinite(reading) || rate <= 0 || count <= 0) return null;
+
+                      // Where THIS member's billing in this room began — set for a
+                      // mid-month joiner or anyone who transferred in. Silence here
+                      // is what made a mistyped reading look like a real answer: the
+                      // reading now prices the departure, so a number at or below
+                      // their arrival point charges them nothing at all, and the old
+                      // line just printed "PKR 0" in reassuring green.
+                      const ownJoin = checkoutACContext?.joinReadingsRaw?.find(j => j.tenant_id === checkingOut?.id);
+                      const arrivedAt = ownJoin != null ? prev + Math.round(Number(ownJoin.units_at_join)) : null;
+
+                      if (reading < prev) {
+                        return (
+                          <p className="text-xs text-rose-400">
+                            The month opened at {prev.toLocaleString()} — a meter cannot run backwards. Check the number.
+                          </p>
+                        );
+                      }
+                      if (arrivedAt != null && reading < arrivedAt) {
+                        return (
+                          <p className="text-xs text-rose-400">
+                            Below the {arrivedAt.toLocaleString()} recorded when they moved into this room — they cannot have left before they arrived. Check the number.
+                          </p>
+                        );
+                      }
+                      if (checkoutMath.estimatedACCharge <= 0) {
+                        return (
+                          <p className="text-xs text-amber">
+                            {arrivedAt != null && reading <= arrivedAt
+                              ? `No electricity is billed for this room — ${reading.toLocaleString()} is exactly where their billing here started. Enter the meter as it read when they actually left.`
+                              : `No electricity is billed — the meter has not moved since the month opened at ${prev.toLocaleString()}.`}
+                          </p>
+                        );
+                      }
                       const units = reading - prev;
+                      // Their share stated in units rather than implied by dividing the
+                      // room total by the head count. The old wording ("800 room units
+                      // · 2 tenants sharing × PKR 50/unit") invited exactly that sum and
+                      // it does not reach the figure printed beside it — the split is by
+                      // segment, and after a move part of the bill belongs to another room.
+                      const shareUnits = Math.round((checkoutMath.estimatedACCharge / rate) * 100) / 100;
                       return (
                         <p className="text-xs text-emerald-400">
-                          {units.toLocaleString()} room unit{units === 1 ? "" : "s"} · {count} tenant{count > 1 ? "s" : ""} sharing × PKR {rate.toLocaleString()}/unit = your share est.{" "}
+                          Room metered {units.toLocaleString()} unit{units === 1 ? "" : "s"} ({prev.toLocaleString()} → {reading.toLocaleString()}) · their share {shareUnits.toLocaleString()} unit{shareUnits === 1 ? "" : "s"} × PKR {rate.toLocaleString()} ={" "}
                           <span className="font-medium">PKR {checkoutMath.estimatedACCharge.toLocaleString()}</span>
                         </p>
                       );
