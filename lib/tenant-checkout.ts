@@ -7,6 +7,7 @@ import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, ro
 import { clampGrossToCollected } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
 import { carriedTransferCharges } from "@/lib/ac-transfer";
+import { isMeteredRoom } from "@/lib/room-transfer";
 import { voidReferralRewardsForTenant } from "@/lib/referral-rewards";
 import { mintFeedbackToken } from "@/lib/tenant-feedback";
 import { sendCheckoutMessage } from "@/lib/whatsapp-checkout";
@@ -279,6 +280,19 @@ export async function performTenantCheckout(
     // Set when Step 3a pulls in an AC-only charge the dialog never had a chance to show.
     let adoptedACOnlyPayment = false;
 
+    // A tenant who moved rooms earlier this month already owes their share of the
+    // room they left, and it is sitting on this same payment row. Every writer of
+    // ac_charge overwrites the column with the CURRENT room's share, so that
+    // earlier share has to be added back wherever this checkout rewrites it — it
+    // is money already earned in a room this checkout knows nothing about. Read
+    // once, here, because three separate paths below need the same figure and
+    // must not disagree. Empty for the overwhelming majority who never moved.
+    const carriedThisMonth = (
+      await carriedTransferCharges(
+        adminDb, hostelId, input.checkoutDate.substring(0, 7), tenant.room_id, [input.tenantId]
+      )
+    ).get(input.tenantId) ?? { units: 0, charge: 0 };
+
     // Step 3a: AC checkout billing — compute partial AC charge if meter reading provided.
     // Runs before payment settlement so the charge is included in the payment being settled.
     let acCheckoutRecord: {
@@ -310,7 +324,7 @@ export async function performTenantCheckout(
       const prevDate = new Date(cy, cm - 2, 1);
       const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`;
 
-      const [{ data: prevRecord }, { data: prevMonthCheckouts }, { data: pkgConfig }, { data: roomInfo }, { data: activeTenantsInRoom }, { data: priorCheckoutsData }, { data: joinRowsData }, { data: currentMonthRecord }, { data: ownPaymentRow }] = await Promise.all([
+      const [{ data: prevRecord }, { data: prevMonthCheckouts }, { data: pkgConfig }, { data: roomInfo }, { data: activeTenantsInRoom }, { data: priorCheckoutsData }, { data: joinRowsData }, { data: currentMonthRecord }, { data: ownPaymentRow }, { data: hostelMeter }] = await Promise.all([
         adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", prevMonthStr).maybeSingle(),
         // See effectivePrevReading — only consulted for a vacant-flagged prev row.
         adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", prevMonthStr),
@@ -321,7 +335,7 @@ export async function performTenantCheckout(
         // as segment boundaries — same format as the month-end billing algorithm.
         // meter_reading + tenant_count_at_checkout are what computeACSegmentBilling
         // consumes; units_consumed is kept for the tenant_count headcount below.
-        adminDb.from("hms_room_ac_checkout_readings").select("units_consumed, meter_reading, tenant_count_at_checkout").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth),
+        adminDb.from("hms_room_ac_checkout_readings").select("units_consumed, meter_reading, tenant_count_at_checkout, tenant_id").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth),
         adminDb.from("hms_room_ac_join_readings").select("tenant_id, units_at_join").eq("room_id", tenant.room_id).eq("hostel_id", hostelId).eq("for_month", checkoutMonth),
         // The room's own current-month reading, already applied via the AC Units tab
         // (applyRoomACUnitsAction / computeACSegmentBilling) — the one source of truth
@@ -333,6 +347,13 @@ export async function performTenantCheckout(
         // This tenant's own already-billed AC for the month, so the breakpoint can
         // record the real figure even on the path where nothing is recomputed.
         adminDb.from("hms_payments").select("ac_charge, ac_units_consumed, status, amount_paid").eq("tenant_id", input.tenantId).eq("hostel_id", hostelId).eq("for_month", checkoutMonth).maybeSingle(),
+        // Branches that meter EVERY room, not only the ones with an air
+        // conditioner. Without it this whole block was gated on has_ac alone, so
+        // on a meter-all-rooms branch — where almost no room is flagged has_ac —
+        // checking a member out never billed their final electricity and never
+        // wrote the departure breakpoint, handing their units to the roommates
+        // who stayed. applyRoomACUnitsAction has always read this; checkout did not.
+        adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).single(),
       ]);
 
       // If the meter hasn't actually moved past what AC Units already applied this
@@ -371,7 +392,7 @@ export async function performTenantCheckout(
         || input.acOpeningReading != null
       );
 
-      if (roomInfo?.has_ac) {
+      if (isMeteredRoom(roomInfo, !!hostelMeter?.meter_all_rooms)) {
         // Same fallback as applyRoomACUnitsAction: with no previous-month reading
         // and no explicit opening reading typed in, derive the baseline from the
         // room's earliest known move-in reading instead of assuming the meter
@@ -418,7 +439,12 @@ export async function performTenantCheckout(
             meter_reading: reading,
             units_consumed: units,
             tenant_count: totalStart,
-            ac_charge: Number(ownPaymentRow?.ac_charge ?? 0),
+            // The stored charge is the row TOTAL, which after a transfer also
+            // holds the share of a room the member left earlier this month. This
+            // row records what THIS room metered at the door, so that carried
+            // share comes back out — otherwise the departure breakpoint claims
+            // another room's money as its own.
+            ac_charge: Math.max(0, Number(ownPaymentRow?.ac_charge ?? 0) - carriedThisMonth.charge),
           };
         } else if (perUnitRate > 0 && totalStart > 0) {
           const units = reading - prevReading;
@@ -463,6 +489,7 @@ export async function performTenantCheckout(
               .map(r => ({
                 meter_reading: Number(r.meter_reading),
                 tenant_count_at_checkout: Number(r.tenant_count_at_checkout),
+                tenant_id: r.tenant_id ?? null,
               })),
           });
 
@@ -515,9 +542,7 @@ export async function performTenantCheckout(
                 // of it and adding back only this room's erased that share: the
                 // row then billed less than was already collected and the member
                 // looked owed a refund for money correctly taken.
-                const carriedHere = (
-                  await carriedTransferCharges(adminDb, hostelId, checkoutMonth, tenant.room_id, [input.tenantId])
-                ).get(input.tenantId) ?? { units: 0, charge: 0 };
+                const carriedHere = carriedThisMonth;
                 await adminDb.from("hms_payments")
                   .update({
                     ac_units_consumed: round2(tenantUnits + carriedHere.units),
@@ -569,22 +594,15 @@ export async function performTenantCheckout(
     // Guarded on the row being the SAME month Step 3a computed AC for. When the
     // checkout month has no row yet, the settled row can be an earlier month —
     // subtracting that month's AC would silently drop a charge that is still owed.
-    // A tenant who moved rooms earlier this month already owes their share of the
-    // room they left, and it is sitting on this same payment row. Everything
-    // below overwrites ac_charge with the CURRENT room's share, so that earlier
-    // share is added back — it is money already earned in a room this checkout
-    // knows nothing about. Empty for the overwhelming majority who never moved.
-    const carriedAtCheckout = await carriedTransferCharges(
-      adminDb, hostelId, input.checkoutDate.substring(0, 7), tenant.room_id, [input.tenantId]
-    );
+    // See carriedThisMonth above.
     // Gated on the row actually being settled, exactly as supersededAcCharge is.
     // The carried share lives on the CHECKOUT MONTH's row. When arrears mean the
     // dialog is settling an OLDER month instead — routine here, hundreds of
     // members carry unpaid months — adding it there charges the member a second
     // time for a room they already paid off, on a month they burned nothing in.
     const settlingCheckoutMonth = verifiedPayment?.for_month === input.checkoutDate.substring(0, 7);
-    const carriedCharge = settlingCheckoutMonth ? (carriedAtCheckout.get(input.tenantId)?.charge ?? 0) : 0;
-    const carriedUnits = settlingCheckoutMonth ? (carriedAtCheckout.get(input.tenantId)?.units ?? 0) : 0;
+    const carriedCharge = settlingCheckoutMonth ? carriedThisMonth.charge : 0;
+    const carriedUnits = settlingCheckoutMonth ? carriedThisMonth.units : 0;
 
     // What the bill should show: this room's share plus anything carried. The
     // readings row below keeps the room's own share alone — it records what this

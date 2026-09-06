@@ -57,6 +57,7 @@ export async function getManagerTenants() {
       foodAddonRates: { food_breakfast_rate: 0, food_lunch_rate: 0, food_dinner_rate: 0, food_all_meals_rate: 0 },
       foodMonthlyRate: 0,
       noticePeriodDays: 30,
+      meterAllRooms: false,
       currentMonthPaymentByTenant: {} as Record<string, { status: string; remaining: number }>,
     };
   }
@@ -71,7 +72,7 @@ export async function getManagerTenants() {
 
   const [
     { data: tenants }, { data: rooms }, packageConfig, { data: currentMonthPayments },
-    { data: applications }, { data: waitlistEntries },
+    { data: applications }, { data: waitlistEntries }, { data: hostelRow },
   ] = await Promise.all([
     admin.from("hms_tenants").select("*").eq("hostel_id", hostelId).order("created_at", { ascending: false }),
     admin.from("hms_rooms").select("*").eq("hostel_id", hostelId).order("room_number"),
@@ -79,6 +80,9 @@ export async function getManagerTenants() {
     admin.from("hms_payments").select("tenant_id,status,amount,amount_paid").eq("hostel_id", hostelId).eq("for_month", currentMonthKey),
     admin.from("hms_tenant_applications").select("*").eq("hostel_id", hostelId).order("applied_at", { ascending: false }),
     admin.from("hms_waitlist").select("*").eq("hostel_id", hostelId).order("created_at", { ascending: false }),
+    // The branch meters every room, not only the AC ones — the checkout dialog
+    // needs it to decide whether to ask for a departure reading at all.
+    admin.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).maybeSingle(),
   ]);
 
   const all = (tenants ?? []) as Tenant[];
@@ -110,6 +114,7 @@ export async function getManagerTenants() {
     },
     foodMonthlyRate: Number(packageConfig?.food_monthly_rate ?? 0),
     noticePeriodDays: Number(packageConfig?.notice_period_days ?? 30),
+    meterAllRooms: !!hostelRow?.meter_all_rooms,
     currentMonthPaymentByTenant,
   };
 }

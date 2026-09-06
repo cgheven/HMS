@@ -1177,7 +1177,7 @@ export async function applyRoomACUnitsAction(
         .order("units_at_join", { ascending: true }),
       adminDb
         .from("hms_room_ac_checkout_readings")
-        .select("meter_reading, tenant_count_at_checkout")
+        .select("meter_reading, tenant_count_at_checkout, tenant_id")
         .eq("room_id", roomId)
         .eq("for_month", forMonth)
         .eq("hostel_id", hostelId)
@@ -1193,7 +1193,13 @@ export async function applyRoomACUnitsAction(
       units,
       perUnitRate,
       forMonth,
-      joinReadingsRaw: (joinReadingsRaw ?? []).filter(r => eligible.some(t => t.id === r.tenant_id)),
+      // Passed WHOLE, not pre-filtered to the eligible list. computeACSegmentBilling
+      // already drops rows for tenants who are not eligible when it builds the
+      // billing timeline — but it also needs the join row of a member who has
+      // since LEFT the room, to know they arrived partway rather than assuming
+      // they were there from the first unit. Filtering here hid exactly that row
+      // and under-billed the roommates who really were alone before they moved in.
+      joinReadingsRaw: joinReadingsRaw ?? [],
       // Passed through unfiltered. A departure at exactly this reading has to
       // reach computeACSegmentBilling — it counts toward the divisor for the
       // month even though it opens no new segment, and dropping it here billed

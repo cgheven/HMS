@@ -178,7 +178,7 @@ export async function performRoomTransfer(
         adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", fromRoom.id).eq("hostel_id", hostelId).eq("for_month", prevMonth),
         adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", fromRoom.id).eq("is_active", true),
         adminDb.from("hms_room_ac_join_readings").select("tenant_id, units_at_join").eq("room_id", fromRoom.id).eq("hostel_id", hostelId).eq("for_month", forMonth),
-        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading, tenant_count_at_checkout").eq("room_id", fromRoom.id).eq("hostel_id", hostelId).eq("for_month", forMonth),
+        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading, tenant_count_at_checkout, tenant_id").eq("room_id", fromRoom.id).eq("hostel_id", hostelId).eq("for_month", forMonth),
         adminDb.from("hms_package_configs").select("ac_per_unit_rate").eq("hostel_id", hostelId).maybeSingle(),
       ]);
 
@@ -250,6 +250,7 @@ export async function performRoomTransfer(
       checkoutReadingsRaw: (priorCheckouts ?? []).map(c => ({
         meter_reading: Number(c.meter_reading),
         tenant_count_at_checkout: Number(c.tenant_count_at_checkout),
+        tenant_id: c.tenant_id ?? null,
       })),
     });
 

@@ -66,6 +66,11 @@ interface Props {
   /** Branch-level AC maintenance rate. Applied on the admission form only to a
    *  resident whose room has AC, matching what the payment trigger charges. */
   acMaintenanceRate?: number;
+  /** hms_hostels.meter_all_rooms — the branch meters every room, not only the
+   *  ones flagged has_ac. The checkout dialog's AC section keyed off has_ac
+   *  alone, so on these branches it never appeared and the departing member's
+   *  final electricity went unbilled onto whoever stayed. */
+  meterAllRooms?: boolean;
   currentMonthPaymentByTenant?: Record<string, { status: string; remaining: number }>;
   // null/undefined = owner (unrestricted). Add/Edit Tenant and Give Notice are
   // deferred for partners in this pass — the safe write actions only cover a
@@ -666,7 +671,7 @@ function RedflagWarningDialog({
   );
 }
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, mealTimes = null, acMaintenanceRate = 0, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, mealTimes = null, acMaintenanceRate = 0, meterAllRooms = false, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null }: Props) {
   const isPartner = !!partnerTier;
   const canFullTier = !partnerTier || partnerTier === "full";
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
@@ -750,7 +755,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     derivedOpening: number | null;
     eligibleTenants: { id: string; check_in: string; joining_meter_reading: number | null }[];
     joinReadingsRaw: { tenant_id: string; units_at_join: number }[];
-    checkoutReadingsRaw: { meter_reading: number; tenant_count_at_checkout: number }[];
+    checkoutReadingsRaw: { meter_reading: number; tenant_count_at_checkout: number; tenant_id: string | null }[];
   } | null>(null);
   const [checkoutACContextLoading, setCheckoutACContextLoading] = useState(false);
   const [shareReceipt, setShareReceipt] = useState<{ name: string; phone: string | null; token: string } | null>(null);
@@ -1838,7 +1843,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     fetchCheckoutPayment(checkingOut.id, month);
 
     const room = checkingOut.room_id ? roomMap[checkingOut.room_id] : null;
-    if (room?.has_ac) {
+    if (room?.has_ac || meterAllRooms) {
       setCheckoutACContextLoading(true);
       setCheckoutACContext(null);
       getACCheckoutContextAction(checkingOut.room_id!, month).then((ctx) => {
@@ -2312,7 +2317,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       ?? 0;
     const acRate = checkoutACContext?.perUnitRate ?? 0;
     const acCount = checkoutACContext?.activeTenantCount ?? 0;
-    const roomHasAC = !!(checkingOut?.room_id && roomMap[checkingOut.room_id]?.has_ac);
+    const roomHasAC = !!(checkingOut?.room_id && (roomMap[checkingOut.room_id]?.has_ac || meterAllRooms));
     // If the meter hasn't actually moved past what the AC Units tab already
     // applied this month, there's nothing new to bill — recompute from an
     // independently-fetched join/checkout dataset here instead risks disagreeing
@@ -4823,8 +4828,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               />
             </div>
 
-            {/* Section 2 — AC Meter Reading (only for AC rooms) */}
-            {checkingOut?.room_id && roomMap[checkingOut.room_id]?.has_ac && (
+            {/* Section 2 — meter reading at departure. Shown for an AC room, and
+                for every room on a branch that meters all of them. */}
+            {checkingOut?.room_id && (roomMap[checkingOut.room_id]?.has_ac || meterAllRooms) && (
               <div className="space-y-2">
                 <Label htmlFor="checkout-ac-reading" className="flex items-center gap-1.5">
                   AC Meter Reading at Departure

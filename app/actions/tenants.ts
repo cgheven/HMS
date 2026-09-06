@@ -1618,7 +1618,7 @@ export async function getACCheckoutContextAction(
    */
   eligibleTenants: { id: string; check_in: string; joining_meter_reading: number | null }[];
   joinReadingsRaw: { tenant_id: string; units_at_join: number }[];
-  checkoutReadingsRaw: { meter_reading: number; tenant_count_at_checkout: number }[];
+  checkoutReadingsRaw: { meter_reading: number; tenant_count_at_checkout: number; tenant_id: string | null }[];
   /** This month's meter reading, if the operator already applied AC units for
    *  this room via the AC Units tab (e.g. earlier the same day the tenant is
    *  checking out) — surfaced so the checkout dialog can default to it instead
@@ -1703,7 +1703,7 @@ export async function getACCheckoutContextAction(
       // the same boundary format used by the month-end AC billing algorithm.
       adminDb
         .from("hms_room_ac_checkout_readings")
-        .select("units_consumed, meter_reading, tenant_count_at_checkout")
+        .select("units_consumed, meter_reading, tenant_count_at_checkout, tenant_id")
         .eq("room_id", roomId)
         .eq("hostel_id", hostelId)
         .eq("for_month", checkoutMonth),
@@ -1759,6 +1759,7 @@ export async function getACCheckoutContextAction(
       checkoutReadingsRaw: (priorCheckouts ?? []).map(r => ({
         meter_reading: Number(r.meter_reading),
         tenant_count_at_checkout: Number(r.tenant_count_at_checkout),
+        tenant_id: r.tenant_id ?? null,
       })),
     };
   } catch (err: unknown) {
