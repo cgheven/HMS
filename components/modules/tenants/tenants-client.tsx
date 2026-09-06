@@ -4410,8 +4410,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             )}
 
             {/* AC Meter Reading at move-in — printed on the tenant's receipt so
-                there's a documented reference if AC billing is ever disputed. */}
-            {!form.is_waiting && form.room_id && rooms.find((r) => r.id === form.room_id)?.has_ac && (
+                there's a documented reference if AC billing is ever disputed.
+                Hidden during a MOVE: the panel above is already asking for the
+                destination's meter, and the move writes this field from it. Three
+                meter boxes on one screen, one of them still showing the meter of
+                the room being left, is a question nobody can answer correctly. */}
+            {!form.is_waiting && form.room_id && !transferPreview && rooms.find((r) => r.id === form.room_id)?.has_ac && (
               <div className="space-y-1.5">
                 <Label>AC Meter Reading at Move-in</Label>
                 <Input

@@ -434,9 +434,30 @@ export async function performRoomTransfer(
     }
 
     // ── The move itself ──────────────────────────────────────────────────
+    //
+    // joining_meter_reading moves WITH them. It is "the meter reading when this
+    // member moved in", and after a transfer that is the destination's meter, not
+    // the meter of a room they no longer occupy.
+    //
+    // Not cosmetic. deriveOpeningReading — the last-resort opening for a room with
+    // no reading on file, which is most rooms on a branch that has only just
+    // started metering — takes the MINIMUM joining_meter_reading of the room's
+    // active tenants. Leaving the old value behind drops a foreign meter into that
+    // set: a member moving from a room reading 1,000 into one reading 9,300 made
+    // the destination open at 1,000, and its next Apply billed 8,500 units against
+    // a real consumption of 500.
+    //
+    // Cleared, not kept, when the destination has no meter: there is no reading
+    // that describes their arrival there, and a stale number would poison the room
+    // the day someone starts metering it.
     const { error: moveErr } = await adminDb
       .from("hms_tenants")
-      .update({ room_id: input.toRoomId })
+      .update({
+        room_id: input.toRoomId,
+        joining_meter_reading: toMetered && input.toRoomReading != null
+          ? Math.round(Number(input.toRoomReading))
+          : null,
+      })
       .eq("id", input.tenantId)
       .eq("hostel_id", hostelId);
     if (moveErr) throw new Error("Could not move the member to the new room.");
@@ -694,8 +715,19 @@ export async function correctRoomTransferReadings(
     await adminDb.from("hms_room_ac_join_readings").delete()
       .eq("hostel_id", hostelId).eq("room_id", corr.toRoomId)
       .eq("tenant_id", input.tenantId).eq("for_month", forMonth);
+    // joining_meter_reading goes back to NULL alongside the room, because the
+    // move overwrote it with the DESTINATION's meter. Left in place it describes
+    // a room the member is no longer in, and the redo below reads it as their
+    // arrival point in the source room: a member put back into a room that turned
+    // 200 units was treated as arriving at unit 4,300 of it and charged nothing.
+    //
+    // NULL rather than the pre-move value, which no longer exists anywhere. It is
+    // also the honest answer: a genuine mid-month arrival in the source room is
+    // recorded as an explicit join row, which the engine prefers over this field,
+    // so nothing real is lost by clearing it.
     const { error } = await adminDb.from("hms_tenants")
-      .update({ room_id: corr.fromRoomId }).eq("id", input.tenantId).eq("hostel_id", hostelId);
+      .update({ room_id: corr.fromRoomId, joining_meter_reading: null })
+      .eq("id", input.tenantId).eq("hostel_id", hostelId);
     if (error) throw new Error("Could not put the member back in the room they moved from.");
   };
 
