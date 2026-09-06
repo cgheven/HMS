@@ -26,6 +26,21 @@ export interface RoomTransferResult {
   closedMeter: boolean;
   /** True when the room being joined is metered and an opening breakpoint was recorded. */
   openedMeter: boolean;
+  /**
+   * Rooms whose month-end units were ALREADY applied before this move, and whose
+   * split is therefore now stale. Both ends go wrong, in opposite directions:
+   *
+   *   * the room LEFT re-cut the mover's share down to the moment they walked
+   *     out, but the roommates who stayed keep the smaller share they were given
+   *     while the mover was still counted — nobody is billed the difference;
+   *   * the room JOINED split its month without the mover's arrival point, so
+   *     they are carrying units burned before they got there.
+   *
+   * Neither shows up as an error: the room-left total simply falls short of its
+   * meter, and the room-joined total still adds up. Re-applying both is the only
+   * repair, and it is the caller's job because Apply is tier-specific.
+   */
+  reapply: { roomId: string; roomNumber: string; reading: number }[];
   warning?: string;
 }
 
@@ -451,6 +466,21 @@ export async function performRoomTransfer(
       .eq("id", rid);
   }
 
+  // Which of the two rooms already has this month's reading on file — see the
+  // `reapply` note on RoomTransferResult.
+  const reapply: { roomId: string; roomNumber: string; reading: number }[] = [];
+  for (const room of [fromRoom, toRoom]) {
+    if (!room) continue;
+    const { data: rd } = await adminDb
+      .from("hms_room_ac_readings")
+      .select("meter_reading")
+      .eq("hostel_id", hostelId).eq("room_id", room.id).eq("for_month", forMonth)
+      .maybeSingle();
+    if (rd?.meter_reading != null) {
+      reapply.push({ roomId: room.id, roomNumber: room.room_number, reading: Math.round(Number(rd.meter_reading)) });
+    }
+  }
+
   return {
     fromRoomNumber: fromRoom?.room_number ?? null,
     toRoomNumber: toRoom.room_number,
@@ -458,6 +488,7 @@ export async function performRoomTransfer(
     closedCharge,
     closedMeter: fromMetered && !!fromRoom,
     openedMeter: toMetered && !warning,
+    reapply,
     warning,
   };
 }
@@ -594,14 +625,7 @@ export async function findCorrectableTransfer(
 export interface RoomTransferCorrectionResult extends RoomTransferResult {
   previousUnits: number;
   previousCharge: number;
-  /** The destination room still needs re-applying — its split was made against the
-   *  arrival point this correction just moved. Left to the caller because Apply is
-   *  tier-specific, but it is NOT optional: the roommates' shares are wrong until
-   *  it runs, and they are wrong in a way nothing on screen would flag, since the
-   *  stale total still adds up to the meter. */
-  reapplyRoom: string | null;
-  reapplyRoomId: string | null;
-  reapplyReading: number | null;
+  /** See RoomTransferResult.reapply — inherited, and just as load-bearing here. */
 }
 
 /**
@@ -718,8 +742,5 @@ export async function correctRoomTransferReadings(
     ...result,
     previousUnits: corr.billedUnits,
     previousCharge: corr.billedCharge,
-    reapplyRoom: corr.destinationApplied ? corr.toRoomNumber : null,
-    reapplyRoomId: corr.destinationApplied ? corr.toRoomId : null,
-    reapplyReading: corr.destinationReading,
   };
 }

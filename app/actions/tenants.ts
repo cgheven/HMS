@@ -2250,6 +2250,43 @@ export async function getRoomTransferPreviewAction(
   }
 }
 
+
+/**
+ * Re-run month-end Apply on the rooms a move left stale — see
+ * RoomTransferResult.reapply for why both ends go wrong and why neither shows as
+ * an error. Done here rather than in lib/room-transfer because Apply is
+ * tier-specific, and done automatically rather than asked of the operator
+ * because there is nothing on screen that would prompt them.
+ *
+ * A failure never fails the move: the readings are already recorded correctly.
+ * It is reported instead, naming the room, because nothing else will.
+ */
+async function reapplyStaleRooms(
+  rooms: { roomId: string; roomNumber: string; reading: number }[],
+  asManager: boolean,
+): Promise<string | undefined> {
+  const month = pktTodayDateString().slice(0, 7);
+  const failed: string[] = [];
+  for (const r of rooms) {
+    try {
+      const applied = asManager
+        ? await applyRoomACUnitsAsManager(r.roomId, month, r.reading)
+        : await applyRoomACUnitsAction(r.roomId, month, r.reading);
+      const err = "error" in applied ? applied.error : undefined;
+      const ok = "success" in applied ? applied.success : !err;
+      if (!ok) throw new Error(err ?? "Apply failed");
+    } catch {
+      failed.push(r.roomNumber);
+    }
+  }
+  if (failed.length === 0) return undefined;
+  return (
+    `Room ${failed.join(" and ")} had units applied before this change, and could not be re-split automatically. ` +
+    `Open Payments → AC Billing and press Apply on ${failed.length > 1 ? "those rooms" : `room ${failed[0]}`} — ` +
+    `until you do, the members there are billed for each other's units.`
+  );
+}
+
 export async function transferTenantRoomAction(input: {
   tenantId: string;
   toRoomId: string;
@@ -2271,6 +2308,7 @@ export async function transferTenantRoomAction(input: {
     const adminDb = createAdminClient();
 
     const result = await performRoomTransfer(adminDb, hostelId, input);
+    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel);
 
     // Ledger entry, with the meter evidence in the note — the Member Ledger is
     // where an owner goes to answer "why was I charged for two rooms in March?".
@@ -2302,7 +2340,7 @@ export async function transferTenantRoomAction(input: {
 
     revalidatePath("/tenants");
     revalidatePath("/payments");
-    return { success: true, result };
+    return { success: true, result: { ...result, warning: reapplyWarning ?? result.warning } };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -2349,31 +2387,10 @@ export async function correctRoomTransferAction(input: {
     const adminDb = createAdminClient();
     const result = await correctRoomTransferReadings(adminDb, hostelId, input);
 
-    // Re-run the destination's Apply rather than asking the operator to remember.
-    // Its split was made against the arrival point this correction just moved, and
-    // the staleness is invisible: the roommates' shares still sum to the meter, so
-    // the AC card shows nothing wrong while one member carries another's units.
-    // A failure here does not fail the correction — the readings are already right
-    // — but it must be said out loud, because nothing else will.
-    let reapplyWarning: string | undefined;
-    if (result.reapplyRoomId && result.reapplyReading != null) {
-      try {
-        const month = pktTodayDateString().slice(0, 7);
-        // The manager variant reports failure as a non-null `error` rather than a
-        // success flag; both shapes are checked so neither tier fails silently.
-        const applied = mgr?.activeHostel
-          ? await applyRoomACUnitsAsManager(result.reapplyRoomId, month, result.reapplyReading)
-          : await applyRoomACUnitsAction(result.reapplyRoomId, month, result.reapplyReading);
-        const appliedErr = "error" in applied ? applied.error : undefined;
-        const appliedOk = "success" in applied ? applied.success : !appliedErr;
-        if (!appliedOk) throw new Error(appliedErr ?? "Apply failed");
-      } catch (e) {
-        reapplyWarning =
-          `Room ${result.reapplyRoom}'s units were already applied against the old reading and could not be re-split ` +
-          `automatically (${e instanceof Error ? e.message : String(e)}). Open Payments -> AC Billing and press Apply ` +
-          `on room ${result.reapplyRoom} — until you do, the members there are billed for each other's units.`;
-      }
-    }
+    // Both rooms, not just the destination — a move re-cuts the leaver's share in
+    // the room they left, and the roommates who stayed keep the smaller share they
+    // were given while the leaver was still counted.
+    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel);
 
     // Appended, never rewritten. The original move is what the operator recorded
     // at the time; a correction is a second fact about the same move, and an
