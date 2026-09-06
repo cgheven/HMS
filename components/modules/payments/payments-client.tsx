@@ -2490,14 +2490,35 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       const acTenants = tenants.filter(t => t.room_id === room.id && t.is_active);
                       const monthRows = payments.filter(p => p.for_month === selectedMonth && p.tenant?.room_id === room.id);
                       const activeIds = new Set(acTenants.map(t => t.id));
+                      // ac_units_consumed on a payment row is the member's WHOLE MONTH
+                      // across every room they lived in — after a move it holds the room
+                      // they left as well as this one. This card is an account of ONE
+                      // room's meter, so anything earned in a room they have moved out of
+                      // comes back out first. Without it the room listed more units than
+                      // it metered (350 + 550 against an 800-unit meter) and told the
+                      // operator to press Apply, which recomputes the same figure.
+                      // Mirrors carriedTransferCharges (lib/ac-transfer.ts) on the server.
+                      const carriedFor = (tenantId: string) => acCheckoutReadings.reduce(
+                        (acc, c) => (
+                          c.for_month === selectedMonth &&
+                          c.transferred_to_room_id != null &&
+                          c.tenant_id === tenantId &&
+                          c.room_id !== room.id
+                        )
+                          ? { units: acc.units + Number(c.units_consumed ?? 0), charge: acc.charge + Number(c.ac_charge ?? 0), from: [...acc.from, c.room_id] }
+                          : acc,
+                        { units: 0, charge: 0, from: [] as string[] }
+                      );
                       const rows = acTenants.map(t => {
                         const pay = monthRows.find(p => p.tenant_id === t.id);
+                        const carried = carriedFor(t.id);
                         return {
                           id: t.id,
                           name: t.full_name,
-                          units: Number(pay?.ac_units_consumed ?? 0),
-                          charge: Number(pay?.ac_charge ?? 0),
+                          units: Math.round((Number(pay?.ac_units_consumed ?? 0) - carried.units) * 100) / 100,
+                          charge: Number(pay?.ac_charge ?? 0) - carried.charge,
                           departed: false,
+                          carried,
                         };
                       });
                       // A tenant who checked out mid-month keeps their payment row but
@@ -2506,13 +2527,17 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       // and the listed units never added up to the reading.
                       const departedRows = monthRows
                         .filter(p => !activeIds.has(p.tenant_id) && Number(p.ac_charge ?? 0) > 0)
-                        .map(p => ({
-                          id: p.tenant_id,
-                          name: p.tenant?.full_name ?? "Checked out",
-                          units: Number(p.ac_units_consumed ?? 0),
-                          charge: Number(p.ac_charge ?? 0),
-                          departed: true,
-                        }));
+                        .map(p => {
+                          const carried = carriedFor(p.tenant_id);
+                          return {
+                            id: p.tenant_id,
+                            name: p.tenant?.full_name ?? "Checked out",
+                            units: Math.round((Number(p.ac_units_consumed ?? 0) - carried.units) * 100) / 100,
+                            charge: Number(p.ac_charge ?? 0) - carried.charge,
+                            departed: true,
+                            carried,
+                          };
+                        });
                       // A member who TRANSFERRED out of this room is invisible to both
                       // lists above: they are still active, and their payment row has
                       // followed them to the new room, so `monthRows` (matched on the
@@ -2537,6 +2562,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           charge: Number(c.ac_charge ?? 0),
                           departed: true,
                           moved: true,
+                          carried: { units: 0, charge: 0, from: [] as string[] },
                         }));
                       const allRows = [
                         ...rows.map(r => ({ ...r, moved: false })),
@@ -2577,6 +2603,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                                 {r.departed && (
                                   <span className="text-muted-foreground/50">
                                     {r.moved ? " — moved rooms, charged at the move" : " — checked out, charged at departure"}
+                                  </span>
+                                )}
+                                {/* Their bill is higher than this line, and the operator
+                                    will compare the two. Say why here rather than leave
+                                    the difference looking like an error. */}
+                                {r.carried.units > 0 && (
+                                  <span className="text-muted-foreground/50">
+                                    {" "}— plus {r.carried.units} units from room{r.carried.from.length > 1 ? "s" : ""}{" "}
+                                    {r.carried.from.map(id => rooms.find(rm => rm.id === id)?.room_number ?? "?").join(", ")}, on the same bill
                                   </span>
                                 )}
                               </span>
