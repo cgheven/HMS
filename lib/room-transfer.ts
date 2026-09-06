@@ -134,7 +134,10 @@ export async function performRoomTransfer(
 
   let closedUnits = 0;
   let closedCharge = 0;
-  let warning: string | undefined;
+  // Kept on the result shape for callers, but nothing sets it any more: every
+  // condition that used to warn now refuses outright, because each one left the
+  // member's billing in a state the operator had no reachable way to correct.
+  const warning: string | undefined = undefined;
 
   // These writes happen before the move itself, and there is no transaction
   // across them. A failure after either one — most reachably the pricing
@@ -168,9 +171,10 @@ export async function performRoomTransfer(
     if (reading < 0 || reading > 999_999) throw new Error("Meter reading must be between 0 and 999,999.");
 
     const prevMonth = prevMonthOf(forMonth);
-    const [{ data: prevRow }, { data: prevCheckouts }, { data: roommates }, { data: joinRows }, { data: priorCheckouts }, { data: cfg }] =
+    const [{ data: prevRow }, { data: thisMonthRow }, { data: prevCheckouts }, { data: roommates }, { data: joinRows }, { data: priorCheckouts }, { data: cfg }] =
       await Promise.all([
         adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", fromRoom.id).eq("hostel_id", hostelId).eq("for_month", prevMonth).maybeSingle(),
+        adminDb.from("hms_room_ac_readings").select("meter_reading, total_units").eq("room_id", fromRoom.id).eq("hostel_id", hostelId).eq("for_month", forMonth).maybeSingle(),
         adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", fromRoom.id).eq("hostel_id", hostelId).eq("for_month", prevMonth),
         adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", fromRoom.id).eq("is_active", true),
         adminDb.from("hms_room_ac_join_readings").select("tenant_id, units_at_join").eq("room_id", fromRoom.id).eq("hostel_id", hostelId).eq("for_month", forMonth),
@@ -179,10 +183,34 @@ export async function performRoomTransfer(
       ]);
 
     const perUnitRate = Number(cfg?.ac_per_unit_rate ?? 0);
+
+    // Where this month started for THIS room, ranked exactly as checkout ranks it.
+    //   1. last month's closing reading;
+    //   2. the opening this month's own Apply already used, backed out of the row
+    //      it saved (reading - units) — without this a transfer after a mid-month
+    //      Apply re-derives a different opening and bills the same units twice;
+    //   3. the earliest move-in reading among the room's tenants.
+    //
+    // Never 0. That fallback was silently catastrophic on exactly the branches
+    // this feature was built for: the admission form only asks for a move-in
+    // meter reading when the room is flagged has_ac, so on a meter-all-rooms
+    // branch with no AC-flagged rooms — Continental, all three — no tenant ever
+    // has one, step 3 always returns null, and a 0 baseline turns the meter's
+    // absolute reading into one month's consumption. An 8,432 reading became a
+    // six-figure charge written straight onto a member's bill with no preview.
     const storedPrev = effectivePrevReading(prevRow, prevCheckouts);
-    const prevReading = storedPrev != null
-      ? storedPrev
-      : (deriveOpeningReading(roommates ?? [], forMonth) ?? 0);
+    const impliedFromThisMonth =
+      thisMonthRow?.meter_reading != null && thisMonthRow?.total_units != null
+        ? Math.round(Number(thisMonthRow.meter_reading)) - Math.round(Number(thisMonthRow.total_units))
+        : null;
+    const prevReading = storedPrev ?? impliedFromThisMonth ?? deriveOpeningReading(roommates ?? [], forMonth);
+
+    if (prevReading == null) {
+      throw new Error(
+        `Room ${fromRoom.room_number} has no opening meter reading for this month, so there is nothing to ` +
+        `measure the member's usage against. Record the room's reading on the AC Billing tab first, then move them.`
+      );
+    }
 
     if (reading < prevReading) {
       throw new Error(
@@ -281,13 +309,25 @@ export async function performRoomTransfer(
         : deriveOpeningReading(roommates ?? [], forMonth);
 
       if (opening == null) {
-        // No baseline exists for the destination yet, so an offset cannot be
-        // computed. Recording nothing is the honest outcome: the month's first
-        // Apply establishes the opening, and the operator can enter this tenant
-        // under Mid-Month Joiners then. Said out loud rather than swallowed.
-        warning =
-          `Room ${toRoom.room_number} has no earlier meter reading, so the member's starting point there could not be ` +
-          `recorded automatically. Enter them under "Mid-Month Joiners" on the AC Billing tab when you apply this month's units.`;
+        // Refused, not warned. The old warning told the operator to finish the
+        // job under "Mid-Month Joiners" — a box built from tenants whose
+        // CHECK-IN month is the month on screen. A transfer never touches
+        // check_in, so a member who joined in March and moves rooms in October
+        // is never in that list and the instruction could not be followed. Left
+        // unrecorded, the destination's Apply treats them as present from unit
+        // zero and bills them for what was burned before they arrived — the
+        // exact bug this feature exists to remove.
+        //
+        // Reachable on the simplest move of all: into an empty room, where there
+        // are no roommates to derive an opening from and often no reading on
+        // file. The operator is standing at that meter, so recording the room
+        // first is a real one-time action, and the AC Billing tab has an Opening
+        // box for precisely this.
+        throw new Error(
+          `Room ${toRoom.room_number} has no opening meter reading for this month, so the member's starting point ` +
+          `there cannot be recorded. Record that room's reading on the AC Billing tab first, then move them — ` +
+          `otherwise they would be billed for units used before they arrived.`
+        );
       } else if (reading < opening) {
         throw new Error(
           `Meter reading ${reading} for room ${toRoom.room_number} is below where the month opened (${opening}). ` +

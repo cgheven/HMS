@@ -2292,10 +2292,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // lib/tenant-checkout.ts adds it back). Superseding all of it quoted the
     // door figure that much too low while the server settled the full amount.
     const carriedAc = checkoutPendingPayment?.carried_ac_charge ?? 0;
-    const supersededAc = rowIsDepartureMonth ? Math.max(0, existingAcCharge - carriedAc) : 0;
-    const rawPending = Math.max(0, (checkoutPendingPayment?.amount ?? 0) - supersededAc - alreadyPaid);
-    const proRateDiscount = proRateActive ? (checkoutProRateInfo?.discount ?? 0) : 0;
-    const basePending = Math.max(0, rawPending - proRateDiscount);
+    // Declared here, assigned after estimatedACCharge is known — the two must
+    // agree, and which one is right depends on the branch the estimate takes.
+    let supersededAc = 0;
 
     // The exact opening the AC Units tab already used, backed out from what it
     // actually saved (reading - units) — preferred over the generic move-in-reading
@@ -2363,10 +2362,28 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       }
     };
 
+    // Two of these branches REUSE the charge already on the row rather than
+    // estimating a fresh one. That stored figure may include a share carried
+    // from a room the member moved out of this month — so on those branches the
+    // whole of it is being put back and the whole of it must come off, while on
+    // the estimate branch only the current room's part is replaced. Netting the
+    // carried share out unconditionally (as this did) over-quoted by exactly
+    // that amount: on a deposit checkout the surplus was written off as a
+    // forfeit, and without a deposit it was collected in cash and never recorded.
+    const reusesStoredCharge = roomHasAC && ((isPartiallyPaid && existingAcCharge > 0) || !hasNewerACReading);
     const estimatedACCharge = !roomHasAC ? 0
-      : (isPartiallyPaid && existingAcCharge > 0) ? existingAcCharge
-      : !hasNewerACReading ? existingAcCharge
+      : reusesStoredCharge ? existingAcCharge
       : previewACCharge();
+
+    supersededAc = rowIsDepartureMonth
+      ? (reusesStoredCharge ? existingAcCharge : Math.max(0, existingAcCharge - carriedAc))
+      : 0;
+
+    // Computed here, not earlier: it subtracts supersededAc, which is only
+    // knowable once the estimate's branch is decided just above.
+    const rawPending = Math.max(0, (checkoutPendingPayment?.amount ?? 0) - supersededAc - alreadyPaid);
+    const proRateDiscount = proRateActive ? (checkoutProRateInfo?.discount ?? 0) : 0;
+    const basePending = Math.max(0, rawPending - proRateDiscount);
 
     const pending = basePending + estimatedACCharge;
     // "waive" forgives the dues outright, so there is nothing for the deposit to cover.
