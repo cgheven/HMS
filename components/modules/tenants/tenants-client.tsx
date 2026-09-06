@@ -2328,26 +2328,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const acRate = checkoutACContext?.perUnitRate ?? 0;
     const acCount = checkoutACContext?.activeTenantCount ?? 0;
     const roomHasAC = !!(checkingOut?.room_id && (roomMap[checkingOut.room_id]?.has_ac || meterAllRooms));
-    // If the meter hasn't actually moved past what the AC Units tab already
-    // applied this month, there's nothing new to bill — recompute from an
-    // independently-fetched join/checkout dataset here instead risks disagreeing
-    // with the allocation already sitting on the row (join-reading corrections
-    // saved after Apply ran, timing drift, etc). Reuse that already-correct
-    // number rather than a fresh, possibly-diverging estimate; only genuinely
-    // newer meter data (past what Apply has already seen) needs computing here.
-    // A partially_paid row never recomputes at all, regardless of the reading
-    // entered — there's no way to tell how much of what's already been paid
-    // covered AC vs. rent, so re-deriving a fresh split here would risk
-    // double-billing or under-billing the AC portion against a payment that
-    // already happened.
-    const currentAppliedReading = checkoutACContext?.currentMonthReading ?? null;
-    // An explicit opening-reading correction also forces a recompute, even if
-    // the closing reading is left at whatever was already applied — otherwise
-    // a typed correction here silently gets ignored (only reachable when there's
-    // no previous-month record, since that's the only time this field shows).
-    const hasNewerACReading = currentAppliedReading == null
-      || (Number.isFinite(acReading) && acReading > currentAppliedReading)
-      || checkoutACOpeningReading.trim() !== "";
+    // A partially_paid row never recomputes, regardless of the reading entered —
+    // there's no way to tell how much of what's already been paid covered AC vs.
+    // rent, so re-deriving a fresh split would risk double-billing or writing off
+    // the AC portion against a payment that already happened.
+
 
     // Computed by the SAME function the Payments page's AC Units tab bills with
     // (computeACSegmentBilling), fed the same raw join/checkout rows — so this
@@ -2385,7 +2370,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // carried share out unconditionally (as this did) over-quoted by exactly
     // that amount: on a deposit checkout the surplus was written off as a
     // forfeit, and without a deposit it was collected in cash and never recorded.
-    const reusesStoredCharge = roomHasAC && ((isPartiallyPaid && existingAcCharge > 0) || !hasNewerACReading);
+    // MUST match performTenantCheckout exactly — see the long note on
+    // hasNewerReading there. The departure reading always prices the departure
+    // now; the ONLY row that reuses what is on it is one with money already
+    // collected against AC, because that is the one case where the split cannot
+    // be re-derived without risking billing it twice or writing it off.
+    const reusesStoredCharge = roomHasAC && isPartiallyPaid && existingAcCharge > 0;
     const estimatedACCharge = !roomHasAC ? 0
       : reusesStoredCharge ? existingAcCharge
       : previewACCharge();

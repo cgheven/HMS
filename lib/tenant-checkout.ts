@@ -356,19 +356,30 @@ export async function performTenantCheckout(
         adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).single(),
       ]);
 
-      // If the meter hasn't actually moved past what AC Units already applied this
-      // month AND the operator isn't correcting the opening reading either, there
-      // is nothing new to bill — recomputing here duplicates that exact same
-      // allocation with an independently-fetched, independently-timed dataset
-      // (join/checkout rows can drift between when Apply ran and now), which is
-      // exactly how a departing tenant's estimate silently diverged from the
-      // already-correct number sitting on their payment row. Skipping leaves
-      // whatever ac_charge Apply already computed untouched — the only cases that
-      // still need computing here are a genuinely newer reading or an explicit
-      // opening correction, i.e. real information the room's last Apply never saw.
-      const alreadyAppliedReading = currentMonthRecord?.meter_reading != null
-        ? Math.round(Number(currentMonthRecord.meter_reading))
-        : null;
+      // The departure reading ALWAYS drives the charge.
+      //
+      // This used to be skipped whenever the reading did not exceed what the AC
+      // Units tab had already applied, on the reasoning that a meter which has
+      // not advanced has nothing new to bill. That reasoning was wrong, and it
+      // was wrong in the operator's face: apply the room at 5,800, then check
+      // someone out at 5,700, 5,500 or 5,100 and every one of them produced the
+      // same charge, because all three tripped the guard. The field looked like
+      // it priced the departure and did not.
+      //
+      // "The meter has not moved" is not "we have learnt nothing". A departure
+      // reading BELOW the applied one is real information the room's Apply never
+      // had — it says the member stopped consuming before the month closed — and
+      // it can only ever reduce their share. Discarding it left them paying for
+      // units burned after they walked out, and left the room billing more units
+      // than it metered once the remaining tenants were re-applied against the
+      // departure breakpoint. Five real departures across two live branches had
+      // already been billed this way.
+      //
+      // The drift this guard was protecting against is not a real risk: the
+      // recompute below and the AC Units tab call the SAME computeACSegmentBilling
+      // with the same inputs, so an unchanged reading reproduces Apply's own
+      // figure exactly. What is left is the one case where the numbers genuinely
+      // cannot be re-derived — a row with money already collected against AC.
       // A partially-paid row never recomputes, whatever reading is entered —
       // there is no way to tell how much of what was already collected covered
       // AC versus rent, so re-deriving the AC share would risk billing it twice
@@ -386,11 +397,7 @@ export async function performTenantCheckout(
       const rowPartiallyPaid = ownPaymentRow?.status === "partially_paid"
         && Number(ownPaymentRow?.amount_paid ?? 0) > 0.009
         && Number(ownPaymentRow?.ac_charge ?? 0) > 0;
-      const hasNewerReading = !rowPartiallyPaid && (
-        alreadyAppliedReading == null
-        || Math.round(Number(input.acCheckoutReading)) > alreadyAppliedReading
-        || input.acOpeningReading != null
-      );
+      const hasNewerReading = !rowPartiallyPaid;
 
       if (isMeteredRoom(roomInfo, !!hostelMeter?.meter_all_rooms)) {
         // Same fallback as applyRoomACUnitsAction: with no previous-month reading
@@ -428,6 +435,21 @@ export async function performTenantCheckout(
         }
         if (reading < prevReading) {
           throw new Error(`AC meter reading (${reading}) cannot be less than previous month's reading (${prevReading})`);
+        }
+        // Nobody leaves before they arrive. Now that the reading actually prices
+        // the departure, a number below the member's own arrival point silently
+        // bills them nothing for this room instead of merely being ignored — so a
+        // slipped digit stops being cosmetic and starts costing the owner the
+        // whole stay. Only checked for a member who HAS an arrival point in this
+        // room this month (a mid-month joiner or a room transfer); everyone else
+        // was present from the first unit and has nothing to be below.
+        const ownJoinOffset = (joinRowsData ?? []).find(j => j.tenant_id === input.tenantId)?.units_at_join;
+        if (ownJoinOffset != null && reading - prevReading < Math.round(Number(ownJoinOffset))) {
+          const arrivedAt = prevReading + Math.round(Number(ownJoinOffset));
+          throw new Error(
+            `Meter reading ${reading} is below the ${arrivedAt} recorded when this member moved into the room. ` +
+            `Check the number — they cannot have left before they arrived.`
+          );
         }
         if (perUnitRate > 0 && totalStart > 0 && !hasNewerReading) {
           // Nothing new to bill — the AC Units tab already computed and recorded
@@ -623,6 +645,21 @@ export async function performTenantCheckout(
     // Net of anything already paid — a month that was settled before an AC charge
     // showed up at checkout only owes the AC charge, not the rent all over again.
     const totalDue = Math.max(0, grossDue - Number(verifiedPayment?.amount_paid ?? 0));
+    // The departure reading can now lower the bill — that is the point of it. When
+    // the member had already paid against the higher figure the difference is
+    // theirs, and the max() above quietly swallows it: totalDue clamps to zero,
+    // the row is marked settled, and nothing on screen says money is owed BACK.
+    // Said out loud instead. Not clamped or auto-refunded: cash movements are the
+    // operator's to make, and a silent adjustment to a settled bill is exactly
+    // what this whole feature exists to stop.
+    const overCollected = Math.round((Number(verifiedPayment?.amount_paid ?? 0) - grossDue) * 100) / 100;
+    if (verifiedPayment && overCollected > 0.01) {
+      const notice =
+        `This bill re-prices to ${grossDue.toLocaleString()} once the departure reading is applied, ` +
+        `and ${Number(verifiedPayment.amount_paid ?? 0).toLocaleString()} has already been collected. ` +
+        `Return ${overCollected.toLocaleString()} to the member.`;
+      repriceWarning = repriceWarning ? `${repriceWarning} ${notice}` : notice;
+    }
     // Dues come out of the deposit first; only the shortfall is real cash the
     // operator has to collect at the door.
     const depositApplied = settleAction === "pay" ? Math.min(heldDeposit, totalDue) : 0;
