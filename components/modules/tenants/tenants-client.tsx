@@ -34,14 +34,14 @@ import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplica
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction, getRoomTransferPreviewAction, transferTenantRoomAction, type RoomTransferPreview } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction, getRoomTransferPreviewAction, transferTenantRoomAction, getRoomTransferCorrectionAction, correctRoomTransferAction, type RoomTransferPreview } from "@/app/actions/tenants";
 // Straight from the module that declares it. Re-exporting it through the
 // "use server" file as `export type { RoomTransferResult }` did not survive
 // Turbopack — a re-exported import binding is emitted as a real runtime export,
 // and every page that pulls in tenants.ts died with "RoomTransferResult is not
 // defined". A dedicated `import type` is erased outright, so the server-only
 // module it names is never bundled into this client component.
-import type { RoomTransferResult } from "@/lib/room-transfer";
+import type { RoomTransferResult, CorrectableTransfer } from "@/lib/room-transfer";
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 import { addTenantAsManager, editTenantAsManager, checkoutTenantAsManager, giveTenantNoticeAsManager, cancelTenantNoticeAsManager } from "@/app/actions/managers";
 import { checkTenantRedflagAction } from "@/app/actions/redflag";
@@ -726,6 +726,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   // quickly — only the latest request may write state.
   const transferReqRef = useRef(0);
   const [transferFromReading, setTransferFromReading] = useState("");
+  // A move already saved this month that can still be re-priced. Fetched when the
+  // edit dialog opens, because a mistyped meter reading used to be permanent and
+  // the only repair was a hand-written SQL statement.
+  const [correction, setCorrection] = useState<CorrectableTransfer | null>(null);
+  const [correctionOpen, setCorrectionOpen] = useState(false);
+  const [correctFrom, setCorrectFrom] = useState("");
+  const [correctTo, setCorrectTo] = useState("");
+  const [correcting, setCorrecting] = useState(false);
   const [transferToReading, setTransferToReading] = useState("");
 
   const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; registration_fee_charge: number; ac_maintenance_charge: number; late_fee: number; discount_percent: number; referral_percent: number; carried_ac_charge?: number } | null>(null);
@@ -1252,6 +1260,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   function openEdit(t: Tenant, forceActive = false) {
     setEditing(t);
     setViewOnly(false);
+    setCorrection(null);
+    setCorrectionOpen(false);
+    getRoomTransferCorrectionAction(t.id)
+      .then((r) => {
+        if (r.correction) {
+          setCorrection(r.correction);
+          setCorrectFrom(String(r.correction.fromRoomReading));
+          setCorrectTo(r.correction.toRoomReading != null ? String(r.correction.toRoomReading) : "");
+        }
+      })
+      .catch(() => {/* the panel simply does not appear */});
     setJoiningPhotoFile(null);
     setEditingDocs(t.documents ?? []);
     setForm({
@@ -4262,6 +4281,86 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   , and room {transferPreview.toRoomNumber}
                   {transferPreview.toMetered && transferToReading ? ` from ${Number(transferToReading).toLocaleString()}` : ""} onward.
                 </p>
+              </div>
+            )}
+
+            {/* A move already recorded this month, and the way back from a slipped
+                digit. Hidden while a NEW destination is being picked — one dialog
+                cannot both make a move and re-price the last one. */}
+            {correction && !transferPreview && (
+              <div className="rounded-xl border border-sidebar-border bg-sidebar-accent/20 p-3 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-foreground">
+                      Moved {correction.fromRoomNumber} → {correction.toRoomNumber} on {formatDate(correction.movedOn)}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      {correction.fromRoomNumber} meter: {correction.fromRoomReading.toLocaleString()}
+                      {" · "}{correction.billedUnits} units → {formatCurrency(correction.billedCharge)}
+                      {correction.toRoomReading != null && <> · {correction.toRoomNumber} meter: {correction.toRoomReading.toLocaleString()}</>}
+                    </p>
+                  </div>
+                  {!correctionOpen && (
+                    <Button type="button" variant="outline" size="sm" className="h-7 text-xs shrink-0"
+                      onClick={() => setCorrectionOpen(true)}>
+                      Fix readings
+                    </Button>
+                  )}
+                </div>
+                {correctionOpen && (
+                  <>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Room {correction.fromRoomNumber} meter at the move</Label>
+                        <Input type="number" min="0" max="999999" inputMode="numeric"
+                          value={correctFrom} onChange={(e) => setCorrectFrom(e.target.value)} />
+                      </div>
+                      {correction.toRoomReading != null && (
+                        <div className="space-y-1">
+                          <Label className="text-xs">Room {correction.toRoomNumber} meter at the move</Label>
+                          <Input type="number" min="0" max="999999" inputMode="numeric"
+                            value={correctTo} onChange={(e) => setCorrectTo(e.target.value)} />
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Re-prices the move and re-splits both rooms. The original entry stays in the ledger.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button type="button" size="sm" className="h-7 text-xs"
+                        disabled={correcting || correctFrom.trim() === "" || (correction.toRoomReading != null && correctTo.trim() === "")}
+                        onClick={async () => {
+                          setCorrecting(true);
+                          const res = await correctRoomTransferAction({
+                            tenantId: editing!.id,
+                            fromRoomReading: Number(correctFrom),
+                            toRoomReading: correction.toRoomReading != null ? Number(correctTo) : null,
+                          });
+                          setCorrecting(false);
+                          if (!res.success) {
+                            toast({ title: "Readings not changed", description: res.error, variant: "destructive" });
+                            return;
+                          }
+                          const r = res.result!;
+                          toast({
+                            title: r.warning ? "Re-priced — one thing left to finish" : "Move re-priced",
+                            description: r.warning
+                              ?? `Room ${r.fromRoomNumber}: ${r.closedUnits} units (${formatCurrency(r.closedCharge)}), was ${r.previousUnits} units (${formatCurrency(r.previousCharge)}).`,
+                            variant: r.warning ? "destructive" : undefined,
+                          });
+                          setCorrectionOpen(false);
+                          setCorrection(null);
+                          router.refresh();
+                        }}>
+                        {correcting ? "Saving…" : "Save readings"}
+                      </Button>
+                      <Button type="button" variant="ghost" size="sm" className="h-7 text-xs"
+                        onClick={() => setCorrectionOpen(false)} disabled={correcting}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
 

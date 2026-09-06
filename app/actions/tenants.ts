@@ -9,17 +9,19 @@ import { billLinkForPayment } from "@/lib/bill-link";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
 import { requireOwnerOrAbove, requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
+import { applyRoomACUnitsAction } from "@/app/actions/payments";
+import { applyRoomACUnitsAsManager } from "@/app/actions/managers";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
 import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount, splitPaymentCharges } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
-import { performRoomTransfer, isMeteredRoom } from "@/lib/room-transfer";
+import { performRoomTransfer, isMeteredRoom, findCorrectableTransfer, correctRoomTransferReadings } from "@/lib/room-transfer";
 // Separate `import type`, never re-exported from this file. `export type { X }`
 // of an imported binding is emitted as a real runtime export by Turbopack, and
 // every page importing this module then died on "RoomTransferResult is not
 // defined". Consumers import the type from @/lib/room-transfer directly.
-import type { RoomTransferResult } from "@/lib/room-transfer";
+import type { RoomTransferResult, CorrectableTransfer, RoomTransferCorrectionResult } from "@/lib/room-transfer";
 import { carriedTransferCharges } from "@/lib/ac-transfer";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
@@ -2301,6 +2303,104 @@ export async function transferTenantRoomAction(input: {
     revalidatePath("/tenants");
     revalidatePath("/payments");
     return { success: true, result };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** The move this member made this month that can still be re-priced, or null. */
+export async function getRoomTransferCorrectionAction(
+  tenantId: string
+): Promise<{ correction?: CorrectableTransfer | null; error?: string }> {
+  try {
+    const mgr = await getManagerContext();
+    let hostelId: string;
+    if (mgr?.activeHostel) {
+      if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      hostelId = mgr.activeHostel.id;
+    } else {
+      await requireOwnerOrPartnerTier("full");
+      hostelId = await resolveHostelId();
+    }
+    return { correction: await findCorrectableTransfer(createAdminClient(), hostelId, tenantId) };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function correctRoomTransferAction(input: {
+  tenantId: string;
+  fromRoomReading: number;
+  toRoomReading?: number | null;
+}): Promise<{ success: boolean; result?: RoomTransferCorrectionResult; error?: string }> {
+  try {
+    // Same gate as the move itself — correcting one is the same act of pricing.
+    const mgr = await getManagerContext();
+    let hostelId: string;
+    if (mgr?.activeHostel) {
+      if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      hostelId = mgr.activeHostel.id;
+    } else {
+      await requireOwnerOrPartnerTier("full");
+      hostelId = await resolveHostelId();
+    }
+    const adminDb = createAdminClient();
+    const result = await correctRoomTransferReadings(adminDb, hostelId, input);
+
+    // Re-run the destination's Apply rather than asking the operator to remember.
+    // Its split was made against the arrival point this correction just moved, and
+    // the staleness is invisible: the roommates' shares still sum to the meter, so
+    // the AC card shows nothing wrong while one member carries another's units.
+    // A failure here does not fail the correction — the readings are already right
+    // — but it must be said out loud, because nothing else will.
+    let reapplyWarning: string | undefined;
+    if (result.reapplyRoomId && result.reapplyReading != null) {
+      try {
+        const month = pktTodayDateString().slice(0, 7);
+        // The manager variant reports failure as a non-null `error` rather than a
+        // success flag; both shapes are checked so neither tier fails silently.
+        const applied = mgr?.activeHostel
+          ? await applyRoomACUnitsAsManager(result.reapplyRoomId, month, result.reapplyReading)
+          : await applyRoomACUnitsAction(result.reapplyRoomId, month, result.reapplyReading);
+        const appliedErr = "error" in applied ? applied.error : undefined;
+        const appliedOk = "success" in applied ? applied.success : !appliedErr;
+        if (!appliedOk) throw new Error(appliedErr ?? "Apply failed");
+      } catch (e) {
+        reapplyWarning =
+          `Room ${result.reapplyRoom}'s units were already applied against the old reading and could not be re-split ` +
+          `automatically (${e instanceof Error ? e.message : String(e)}). Open Payments -> AC Billing and press Apply ` +
+          `on room ${result.reapplyRoom} — until you do, the members there are billed for each other's units.`;
+      }
+    }
+
+    // Appended, never rewritten. The original move is what the operator recorded
+    // at the time; a correction is a second fact about the same move, and an
+    // audit trail that edits itself is not one.
+    const noteParts = [
+      `${result.fromRoomNumber} meter: ${Math.round(Number(input.fromRoomReading))}` +
+      ` · ${result.closedUnits} units` +
+      (result.closedCharge > 0 ? ` → Rs ${result.closedCharge.toLocaleString()}` : ""),
+    ];
+    if (result.openedMeter && input.toRoomReading != null) {
+      noteParts.push(`${result.toRoomNumber} meter: ${Math.round(Number(input.toRoomReading))}`);
+    }
+    noteParts.push(`was ${result.previousUnits} units → Rs ${result.previousCharge.toLocaleString()}`);
+
+    await adminDb.from("hms_tenant_events").insert({
+      hostel_id: hostelId,
+      tenant_id: input.tenantId,
+      event_type: "room_changed",
+      from_value: result.fromRoomNumber,
+      to_value: result.toRoomNumber,
+      amount: result.closedCharge > 0 ? result.closedCharge : null,
+      notes: `Readings corrected · ${noteParts.join(" · ")}`,
+    });
+
+    revalidatePath("/tenants");
+    revalidatePath("/payments");
+    return { success: true, result: { ...result, warning: reapplyWarning ?? result.warning } };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };

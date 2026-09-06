@@ -484,3 +484,242 @@ function prevMonthOf(m: string): string {
   const d = new Date(y, mo - 2, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
+
+/** A move made this month that can still be corrected, with the two readings it was priced from. */
+export interface CorrectableTransfer {
+  fromRoomId: string;
+  fromRoomNumber: string;
+  toRoomId: string;
+  toRoomNumber: string;
+  /** What was typed at the time — what the operator needs to see to spot the slip. */
+  fromRoomReading: number;
+  toRoomReading: number | null;
+  movedOn: string;
+  billedUnits: number;
+  billedCharge: number;
+  /** The destination's month-end Apply has already run, so its split of that room
+   *  was made against the OLD arrival point and has to be re-run afterwards. */
+  destinationApplied: boolean;
+  /** The reading that Apply used, so the caller can re-run it unattended. */
+  destinationReading: number | null;
+}
+
+/**
+ * The move a correction would act on, or null when there is nothing to correct.
+ *
+ * A mistyped meter reading used to be permanent. The panel prefilled both boxes
+ * with each room's last recorded reading — the month's OPENING, never what the
+ * meter says at the moment of the move — so pressing Save without touching them
+ * closed the old room at zero units and opened the new one at offset zero. That
+ * prefill is gone, but a slipped digit is still a slipped digit, and until now
+ * the only repair was a hand-written SQL statement.
+ *
+ * Deliberately narrow. It finds ONLY the move whose destination is the room the
+ * member is in right now, which is by construction their most recent one: an
+ * earlier move in a chain (A->B->C) has its destination behind them, and
+ * correcting it would silently invalidate every move computed on top of it.
+ */
+export async function findCorrectableTransfer(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adminDb: SupabaseClient<any, any, any>,
+  hostelId: string,
+  tenantId: string
+): Promise<CorrectableTransfer | null> {
+  const forMonth = pktTodayDateString().slice(0, 7);
+
+  const { data: tenant } = await adminDb
+    .from("hms_tenants")
+    .select("id, room_id, is_active")
+    .eq("id", tenantId)
+    .eq("hostel_id", hostelId)
+    .maybeSingle();
+  // A member who has left cannot have their move corrected: the checkout priced
+  // their final bill off the arrival point this would move.
+  if (!tenant || !tenant.is_active || !tenant.room_id) return null;
+
+  const { data: move } = await adminDb
+    .from("hms_room_ac_checkout_readings")
+    .select("room_id, meter_reading, units_consumed, ac_charge, checkout_date")
+    .eq("hostel_id", hostelId)
+    .eq("for_month", forMonth)
+    .eq("tenant_id", tenantId)
+    .eq("transferred_to_room_id", tenant.room_id)
+    .maybeSingle();
+  if (!move) return null;
+
+  const [{ data: fromRoom }, { data: toRoom }, { data: joinRow }] = await Promise.all([
+    adminDb.from("hms_rooms").select("id, room_number").eq("id", move.room_id).eq("hostel_id", hostelId).maybeSingle(),
+    adminDb.from("hms_rooms").select("id, room_number").eq("id", tenant.room_id).eq("hostel_id", hostelId).maybeSingle(),
+    adminDb.from("hms_room_ac_join_readings").select("units_at_join").eq("hostel_id", hostelId)
+      .eq("room_id", tenant.room_id).eq("tenant_id", tenantId).eq("for_month", forMonth).maybeSingle(),
+  ]);
+  if (!fromRoom || !toRoom) return null;
+
+  // units_at_join is an OFFSET from the destination's opening. The operator typed
+  // an absolute meter reading, so turn it back into one or the box shows a number
+  // they never entered.
+  let toRoomReading: number | null = null;
+  if (joinRow?.units_at_join != null) {
+    const prevMonth = prevMonthOf(forMonth);
+    const [{ data: prevRow }, { data: prevCheckouts }, { data: roommates }] = await Promise.all([
+      adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", toRoom.id).eq("hostel_id", hostelId).eq("for_month", prevMonth).maybeSingle(),
+      adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", toRoom.id).eq("hostel_id", hostelId).eq("for_month", prevMonth),
+      adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", toRoom.id).eq("is_active", true),
+    ]);
+    const opening = effectivePrevReading(prevRow, prevCheckouts) ?? deriveOpeningReading(roommates ?? [], forMonth);
+    if (opening != null) toRoomReading = opening + Math.round(Number(joinRow.units_at_join));
+  }
+
+  const { data: destReading } = await adminDb
+    .from("hms_room_ac_readings")
+    .select("meter_reading")
+    .eq("hostel_id", hostelId).eq("room_id", toRoom.id).eq("for_month", forMonth)
+    .maybeSingle();
+
+  return {
+    fromRoomId: fromRoom.id,
+    fromRoomNumber: fromRoom.room_number,
+    toRoomId: toRoom.id,
+    toRoomNumber: toRoom.room_number,
+    fromRoomReading: Math.round(Number(move.meter_reading)),
+    toRoomReading,
+    movedOn: String(move.checkout_date),
+    billedUnits: Number(move.units_consumed ?? 0),
+    billedCharge: Number(move.ac_charge ?? 0),
+    destinationApplied: destReading?.meter_reading != null,
+    destinationReading: destReading?.meter_reading != null ? Math.round(Number(destReading.meter_reading)) : null,
+  };
+}
+
+export interface RoomTransferCorrectionResult extends RoomTransferResult {
+  previousUnits: number;
+  previousCharge: number;
+  /** The destination room still needs re-applying — its split was made against the
+   *  arrival point this correction just moved. Left to the caller because Apply is
+   *  tier-specific, but it is NOT optional: the roommates' shares are wrong until
+   *  it runs, and they are wrong in a way nothing on screen would flag, since the
+   *  stale total still adds up to the meter. */
+  reapplyRoom: string | null;
+  reapplyRoomId: string | null;
+  reapplyReading: number | null;
+}
+
+/**
+ * Re-price a move that was recorded with the wrong meter readings.
+ *
+ * Implemented as undo-then-redo rather than a second copy of the pricing, because
+ * a second copy is exactly how the checkout estimate and the AC Units tab drifted
+ * apart. performRoomTransfer is the one implementation that has been verified
+ * against the meter; this puts the member back where they started and runs it
+ * again with the corrected numbers.
+ *
+ * If the new readings are rejected — below the room's opening, below another
+ * member's departure recorded since — the original move is put back before the
+ * error is raised. A typo in the correction must not cost them the move itself.
+ */
+export async function correctRoomTransferReadings(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adminDb: SupabaseClient<any, any, any>,
+  hostelId: string,
+  input: { tenantId: string; fromRoomReading: number; toRoomReading?: number | null }
+): Promise<RoomTransferCorrectionResult> {
+  const forMonth = pktTodayDateString().slice(0, 7);
+  const corr = await findCorrectableTransfer(adminDb, hostelId, input.tenantId);
+  if (!corr) {
+    throw new Error("There is no move from this month left to correct for this member.");
+  }
+
+  // Money already collected cannot be quietly re-cut. The charge for the room they
+  // left sits on this bill; moving it after the member has paid against it turns a
+  // settled row into one that disagrees with the cash in the drawer, with nothing
+  // on screen to reconcile it.
+  const payBefore = await readPayRow(adminDb, hostelId, forMonth, input.tenantId);
+  if (payBefore && Number(payBefore.amount_paid ?? 0) > 0.009) {
+    throw new Error(
+      `This month's bill for the member already has ${Number(payBefore.amount_paid).toLocaleString()} collected against it, ` +
+      `so the move's charge cannot be re-cut here. Undo the payment first, then correct the readings.`
+    );
+  }
+
+  // Whatever the DESTINATION's own Apply has already put on this bill. Every
+  // transfer row is a room the member has left, so what is left over after
+  // subtracting all of them is the current room's share — and performRoomTransfer
+  // overwrites ac_charge with (other rooms + this closing), which would erase it.
+  const { data: allMoves } = await adminDb
+    .from("hms_room_ac_checkout_readings")
+    .select("ac_charge, units_consumed")
+    .eq("hostel_id", hostelId).eq("for_month", forMonth).eq("tenant_id", input.tenantId)
+    .not("transferred_to_room_id", "is", null);
+  const movedCharge = (allMoves ?? []).reduce((s, r) => s + Number(r.ac_charge ?? 0), 0);
+  const movedUnits = (allMoves ?? []).reduce((s, r) => s + Number(r.units_consumed ?? 0), 0);
+  const destOwnCharge = Math.max(0, Number(payBefore?.ac_charge ?? 0) - movedCharge);
+  const destOwnUnits = Math.max(0, Number(payBefore?.ac_units_consumed ?? 0) - movedUnits);
+
+  const undo = async () => {
+    await adminDb.from("hms_room_ac_checkout_readings").delete()
+      .eq("hostel_id", hostelId).eq("room_id", corr.fromRoomId)
+      .eq("tenant_id", input.tenantId).eq("for_month", forMonth);
+    await adminDb.from("hms_room_ac_join_readings").delete()
+      .eq("hostel_id", hostelId).eq("room_id", corr.toRoomId)
+      .eq("tenant_id", input.tenantId).eq("for_month", forMonth);
+    const { error } = await adminDb.from("hms_tenants")
+      .update({ room_id: corr.fromRoomId }).eq("id", input.tenantId).eq("hostel_id", hostelId);
+    if (error) throw new Error("Could not put the member back in the room they moved from.");
+  };
+
+  await undo();
+
+  let result: RoomTransferResult;
+  try {
+    result = await performRoomTransfer(adminDb, hostelId, {
+      tenantId: input.tenantId,
+      toRoomId: corr.toRoomId,
+      fromRoomReading: input.fromRoomReading,
+      toRoomReading: input.toRoomReading,
+    });
+  } catch (e) {
+    // Put the move back exactly as it was, using the same path that made it.
+    try {
+      await undo();
+      await performRoomTransfer(adminDb, hostelId, {
+        tenantId: input.tenantId,
+        toRoomId: corr.toRoomId,
+        fromRoomReading: corr.fromRoomReading,
+        toRoomReading: corr.toRoomReading,
+      });
+    } catch {
+      throw new Error(
+        `${e instanceof Error ? e.message : String(e)} — and the original move could not be restored. ` +
+        `Move the member back to room ${corr.fromRoomNumber} and re-enter it: ` +
+        `room ${corr.fromRoomNumber} at ${corr.fromRoomReading}, room ${corr.toRoomNumber} at ${corr.toRoomReading ?? "?"}.`
+      );
+    }
+    throw e;
+  }
+
+  // Hand the destination's own applied share back. It is stale — the split was
+  // made against the arrival point that just moved — but dropping it silently
+  // would be worse than keeping it until the room is re-applied, which the caller
+  // is told to do.
+  if (destOwnCharge > 0 || destOwnUnits > 0) {
+    const payAfter = await readPayRow(adminDb, hostelId, forMonth, input.tenantId);
+    if (payAfter) {
+      const nextCharge = Number(payAfter.ac_charge ?? 0) + destOwnCharge;
+      await adminDb.from("hms_payments").update({
+        ac_charge: nextCharge,
+        ac_units_consumed: round2(Number(payAfter.ac_units_consumed ?? 0) + destOwnUnits),
+        amount: Math.max(0, Number(payAfter.amount ?? 0) - Number(payAfter.ac_charge ?? 0) + nextCharge),
+        updated_at: new Date().toISOString(),
+      }).eq("id", payAfter.id);
+    }
+  }
+
+  return {
+    ...result,
+    previousUnits: corr.billedUnits,
+    previousCharge: corr.billedCharge,
+    reapplyRoom: corr.destinationApplied ? corr.toRoomNumber : null,
+    reapplyRoomId: corr.destinationApplied ? corr.toRoomId : null,
+    reapplyReading: corr.destinationReading,
+  };
+}
