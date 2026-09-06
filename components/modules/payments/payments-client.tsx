@@ -1265,14 +1265,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const acRooms = useMemo(() => {
     return rooms
       .filter(r => r.has_ac || meterAllRooms)
-      // A manager's action refuses a non-AC room even on a meter-all-rooms
-      // branch — pre-existing, and deliberately left alone. But an OCCUPIED one
-      // still carries what a manager can genuinely do there: save a join
-      // reading, upload a meter photo, read the allocation. Only the empty ones
-      // go, where there is nothing to see and no action to take.
-      .filter(r => r.has_ac || !isManager || acRoomOccupiedInMonth.has(r.id))
+      // Empty metered rooms used to be hidden from managers, because the manager
+      // action refused a non-AC room and there was nothing to do in one. It does
+      // not refuse any more, and an empty metered room is exactly where a reading
+      // has to be recorded — its units are the hostel's own cost and the meter
+      // has to carry forward for whoever moves in next. Both tiers see the same
+      // list now.
       .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
-  }, [rooms, meterAllRooms, isManager, acRoomOccupiedInMonth]);
+  }, [rooms, meterAllRooms]);
 
   const acRoomMeta = useMemo(() => {
     const m = new Map<string, { occupied: boolean }>();
@@ -2364,15 +2364,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               // residency, and the occupied branch has an empty
                               // eligible set. Offering the button would be a
                               // prominent action that can only ever fail.
-                              disabled={applyingAC === room.id || !currentInput || (isManager && !room.has_ac) || (someoneLivedHereThisMonth && acTenantCount === 0)}
+                              // No `isManager && !room.has_ac` here any more. The
+                              // button was greyed out for a manager on every
+                              // metered room without an air conditioner — which on
+                              // a branch that meters all of them is every room —
+                              // mirroring a refusal the server no longer makes.
+                              // The two tiers now bill the same rooms.
+                              disabled={applyingAC === room.id || !currentInput || (someoneLivedHereThisMonth && acTenantCount === 0)}
                               title={
-                                isManager && !room.has_ac
-                                  ? "Only the owner can record units for a room not flagged as AC."
-                                  : someoneLivedHereThisMonth && acTenantCount === 0
-                                    ? "Everyone who lived here this month has checked out — their AC was settled at the door, so there is nothing left to apply."
-                                    : saved?.recorded_while_vacant && someoneLivedHereThisMonth
-                                      ? "This month was recorded with nobody in the room. Applying now bills its units to whoever is in the room today — check they actually lived here that month."
-                                      : undefined
+                                someoneLivedHereThisMonth && acTenantCount === 0
+                                  ? "Everyone who lived here this month has checked out — their AC was settled at the door, so there is nothing left to apply."
+                                  : saved?.recorded_while_vacant && someoneLivedHereThisMonth
+                                    ? "This month was recorded with nobody in the room. Applying now bills its units to whoever is in the room today — check they actually lived here that month."
+                                    : undefined
                               }
                               onClick={() => applyACUnits(room.id)}
                             >
