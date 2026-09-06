@@ -426,7 +426,7 @@ export async function getTenantTimeline(
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
-    const [tenantRes, paymentsRes, tenantEventsRes, checkoutReadingRes, installmentsRes, feedbackRes, feedbackTokenRes] = await Promise.all([
+    const [tenantRes, paymentsRes, tenantEventsRes, checkoutReadingRes, installmentsRes, feedbackRes, feedbackTokenRes, acRateRes] = await Promise.all([
       supabase
         .from("hms_tenants")
         .select("id, full_name, check_in, check_out, is_active, created_at, joining_meter_reading")
@@ -449,7 +449,12 @@ export async function getTenantTimeline(
         .order("created_at", { ascending: false }),
       supabase
         .from("hms_room_ac_checkout_readings")
-        .select("meter_reading")
+        // ac_charge here is this member's OWN share of that room, not the room's
+        // total — so the departure line can state the same three facts the move
+        // line does, and a dispute can be settled from the ledger alone.
+        // The FK must be named: migration 215 added transferred_to_room_id, so this
+        // table now points at hms_rooms twice and a bare embed is ambiguous.
+        .select("meter_reading, ac_charge, room:hms_rooms!hms_room_ac_checkout_readings_room_id_fkey(room_number)")
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
         // Real departures only. A room transfer writes a row in the SAME shape,
@@ -483,6 +488,13 @@ export async function getTenantTimeline(
         .select("id", { count: "exact", head: true })
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId),
+      // The departure row stores the member's share in rupees, not units. The
+      // rate turns it back into the units a dispute is actually argued over.
+      supabase
+        .from("hms_package_configs")
+        .select("ac_per_unit_rate")
+        .eq("hostel_id", hostelId)
+        .maybeSingle(),
     ]);
 
     if (tenantRes.error || !tenantRes.data) throw new Error("Tenant not found or access denied");
@@ -490,6 +502,7 @@ export async function getTenantTimeline(
 
     const tenant = tenantRes.data;
     const payments = paymentsRes.data;
+    const acPerUnitRate = Number(acRateRes.data?.ac_per_unit_rate ?? 0);
     const tenantEvents = tenantEventsRes.data ?? [];
     const checkoutReading = checkoutReadingRes.data;
     const installmentsByPayment = new Map<string, NonNullable<typeof installmentsRes.data>>();
@@ -515,15 +528,30 @@ export async function getTenantTimeline(
     });
 
     // Check-out event
+    const departureRoom = (checkoutReading as { room?: { room_number?: string } | null } | null)?.room?.room_number ?? null;
+    const departureCharge = Number((checkoutReading as { ac_charge?: number } | null)?.ac_charge ?? 0);
+    const departureUnits = acPerUnitRate > 0 ? Math.round((departureCharge / acPerUnitRate) * 100) / 100 : null;
+    const departureDetail = checkoutReading?.meter_reading != null
+      ? [
+          `${departureRoom ? `${departureRoom} meter` : "Meter"}: ${checkoutReading.meter_reading}`,
+          departureUnits != null && departureCharge > 0
+            ? `${departureUnits.toLocaleString()} units → Rs ${departureCharge.toLocaleString()}`
+            : null,
+        ].filter(Boolean).join(" · ")
+      : undefined;
     if (tenant.check_out && !tenant.is_active) {
       events.push({
         id: `checkout-${tenant.id}`,
         type: "check_out",
         date: tenant.check_out,
         label: "Checked out",
-        sub: checkoutReading?.meter_reading != null
-          ? `Meter at departure: ${checkoutReading.meter_reading}`
-          : undefined,
+        sub: undefined,
+        // Same shape as the move's line — which room, what it read, how many
+        // units were this member's, what that cost. Read together, a move and a
+        // departure now account for every unit on the bill: the move's units in
+        // the room they left plus these in the room they left from add up to the
+        // AC total the payment line shows.
+        detail: departureDetail,
       });
     }
 
