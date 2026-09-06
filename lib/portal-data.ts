@@ -170,7 +170,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     // empty and then let — see effectivePrevReading — or "Previous month ended
     // at" and the unit preview would disagree with the figure Apply uses.
     admin.from("hms_room_ac_checkout_readings")
-      .select("room_id, for_month, meter_reading")
+      .select("room_id, for_month, meter_reading, tenant_id, units_consumed, ac_charge, transferred_to_room_id")
       .eq("hostel_id", hostelId),
     admin.from("hms_room_ac_join_readings")
       .select("room_id, tenant_id, units_at_join, for_month")

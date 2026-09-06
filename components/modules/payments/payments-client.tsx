@@ -96,7 +96,15 @@ interface Props {
   acReadings?: { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null; recorded_while_vacant?: boolean | null }[];
   /** Latest WhatsApp status per tenant id — drives the delivery tick. */
   lastWhatsApp?: Record<string, { status: string; error_code: number | null; created_at: string }>;
-  acCheckoutReadings?: { room_id: string; for_month: string; meter_reading: number | null }[];
+  acCheckoutReadings?: {
+    room_id: string; for_month: string; meter_reading: number | null;
+    /** Set only on a ROOM TRANSFER. The share below was billed to that member at
+     *  the moment they moved, and their payment row has since followed them to
+     *  the new room — so the AC card cannot find it by room_id and would report
+     *  it as units nobody paid for. */
+    tenant_id?: string | null; units_consumed?: number | null;
+    ac_charge?: number | null; transferred_to_room_id?: string | null;
+  }[];
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
   // Tenants currently on the waiting list — a payment row can outlive an
   // active tenant being edited back to waiting, so the headline stats below
@@ -2505,7 +2513,36 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           charge: Number(p.ac_charge ?? 0),
                           departed: true,
                         }));
-                      const allRows = [...rows, ...departedRows];
+                      // A member who TRANSFERRED out of this room is invisible to both
+                      // lists above: they are still active, and their payment row has
+                      // followed them to the new room, so `monthRows` (matched on the
+                      // tenant's CURRENT room_id) never contains them. Their share of
+                      // THIS room was billed at the moment they moved and is sitting on
+                      // that same row. Without it the card subtracted their units from
+                      // the meter and announced the difference as "hostel absorbs" —
+                      // telling the owner they were eating money they had in fact
+                      // already charged. Read from the move's own breakpoint, which is
+                      // the only record left in this room.
+                      const movedRows = acCheckoutReadings
+                        .filter(c =>
+                          c.room_id === room.id &&
+                          c.for_month === selectedMonth &&
+                          c.transferred_to_room_id != null &&
+                          Number(c.ac_charge ?? 0) > 0
+                        )
+                        .map(c => ({
+                          id: `moved-${c.tenant_id}`,
+                          name: tenants.find(t => t.id === c.tenant_id)?.full_name ?? "Moved rooms",
+                          units: Number(c.units_consumed ?? 0),
+                          charge: Number(c.ac_charge ?? 0),
+                          departed: true,
+                          moved: true,
+                        }));
+                      const allRows = [
+                        ...rows.map(r => ({ ...r, moved: false })),
+                        ...departedRows.map(r => ({ ...r, moved: false })),
+                        ...movedRows,
+                      ];
                       // Tenants on 0 units used to be filtered out here. That hid the
                       // commonest real fault: a tenant present in the room who was
                       // never billed (joined after the last apply, or the roster
@@ -2537,7 +2574,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                             <div key={r.id} className="flex items-center gap-2 text-xs">
                               <span className="text-muted-foreground flex-1 min-w-0 truncate">
                                 {r.name}
-                                {r.departed && <span className="text-muted-foreground/50"> — checked out, charged at departure</span>}
+                                {r.departed && (
+                                  <span className="text-muted-foreground/50">
+                                    {r.moved ? " — moved rooms, charged at the move" : " — checked out, charged at departure"}
+                                  </span>
+                                )}
                               </span>
                               <span className="tabular-nums text-foreground">{r.units} units</span>
                               <span className="text-muted-foreground/40">·</span>
