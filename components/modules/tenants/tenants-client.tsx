@@ -6,7 +6,7 @@ import {
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, Eye,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
   FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check, UtensilsCrossed,
-  CalendarClock, CalendarX, MessageCircle, Car, Download, Printer,
+  CalendarClock, CalendarX, MessageCircle, Car, Download, Printer, Zap,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -34,7 +34,14 @@ import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplica
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction, getRoomTransferPreviewAction, transferTenantRoomAction, getRoomTransferCorrectionAction, correctRoomTransferAction, type RoomTransferPreview } from "@/app/actions/tenants";
+// Straight from the module that declares it. Re-exporting it through the
+// "use server" file as `export type { RoomTransferResult }` did not survive
+// Turbopack — a re-exported import binding is emitted as a real runtime export,
+// and every page that pulls in tenants.ts died with "RoomTransferResult is not
+// defined". A dedicated `import type` is erased outright, so the server-only
+// module it names is never bundled into this client component.
+import type { RoomTransferResult, CorrectableTransfer } from "@/lib/room-transfer";
 import { checkoutTenantAsPartner, addTenantAsPartner, editTenantAsPartner } from "@/app/actions/partner";
 import { addTenantAsManager, editTenantAsManager, checkoutTenantAsManager, giveTenantNoticeAsManager, cancelTenantNoticeAsManager } from "@/app/actions/managers";
 import { checkTenantRedflagAction } from "@/app/actions/redflag";
@@ -66,6 +73,11 @@ interface Props {
   /** Branch-level AC maintenance rate. Applied on the admission form only to a
    *  resident whose room has AC, matching what the payment trigger charges. */
   acMaintenanceRate?: number;
+  /** hms_hostels.meter_all_rooms — the branch meters every room, not only the
+   *  ones flagged has_ac. The checkout dialog's AC section keyed off has_ac
+   *  alone, so on these branches it never appeared and the departing member's
+   *  final electricity went unbilled onto whoever stayed. */
+  meterAllRooms?: boolean;
   currentMonthPaymentByTenant?: Record<string, { status: string; remaining: number }>;
   // null/undefined = owner (unrestricted). Add/Edit Tenant and Give Notice are
   // deferred for partners in this pass — the safe write actions only cover a
@@ -666,7 +678,7 @@ function RedflagWarningDialog({
   );
 }
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, mealTimes = null, acMaintenanceRate = 0, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, mealTimes = null, acMaintenanceRate = 0, meterAllRooms = false, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null }: Props) {
   const isPartner = !!partnerTier;
   const canFullTier = !partnerTier || partnerTier === "full";
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
@@ -701,7 +713,30 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [editing, setEditing] = useState<Tenant | null>(null);
   const [checkingOut, setCheckingOut] = useState<Tenant | null>(null);
   const [checkoutDate, setCheckoutDate] = useState(formatDateInput(new Date()));
-  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; registration_fee_charge: number; ac_maintenance_charge: number; late_fee: number; discount_percent: number; referral_percent: number } | null>(null);
+  // Room transfer: when an EDIT changes the room and either side is metered, the
+  // meter has to be read on both sides at the moment of the move. Fetched when
+  // the room is picked so the fields can prefill and the operator sees what is
+  // being asked before they save.
+  const [transferPreview, setTransferPreview] = useState<RoomTransferPreview | null>(null);
+  // Whether the "is this move metered?" question is still unanswered. Save is
+  // blocked while it is, because a null preview is indistinguishable from
+  // "nothing is metered here" and would silently perform a bare room change.
+  const [transferChecking, setTransferChecking] = useState(false);
+  // Guards against an out-of-order response when the room is picked twice
+  // quickly — only the latest request may write state.
+  const transferReqRef = useRef(0);
+  const [transferFromReading, setTransferFromReading] = useState("");
+  // A move already saved this month that can still be re-priced. Fetched when the
+  // edit dialog opens, because a mistyped meter reading used to be permanent and
+  // the only repair was a hand-written SQL statement.
+  const [correction, setCorrection] = useState<CorrectableTransfer | null>(null);
+  const [correctionOpen, setCorrectionOpen] = useState(false);
+  const [correctFrom, setCorrectFrom] = useState("");
+  const [correctTo, setCorrectTo] = useState("");
+  const [correcting, setCorrecting] = useState(false);
+  const [transferToReading, setTransferToReading] = useState("");
+
+  const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; registration_fee_charge: number; ac_maintenance_charge: number; late_fee: number; discount_percent: number; referral_percent: number; carried_ac_charge?: number } | null>(null);
   const [checkoutPaymentLoading, setCheckoutPaymentLoading] = useState(false);
   const [checkoutPaymentError, setCheckoutPaymentError] = useState<string | null>(null);
   const [checkoutPayAction, setCheckoutPayAction] = useState<"pay" | "waive">("pay");
@@ -735,7 +770,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     derivedOpening: number | null;
     eligibleTenants: { id: string; check_in: string; joining_meter_reading: number | null }[];
     joinReadingsRaw: { tenant_id: string; units_at_join: number }[];
-    checkoutReadingsRaw: { meter_reading: number; tenant_count_at_checkout: number }[];
+    checkoutReadingsRaw: { meter_reading: number; tenant_count_at_checkout: number; tenant_id: string | null }[];
   } | null>(null);
   const [checkoutACContextLoading, setCheckoutACContextLoading] = useState(false);
   const [shareReceipt, setShareReceipt] = useState<{ name: string; phone: string | null; token: string } | null>(null);
@@ -952,6 +987,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [noticeSubmitting, setNoticeSubmitting] = useState(false);
 
   // Rooms with remaining capacity
+  // A metered side with an empty box is refused by the server anyway; blocking
+  // it here keeps the operator from discovering that only after the closing
+  // reading has already been written and rolled back.
+  // A destination with no opening reading for this month is refused by the server
+  // — Save stays disabled rather than letting the operator fill the form first.
+  const transferBlocked = !!transferPreview?.toBlocked;
+  const transferReadingsMissing = !!transferPreview && (
+    (transferPreview.fromMetered && transferFromReading.trim() === "") ||
+    (transferPreview.toMetered && transferToReading.trim() === "")
+  );
+
   const availableRooms = useMemo(
     () => rooms.filter((r) => r.status !== "maintenance" && r.occupied < r.capacity),
     [rooms]
@@ -1214,6 +1260,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   function openEdit(t: Tenant, forceActive = false) {
     setEditing(t);
     setViewOnly(false);
+    setCorrection(null);
+    setCorrectionOpen(false);
+    getRoomTransferCorrectionAction(t.id)
+      .then((r) => {
+        if (r.correction) {
+          setCorrection(r.correction);
+          setCorrectFrom(String(r.correction.fromRoomReading));
+          setCorrectTo(r.correction.toRoomReading != null ? String(r.correction.toRoomReading) : "");
+        }
+      })
+      .catch(() => {/* the panel simply does not appear */});
     setJoiningPhotoFile(null);
     setEditingDocs(t.documents ?? []);
     setForm({
@@ -1462,8 +1519,62 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       setJoiningPhotoFile(null);
     };
 
+    // ── Room transfer, BEFORE the tier branches ─────────────────────────
+    // handleSave returns early for managers and for partners, so anything below
+    // those branches never runs for them. The meter panel has no role gate and
+    // the preview action serves managers explicitly, so leaving the transfer
+    // further down meant a manager typed both readings, saw "Tenant updated",
+    // and nothing was recorded — the exact silent misbilling this feature
+    // exists to remove. transferTenantRoomAction authorises all three tiers
+    // itself, so it runs here for everyone, and each tier's own room write is
+    // suppressed below because the move has already happened.
+    const prevRoomIdEarly = editing?.room_id;
+    const isMeteredTransfer = !!(editing && transferPreview && prevRoomIdEarly && payload.room_id && prevRoomIdEarly !== payload.room_id);
+    let transferOutcome: RoomTransferResult | null = null;
+    if (isMeteredTransfer) {
+      const parseReading = (v: string): number | null => {
+        const t = v.trim();
+        if (t === "") return null;
+        const n = parseFloat(t);
+        return Number.isFinite(n) ? n : null;
+      };
+      const res = await transferTenantRoomAction({
+        tenantId: editing!.id,
+        toRoomId: payload.room_id!,
+        fromRoomReading: transferPreview!.fromMetered ? parseReading(transferFromReading) : null,
+        toRoomReading: transferPreview!.toMetered ? parseReading(transferToReading) : null,
+      });
+      if (!res.success) {
+        toast({ title: "Room transfer not saved", description: res.error, variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+      transferOutcome = res.result!;
+    }
+
+    // Raised AFTER each tier's completion toast, deliberately. TOAST_LIMIT is 1
+    // and ADD_TOAST slices, so a later toast REPLACES an earlier one — raising
+    // this first meant "Tenant updated" evicted it every time, including the
+    // warning branch, which is the only place the operator is told to go finish
+    // the job under Mid-Month Joiners.
+    const announceTransfer = () => {
+      if (!transferOutcome) return;
+      if (transferOutcome.warning) {
+        toast({ title: "Moved — one thing left to finish", description: transferOutcome.warning, variant: "destructive" });
+      } else if (transferOutcome.closedMeter && transferOutcome.closedCharge > 0) {
+        toast({
+          title: `Moved to room ${transferOutcome.toRoomNumber}`,
+          description: `Room ${transferOutcome.fromRoomNumber}: ${transferOutcome.closedUnits} units (${formatCurrency(transferOutcome.closedCharge)}) billed up to the move.`,
+        });
+      }
+    };
+
     if (isManager) {
       // The action re-resolves the branch server-side, so hostel_id/is_active are dropped.
+      // room_id is left in the payload even after a transfer: the action reads
+      // the tenant's CURRENT room to decide whether the room changed, and the
+      // transfer has already moved them, so it correctly sees no change and
+      // neither logs a second room_changed event nor re-adjusts occupancy.
       const { hostel_id: _mHostelId, is_active: _mIsActive, ...managerPayload } = payload;
       const result = editing
         ? await editTenantAsManager(editing.id, managerPayload)
@@ -1479,6 +1590,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           : form.is_waiting ? "Added to waiting list" : "Tenant added",
       });
       await uploadStagedJoiningPhoto(editing ? editing.id : (result as { tenantId?: string }).tenantId);
+      announceTransfer();
       setDialogOpen(false);
       // Managers have no RLS grants, so the client-SDK reload() below would come back
       // empty and blank the list. A full reload re-runs the server page, which reads
@@ -1491,6 +1603,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       // The partner write action does everything the rest of this function
       // does client-side for an owner — insert/update, room occupancy,
       // ledger events, historical backfill — server-side in one call.
+      // Same as the manager branch: the transfer already moved them, so this
+      // action sees no room change and does not duplicate its side effects.
       const { hostel_id: _hostelId, is_active: _isActive, ...partnerPayload } = payload;
       const result = editing
         ? await editTenantAsPartner(editing.id, partnerPayload)
@@ -1506,13 +1620,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           : form.is_waiting ? "Added to waiting list" : "Tenant added",
       });
       await uploadStagedJoiningPhoto(editing ? editing.id : (result as { tenantId?: string }).tenantId);
+      announceTransfer();
       setDialogOpen(false);
       await reload();
       setSaving(false);
       return;
     }
 
-    const prevRoomId = editing?.room_id;
+    const prevRoomId = prevRoomIdEarly;
     const newRoomId = payload.room_id;
 
     let newTenantId: string | null = null;
@@ -1610,7 +1725,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     }
 
     if (ledgerTenantId) {
-      if (editing && prevRoomId !== newRoomId) {
+      // Skipped for a metered transfer: transferTenantRoomAction already wrote a
+      // richer room_changed event carrying the meter readings and the charge.
+      if (editing && prevRoomId !== newRoomId && !isMeteredTransfer) {
         const oldRoomLabel = prevRoomId ? rooms.find((r) => r.id === prevRoomId)?.room_number ?? "Unknown" : "None";
         const newRoomLabel = newRoomId ? rooms.find((r) => r.id === newRoomId)?.room_number ?? "Unknown" : "None";
         logTenantEvent({ tenantId: ledgerTenantId, eventType: "room_changed", fromValue: oldRoomLabel, toValue: newRoomLabel });
@@ -1634,8 +1751,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           status: newOccupied >= room.capacity ? "occupied" : "available",
         }).eq("id", newRoomId);
       }
-    } else if (editing && prevRoomId !== newRoomId) {
-      // Room changed — update both old and new
+    } else if (editing && prevRoomId !== newRoomId && !isMeteredTransfer) {
+      // Room changed — update both old and new.
+      // Skipped for a metered transfer: the server action already recounted both
+      // rooms from the tenant table, which is truth. Letting this run too would
+      // apply a second -1/+1 on top of a count that is already correct.
       if (prevRoomId) {
         const oldRoom = rooms.find((r) => r.id === prevRoomId);
         if (oldRoom) {
@@ -1686,6 +1806,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           ? "Added to waiting list"
           : "Tenant added",
     });
+    announceTransfer();
     setDialogOpen(false);
     await reload();
     setSaving(false);
@@ -1751,7 +1872,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     fetchCheckoutPayment(checkingOut.id, month);
 
     const room = checkingOut.room_id ? roomMap[checkingOut.room_id] : null;
-    if (room?.has_ac) {
+    if (room?.has_ac || meterAllRooms) {
       setCheckoutACContextLoading(true);
       setCheckoutACContext(null);
       getACCheckoutContextAction(checkingOut.room_id!, month).then((ctx) => {
@@ -1762,11 +1883,18 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           // that's already on file. Only when the operator hasn't already
           // typed something themselves, so re-fetching on a date edit doesn't
           // clobber a value they just entered.
-          // Never from a reading taken while the room was empty: that number
-          // predates this tenant, and pre-filling it as their departure reading
-          // hands the operator a plausible wrong figure to accept. It still
-          // serves as the OPENING below — which is what it actually is.
-          setCheckoutACReading((prev) => (prev === "" && ctx.currentMonthReading != null && !ctx.currentMonthVacant) ? String(ctx.currentMonthReading) : prev);
+          // NOT pre-filled, deliberately. This used to default to the reading the
+          // AC Units tab had already applied for the room, on the reasoning that
+          // the operator often reads the meter and checks someone out the same
+          // day. That was harmless while the departure reading was discarded
+          // whenever it did not exceed what Apply had billed — it changed no
+          // money either way. It is not harmless now that the reading prices the
+          // departure: accepting the default records the member as present until
+          // the room's month-end reading, which for anyone who left earlier in
+          // the month is simply false, and bills them for units burned after they
+          // had gone. Same trap as the room-transfer panel's prefill, and the
+          // same answer — the number is shown underneath for reference, and the
+          // operator types what the meter read when they actually walked out.
 
           // Same treatment for the OPENING reading. It was shown only as a
           // placeholder, so the operator saw a greyed-out number in an empty box
@@ -1819,6 +1947,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           status: payment.status,
           discount_percent: payment.discount_percent,
           referral_percent: payment.referral_percent,
+          carried_ac_charge: payment.carried_ac_charge,
           amount,
           amount_paid: payment.amount_paid,
           ac_charge: payment.ac_charge,
@@ -2198,10 +2327,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // fresh AC belongs to a different month than this row's charge and the two
     // must not be swapped. Mirrors supersededAcCharge in lib/tenant-checkout.ts.
     const rowIsDepartureMonth = checkoutPendingPayment?.for_month === checkoutDate.slice(0, 7);
-    const supersededAc = rowIsDepartureMonth ? existingAcCharge : 0;
-    const rawPending = Math.max(0, (checkoutPendingPayment?.amount ?? 0) - supersededAc - alreadyPaid);
-    const proRateDiscount = proRateActive ? (checkoutProRateInfo?.discount ?? 0) : 0;
-    const basePending = Math.max(0, rawPending - proRateDiscount);
+    // Only the CURRENT room's part is superseded by the fresh estimate. After a
+    // transfer this column also holds the share of a room the member has already
+    // moved out of, which the server deliberately keeps (acChargeForBill in
+    // lib/tenant-checkout.ts adds it back). Superseding all of it quoted the
+    // door figure that much too low while the server settled the full amount.
+    const carriedAc = checkoutPendingPayment?.carried_ac_charge ?? 0;
+    // Declared here, assigned after estimatedACCharge is known — the two must
+    // agree, and which one is right depends on the branch the estimate takes.
+    let supersededAc = 0;
 
     // The exact opening the AC Units tab already used, backed out from what it
     // actually saved (reading - units) — preferred over the generic move-in-reading
@@ -2219,27 +2353,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       ?? 0;
     const acRate = checkoutACContext?.perUnitRate ?? 0;
     const acCount = checkoutACContext?.activeTenantCount ?? 0;
-    const roomHasAC = !!(checkingOut?.room_id && roomMap[checkingOut.room_id]?.has_ac);
-    // If the meter hasn't actually moved past what the AC Units tab already
-    // applied this month, there's nothing new to bill — recompute from an
-    // independently-fetched join/checkout dataset here instead risks disagreeing
-    // with the allocation already sitting on the row (join-reading corrections
-    // saved after Apply ran, timing drift, etc). Reuse that already-correct
-    // number rather than a fresh, possibly-diverging estimate; only genuinely
-    // newer meter data (past what Apply has already seen) needs computing here.
-    // A partially_paid row never recomputes at all, regardless of the reading
-    // entered — there's no way to tell how much of what's already been paid
-    // covered AC vs. rent, so re-deriving a fresh split here would risk
-    // double-billing or under-billing the AC portion against a payment that
-    // already happened.
-    const currentAppliedReading = checkoutACContext?.currentMonthReading ?? null;
-    // An explicit opening-reading correction also forces a recompute, even if
-    // the closing reading is left at whatever was already applied — otherwise
-    // a typed correction here silently gets ignored (only reachable when there's
-    // no previous-month record, since that's the only time this field shows).
-    const hasNewerACReading = currentAppliedReading == null
-      || (Number.isFinite(acReading) && acReading > currentAppliedReading)
-      || checkoutACOpeningReading.trim() !== "";
+    const roomHasAC = !!(checkingOut?.room_id && (roomMap[checkingOut.room_id]?.has_ac || meterAllRooms));
+    // A partially_paid row never recomputes, regardless of the reading entered —
+    // there's no way to tell how much of what's already been paid covered AC vs.
+    // rent, so re-deriving a fresh split would risk double-billing or writing off
+    // the AC portion against a payment that already happened.
+
 
     // Computed by the SAME function the Payments page's AC Units tab bills with
     // (computeACSegmentBilling), fed the same raw join/checkout rows — so this
@@ -2269,10 +2388,33 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       }
     };
 
+    // Two of these branches REUSE the charge already on the row rather than
+    // estimating a fresh one. That stored figure may include a share carried
+    // from a room the member moved out of this month — so on those branches the
+    // whole of it is being put back and the whole of it must come off, while on
+    // the estimate branch only the current room's part is replaced. Netting the
+    // carried share out unconditionally (as this did) over-quoted by exactly
+    // that amount: on a deposit checkout the surplus was written off as a
+    // forfeit, and without a deposit it was collected in cash and never recorded.
+    // MUST match performTenantCheckout exactly — see the long note on
+    // hasNewerReading there. The departure reading always prices the departure
+    // now; the ONLY row that reuses what is on it is one with money already
+    // collected against AC, because that is the one case where the split cannot
+    // be re-derived without risking billing it twice or writing it off.
+    const reusesStoredCharge = roomHasAC && isPartiallyPaid && existingAcCharge > 0;
     const estimatedACCharge = !roomHasAC ? 0
-      : (isPartiallyPaid && existingAcCharge > 0) ? existingAcCharge
-      : !hasNewerACReading ? existingAcCharge
+      : reusesStoredCharge ? existingAcCharge
       : previewACCharge();
+
+    supersededAc = rowIsDepartureMonth
+      ? (reusesStoredCharge ? existingAcCharge : Math.max(0, existingAcCharge - carriedAc))
+      : 0;
+
+    // Computed here, not earlier: it subtracts supersededAc, which is only
+    // knowable once the estimate's branch is decided just above.
+    const rawPending = Math.max(0, (checkoutPendingPayment?.amount ?? 0) - supersededAc - alreadyPaid);
+    const proRateDiscount = proRateActive ? (checkoutProRateInfo?.discount ?? 0) : 0;
+    const basePending = Math.max(0, rawPending - proRateDiscount);
 
     const pending = basePending + estimatedACCharge;
     // "waive" forgives the dues outright, so there is nothing for the deposit to cover.
@@ -4025,6 +4167,80 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     const suggestedDeposit = tierDeposit > 0 ? String(tierDeposit) : (configSecurityDeposit > 0 ? String(configSecurityDeposit) : "");
                     const deposit = !form.security_deposit ? suggestedDeposit : form.security_deposit;
                     setForm({ ...form, room_id: v, monthly_rent: pkgSuggested || fallback || form.monthly_rent, security_deposit: deposit });
+
+                    // Only an EDIT can be a transfer — a new member has no room
+                    // to leave. Cleared first so a re-pick never shows the
+                    // previous destination's fields.
+                    setTransferPreview(null);
+                    setTransferFromReading("");
+                    setTransferToReading("");
+                    if (editing && v && editing.room_id && v !== editing.room_id) {
+                      const req = ++transferReqRef.current;
+                      setTransferChecking(true);
+                      // Draw the panel NOW from what the page already knows. Which
+                      // rooms are metered is a local fact — has_ac on the room, plus
+                      // the branch's meter_all_rooms — so waiting on the round trip
+                      // to render the two boxes left the operator staring at an
+                      // unchanged dialog for as long as the server took, with no
+                      // sign the room change had registered.
+                      //
+                      // Only three things genuinely need the server: each room's
+                      // last recorded reading (a hint), and whether the destination
+                      // has an opening for this month (which blocks the move). They
+                      // merge in below. Save stays disabled until they arrive, so
+                      // nothing can be submitted against a half-known panel.
+                      const fromRoomLocal = roomMap[editing.room_id];
+                      const toRoomLocal = roomMap[v];
+                      const fromMeteredLocal = !!(fromRoomLocal?.has_ac || meterAllRooms);
+                      const toMeteredLocal = !!(toRoomLocal?.has_ac || meterAllRooms);
+                      if (fromMeteredLocal || toMeteredLocal) {
+                        setTransferPreview({
+                          fromRoomNumber: fromRoomLocal?.room_number ?? null,
+                          toRoomNumber: toRoomLocal?.room_number ?? null,
+                          fromMetered: fromMeteredLocal,
+                          toMetered: toMeteredLocal,
+                          fromLastReading: null,
+                          toLastReading: null,
+                          toBlocked: null,
+                        });
+                      }
+                      getRoomTransferPreviewAction(editing.id, v)
+                        .then((p) => {
+                          if (req !== transferReqRef.current) return; // a later pick won
+                          if (p.error) {
+                            // Swallowing this used to leave the operator with no
+                            // panel and no warning — indistinguishable from an
+                            // unmetered move, which is how a metered one slipped
+                            // through as a bare room change.
+                            toast({ title: "Could not check the meters", description: p.error, variant: "destructive" });
+                            setTransferPreview(null);
+                            return;
+                          }
+                          if (!p.fromMetered && !p.toMetered) {
+                            // The server disagrees with the local guess — clear the
+                            // panel rather than leave two boxes asking for readings
+                            // nothing will use.
+                            setTransferPreview(null);
+                            return;
+                          }
+                          setTransferPreview(p);
+                          // Deliberately left EMPTY. These were prefilled with each
+                          // room's last recorded reading, which is the month's
+                          // OPENING — the one number that is never what the meter
+                          // says at the moment of the move. Pressing Save without
+                          // touching them was the path of least resistance and it
+                          // silently closed the old room at zero units and opened
+                          // the new one at offset zero, so the member paid nothing
+                          // where they had been and got billed in the new room for
+                          // everything burned before they arrived. Both figures are
+                          // still shown underneath each box for reference; the
+                          // operator is standing at the meter and has to type what
+                          // it reads. Save stays disabled until they do.
+                        })
+                        .finally(() => {
+                          if (req === transferReqRef.current) setTransferChecking(false);
+                        });
+                    }
                   }}>
                     <SelectTrigger><SelectValue placeholder="Select room" /></SelectTrigger>
                     <SelectContent>
@@ -4040,6 +4256,156 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </Select>
                 </div>
                 <div className="space-y-1.5"><Label>Bed Number</Label><Input placeholder="A1" value={form.bed_number} onChange={(e) => setForm({ ...form, bed_number: e.target.value })} /></div>
+              </div>
+            )}
+
+            {/* Room transfer on a metered room. Shown only when a meter is
+                actually involved — a move between two unmetered rooms stays the
+                one-click change it has always been. Each side is asked for
+                independently: close the room being left, open the room being
+                joined, and only where there is a meter to read. */}
+            {transferPreview?.toBlocked && (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/[0.07] p-3">
+                <p className="text-xs font-medium text-destructive flex items-start gap-1.5">
+                  <Zap className="w-3.5 h-3.5 shrink-0 mt-px" />
+                  <span>{transferPreview.toBlocked}</span>
+                </p>
+              </div>
+            )}
+            {transferPreview && !transferPreview.toBlocked && (
+              <div className="rounded-xl border border-amber/25 bg-amber/[0.06] p-3 space-y-3">
+                <p className="text-xs font-medium text-amber flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 shrink-0" />
+                  {transferPreview.fromMetered && transferPreview.toMetered
+                    ? "Both rooms are metered — enter the readings at the time of the move"
+                    : transferPreview.fromMetered
+                      ? `Room ${transferPreview.fromRoomNumber} is metered — enter its reading at the time of the move`
+                      : `Room ${transferPreview.toRoomNumber} is metered — enter its reading at the time of the move`}
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {transferPreview.fromMetered && (
+                    <div className="space-y-1">
+                      <Label className="text-xs">Room {transferPreview.fromRoomNumber} meter now</Label>
+                      <Input
+                        type="number" min="0" max="999999" inputMode="numeric"
+                        placeholder="Read the meter now"
+                        value={transferFromReading}
+                        onChange={(e) => setTransferFromReading(e.target.value)}
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        {transferChecking
+                          ? "Checking the meter…"
+                          : transferPreview.fromLastReading != null
+                            ? `Last recorded ${transferPreview.fromLastReading.toLocaleString()}`
+                            : "No earlier reading on file"}
+                      </p>
+                    </div>
+                  )}
+                  {transferPreview.toMetered && (
+                    <div className="space-y-1">
+                      <Label className="text-xs">Room {transferPreview.toRoomNumber} meter now</Label>
+                      <Input
+                        type="number" min="0" max="999999" inputMode="numeric"
+                        placeholder="Read the meter now"
+                        value={transferToReading}
+                        onChange={(e) => setTransferToReading(e.target.value)}
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        {transferChecking
+                          ? "Checking the meter…"
+                          : transferPreview.toLastReading != null
+                            ? `Last recorded ${transferPreview.toLastReading.toLocaleString()}`
+                            : "No earlier reading on file"}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  {form.full_name || "This member"} pays room {transferPreview.fromRoomNumber ?? "—"}
+                  {transferPreview.fromMetered && transferFromReading ? ` up to ${Number(transferFromReading).toLocaleString()}` : ""}
+                  , and room {transferPreview.toRoomNumber}
+                  {transferPreview.toMetered && transferToReading ? ` from ${Number(transferToReading).toLocaleString()}` : ""} onward.
+                </p>
+              </div>
+            )}
+
+            {/* A move already recorded this month, and the way back from a slipped
+                digit. Hidden while a NEW destination is being picked — one dialog
+                cannot both make a move and re-price the last one. */}
+            {correction && !transferPreview && (
+              <div className="rounded-xl border border-sidebar-border bg-sidebar-accent/20 p-3 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-foreground">
+                      Moved {correction.fromRoomNumber} → {correction.toRoomNumber} on {formatDate(correction.movedOn)}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      {correction.fromRoomNumber} meter: {correction.fromRoomReading.toLocaleString()}
+                      {" · "}{correction.billedUnits} units → {formatCurrency(correction.billedCharge)}
+                      {correction.toRoomReading != null && <> · {correction.toRoomNumber} meter: {correction.toRoomReading.toLocaleString()}</>}
+                    </p>
+                  </div>
+                  {!correctionOpen && (
+                    <Button type="button" variant="outline" size="sm" className="h-7 text-xs shrink-0"
+                      onClick={() => setCorrectionOpen(true)}>
+                      Fix readings
+                    </Button>
+                  )}
+                </div>
+                {correctionOpen && (
+                  <>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Room {correction.fromRoomNumber} meter at the move</Label>
+                        <Input type="number" min="0" max="999999" inputMode="numeric"
+                          value={correctFrom} onChange={(e) => setCorrectFrom(e.target.value)} />
+                      </div>
+                      {correction.toRoomReading != null && (
+                        <div className="space-y-1">
+                          <Label className="text-xs">Room {correction.toRoomNumber} meter at the move</Label>
+                          <Input type="number" min="0" max="999999" inputMode="numeric"
+                            value={correctTo} onChange={(e) => setCorrectTo(e.target.value)} />
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Re-prices the move and re-splits both rooms. The original entry stays in the ledger.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button type="button" size="sm" className="h-7 text-xs"
+                        disabled={correcting || correctFrom.trim() === "" || (correction.toRoomReading != null && correctTo.trim() === "")}
+                        onClick={async () => {
+                          setCorrecting(true);
+                          const res = await correctRoomTransferAction({
+                            tenantId: editing!.id,
+                            fromRoomReading: Number(correctFrom),
+                            toRoomReading: correction.toRoomReading != null ? Number(correctTo) : null,
+                          });
+                          setCorrecting(false);
+                          if (!res.success) {
+                            toast({ title: "Readings not changed", description: res.error, variant: "destructive" });
+                            return;
+                          }
+                          const r = res.result!;
+                          toast({
+                            title: r.warning ? "Re-priced — one thing left to finish" : "Move re-priced",
+                            description: r.warning
+                              ?? `Room ${r.fromRoomNumber}: ${r.closedUnits} units (${formatCurrency(r.closedCharge)}), was ${r.previousUnits} units (${formatCurrency(r.previousCharge)}).`,
+                            variant: r.warning ? "destructive" : undefined,
+                          });
+                          setCorrectionOpen(false);
+                          setCorrection(null);
+                          router.refresh();
+                        }}>
+                        {correcting ? "Saving…" : "Save readings"}
+                      </Button>
+                      <Button type="button" variant="ghost" size="sm" className="h-7 text-xs"
+                        onClick={() => setCorrectionOpen(false)} disabled={correcting}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -4552,8 +4918,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </span>
                 )}
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={saving || redflagChecking || !form.full_name || (!editing && (!form.father_name.trim() || !form.emergency_contact.trim() || !form.emergency_phone.trim())) || (!form.is_waiting && !form.check_in)}>
-                  {redflagChecking
+                <Button onClick={handleSave} disabled={saving || redflagChecking || transferChecking || transferReadingsMissing || transferBlocked || !form.full_name || (!editing && (!form.father_name.trim() || !form.emergency_contact.trim() || !form.emergency_phone.trim())) || (!form.is_waiting && !form.check_in)}>
+                  {transferChecking
+                    ? "Checking meters…"
+                    : redflagChecking
                     ? "Checking…"
                     : saving
                     ? "Saving…"
@@ -4624,8 +4992,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               />
             </div>
 
-            {/* Section 2 — AC Meter Reading (only for AC rooms) */}
-            {checkingOut?.room_id && roomMap[checkingOut.room_id]?.has_ac && (
+            {/* Section 2 — meter reading at departure. Shown for an AC room, and
+                for every room on a branch that meters all of them. */}
+            {checkingOut?.room_id && (roomMap[checkingOut.room_id]?.has_ac || meterAllRooms) && (
               <div className="space-y-2">
                 <Label htmlFor="checkout-ac-reading" className="flex items-center gap-1.5">
                   AC Meter Reading at Departure
@@ -4693,8 +5062,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           {checkoutACContext.prevMonthReading == null && ` If this tenant should not pay for the empty period, set the opening above to ${checkoutACContext.currentMonthReading.toLocaleString()}.`}
                         </p>
                       ) : (
-                        <p className="text-xs text-emerald-400/80">
-                          Auto-filled from this month&apos;s AC Units entry ({checkoutACContext.currentMonthReading.toLocaleString()}) — edit below if the meter has moved since.
+                        // States the room's figure without proposing it. The old
+                        // wording ("edit below if the meter has moved since") only
+                        // ever invited raising the number, when a departure reading
+                        // is almost always LOWER than the room's month-end one.
+                        <p className="text-xs text-muted-foreground">
+                          This room was read at {checkoutACContext.currentMonthReading.toLocaleString()} for the month. Enter the meter as it read when this member left — usually lower, if they left before the month ended.
                         </p>
                       )
                     )}
@@ -4712,17 +5085,63 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       // Reuse checkoutMath rather than recomputing — a second copy of this
                       // sum is how the summary drifted from what actually got charged.
                       const reading = Number(checkoutACReading);
+                      // Same ranking checkoutMath uses, including the opening backed
+                      // out of this month's Apply — a different one here quotes a
+                      // different number of units than the charge was derived from.
+                      const impliedOpening = (checkoutACContext?.currentMonthReading != null && checkoutACContext?.currentMonthUnits != null)
+                        ? checkoutACContext.currentMonthReading - checkoutACContext.currentMonthUnits
+                        : null;
                       const prev = checkoutACContext?.prevMonthReading
                         ?? (checkoutACOpeningReading.trim() !== "" ? Number(checkoutACOpeningReading) : null)
+                        ?? impliedOpening
                         ?? checkoutACContext?.derivedOpening
                         ?? 0;
                       const rate = checkoutACContext?.perUnitRate ?? 0;
                       const count = checkoutACContext?.activeTenantCount ?? 0;
-                      if (!checkoutACReading || !Number.isFinite(reading) || reading <= prev || rate <= 0 || count <= 0) return null;
+                      if (!checkoutACReading || !Number.isFinite(reading) || rate <= 0 || count <= 0) return null;
+
+                      // Where THIS member's billing in this room began — set for a
+                      // mid-month joiner or anyone who transferred in. Silence here
+                      // is what made a mistyped reading look like a real answer: the
+                      // reading now prices the departure, so a number at or below
+                      // their arrival point charges them nothing at all, and the old
+                      // line just printed "PKR 0" in reassuring green.
+                      const ownJoin = checkoutACContext?.joinReadingsRaw?.find(j => j.tenant_id === checkingOut?.id);
+                      const arrivedAt = ownJoin != null ? prev + Math.round(Number(ownJoin.units_at_join)) : null;
+
+                      if (reading < prev) {
+                        return (
+                          <p className="text-xs text-rose-400">
+                            The month opened at {prev.toLocaleString()} — a meter cannot run backwards. Check the number.
+                          </p>
+                        );
+                      }
+                      if (arrivedAt != null && reading < arrivedAt) {
+                        return (
+                          <p className="text-xs text-rose-400">
+                            Below the {arrivedAt.toLocaleString()} recorded when they moved into this room — they cannot have left before they arrived. Check the number.
+                          </p>
+                        );
+                      }
+                      if (checkoutMath.estimatedACCharge <= 0) {
+                        return (
+                          <p className="text-xs text-amber">
+                            {arrivedAt != null && reading <= arrivedAt
+                              ? `No electricity is billed for this room — ${reading.toLocaleString()} is exactly where their billing here started. Enter the meter as it read when they actually left.`
+                              : `No electricity is billed — the meter has not moved since the month opened at ${prev.toLocaleString()}.`}
+                          </p>
+                        );
+                      }
                       const units = reading - prev;
+                      // Their share stated in units rather than implied by dividing the
+                      // room total by the head count. The old wording ("800 room units
+                      // · 2 tenants sharing × PKR 50/unit") invited exactly that sum and
+                      // it does not reach the figure printed beside it — the split is by
+                      // segment, and after a move part of the bill belongs to another room.
+                      const shareUnits = Math.round((checkoutMath.estimatedACCharge / rate) * 100) / 100;
                       return (
                         <p className="text-xs text-emerald-400">
-                          {units.toLocaleString()} room unit{units === 1 ? "" : "s"} · {count} tenant{count > 1 ? "s" : ""} sharing × PKR {rate.toLocaleString()}/unit = your share est.{" "}
+                          Room metered {units.toLocaleString()} unit{units === 1 ? "" : "s"} ({prev.toLocaleString()} → {reading.toLocaleString()}) · their share {shareUnits.toLocaleString()} unit{shareUnits === 1 ? "" : "s"} × PKR {rate.toLocaleString()} ={" "}
                           <span className="font-medium">PKR {checkoutMath.estimatedACCharge.toLocaleString()}</span>
                         </p>
                       );

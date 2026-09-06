@@ -96,7 +96,15 @@ interface Props {
   acReadings?: { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null; recorded_while_vacant?: boolean | null }[];
   /** Latest WhatsApp status per tenant id — drives the delivery tick. */
   lastWhatsApp?: Record<string, { status: string; error_code: number | null; created_at: string }>;
-  acCheckoutReadings?: { room_id: string; for_month: string; meter_reading: number | null }[];
+  acCheckoutReadings?: {
+    room_id: string; for_month: string; meter_reading: number | null;
+    /** Set only on a ROOM TRANSFER. The share below was billed to that member at
+     *  the moment they moved, and their payment row has since followed them to
+     *  the new room — so the AC card cannot find it by room_id and would report
+     *  it as units nobody paid for. */
+    tenant_id?: string | null; units_consumed?: number | null;
+    ac_charge?: number | null; transferred_to_room_id?: string | null;
+  }[];
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
   // Tenants currently on the waiting list — a payment row can outlive an
   // active tenant being edited back to waiting, so the headline stats below
@@ -1257,14 +1265,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const acRooms = useMemo(() => {
     return rooms
       .filter(r => r.has_ac || meterAllRooms)
-      // A manager's action refuses a non-AC room even on a meter-all-rooms
-      // branch — pre-existing, and deliberately left alone. But an OCCUPIED one
-      // still carries what a manager can genuinely do there: save a join
-      // reading, upload a meter photo, read the allocation. Only the empty ones
-      // go, where there is nothing to see and no action to take.
-      .filter(r => r.has_ac || !isManager || acRoomOccupiedInMonth.has(r.id))
+      // Empty metered rooms used to be hidden from managers, because the manager
+      // action refused a non-AC room and there was nothing to do in one. It does
+      // not refuse any more, and an empty metered room is exactly where a reading
+      // has to be recorded — its units are the hostel's own cost and the meter
+      // has to carry forward for whoever moves in next. Both tiers see the same
+      // list now.
       .sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
-  }, [rooms, meterAllRooms, isManager, acRoomOccupiedInMonth]);
+  }, [rooms, meterAllRooms]);
 
   const acRoomMeta = useMemo(() => {
     const m = new Map<string, { occupied: boolean }>();
@@ -2356,15 +2364,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               // residency, and the occupied branch has an empty
                               // eligible set. Offering the button would be a
                               // prominent action that can only ever fail.
-                              disabled={applyingAC === room.id || !currentInput || (isManager && !room.has_ac) || (someoneLivedHereThisMonth && acTenantCount === 0)}
+                              // No `isManager && !room.has_ac` here any more. The
+                              // button was greyed out for a manager on every
+                              // metered room without an air conditioner — which on
+                              // a branch that meters all of them is every room —
+                              // mirroring a refusal the server no longer makes.
+                              // The two tiers now bill the same rooms.
+                              disabled={applyingAC === room.id || !currentInput || (someoneLivedHereThisMonth && acTenantCount === 0)}
                               title={
-                                isManager && !room.has_ac
-                                  ? "Only the owner can record units for a room not flagged as AC."
-                                  : someoneLivedHereThisMonth && acTenantCount === 0
-                                    ? "Everyone who lived here this month has checked out — their AC was settled at the door, so there is nothing left to apply."
-                                    : saved?.recorded_while_vacant && someoneLivedHereThisMonth
-                                      ? "This month was recorded with nobody in the room. Applying now bills its units to whoever is in the room today — check they actually lived here that month."
-                                      : undefined
+                                someoneLivedHereThisMonth && acTenantCount === 0
+                                  ? "Everyone who lived here this month has checked out — their AC was settled at the door, so there is nothing left to apply."
+                                  : saved?.recorded_while_vacant && someoneLivedHereThisMonth
+                                    ? "This month was recorded with nobody in the room. Applying now bills its units to whoever is in the room today — check they actually lived here that month."
+                                    : undefined
                               }
                               onClick={() => applyACUnits(room.id)}
                             >
@@ -2482,14 +2494,35 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       const acTenants = tenants.filter(t => t.room_id === room.id && t.is_active);
                       const monthRows = payments.filter(p => p.for_month === selectedMonth && p.tenant?.room_id === room.id);
                       const activeIds = new Set(acTenants.map(t => t.id));
+                      // ac_units_consumed on a payment row is the member's WHOLE MONTH
+                      // across every room they lived in — after a move it holds the room
+                      // they left as well as this one. This card is an account of ONE
+                      // room's meter, so anything earned in a room they have moved out of
+                      // comes back out first. Without it the room listed more units than
+                      // it metered (350 + 550 against an 800-unit meter) and told the
+                      // operator to press Apply, which recomputes the same figure.
+                      // Mirrors carriedTransferCharges (lib/ac-transfer.ts) on the server.
+                      const carriedFor = (tenantId: string) => acCheckoutReadings.reduce(
+                        (acc, c) => (
+                          c.for_month === selectedMonth &&
+                          c.transferred_to_room_id != null &&
+                          c.tenant_id === tenantId &&
+                          c.room_id !== room.id
+                        )
+                          ? { units: acc.units + Number(c.units_consumed ?? 0), charge: acc.charge + Number(c.ac_charge ?? 0), from: [...acc.from, c.room_id] }
+                          : acc,
+                        { units: 0, charge: 0, from: [] as string[] }
+                      );
                       const rows = acTenants.map(t => {
                         const pay = monthRows.find(p => p.tenant_id === t.id);
+                        const carried = carriedFor(t.id);
                         return {
                           id: t.id,
                           name: t.full_name,
-                          units: Number(pay?.ac_units_consumed ?? 0),
-                          charge: Number(pay?.ac_charge ?? 0),
+                          units: Math.round((Number(pay?.ac_units_consumed ?? 0) - carried.units) * 100) / 100,
+                          charge: Number(pay?.ac_charge ?? 0) - carried.charge,
                           departed: false,
+                          carried,
                         };
                       });
                       // A tenant who checked out mid-month keeps their payment row but
@@ -2498,14 +2531,48 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       // and the listed units never added up to the reading.
                       const departedRows = monthRows
                         .filter(p => !activeIds.has(p.tenant_id) && Number(p.ac_charge ?? 0) > 0)
-                        .map(p => ({
-                          id: p.tenant_id,
-                          name: p.tenant?.full_name ?? "Checked out",
-                          units: Number(p.ac_units_consumed ?? 0),
-                          charge: Number(p.ac_charge ?? 0),
+                        .map(p => {
+                          const carried = carriedFor(p.tenant_id);
+                          return {
+                            id: p.tenant_id,
+                            name: p.tenant?.full_name ?? "Checked out",
+                            units: Math.round((Number(p.ac_units_consumed ?? 0) - carried.units) * 100) / 100,
+                            charge: Number(p.ac_charge ?? 0) - carried.charge,
+                            departed: true,
+                            carried,
+                          };
+                        });
+                      // A member who TRANSFERRED out of this room is invisible to both
+                      // lists above: they are still active, and their payment row has
+                      // followed them to the new room, so `monthRows` (matched on the
+                      // tenant's CURRENT room_id) never contains them. Their share of
+                      // THIS room was billed at the moment they moved and is sitting on
+                      // that same row. Without it the card subtracted their units from
+                      // the meter and announced the difference as "hostel absorbs" —
+                      // telling the owner they were eating money they had in fact
+                      // already charged. Read from the move's own breakpoint, which is
+                      // the only record left in this room.
+                      const movedRows = acCheckoutReadings
+                        .filter(c =>
+                          c.room_id === room.id &&
+                          c.for_month === selectedMonth &&
+                          c.transferred_to_room_id != null &&
+                          Number(c.ac_charge ?? 0) > 0
+                        )
+                        .map(c => ({
+                          id: `moved-${c.tenant_id}`,
+                          name: tenants.find(t => t.id === c.tenant_id)?.full_name ?? "Moved rooms",
+                          units: Number(c.units_consumed ?? 0),
+                          charge: Number(c.ac_charge ?? 0),
                           departed: true,
+                          moved: true,
+                          carried: { units: 0, charge: 0, from: [] as string[] },
                         }));
-                      const allRows = [...rows, ...departedRows];
+                      const allRows = [
+                        ...rows.map(r => ({ ...r, moved: false })),
+                        ...departedRows.map(r => ({ ...r, moved: false })),
+                        ...movedRows,
+                      ];
                       // Tenants on 0 units used to be filtered out here. That hid the
                       // commonest real fault: a tenant present in the room who was
                       // never billed (joined after the last apply, or the roster
@@ -2537,7 +2604,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                             <div key={r.id} className="flex items-center gap-2 text-xs">
                               <span className="text-muted-foreground flex-1 min-w-0 truncate">
                                 {r.name}
-                                {r.departed && <span className="text-muted-foreground/50"> — checked out, charged at departure</span>}
+                                {r.departed && (
+                                  <span className="text-muted-foreground/50">
+                                    {r.moved ? " — moved rooms, charged at the move" : " — checked out, charged at departure"}
+                                  </span>
+                                )}
+                                {/* Their bill is higher than this line, and the operator
+                                    will compare the two. Say why here rather than leave
+                                    the difference looking like an error. */}
+                                {r.carried.units > 0 && (
+                                  <span className="text-muted-foreground/50">
+                                    {" "}— plus {r.carried.units} units from room{r.carried.from.length > 1 ? "s" : ""}{" "}
+                                    {r.carried.from.map(id => rooms.find(rm => rm.id === id)?.room_number ?? "?").join(", ")}, on the same bill
+                                  </span>
+                                )}
                               </span>
                               <span className="tabular-nums text-foreground">{r.units} units</span>
                               <span className="text-muted-foreground/40">·</span>

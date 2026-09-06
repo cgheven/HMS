@@ -20,6 +20,10 @@ export interface ACJoinReadingRow {
 export interface ACCheckoutReadingRow {
   meter_reading: number;
   tenant_count_at_checkout: number;
+  /** Who left. Optional only because not every caller has always sent it; without
+   *  it a departure is assumed to have been present from the month's first unit,
+   *  which is what this function did for everyone before room transfers existed. */
+  tenant_id?: string | null;
 }
 
 export interface ACTenantBillingRow {
@@ -154,10 +158,26 @@ export function computeACSegmentBilling(params: {
   // Excluding them re-split the entire month across only the tenants who stayed,
   // on top of the share the departing tenant was already charged at checkout, and
   // the room billed more units than the meter recorded.
+  //
+  // joinOffset closes the other end of the same window. A departure row alone says
+  // when someone LEFT; it says nothing about when they arrived, and this function
+  // used to assume "unit 0" for everyone. That was harmless while the only way to
+  // leave a room mid-month was to leave the hostel — you were nearly always there
+  // from the 1st. Room transfers break it: a member who moves in on the 10th and
+  // out again on the 20th was counted in the divisor for the first ten days too,
+  // so the roommates who were genuinely alone in that window were under-billed and
+  // the room silently billed fewer units than the meter recorded, with nothing
+  // reported as unassigned. Their join row is still in joinReadingsRaw — it is
+  // dropped from `joinReadings` above only because they are no longer eligible —
+  // so read the offset straight off it.
+  const rawJoinByTenant = new Map(
+    (joinReadingsRaw ?? []).map(r => [r.tenant_id, Math.max(0, Math.round(Number(r.units_at_join)))])
+  );
   const checkoutSegments = rawCheckoutReadings
     .map(cr => ({
       unitsOffset: Math.max(0, Math.round(Number(cr.meter_reading) - prevReading)),
       tenantCount: Number(cr.tenant_count_at_checkout),
+      joinOffset: cr.tenant_id ? (rawJoinByTenant.get(cr.tenant_id) ?? 0) : 0,
     }))
     .filter(cr => cr.unitsOffset > 0 && cr.unitsOffset <= units);
 
@@ -180,6 +200,8 @@ export function computeACSegmentBilling(params: {
     const boundarySet = new Set<number>([
       0,
       ...checkoutSegments.map(cr => cr.unitsOffset),
+      // A departed member's own arrival point is a boundary too — see joinOffset.
+      ...checkoutSegments.map(cr => Math.min(cr.joinOffset, units)).filter(x => x > 0),
       ...joinReadings.map(r => Math.min(Number(r.units_at_join), units)).filter(x => x > 0),
       units,
     ]);
@@ -197,7 +219,10 @@ export function computeACSegmentBilling(params: {
         const jr = joinReadings.find(jr => jr.tenant_id === t.id);
         return !jr || Number(jr.units_at_join) <= from;
       });
-      const departedPresent = checkoutSegments.filter(cs => cs.unitsOffset >= to).length;
+      // Present for the WHOLE segment: arrived at or before it opened, left at or
+      // after it closed. The join half is new; without it a departure counted from
+      // unit 0 regardless of when they actually walked in.
+      const departedPresent = checkoutSegments.filter(cs => cs.unitsOffset >= to && cs.joinOffset <= from).length;
       const totalCount = presentActive.length + departedPresent;
 
       if (totalCount > 0) {

@@ -20,7 +20,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { toast } from "@/hooks/use-toast";
 import { getReportData, getLedgerTenants, type ReportData, type LedgerTenantRow } from "@/app/actions/reports";
 import { getTenantTimeline, createInvoiceLink, createInstallmentReceiptLink, type TimelineEvent } from "@/app/actions/tenants";
-import { EventIcon, eventDotColor } from "@/components/modules/tenants/tenant-timeline";
+import { EventIcon, eventDotColor, TimelineEventBody } from "@/components/modules/tenants/tenant-timeline";
 import { DailyExpensesSection } from "./daily-expenses-section";
 import { UnitCostTab } from "./unit-cost-tab";
 import type { RevenueMonth, AgingBucket } from "@/types";
@@ -1830,24 +1830,7 @@ function MemberLedgerTab({
                           </div>
 
                           <div className="flex items-start justify-between gap-2 min-w-0">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1.5">
-                                <EventIcon type={event.type} />
-                                <p className="text-sm font-medium text-foreground leading-snug">{event.label}</p>
-                              </div>
-                              {event.sub && <p className="text-xs text-muted-foreground mt-0.5">{event.sub}</p>}
-                              {event.type === "payment" && (
-                                <p className="text-xs text-muted-foreground mt-0.5">
-                                  Rent: {formatCurrency(event.rentCharge ?? 0)}
-                                  {(event.foodCharge ?? 0) > 0 && <> · Food: {formatCurrency(event.foodCharge!)}</>}
-                                  {(event.acCharge ?? 0) > 0 && (
-                                    <> · AC: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{formatCurrency(event.acCharge!)}</>
-                                  )}
-                                  {(event.depositCharge ?? 0) > 0 && <> · Deposit: {formatCurrency(event.depositCharge!)}</>}
-                                  {(event.lateFee ?? 0) > 0 && <> · Late Fee: {formatCurrency(event.lateFee!)}</>}
-                                </p>
-                              )}
-                            </div>
+                            <TimelineEventBody event={event} />
                             <div className="flex items-center gap-1.5 shrink-0">
                               <p className="text-xs text-muted-foreground whitespace-nowrap">{formatDate(event.date)}</p>
                               {(event.type === "payment" || event.type === "partially_paid") && event.paymentId && (

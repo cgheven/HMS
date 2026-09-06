@@ -9,11 +9,20 @@ import { billLinkForPayment } from "@/lib/bill-link";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
 import { requireOwnerOrAbove, requireOwnerOrPartnerTier } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
+import { applyRoomACUnitsAction } from "@/app/actions/payments";
+import { applyRoomACUnitsAsManager } from "@/app/actions/managers";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
 import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount, splitPaymentCharges } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
+import { performRoomTransfer, isMeteredRoom, findCorrectableTransfer, correctRoomTransferReadings } from "@/lib/room-transfer";
+// Separate `import type`, never re-exported from this file. `export type { X }`
+// of an imported binding is emitted as a real runtime export by Turbopack, and
+// every page importing this module then died on "RoomTransferResult is not
+// defined". Consumers import the type from @/lib/room-transfer directly.
+import type { RoomTransferResult, CorrectableTransfer, RoomTransferCorrectionResult } from "@/lib/room-transfer";
+import { carriedTransferCharges } from "@/lib/ac-transfer";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
@@ -385,6 +394,10 @@ export interface TimelineEvent {
   date: string; // ISO string for sorting
   label: string;
   sub?: string;
+  /** A second, denser line under `sub` — labelled fragments, same shape as the
+   *  payment breakdown. Keeps a move's meter evidence scannable instead of
+   *  folding it into a sentence nobody reads. */
+  detail?: string;
   amount?: number;
   method?: string;
   forMonth?: string;
@@ -415,7 +428,7 @@ export async function getTenantTimeline(
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
-    const [tenantRes, paymentsRes, tenantEventsRes, checkoutReadingRes, installmentsRes, feedbackRes, feedbackTokenRes] = await Promise.all([
+    const [tenantRes, paymentsRes, tenantEventsRes, checkoutReadingRes, installmentsRes, feedbackRes, feedbackTokenRes, acRateRes] = await Promise.all([
       supabase
         .from("hms_tenants")
         .select("id, full_name, check_in, check_out, is_active, created_at, joining_meter_reading")
@@ -438,10 +451,21 @@ export async function getTenantTimeline(
         .order("created_at", { ascending: false }),
       supabase
         .from("hms_room_ac_checkout_readings")
-        .select("meter_reading")
+        // ac_charge here is this member's OWN share of that room, not the room's
+        // total — so the departure line can state the same three facts the move
+        // line does, and a dispute can be settled from the ledger alone.
+        // The FK must be named: migration 215 added transferred_to_room_id, so this
+        // table now points at hms_rooms twice and a bare embed is ambiguous.
+        .select("meter_reading, ac_charge, room:hms_rooms!hms_room_ac_checkout_readings_room_id_fkey(room_number)")
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
+        // Real departures only. A room transfer writes a row in the SAME shape,
+        // and a member who moved and left on the same day gives two rows with the
+        // same checkout_date — the sort was a coin flip and the ledger printed the
+        // meter of the room they had left weeks earlier as their departure reading.
+        .is("transferred_to_room_id", null)
         .order("checkout_date", { ascending: false })
+        .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle(),
       supabase
@@ -466,6 +490,13 @@ export async function getTenantTimeline(
         .select("id", { count: "exact", head: true })
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId),
+      // The departure row stores the member's share in rupees, not units. The
+      // rate turns it back into the units a dispute is actually argued over.
+      supabase
+        .from("hms_package_configs")
+        .select("ac_per_unit_rate")
+        .eq("hostel_id", hostelId)
+        .maybeSingle(),
     ]);
 
     if (tenantRes.error || !tenantRes.data) throw new Error("Tenant not found or access denied");
@@ -473,6 +504,7 @@ export async function getTenantTimeline(
 
     const tenant = tenantRes.data;
     const payments = paymentsRes.data;
+    const acPerUnitRate = Number(acRateRes.data?.ac_per_unit_rate ?? 0);
     const tenantEvents = tenantEventsRes.data ?? [];
     const checkoutReading = checkoutReadingRes.data;
     const installmentsByPayment = new Map<string, NonNullable<typeof installmentsRes.data>>();
@@ -490,21 +522,38 @@ export async function getTenantTimeline(
       type: "joined",
       date: tenant.check_in ?? tenant.created_at,
       label: "Checked in",
+      // "Checked in" already says a tenant joined the hostel. What the reader
+      // cannot see anywhere else is the meter it started from.
       sub: tenant.joining_meter_reading != null
-        ? `Tenant joined the hostel · AC meter at move-in: ${tenant.joining_meter_reading}`
-        : "Tenant joined the hostel",
+        ? `Meter at move-in: ${tenant.joining_meter_reading}`
+        : undefined,
     });
 
     // Check-out event
+    const departureRoom = (checkoutReading as { room?: { room_number?: string } | null } | null)?.room?.room_number ?? null;
+    const departureCharge = Number((checkoutReading as { ac_charge?: number } | null)?.ac_charge ?? 0);
+    const departureUnits = acPerUnitRate > 0 ? Math.round((departureCharge / acPerUnitRate) * 100) / 100 : null;
+    const departureDetail = checkoutReading?.meter_reading != null
+      ? [
+          `${departureRoom ? `${departureRoom} meter` : "Meter"}: ${checkoutReading.meter_reading}`,
+          departureUnits != null && departureCharge > 0
+            ? `${departureUnits.toLocaleString()} units → Rs ${departureCharge.toLocaleString()}`
+            : null,
+        ].filter(Boolean).join(" · ")
+      : undefined;
     if (tenant.check_out && !tenant.is_active) {
       events.push({
         id: `checkout-${tenant.id}`,
         type: "check_out",
         date: tenant.check_out,
         label: "Checked out",
-        sub: checkoutReading?.meter_reading != null
-          ? `Tenant left the hostel · AC meter at checkout: ${checkoutReading.meter_reading}`
-          : "Tenant left the hostel",
+        sub: undefined,
+        // Same shape as the move's line — which room, what it read, how many
+        // units were this member's, what that cost. Read together, a move and a
+        // departure now account for every unit on the bill: the move's units in
+        // the room they left plus these in the room they left from add up to the
+        // AC total the payment line shows.
+        detail: departureDetail,
       });
     }
 
@@ -692,12 +741,17 @@ export async function getTenantTimeline(
     // forward only; changes made before this table existed are not recoverable)
     for (const e of tenantEvents) {
       if (e.event_type === "room_changed") {
+        // A transfer off a metered room carries the meter evidence and the charge
+        // it produced. Without it the ledger shows a room change on one line and
+        // an unexplained AC charge on another, and nobody can connect them.
         events.push({
           id: `event-${e.id}`,
           type: "room_changed",
           date: e.created_at,
-          label: "Room changed",
+          label: e.amount != null && Number(e.amount) > 0 ? "Room transferred" : "Room changed",
           sub: `${e.from_value ?? "None"} → ${e.to_value ?? "None"}`,
+          detail: e.notes ?? undefined,
+          ...(e.amount != null && Number(e.amount) > 0 ? { acCharge: Number(e.amount) } : {}),
         });
       } else if (e.event_type === "plan_changed") {
         const fromLabel = TIMELINE_TIER_LABELS[e.from_value ?? ""] ?? e.from_value ?? "Unknown";
@@ -839,7 +893,11 @@ export async function getTenantTimeline(
       const dayA = new Date(a.date).toISOString().slice(0, 10);
       const dayB = new Date(b.date).toISOString().slice(0, 10);
       if (dayB !== dayA) return dayB < dayA ? -1 : 1;
-      return SAME_DAY_PRIORITY[a.type] - SAME_DAY_PRIORITY[b.type];
+      // Newest first WITHIN the day too. Days run newest-first, but this tie-break
+      // ran the other way, so a single day read bottom-up inside a list that reads
+      // top-down: a move, its payment and the checkout all landing on one day were
+      // printed in the exact reverse of the order the reader had just been taught.
+      return SAME_DAY_PRIORITY[b.type] - SAME_DAY_PRIORITY[a.type];
     });
 
     const feedback = (feedbackRes.data as TenantFeedback | null) ?? null;
@@ -1495,6 +1553,10 @@ export async function getCheckoutPendingPaymentAction(
      *  pro-rated rent through them or it quotes a figure the server will not
      *  settle at. */
     discount_percent: number; referral_percent: number;
+    /** AC already billed on this row for rooms the member MOVED OUT OF this
+     *  month. Not part of the current room's charge, so the checkout estimate
+     *  must not supersede it — see checkoutMath. */
+    carried_ac_charge: number;
   } | null;
   error?: string;
 }> {
@@ -1552,6 +1614,13 @@ export async function getCheckoutPendingPaymentAction(
         late_fee: Number(data.late_fee ?? 0),
         discount_percent: Number(data.discount_percent ?? 0),
         referral_percent: Number(data.referral_percent ?? 0),
+        carried_ac_charge: (
+          await carriedTransferCharges(
+            adminDb, hostelId, data.for_month as string,
+            (await adminDb.from("hms_tenants").select("room_id").eq("id", tenantId).maybeSingle()).data?.room_id ?? null,
+            [tenantId]
+          )
+        ).get(tenantId)?.charge ?? 0,
         ac_charge: Number(data.ac_charge ?? 0),
         ac_units_consumed: data.ac_units_consumed != null ? Number(data.ac_units_consumed) : null,
         food_charge: Number(data.food_charge ?? 0),
@@ -1600,7 +1669,7 @@ export async function getACCheckoutContextAction(
    */
   eligibleTenants: { id: string; check_in: string; joining_meter_reading: number | null }[];
   joinReadingsRaw: { tenant_id: string; units_at_join: number }[];
-  checkoutReadingsRaw: { meter_reading: number; tenant_count_at_checkout: number }[];
+  checkoutReadingsRaw: { meter_reading: number; tenant_count_at_checkout: number; tenant_id: string | null }[];
   /** This month's meter reading, if the operator already applied AC units for
    *  this room via the AC Units tab (e.g. earlier the same day the tenant is
    *  checking out) — surfaced so the checkout dialog can default to it instead
@@ -1685,7 +1754,7 @@ export async function getACCheckoutContextAction(
       // the same boundary format used by the month-end AC billing algorithm.
       adminDb
         .from("hms_room_ac_checkout_readings")
-        .select("units_consumed, meter_reading, tenant_count_at_checkout")
+        .select("units_consumed, meter_reading, tenant_count_at_checkout, tenant_id")
         .eq("room_id", roomId)
         .eq("hostel_id", hostelId)
         .eq("for_month", checkoutMonth),
@@ -1741,6 +1810,7 @@ export async function getACCheckoutContextAction(
       checkoutReadingsRaw: (priorCheckouts ?? []).map(r => ({
         meter_reading: Number(r.meter_reading),
         tenant_count_at_checkout: Number(r.tenant_count_at_checkout),
+        tenant_id: r.tenant_id ?? null,
       })),
     };
   } catch (err: unknown) {
@@ -2049,6 +2119,305 @@ export async function deleteTenantAction(
 
     revalidatePath("/tenants");
     return { success: true };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Room transfer — moving a member between rooms, settling the meter on both.
+//
+// Editing room_id directly is still what happens for a branch that meters
+// nothing; this path exists because a metered room needs the move recorded on
+// its meter, in both directions. See lib/room-transfer.ts for why.
+// ---------------------------------------------------------------------------
+
+export interface RoomTransferPreview {
+  fromRoomNumber: string | null;
+  toRoomNumber: string | null;
+  fromMetered: boolean;
+  toMetered: boolean;
+  /** Last reading known for each room, to prefill the two fields. */
+  fromLastReading: number | null;
+  toLastReading: number | null;
+  /** Set when the destination has no opening reading for this month, so the move
+   *  WILL be refused. Said up front rather than after the operator fills the form. */
+  toBlocked: string | null;
+  error?: string;
+}
+
+/** What the Edit Member dialog needs to decide whether to ask for meter
+ *  readings, and what to prefill them with. Read-only. */
+export async function getRoomTransferPreviewAction(
+  tenantId: string,
+  toRoomId: string
+): Promise<RoomTransferPreview> {
+  const empty: RoomTransferPreview = {
+    fromRoomNumber: null, toRoomNumber: null, fromMetered: false, toMetered: false,
+    fromLastReading: null, toLastReading: null, toBlocked: null,
+  };
+  try {
+    const mgr = await getManagerContext();
+    let hostelId: string;
+    if (mgr?.activeHostel) {
+      if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      hostelId = mgr.activeHostel.id;
+    } else {
+      await requireOwnerOrPartnerTier("full");
+      hostelId = await resolveHostelId();
+    }
+    const adminDb = createAdminClient();
+
+    const { data: tenant } = await adminDb
+      .from("hms_tenants").select("id, room_id").eq("id", tenantId).eq("hostel_id", hostelId).maybeSingle();
+    if (!tenant) return { ...empty, error: "Member not found." };
+
+    const [{ data: toRoom }, { data: fromRoom }, { data: hostel }] = await Promise.all([
+      adminDb.from("hms_rooms").select("id, room_number, has_ac").eq("id", toRoomId).eq("hostel_id", hostelId).maybeSingle(),
+      tenant.room_id
+        ? adminDb.from("hms_rooms").select("id, room_number, has_ac").eq("id", tenant.room_id).eq("hostel_id", hostelId).maybeSingle()
+        : Promise.resolve({ data: null }),
+      adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).single(),
+    ]);
+    if (!toRoom) return { ...empty, error: "Destination room not found." };
+
+    const meterAll = !!hostel?.meter_all_rooms;
+    const fromMetered = isMeteredRoom(fromRoom, meterAll);
+    const toMetered = isMeteredRoom(toRoom, meterAll);
+
+    // Prefill: the most recent reading this room has, whatever month it came
+    // from — the operator is standing at a meter that only ever goes up, so the
+    // last number on file is the closest starting guess.
+    const lastReadingFor = async (roomId: string | null | undefined): Promise<number | null> => {
+      if (!roomId) return null;
+      const [{ data: rd }, { data: co }] = await Promise.all([
+        adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId)
+          .eq("hostel_id", hostelId).not("meter_reading", "is", null)
+          .order("for_month", { ascending: false }).limit(1).maybeSingle(),
+        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId)
+          .eq("hostel_id", hostelId).order("for_month", { ascending: false })
+          .order("meter_reading", { ascending: false }).limit(1).maybeSingle(),
+      ]);
+      const a = rd?.meter_reading != null ? Math.round(Number(rd.meter_reading)) : null;
+      const b = co?.meter_reading != null ? Math.round(Number(co.meter_reading)) : null;
+      if (a == null) return b;
+      if (b == null) return a;
+      return Math.max(a, b);
+    };
+
+    // Whether the destination has an opening for THIS month — resolved exactly as
+    // performRoomTransfer resolves it, because that is what decides between a
+    // recorded move and a refusal. lastReadingFor above is only a prefill: it
+    // takes the newest reading from any month, so it is happily non-null for a
+    // room whose meter was last read in June. Asked here so the panel can say so
+    // BEFORE the operator fills the form, instead of after they press Save.
+    const forMonth = pktTodayDateString().slice(0, 7);
+    const [y, mo] = forMonth.split("-").map(Number);
+    const pd = new Date(y, mo - 2, 1);
+    const prevMonth = `${pd.getFullYear()}-${String(pd.getMonth() + 1).padStart(2, "0")}`;
+
+    const openingFor = async (roomId: string): Promise<number | null> => {
+      const [{ data: prevRow }, { data: prevCheckouts }, { data: roommates }] = await Promise.all([
+        adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonth).maybeSingle(),
+        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonth),
+        adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", roomId).eq("is_active", true),
+      ]);
+      const storedPrev = effectivePrevReading(prevRow, prevCheckouts);
+      return storedPrev != null ? storedPrev : deriveOpeningReading(roommates ?? [], forMonth);
+    };
+
+    const [fromLastReading, toLastReading, toOpening] = await Promise.all([
+      fromMetered ? lastReadingFor(fromRoom?.id) : Promise.resolve(null),
+      toMetered ? lastReadingFor(toRoom.id) : Promise.resolve(null),
+      toMetered ? openingFor(toRoom.id) : Promise.resolve(null),
+    ]);
+
+    return {
+      fromRoomNumber: fromRoom?.room_number ?? null,
+      toRoomNumber: toRoom.room_number,
+      fromMetered,
+      toMetered,
+      fromLastReading,
+      toLastReading,
+      toBlocked: toMetered && toOpening == null
+        ? `Room ${toRoom.room_number} has no opening meter reading for this month yet. Record it on the Payments page under AC Billing first — otherwise this member would be billed there for units used before they arrived.`
+        : null,
+    };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { ...empty, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+
+/**
+ * Re-run month-end Apply on the rooms a move left stale — see
+ * RoomTransferResult.reapply for why both ends go wrong and why neither shows as
+ * an error. Done here rather than in lib/room-transfer because Apply is
+ * tier-specific, and done automatically rather than asked of the operator
+ * because there is nothing on screen that would prompt them.
+ *
+ * A failure never fails the move: the readings are already recorded correctly.
+ * It is reported instead, naming the room, because nothing else will.
+ */
+async function reapplyStaleRooms(
+  rooms: { roomId: string; roomNumber: string; reading: number }[],
+  asManager: boolean,
+): Promise<string | undefined> {
+  const month = pktTodayDateString().slice(0, 7);
+  const failed: string[] = [];
+  for (const r of rooms) {
+    try {
+      const applied = asManager
+        ? await applyRoomACUnitsAsManager(r.roomId, month, r.reading)
+        : await applyRoomACUnitsAction(r.roomId, month, r.reading);
+      const err = "error" in applied ? applied.error : undefined;
+      const ok = "success" in applied ? applied.success : !err;
+      if (!ok) throw new Error(err ?? "Apply failed");
+    } catch {
+      failed.push(r.roomNumber);
+    }
+  }
+  if (failed.length === 0) return undefined;
+  return (
+    `Room ${failed.join(" and ")} had units applied before this change, and could not be re-split automatically. ` +
+    `Open Payments → AC Billing and press Apply on ${failed.length > 1 ? "those rooms" : `room ${failed[0]}`} — ` +
+    `until you do, the members there are billed for each other's units.`
+  );
+}
+
+export async function transferTenantRoomAction(input: {
+  tenantId: string;
+  toRoomId: string;
+  fromRoomReading?: number | null;
+  toRoomReading?: number | null;
+}): Promise<{ success: boolean; result?: RoomTransferResult; error?: string }> {
+  try {
+    // Same gate the room field already sits behind in the edit dialog: a manager
+    // with edit_members, or an owner / full-tier partner.
+    const mgr = await getManagerContext();
+    let hostelId: string;
+    if (mgr?.activeHostel) {
+      if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      hostelId = mgr.activeHostel.id;
+    } else {
+      await requireOwnerOrPartnerTier("full");
+      hostelId = await resolveHostelId();
+    }
+    const adminDb = createAdminClient();
+
+    const result = await performRoomTransfer(adminDb, hostelId, input);
+    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel);
+
+    // Ledger entry, with the meter evidence in the note — the Member Ledger is
+    // where an owner goes to answer "why was I charged for two rooms in March?".
+    const noteParts: string[] = [];
+    if (result.closedMeter) {
+      // The readings, not just the outcome. This note is the whole answer to "why
+      // was I charged for two rooms in March?", and without the numbers the owner
+      // cannot check it against the meter or the AC Billing tab.
+      noteParts.push(
+        `${result.fromRoomNumber} meter: ${Math.round(Number(input.fromRoomReading))}` +
+        ` · ${result.closedUnits} units` +
+        (result.closedCharge > 0 ? ` → Rs ${result.closedCharge.toLocaleString()}` : "")
+      );
+    }
+    if (result.openedMeter) {
+      noteParts.push(`${result.toRoomNumber} meter: ${Math.round(Number(input.toRoomReading))}`);
+    }
+    if (result.warning) noteParts.push(result.warning);
+
+    await adminDb.from("hms_tenant_events").insert({
+      hostel_id: hostelId,
+      tenant_id: input.tenantId,
+      event_type: "room_changed",
+      from_value: result.fromRoomNumber,
+      to_value: result.toRoomNumber,
+      amount: result.closedCharge > 0 ? result.closedCharge : null,
+      notes: noteParts.length > 0 ? noteParts.join(" · ") : null,
+    });
+
+    revalidatePath("/tenants");
+    revalidatePath("/payments");
+    return { success: true, result: { ...result, warning: reapplyWarning ?? result.warning } };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** The move this member made this month that can still be re-priced, or null. */
+export async function getRoomTransferCorrectionAction(
+  tenantId: string
+): Promise<{ correction?: CorrectableTransfer | null; error?: string }> {
+  try {
+    const mgr = await getManagerContext();
+    let hostelId: string;
+    if (mgr?.activeHostel) {
+      if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      hostelId = mgr.activeHostel.id;
+    } else {
+      await requireOwnerOrPartnerTier("full");
+      hostelId = await resolveHostelId();
+    }
+    return { correction: await findCorrectableTransfer(createAdminClient(), hostelId, tenantId) };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function correctRoomTransferAction(input: {
+  tenantId: string;
+  fromRoomReading: number;
+  toRoomReading?: number | null;
+}): Promise<{ success: boolean; result?: RoomTransferCorrectionResult; error?: string }> {
+  try {
+    // Same gate as the move itself — correcting one is the same act of pricing.
+    const mgr = await getManagerContext();
+    let hostelId: string;
+    if (mgr?.activeHostel) {
+      if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      hostelId = mgr.activeHostel.id;
+    } else {
+      await requireOwnerOrPartnerTier("full");
+      hostelId = await resolveHostelId();
+    }
+    const adminDb = createAdminClient();
+    const result = await correctRoomTransferReadings(adminDb, hostelId, input);
+
+    // Both rooms, not just the destination — a move re-cuts the leaver's share in
+    // the room they left, and the roommates who stayed keep the smaller share they
+    // were given while the leaver was still counted.
+    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel);
+
+    // Appended, never rewritten. The original move is what the operator recorded
+    // at the time; a correction is a second fact about the same move, and an
+    // audit trail that edits itself is not one.
+    const noteParts = [
+      `${result.fromRoomNumber} meter: ${Math.round(Number(input.fromRoomReading))}` +
+      ` · ${result.closedUnits} units` +
+      (result.closedCharge > 0 ? ` → Rs ${result.closedCharge.toLocaleString()}` : ""),
+    ];
+    if (result.openedMeter && input.toRoomReading != null) {
+      noteParts.push(`${result.toRoomNumber} meter: ${Math.round(Number(input.toRoomReading))}`);
+    }
+    noteParts.push(`was ${result.previousUnits} units → Rs ${result.previousCharge.toLocaleString()}`);
+
+    await adminDb.from("hms_tenant_events").insert({
+      hostel_id: hostelId,
+      tenant_id: input.tenantId,
+      event_type: "room_changed",
+      from_value: result.fromRoomNumber,
+      to_value: result.toRoomNumber,
+      amount: result.closedCharge > 0 ? result.closedCharge : null,
+      notes: `Readings corrected · ${noteParts.join(" · ")}`,
+    });
+
+    revalidatePath("/tenants");
+    revalidatePath("/payments");
+    return { success: true, result: { ...result, warning: reapplyWarning ?? result.warning } };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };

@@ -12,6 +12,41 @@ import type { Tenant, Room, PackageTier, TenantDocument, TenantFeedback } from "
 import { DocumentManager } from "./document-manager";
 import { FeedbackSummary } from "@/components/modules/feedback/feedback-summary";
 
+/**
+ * What one timeline entry says — label, sub-line, meter detail, and the payment
+ * itemisation. Shared because the Reports drill-in renders the same events with
+ * its own layout around them, and the two copies had already drifted: reports
+ * omitted the discount line, so a discounted bill's breakdown did not add up
+ * there, and it never showed `detail` at all, so a move's meter evidence was
+ * invisible on the one screen an owner opens to settle a dispute.
+ */
+export function TimelineEventBody({ event }: { event: TimelineEvent }) {
+  return (
+    <div className="flex-1 min-w-0">
+      <div className="flex items-center gap-1.5">
+        <EventIcon type={event.type} />
+        <p className="text-sm font-medium text-foreground leading-snug">{event.label}</p>
+      </div>
+      {event.sub && <p className="text-xs text-muted-foreground mt-0.5">{event.sub}</p>}
+      {event.detail && <p className="mt-1 text-xs text-muted-foreground">{event.detail}</p>}
+      {event.type === "payment" && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Rent: {formatCurrency(event.rentCharge ?? 0)}
+          {(event.foodCharge ?? 0) > 0 && <> · Food: {formatCurrency(event.foodCharge!)}</>}
+          {(event.acCharge ?? 0) > 0 && (
+            <> · AC: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{formatCurrency(event.acCharge!)}</>
+          )}
+          {(event.discountCharge ?? 0) > 0 && (
+            <> · <span className="text-emerald-400">Discount: -{formatCurrency(event.discountCharge!)}</span></>
+          )}
+          {(event.depositCharge ?? 0) > 0 && <> · Deposit: {formatCurrency(event.depositCharge!)}</>}
+          {(event.lateFee ?? 0) > 0 && <> · Late Fee: {formatCurrency(event.lateFee!)}</>}
+        </p>
+      )}
+    </div>
+  );
+}
+
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
   space_only: "Space Only",
   space_food: "Space + 2 Meals",
@@ -273,33 +308,7 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
                     </div>
 
                     <div className="flex items-start justify-between gap-2 min-w-0">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <EventIcon type={event.type} />
-                          <p className="text-sm font-medium text-foreground leading-snug">
-                            {event.label}
-                          </p>
-                        </div>
-                        {event.sub && (
-                          <p className="text-xs text-muted-foreground mt-0.5">{event.sub}</p>
-                        )}
-                        {/* Breakdown for payment events — matches the receipt's itemization:
-                            rent + food/AC, plus a one-time deposit line on the first month's bill. */}
-                        {event.type === "payment" && (
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            Rent: {formatCurrency(event.rentCharge ?? 0)}
-                            {(event.foodCharge ?? 0) > 0 && <> · Food: {formatCurrency(event.foodCharge!)}</>}
-                            {(event.acCharge ?? 0) > 0 && (
-                              <> · AC: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{formatCurrency(event.acCharge!)}</>
-                            )}
-                            {(event.discountCharge ?? 0) > 0 && (
-                              <> · <span className="text-emerald-400">Discount: -{formatCurrency(event.discountCharge!)}</span></>
-                            )}
-                            {(event.depositCharge ?? 0) > 0 && <> · Deposit: {formatCurrency(event.depositCharge!)}</>}
-                            {(event.lateFee ?? 0) > 0 && <> · Late Fee: {formatCurrency(event.lateFee!)}</>}
-                          </p>
-                        )}
-                      </div>
+                      <TimelineEventBody event={event} />
                       <div className="flex items-center gap-1.5 shrink-0">
                         <p className="text-xs text-muted-foreground whitespace-nowrap">
                           {formatDate(event.date)}

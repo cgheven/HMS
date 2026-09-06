@@ -9,6 +9,7 @@ export default async function TenantsPage() {
 
   let applications: TenantApplication[] = [];
   let hostelSlug: string | null = null;
+  let meterAllRooms = false;
   let waitlistEntries: WaitlistEntry[] = [];
   // Derived per tenant on the admission form: charged only to residents whose
   // room has AC, so the rate lives on the branch, not the tenant.
@@ -24,7 +25,7 @@ export default async function TenantsPage() {
         .order("applied_at", { ascending: false }),
       admin
         .from("hms_hostels")
-        .select("slug")
+        .select("slug, meter_all_rooms")
         .eq("id", ctx.hostelId)
         .single(),
       admin
@@ -41,6 +42,7 @@ export default async function TenantsPage() {
     applications = (appsResult.data ?? []) as TenantApplication[];
     acMaintenanceRate = Number(configResult.data?.ac_maintenance_rate ?? 0);
     hostelSlug = hostelResult.data?.slug ?? null;
+    meterAllRooms = !!hostelResult.data?.meter_all_rooms;
     waitlistEntries = (waitlistResult.data ?? []) as WaitlistEntry[];
   }
 
@@ -53,6 +55,7 @@ export default async function TenantsPage() {
       hostelName={ctx?.hostel?.name}
       mealTimes={ctx?.hostel?.meal_times}
       acMaintenanceRate={acMaintenanceRate}
+      meterAllRooms={meterAllRooms}
       waitlistEntries={waitlistEntries}
       partnerTier={ctx?.partnerTier}
     />

@@ -35,7 +35,8 @@ import {
 import { validateDiscountPercent } from "@/lib/tenant-discount";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 import { logActivity } from "@/lib/audit";
-import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore } from "@/lib/ac-billing";
+import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore, round2 } from "@/lib/ac-billing";
+import { carriedTransferCharges } from "@/lib/ac-transfer";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -986,10 +987,9 @@ export async function applyRoomACUnitsAction(
     const perUnitRate = Number(pkgConfig?.ac_per_unit_rate ?? 0);
     if (perUnitRate <= 0) throw new Error("AC per-unit rate is not configured. Set it in Settings → Packages.");
     const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
-    // This function only ever runs against a room already verified has_ac = true
-    // (line above), so the ROOM half of the test is settled for everyone here.
-    // The AMOUNT is not: each tenant may carry their own ac_maintenance override,
-    // so it is computed per tenant inside the loop below rather than hoisted.
+    // NOT settled by the check above: that now passes a metered room with no air
+    // conditioner, which owes no maintenance. Both the room test and the amount
+    // are applied per tenant below, since each may carry their own override.
     const acMaintenanceRate = Number(pkgConfig?.ac_maintenance_rate ?? 0);
 
     // ── Find all active tenants in this room ─────────────────────
@@ -1176,7 +1176,7 @@ export async function applyRoomACUnitsAction(
         .order("units_at_join", { ascending: true }),
       adminDb
         .from("hms_room_ac_checkout_readings")
-        .select("meter_reading, tenant_count_at_checkout")
+        .select("meter_reading, tenant_count_at_checkout, tenant_id")
         .eq("room_id", roomId)
         .eq("for_month", forMonth)
         .eq("hostel_id", hostelId)
@@ -1192,7 +1192,13 @@ export async function applyRoomACUnitsAction(
       units,
       perUnitRate,
       forMonth,
-      joinReadingsRaw: (joinReadingsRaw ?? []).filter(r => eligible.some(t => t.id === r.tenant_id)),
+      // Passed WHOLE, not pre-filtered to the eligible list. computeACSegmentBilling
+      // already drops rows for tenants who are not eligible when it builds the
+      // billing timeline — but it also needs the join row of a member who has
+      // since LEFT the room, to know they arrived partway rather than assuming
+      // they were there from the first unit. Filtering here hid exactly that row
+      // and under-billed the roommates who really were alone before they moved in.
+      joinReadingsRaw: joinReadingsRaw ?? [],
       // Passed through unfiltered. A departure at exactly this reading has to
       // reach computeACSegmentBilling — it counts toward the divisor for the
       // month even though it opens no new segment, and dropping it here billed
@@ -1239,7 +1245,14 @@ export async function applyRoomACUnitsAction(
           forMonth
         );
         const acMaintenanceCharge = computeAcMaintenanceCharge(
-          true,
+          // The ROOM, not `true`. This was hard-coded when the function could only
+          // ever run against a has_ac room; letting meter_all_rooms branches bill
+          // every room made that false without anyone revisiting it. The trigger
+          // zeroes the charge for a non-AC room regardless, so a monthly row was
+          // corrected on the way in — but a DAILY row keeps the app's `amount` and
+          // derives base rent by SUBTRACTING the charges from it, so the phantom
+          // maintenance came straight back out of the rent.
+          room.has_ac,
           acMaintenanceRate,
           (t as { ac_maintenance?: number | null }).ac_maintenance
         );
@@ -1266,21 +1279,53 @@ export async function applyRoomACUnitsAction(
       await adminDb.from("hms_payments").insert(newRows);
     }
 
+    // A tenant who moved into this room part-way through the month still owes
+    // their share of the room they left. This write overwrites ac_charge, so
+    // without adding it back that earlier share would be silently erased.
+    const carried = await carriedTransferCharges(
+      adminDb, hostelId, forMonth, roomId, tenantBilling.map(t => t.id)
+    );
+
+    // What each row bills right now, and how much of that is AC. Needed because
+    // `amount` has to be sent explicitly below — see the note on the update.
+    const { data: preUpdateRows } = await adminDb
+      .from("hms_payments")
+      .select("tenant_id, amount, ac_charge, billing_type:tenant_id")
+      .eq("hostel_id", hostelId)
+      .eq("for_month", forMonth)
+      .in("tenant_id", tenantBilling.map(t => t.id));
+    const preUpdate = new Map(
+      (preUpdateRows ?? []).map(r => [r.tenant_id, { amount: Number(r.amount ?? 0), ac: Number(r.ac_charge ?? 0) }])
+    );
+
     // ── Update each eligible tenant's payment (admin client for writes) ──
     const updateResults = await Promise.all(
-      tenantBilling.map(({ id, tenantUnits, charge }) =>
-        adminDb
+      tenantBilling.map(({ id, tenantUnits, charge }) => {
+        const nextAc = charge + (carried.get(id)?.charge ?? 0);
+        const before = preUpdate.get(id);
+        return adminDb
           .from("hms_payments")
           .update({
-            ac_units_consumed: tenantUnits,
-            ac_charge: charge,
+            ac_units_consumed: round2(tenantUnits + (carried.get(id)?.units ?? 0)),
+            ac_charge: nextAc,
+            // Sent explicitly. A MONTHLY row ignores it — the trigger rebuilds the
+            // total from monthly_rent — but a DAILY row keeps the app's amount and
+            // derives base rent by SUBTRACTING the charges from it. Leaving it out
+            // meant the trigger read the new AC charge as coming OUT of the rent:
+            // a daily tenant's bill did not move at all while their rent silently
+            // dropped by the AC, so the owner billed the electricity to nobody.
+            // Once the AC exceeded the bill it stopped being silent and raised
+            // "payment amount is less than the sum of add-on charges", which
+            // aborts the whole room's Apply — the monthly roommates included.
+            // The transfer and checkout paths have always sent it; this one did not.
+            ...(before ? { amount: Math.max(0, before.amount - before.ac + nextAc) } : {}),
             updated_at: new Date().toISOString(),
           })
           .eq("tenant_id", id)
           .eq("for_month", forMonth)
           .eq("hostel_id", hostelId)
-          .select("id")
-      )
+          .select("id");
+      })
     );
 
     // ── Surface any DB error from the updates ──
