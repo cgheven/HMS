@@ -14,8 +14,12 @@ import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
 import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount, splitPaymentCharges } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
-import { performRoomTransfer, isMeteredRoom, type RoomTransferResult } from "@/lib/room-transfer";
-export type { RoomTransferResult };
+import { performRoomTransfer, isMeteredRoom } from "@/lib/room-transfer";
+// Separate `import type`, never re-exported from this file. `export type { X }`
+// of an imported binding is emitted as a real runtime export by Turbopack, and
+// every page importing this module then died on "RoomTransferResult is not
+// defined". Consumers import the type from @/lib/room-transfer directly.
+import type { RoomTransferResult } from "@/lib/room-transfer";
 import { carriedTransferCharges } from "@/lib/ac-transfer";
 import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
