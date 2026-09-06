@@ -975,6 +975,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   // A metered side with an empty box is refused by the server anyway; blocking
   // it here keeps the operator from discovering that only after the closing
   // reading has already been written and rolled back.
+  // A destination with no opening reading for this month is refused by the server
+  // — Save stays disabled rather than letting the operator fill the form first.
+  const transferBlocked = !!transferPreview?.toBlocked;
   const transferReadingsMissing = !!transferPreview && (
     (transferPreview.fromMetered && transferFromReading.trim() === "") ||
     (transferPreview.toMetered && transferToReading.trim() === "")
@@ -4194,7 +4197,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 one-click change it has always been. Each side is asked for
                 independently: close the room being left, open the room being
                 joined, and only where there is a meter to read. */}
-            {transferPreview && (
+            {transferPreview?.toBlocked && (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/[0.07] p-3">
+                <p className="text-xs font-medium text-destructive flex items-start gap-1.5">
+                  <Zap className="w-3.5 h-3.5 shrink-0 mt-px" />
+                  <span>{transferPreview.toBlocked}</span>
+                </p>
+              </div>
+            )}
+            {transferPreview && !transferPreview.toBlocked && (
               <div className="rounded-xl border border-amber/25 bg-amber/[0.06] p-3 space-y-3">
                 <p className="text-xs font-medium text-amber flex items-center gap-1.5">
                   <Zap className="w-3.5 h-3.5 shrink-0" />
@@ -4754,7 +4765,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </span>
                 )}
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={saving || redflagChecking || transferChecking || transferReadingsMissing || !form.full_name || (!editing && (!form.father_name.trim() || !form.emergency_contact.trim() || !form.emergency_phone.trim())) || (!form.is_waiting && !form.check_in)}>
+                <Button onClick={handleSave} disabled={saving || redflagChecking || transferChecking || transferReadingsMissing || transferBlocked || !form.full_name || (!editing && (!form.father_name.trim() || !form.emergency_contact.trim() || !form.emergency_phone.trim())) || (!form.is_waiting && !form.check_in)}>
                   {transferChecking
                     ? "Checking meters…"
                     : redflagChecking

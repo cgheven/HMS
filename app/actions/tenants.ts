@@ -2090,6 +2090,9 @@ export interface RoomTransferPreview {
   /** Last reading known for each room, to prefill the two fields. */
   fromLastReading: number | null;
   toLastReading: number | null;
+  /** Set when the destination has no opening reading for this month, so the move
+   *  WILL be refused. Said up front rather than after the operator fills the form. */
+  toBlocked: string | null;
   error?: string;
 }
 
@@ -2101,7 +2104,7 @@ export async function getRoomTransferPreviewAction(
 ): Promise<RoomTransferPreview> {
   const empty: RoomTransferPreview = {
     fromRoomNumber: null, toRoomNumber: null, fromMetered: false, toMetered: false,
-    fromLastReading: null, toLastReading: null,
+    fromLastReading: null, toLastReading: null, toBlocked: null,
   };
   try {
     const mgr = await getManagerContext();
@@ -2152,9 +2155,31 @@ export async function getRoomTransferPreviewAction(
       return Math.max(a, b);
     };
 
-    const [fromLastReading, toLastReading] = await Promise.all([
+    // Whether the destination has an opening for THIS month — resolved exactly as
+    // performRoomTransfer resolves it, because that is what decides between a
+    // recorded move and a refusal. lastReadingFor above is only a prefill: it
+    // takes the newest reading from any month, so it is happily non-null for a
+    // room whose meter was last read in June. Asked here so the panel can say so
+    // BEFORE the operator fills the form, instead of after they press Save.
+    const forMonth = pktTodayDateString().slice(0, 7);
+    const [y, mo] = forMonth.split("-").map(Number);
+    const pd = new Date(y, mo - 2, 1);
+    const prevMonth = `${pd.getFullYear()}-${String(pd.getMonth() + 1).padStart(2, "0")}`;
+
+    const openingFor = async (roomId: string): Promise<number | null> => {
+      const [{ data: prevRow }, { data: prevCheckouts }, { data: roommates }] = await Promise.all([
+        adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonth).maybeSingle(),
+        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonth),
+        adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", roomId).eq("is_active", true),
+      ]);
+      const storedPrev = effectivePrevReading(prevRow, prevCheckouts);
+      return storedPrev != null ? storedPrev : deriveOpeningReading(roommates ?? [], forMonth);
+    };
+
+    const [fromLastReading, toLastReading, toOpening] = await Promise.all([
       fromMetered ? lastReadingFor(fromRoom?.id) : Promise.resolve(null),
       toMetered ? lastReadingFor(toRoom.id) : Promise.resolve(null),
+      toMetered ? openingFor(toRoom.id) : Promise.resolve(null),
     ]);
 
     return {
@@ -2164,6 +2189,9 @@ export async function getRoomTransferPreviewAction(
       toMetered,
       fromLastReading,
       toLastReading,
+      toBlocked: toMetered && toOpening == null
+        ? `Room ${toRoom.room_number} has no opening meter reading for this month yet. Record it on the Payments page under AC Billing first — otherwise this member would be billed there for units used before they arrived.`
+        : null,
     };
   } catch (err: unknown) {
     unstable_rethrow(err);
