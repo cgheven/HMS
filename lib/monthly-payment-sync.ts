@@ -185,7 +185,16 @@ export async function ensureMonthlyPaymentRows(
         hostel_id: hostelId,
         tenant_id: t.id,
         for_month: month,
-        amount: baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge,
+        // preservedAC is INSIDE the total, not merely carried alongside it. A
+        // MONTHLY row never noticed the difference — the trigger rebuilds its
+        // amount from monthly_rent and ignores whatever the app sends. A DAILY
+        // row keeps this number and derives base rent by SUBTRACTING the charges
+        // from it, so an amount that excluded the AC made the trigger read the AC
+        // as coming out of the rent: the bill did not move, the rent quietly
+        // dropped by the charge, and once the AC exceeded the bill the sync raised
+        // "payment amount is less than the sum of add-on charges" — on a function
+        // that runs on every Payments page load.
+        amount: baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge + preservedAC,
         payment_package_tier: tier,
         food_charge: foodCharge,
         ac_charge: preservedAC,

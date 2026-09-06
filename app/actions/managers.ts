@@ -641,20 +641,35 @@ export async function applyRoomACUnitsAsManager(
       admin, hostelId, currentMonth, roomId, billing.map((b) => b.id)
     )
 
+    // See applyRoomACUnitsAction — `amount` has to be sent explicitly or a daily
+    // row's rent absorbs the AC charge instead of the bill growing by it.
+    const { data: preUpdateRows } = await admin
+      .from("hms_payments")
+      .select("tenant_id, amount, ac_charge")
+      .eq("hostel_id", hostelId)
+      .eq("for_month", currentMonth)
+      .in("tenant_id", billing.map((b) => b.id))
+    const preUpdate = new Map(
+      (preUpdateRows ?? []).map((r) => [r.tenant_id, { amount: Number(r.amount ?? 0), ac: Number(r.ac_charge ?? 0) }])
+    )
+
     // Update each tenant's payment row for this month
     const updateResults = await Promise.all(
-      billing.map(({ id, tenantUnits, charge }) =>
-        admin
+      billing.map(({ id, tenantUnits, charge }) => {
+        const nextAc = charge + (carried.get(id)?.charge ?? 0)
+        const before = preUpdate.get(id)
+        return admin
           .from("hms_payments")
           .update({
             ac_units_consumed: round2(tenantUnits + (carried.get(id)?.units ?? 0)),
-            ac_charge: charge + (carried.get(id)?.charge ?? 0),
+            ac_charge: nextAc,
+            ...(before ? { amount: Math.max(0, before.amount - before.ac + nextAc) } : {}),
             updated_at: new Date().toISOString(),
           })
           .eq("tenant_id", id)
           .eq("for_month", currentMonth)
           .eq("hostel_id", hostelId)
-      )
+      })
     )
 
     const firstError = updateResults.find((r) => r.error)?.error
