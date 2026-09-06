@@ -967,6 +967,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [noticeSubmitting, setNoticeSubmitting] = useState(false);
 
   // Rooms with remaining capacity
+  // A metered side with an empty box is refused by the server anyway; blocking
+  // it here keeps the operator from discovering that only after the closing
+  // reading has already been written and rolled back.
+  const transferReadingsMissing = !!transferPreview && (
+    (transferPreview.fromMetered && transferFromReading.trim() === "") ||
+    (transferPreview.toMetered && transferToReading.trim() === "")
+  );
+
   const availableRooms = useMemo(
     () => rooms.filter((r) => r.status !== "maintenance" && r.occupied < r.capacity),
     [rooms]
@@ -4724,7 +4732,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </span>
                 )}
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={saving || redflagChecking || transferChecking || !form.full_name || (!editing && (!form.father_name.trim() || !form.emergency_contact.trim() || !form.emergency_phone.trim())) || (!form.is_waiting && !form.check_in)}>
+                <Button onClick={handleSave} disabled={saving || redflagChecking || transferChecking || transferReadingsMissing || !form.full_name || (!editing && (!form.father_name.trim() || !form.emergency_contact.trim() || !form.emergency_phone.trim())) || (!form.is_waiting && !form.check_in)}>
                   {transferChecking
                     ? "Checking meters…"
                     : redflagChecking

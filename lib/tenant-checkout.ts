@@ -509,11 +509,20 @@ export async function performTenantCheckout(
                 // Settled in Step 3 — which also writes the AC fields and the new amount.
                 adopt(monthRow);
               } else {
+                // The stored ac_charge being replaced here may include a share
+                // carried from a room the member moved out of this month, which
+                // the current room's figure knows nothing about. Subtracting all
+                // of it and adding back only this room's erased that share: the
+                // row then billed less than was already collected and the member
+                // looked owed a refund for money correctly taken.
+                const carriedHere = (
+                  await carriedTransferCharges(adminDb, hostelId, checkoutMonth, tenant.room_id, [input.tenantId])
+                ).get(input.tenantId) ?? { units: 0, charge: 0 };
                 await adminDb.from("hms_payments")
                   .update({
-                    ac_units_consumed: tenantUnits,
-                    ac_charge,
-                    amount: Number(monthRow.amount ?? 0) - Number(monthRow.ac_charge ?? 0) + ac_charge,
+                    ac_units_consumed: round2(tenantUnits + carriedHere.units),
+                    ac_charge: ac_charge + carriedHere.charge,
+                    amount: Number(monthRow.amount ?? 0) - Number(monthRow.ac_charge ?? 0) + ac_charge + carriedHere.charge,
                     updated_at: new Date().toISOString(),
                   })
                   .eq("id", monthRow.id);
@@ -568,8 +577,14 @@ export async function performTenantCheckout(
     const carriedAtCheckout = await carriedTransferCharges(
       adminDb, hostelId, input.checkoutDate.substring(0, 7), tenant.room_id, [input.tenantId]
     );
-    const carriedCharge = carriedAtCheckout.get(input.tenantId)?.charge ?? 0;
-    const carriedUnits = carriedAtCheckout.get(input.tenantId)?.units ?? 0;
+    // Gated on the row actually being settled, exactly as supersededAcCharge is.
+    // The carried share lives on the CHECKOUT MONTH's row. When arrears mean the
+    // dialog is settling an OLDER month instead — routine here, hundreds of
+    // members carry unpaid months — adding it there charges the member a second
+    // time for a room they already paid off, on a month they burned nothing in.
+    const settlingCheckoutMonth = verifiedPayment?.for_month === input.checkoutDate.substring(0, 7);
+    const carriedCharge = settlingCheckoutMonth ? (carriedAtCheckout.get(input.tenantId)?.charge ?? 0) : 0;
+    const carriedUnits = settlingCheckoutMonth ? (carriedAtCheckout.get(input.tenantId)?.units ?? 0) : 0;
 
     // What the bill should show: this room's share plus anything carried. The
     // readings row below keeps the room's own share alone — it records what this

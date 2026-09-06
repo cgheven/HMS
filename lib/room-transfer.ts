@@ -248,64 +248,73 @@ export async function performRoomTransfer(
     );
     if (brErr) throw new Error(`Could not record the closing meter reading: ${brErr.message}`);
     writtenClosing.push(fromRoom.id);
-  }
 
-  // ── The room being JOINED: open the meter for this tenant ────────────
-  if (toMetered) {
-    if (input.toRoomReading == null || !Number.isFinite(Number(input.toRoomReading))) {
-      throw new Error(`Enter the meter reading for room ${toRoom.room_number} as it stands now — it is where the member's billing there starts.`);
-    }
-    const reading = Math.round(Number(input.toRoomReading));
-    if (reading < 0 || reading > 999_999) throw new Error("Meter reading must be between 0 and 999,999.");
-
-    const prevMonth = prevMonthOf(forMonth);
-    const [{ data: prevRow }, { data: prevCheckouts }, { data: roommates }] = await Promise.all([
-      adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", toRoom.id).eq("hostel_id", hostelId).eq("for_month", prevMonth).maybeSingle(),
-      adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", toRoom.id).eq("hostel_id", hostelId).eq("for_month", prevMonth),
-      adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", toRoom.id).eq("is_active", true),
-    ]);
-
-    const storedPrev = effectivePrevReading(prevRow, prevCheckouts);
-    const opening = storedPrev != null
-      ? storedPrev
-      : deriveOpeningReading(roommates ?? [], forMonth);
-
-    if (opening == null) {
-      // No baseline exists for the destination yet, so an offset cannot be
-      // computed. Recording nothing is the honest outcome: the month's first
-      // Apply establishes the opening, and the operator can enter this tenant
-      // under Mid-Month Joiners then. Said out loud rather than swallowed.
-      warning =
-        `Room ${toRoom.room_number} has no earlier meter reading, so the member's starting point there could not be ` +
-        `recorded automatically. Enter them under "Mid-Month Joiners" on the AC Billing tab when you apply this month's units.`;
-    } else if (reading < opening) {
-      throw new Error(
-        `Meter reading ${reading} for room ${toRoom.room_number} is below where the month opened (${opening}). ` +
-        `Check the number — a meter cannot run backwards.`
-      );
-    } else {
-      // units_at_join is an OFFSET from the month's opening, the same shape the
-      // Mid-Month Joiners box stores, so the engine needs no new concept.
-      const { error: jErr } = await adminDb.from("hms_room_ac_join_readings").upsert(
-        {
-          hostel_id: hostelId,
-          room_id: toRoom.id,
-          tenant_id: input.tenantId,
-          for_month: forMonth,
-          units_at_join: Math.max(0, reading - opening),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "room_id,for_month,tenant_id" }
-      );
-      if (jErr) {
-        await undoPartialWrites();
-        throw new Error(`Could not record the opening meter reading: ${jErr.message}`);
-      }
-      writtenJoin.push(toRoom.id);
-    }
+  // Everything from here on can fail — a missing or impossible destination
+  // reading, the pricing trigger rejecting the charge, a dropped connection.
+  // The closing reading above is already written, so any failure past this
+  // point must undo it: a departure row left on a room the member never left
+  // makes that room's month-end Apply count them both as present and as gone,
+  // reserving units for a departure that did not happen and silently
+  // under-billing the room. Round 1 wrapped only the charge and the move; the
+  // destination-reading rejections sat outside it and leaked exactly that.
   }
 
   try {
+    // ── The room being JOINED: open the meter for this tenant ────────────
+    if (toMetered) {
+      if (input.toRoomReading == null || !Number.isFinite(Number(input.toRoomReading))) {
+        throw new Error(`Enter the meter reading for room ${toRoom.room_number} as it stands now — it is where the member's billing there starts.`);
+      }
+      const reading = Math.round(Number(input.toRoomReading));
+      if (reading < 0 || reading > 999_999) throw new Error("Meter reading must be between 0 and 999,999.");
+
+      const prevMonth = prevMonthOf(forMonth);
+      const [{ data: prevRow }, { data: prevCheckouts }, { data: roommates }] = await Promise.all([
+        adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", toRoom.id).eq("hostel_id", hostelId).eq("for_month", prevMonth).maybeSingle(),
+        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", toRoom.id).eq("hostel_id", hostelId).eq("for_month", prevMonth),
+        adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", toRoom.id).eq("is_active", true),
+      ]);
+
+      const storedPrev = effectivePrevReading(prevRow, prevCheckouts);
+      const opening = storedPrev != null
+        ? storedPrev
+        : deriveOpeningReading(roommates ?? [], forMonth);
+
+      if (opening == null) {
+        // No baseline exists for the destination yet, so an offset cannot be
+        // computed. Recording nothing is the honest outcome: the month's first
+        // Apply establishes the opening, and the operator can enter this tenant
+        // under Mid-Month Joiners then. Said out loud rather than swallowed.
+        warning =
+          `Room ${toRoom.room_number} has no earlier meter reading, so the member's starting point there could not be ` +
+          `recorded automatically. Enter them under "Mid-Month Joiners" on the AC Billing tab when you apply this month's units.`;
+      } else if (reading < opening) {
+        throw new Error(
+          `Meter reading ${reading} for room ${toRoom.room_number} is below where the month opened (${opening}). ` +
+          `Check the number — a meter cannot run backwards.`
+        );
+      } else {
+        // units_at_join is an OFFSET from the month's opening, the same shape the
+        // Mid-Month Joiners box stores, so the engine needs no new concept.
+        const { error: jErr } = await adminDb.from("hms_room_ac_join_readings").upsert(
+          {
+            hostel_id: hostelId,
+            room_id: toRoom.id,
+            tenant_id: input.tenantId,
+            for_month: forMonth,
+            units_at_join: Math.max(0, reading - opening),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "room_id,for_month,tenant_id" }
+        );
+        if (jErr) {
+          await undoPartialWrites();
+          throw new Error(`Could not record the opening meter reading: ${jErr.message}`);
+        }
+        writtenJoin.push(toRoom.id);
+      }
+    }
+
     // ── Charge the room they left, on this month's bill ──────────────────
     // Only this path will ever bill it: the moment room_id changes below, that
     // room's month-end Apply can no longer see this tenant.
