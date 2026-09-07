@@ -819,6 +819,28 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // the content (lib/receipt-pdf.ts: `PAGE_H = yTop + 10`), so there is no fixed
   // aspect ratio to hard-code. Read the real page box out of the file and size
   // the window to it, so the document fits exactly and never needs zooming.
+  // Whether this browser will render a PDF inside an iframe at all. iOS Safari
+  // will not — it shows an empty white rectangle and reports no error, which is
+  // exactly what an operator sees as "the preview is broken". navigator
+  // .pdfViewerEnabled is the standard signal for this; where it is missing
+  // (Safari below 17, older Chrome) fall back to recognising iOS, including
+  // iPads that report themselves as MacIntel with a touch screen.
+  //
+  // Resolved in an effect, never during render: it reads navigator, and a value
+  // that differs between the server pass and the client one is a hydration
+  // mismatch.
+  const [canEmbedPdf, setCanEmbedPdf] = useState(true);
+  useEffect(() => {
+    const nav = navigator as Navigator & { pdfViewerEnabled?: boolean };
+    if (typeof nav.pdfViewerEnabled === "boolean") {
+      setCanEmbedPdf(nav.pdfViewerEnabled);
+      return;
+    }
+    const ua = nav.userAgent || "";
+    const isIOS = /iPad|iPhone|iPod/.test(ua) || (ua.includes("Macintosh") && nav.maxTouchPoints > 1);
+    setCanEmbedPdf(!isIOS);
+  }, []);
+
   const DEFAULT_DOC_RATIO = 250 / 364;
   async function pdfAspectRatio(blob: Blob): Promise<number> {
     try {
@@ -2979,17 +3001,43 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               the page always fits both axes. */}
           <div
             className="rounded-xl border border-sidebar-border bg-background/60 overflow-hidden mx-auto max-w-full"
-            style={{
-              aspectRatio: `${docPreview?.ratio ?? 250 / 364}`,
-              width: `min(100%, calc(70vh * ${docPreview?.ratio ?? 250 / 364}))`,
-              maxHeight: "70vh",
-            }}
+            style={
+              // The page-shaped box is for a page. When the document cannot be
+              // drawn inline there is nothing to shape it around, and holding the
+              // aspect ratio is what turned "this browser can't preview PDFs"
+              // into a tall blank rectangle that reads as a failure.
+              docPreview?.url && !canEmbedPdf
+                ? { width: "100%" }
+                : {
+                    aspectRatio: `${docPreview?.ratio ?? 250 / 364}`,
+                    width: `min(100%, calc(70vh * ${docPreview?.ratio ?? 250 / 364}))`,
+                    maxHeight: "70vh",
+                  }
+            }
           >
             {docPreview?.error ? (
               <div className="h-full flex flex-col items-center justify-center gap-2 px-6 text-center">
                 <AlertTriangle className="w-8 h-8 text-amber/70" />
                 <p className="text-sm text-foreground">Could not show this document</p>
                 <p className="text-xs text-muted-foreground max-w-sm">{docPreview.error}</p>
+              </div>
+            ) : docPreview?.url && !canEmbedPdf ? (
+              // iOS Safari renders nothing for a PDF in an iframe — no error, no
+              // fallback, just white. Say so and hand over the one action that
+              // does work here, instead of leaving a blank page-shaped hole with
+              // the real button buried in the footer below it.
+              <div className="flex flex-col items-center justify-center gap-3 px-6 py-8 text-center">
+                <FileText className="w-8 h-8 text-amber/70" />
+                <p className="text-sm text-foreground">This browser can&apos;t show a PDF inside the page</p>
+                <p className="text-xs text-muted-foreground max-w-xs">
+                  Open it to view, print or share — it is the same document.
+                </p>
+                <Button
+                  className="mt-1"
+                  onClick={() => window.open(docPreview.href ?? docPreview.url!, "_blank", "noopener,noreferrer")}
+                >
+                  Open {docPreview.title.toLowerCase().replace(" preview", "")}
+                </Button>
               </div>
             ) : docPreview?.url ? (
               // #toolbar=0&navpanes=0: desktop Chrome/Edge wrap an embedded PDF
@@ -3013,9 +3061,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           </div>
 
           <DialogFooter className="flex gap-2">
-            {/* Kept as an escape hatch: some mobile browsers will not render a
-                PDF in an iframe, and printing wants the real page anyway. */}
-            {docPreview?.href && (
+            {/* Kept for printing, which wants the real page anyway. On a browser
+                that cannot embed a PDF the panel above already offers this, so it
+                is not repeated here. */}
+            {docPreview?.href && canEmbedPdf && (
               <Button variant="outline" onClick={() => window.open(docPreview.href!, "_blank", "noopener,noreferrer")}>
                 Open in new tab
               </Button>
