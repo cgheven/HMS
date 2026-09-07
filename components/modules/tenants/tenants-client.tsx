@@ -3667,16 +3667,25 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
                   </div>
                 )}
-              </div>
-
-              {/* Check-in */}
-              <div className="space-y-1.5">
-                <Label>Check-in Date</Label>
-                <Input
-                  type="date"
-                  value={approveForm.check_in}
-                  onChange={(e) => setApproveForm({ ...approveForm, check_in: e.target.value })}
-                />
+                {/* Inside the grid — see the Add Tenant dialog for why, and for
+                    why the span depends on parity. One extra term here: the
+                    discount field itself only renders for a MONTHLY admission, so
+                    a daily one flips the count the other way. */}
+                <div className={cn(
+                  "space-y-1.5",
+                  (
+                    (approveForm.billing_type === "monthly" ? 1 : 0)
+                    + (configAcMaintenance > 0 ? 1 : 0)
+                    + (configRegistrationFee > 0 ? 1 : 0)
+                  ) % 2 === 0 && "col-span-2"
+                )}>
+                  <Label>Check-in Date</Label>
+                  <Input
+                    type="date"
+                    value={approveForm.check_in}
+                    onChange={(e) => setApproveForm({ ...approveForm, check_in: e.target.value })}
+                  />
+                </div>
               </div>
 
               {/* Personal-record fields, deliberately last before Vehicle —
@@ -4805,6 +4814,39 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
                   </div>
                 )}
+                {/* Inside the grid, and last, so it takes the cell the money
+                    fields leave empty. The discount's helper line makes its cell
+                    taller than the rent beside it, so the row below started with
+                    a hole next to Security Deposit on any branch that charges no
+                    AC maintenance and no registration fee — which is most of
+                    them. Check-in is always present for a monthly tenant, so it
+                    fills that cell.
+
+                    col-span-2 when the count of rendered fields is ODD, which is
+                    exactly when one of AC maintenance and registration fee is
+                    configured and the other is not. Without it the hole simply
+                    moved: it reappeared to the RIGHT of check-in instead of the
+                    right of the deposit. Rent, discount and deposit are always
+                    three, so the parity is decided entirely by the two optional
+                    charges.
+
+                    Shown for waiting-list members too: a pre-booked bed is booked
+                    FROM a date, and without this the date was silently forced to
+                    today on every save, so "reserve from 5 August" could not be
+                    recorded at all. It also decides which months a reservation
+                    deposit may be taken for. */}
+                <div className={cn(
+                  "space-y-1.5",
+                  ((configAcMaintenance > 0 ? 1 : 0) + (configRegistrationFee > 0 ? 1 : 0)) % 2 === 1 && "col-span-2"
+                )}>
+                  <Label>{form.is_waiting ? "Expected Joining Date" : "Check-in Date *"}</Label>
+                  <Input type="date" value={form.check_in} onChange={(e) => setForm({ ...form, check_in: e.target.value })} />
+                  {form.is_waiting && (
+                    <p className="text-xs text-muted-foreground">
+                      Rent starts from this date. A reservation deposit can only be taken for a month before it.
+                    </p>
+                  )}
+                </div>
               </div>
             ) : (
               <>
@@ -4853,23 +4895,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   );
                 })()}
               </>
-            )}
-
-            {/* Check-in date for monthly billing. Shown for waiting-list members
-                too: a pre-booked bed is booked FROM a date, and without this the
-                date was silently forced to today on every save, so "reserve from
-                5 August" could not be recorded at all. It also decides which
-                months a reservation deposit may be taken for. */}
-            {form.billing_type === "monthly" && (
-              <div className="space-y-1.5">
-                <Label>{form.is_waiting ? "Expected Joining Date" : "Check-in Date *"}</Label>
-                <Input type="date" value={form.check_in} onChange={(e) => setForm({ ...form, check_in: e.target.value })} />
-                {form.is_waiting && (
-                  <p className="text-xs text-muted-foreground">
-                    Rent starts from this date. A reservation deposit can only be taken for a month before it.
-                  </p>
-                )}
-              </div>
             )}
 
             {/* Personal-record fields, deliberately last before Vehicle. An
