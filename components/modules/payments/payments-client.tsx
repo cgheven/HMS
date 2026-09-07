@@ -17,7 +17,7 @@ import { cn, formatCurrency, formatDate, formatDateInput, formatDateTime, format
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier, StaffPermission } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { countBillableNights } from "@/lib/daily-billing";
-import { splitPaymentCharges, computeRentDiscount, combinedDiscountPercent } from "@/lib/payment-calc";
+import { splitPaymentCharges, computeRentDiscount, combinedDiscountPercent, percentForRupees } from "@/lib/payment-calc";
 import { MeterPhoto } from "@/components/modules/ac/meter-photo";
 import { uploadMonthlyMeterPhoto, deleteMonthlyMeterPhoto } from "@/app/actions/ac-meter-photos";
 import { tenantDueDay, shouldRemindToday, hasCollected, effectivePaymentStatus } from "@/lib/payment-calc";
@@ -552,6 +552,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       amount_received: String(remaining),
       discount_percent: "",
     });
+    // Reset the input mode with the dialog — a rupee figure typed for the last
+    // member means nothing for this one.
+    setDiscountMode("pct");
+    setDiscountRupees("");
   }
 
   // Typing a discount changes what there is to collect, so the amount field has
@@ -560,6 +564,21 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // haven't overridden it themselves: an amount that no longer matches the
   // default is a partial payment being typed, and overwriting that would be
   // worse than leaving it stale.
+  // Rupees or percent. Only the PERCENT is ever stored — the trigger derives the
+  // rupees from it and has no path to accept an amount — so this is an input
+  // convenience, not a second kind of discount. Held outside markForm so nothing
+  // downstream has to know which way the operator typed it.
+  const [discountMode, setDiscountMode] = useState<"pct" | "rs">("pct");
+  const [discountRupees, setDiscountRupees] = useState("");
+
+  function handleDiscountRupeesChange(raw: string, rent: number) {
+    setDiscountRupees(raw);
+    const typed = parseFloat(raw);
+    handleDiscountChange(
+      raw.trim() === "" || !Number.isFinite(typed) ? "" : String(percentForRupees(typed, rent))
+    );
+  }
+
   function handleDiscountChange(raw: string) {
     if (!markDialog) return;
     const before = previewDiscount(markDialog, markForm.discount_percent).remaining;
@@ -2857,16 +2876,53 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               }
               return (
                 <div className="space-y-1.5">
-                  <Label>Discount (%) — rent only</Label>
-                  <Input
-                    type="number"
-                    placeholder="0"
-                    min="0"
-                    max="100"
-                    step="0.01"
-                    value={markForm.discount_percent}
-                    onChange={(e) => handleDiscountChange(e.target.value)}
-                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Discount — rent only</Label>
+                    {/* Rupees is an INPUT mode, not a second kind of discount:
+                        whichever way it is typed, a percentage is what gets
+                        stored, because that is the only discount the pricing
+                        trigger accepts. */}
+                    <div className="inline-flex rounded-md border border-sidebar-border overflow-hidden text-xs">
+                      {(["pct", "rs"] as const).map(m => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => {
+                            setDiscountMode(m);
+                            // Carry the value across so switching mode never
+                            // silently changes the discount that is applied.
+                            if (m === "rs") setDiscountRupees(preview.discount > 0 ? String(preview.discount) : "");
+                          }}
+                          className={cn(
+                            "px-2.5 py-1 transition-colors",
+                            discountMode === m ? "bg-amber/15 text-amber" : "text-muted-foreground hover:text-foreground"
+                          )}
+                        >
+                          {m === "pct" ? "%" : "Rs"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {discountMode === "pct" ? (
+                    <Input
+                      type="number"
+                      placeholder="0"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      value={markForm.discount_percent}
+                      onChange={(e) => handleDiscountChange(e.target.value)}
+                    />
+                  ) : (
+                    <Input
+                      type="number"
+                      placeholder="0"
+                      min="0"
+                      step="1"
+                      value={discountRupees}
+                      onChange={(e) => handleDiscountRupeesChange(e.target.value, preview.rent)}
+                    />
+                  )}
                   {preview.alreadyPercent > 0 && (
                     <p className="text-xs text-emerald-400">
                       {preview.alreadyPercent}% standing discount is already on this bill — anything entered here stacks on top of it.
@@ -2875,6 +2931,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   {preview.discount > 0 && (
                     <p className="text-xs text-muted-foreground">
                       {preview.totalPercent}% of {formatCurrency(preview.rent)} rent = −{formatCurrency(preview.discount)} · new total {formatCurrency(preview.total)}
+                    </p>
+                  )}
+                  {/* Said plainly whenever the stored percentage cannot land on
+                      the exact figure typed. numeric(5,2) is the limit, so
+                      Rs 800 off Rs 22,000 becomes 3.64% and takes Rs 801. The
+                      operator sees it here rather than on the receipt. */}
+                  {discountMode === "rs" && discountRupees.trim() !== "" && preview.discount > 0
+                    && Math.abs(preview.discount - Number(discountRupees)) > 0.004 && (
+                    <p className="text-xs text-amber/80">
+                      Closest available is {formatCurrency(preview.discount)} — a discount is stored as a percentage, and {markForm.discount_percent}% is the nearest to {formatCurrency(Number(discountRupees))}.
                     </p>
                   )}
                 </div>

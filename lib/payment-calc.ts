@@ -208,6 +208,31 @@ export function computeRentDiscount(baseRent: number, percent: number, referralD
   );
 }
 
+/**
+ * The percentage to store when the operator would rather name a rupee figure.
+ *
+ * hms_payments.discount_percent is the only discount the app can set — the
+ * trigger derives the rupees from it and never the other way round — so "give
+ * Rs 800 off" has to become a percentage before it is saved. This is the exact
+ * inverse of computeRentDiscount, and it is here rather than in a component so
+ * the admission form and the collection dialog cannot answer it differently.
+ *
+ * The column holds two decimals, so the result is the CLOSEST achievable
+ * percentage and not always an exact one: Rs 800 off Rs 22,000 is 3.6363…%,
+ * stored as 3.64%, which takes Rs 800.80. Callers are expected to show
+ * computeRentDiscount(rent, thisResult) back to the operator rather than echo
+ * what they typed — the difference is small but it is real, and it is what the
+ * receipt will say.
+ */
+export function percentForRupees(rupees: number, baseRent: number): number {
+  const rent = Number(baseRent) || 0;
+  const amount = Number(rupees) || 0;
+  if (rent <= 0 || amount <= 0) return 0;
+  // 2dp to match numeric(5,2); clamped to 100 so a figure larger than the rent
+  // becomes "all of it" rather than a percentage the trigger would reject.
+  return Math.min(Math.round((amount / rent) * 10000) / 100, 100);
+}
+
 /** The tenant's standing discount plus the one-off typed on this bill, clamped
  *  the way the trigger clamps them: each into 0..100, the sum to 100. */
 export function combinedDiscountPercent(standing?: number | null, manual?: number | null): number {

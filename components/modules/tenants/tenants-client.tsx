@@ -53,7 +53,7 @@ import { ReferralAdmissionBanner } from "@/components/modules/referrals/referral
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
 import QRCode from "qrcode";
-import { computeReferralDiscount, computeRentDiscount } from "@/lib/payment-calc";
+import { computeReferralDiscount, computeRentDiscount, percentForRupees } from "@/lib/payment-calc";
 
 interface Props {
   hostelId: string | null;
@@ -729,6 +729,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   // A move already saved this month that can still be re-priced. Fetched when the
   // edit dialog opens, because a mistyped meter reading used to be permanent and
   // the only repair was a hand-written SQL statement.
+  // Rupees or percent on the discount field. Only the PERCENT is stored — the
+  // pricing trigger derives the rupees and has no path to accept an amount — so
+  // this is an input convenience, not a second kind of discount. Kept out of
+  // `form` so the payload it builds is unchanged.
+  const [discountMode, setDiscountMode] = useState<"pct" | "rs">("pct");
+  const [discountRupees, setDiscountRupees] = useState("");
   const [correction, setCorrection] = useState<CorrectableTransfer | null>(null);
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [correctFrom, setCorrectFrom] = useState("");
@@ -1262,6 +1268,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setViewOnly(false);
     setCorrection(null);
     setCorrectionOpen(false);
+    setDiscountMode("pct");
+    setDiscountRupees("");
     getRoomTransferCorrectionAction(t.id)
       .then((r) => {
         if (r.correction) {
@@ -4701,25 +4709,80 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     );
                   })()}
                 </div>
-                <div className="space-y-1.5">
-                  <Label>Discount (%)</Label>
-                  <Input
-                    type="number" min="0" max="100" step="0.01" placeholder="0"
-                    value={form.discount_percent}
-                    onChange={(e) => setForm({ ...form, discount_percent: e.target.value })}
-                  />
-                  {(() => {
-                    const pct = parseFloat(form.discount_percent);
-                    if (!(pct > 0) || pct > 100) return null;
-                    const rent = parseFloat(form.monthly_rent) || 0;
-                    return (
-                      <p className="text-xs text-emerald-400">
-                        Effective rent: {formatCurrency(discountedRent(rent, pct))}/month
-                      </p>
-                    );
-                  })()}
-                  <p className="text-xs text-muted-foreground">Rent only — never food, AC or the deposit.</p>
-                </div>
+                {(() => {
+                  const rent = parseFloat(form.monthly_rent) || 0;
+                  const pct = parseFloat(form.discount_percent);
+                  const applied = pct > 0 && pct <= 100 ? computeRentDiscount(rent, pct) : 0;
+                  const typedRs = Number(discountRupees);
+                  return (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <Label>Discount</Label>
+                        {/* Rupees is an INPUT mode, not a second kind of
+                            discount: whichever way it is typed, a percentage is
+                            what gets stored, because that is the only discount
+                            the pricing trigger accepts. */}
+                        <div className="inline-flex rounded-md border border-sidebar-border overflow-hidden text-xs">
+                          {(["pct", "rs"] as const).map(m => (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => {
+                                setDiscountMode(m);
+                                // Carried across so switching mode never changes
+                                // the discount that is actually applied.
+                                if (m === "rs") setDiscountRupees(applied > 0 ? String(applied) : "");
+                              }}
+                              className={cn(
+                                "px-2.5 py-1 transition-colors",
+                                discountMode === m ? "bg-amber/15 text-amber" : "text-muted-foreground hover:text-foreground"
+                              )}
+                            >
+                              {m === "pct" ? "%" : "Rs"}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {discountMode === "pct" ? (
+                        <Input
+                          type="number" min="0" max="100" step="0.01" placeholder="0"
+                          value={form.discount_percent}
+                          onChange={(e) => setForm({ ...form, discount_percent: e.target.value })}
+                        />
+                      ) : (
+                        <Input
+                          type="number" min="0" step="1" placeholder="0"
+                          value={discountRupees}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            setDiscountRupees(raw);
+                            const n = parseFloat(raw);
+                            setForm(f => ({
+                              ...f,
+                              discount_percent: raw.trim() === "" || !Number.isFinite(n) ? "" : String(percentForRupees(n, rent)),
+                            }));
+                          }}
+                        />
+                      )}
+                      {applied > 0 && (
+                        <p className="text-xs text-emerald-400">
+                          −{formatCurrency(applied)} · effective rent {formatCurrency(discountedRent(rent, pct))}/month
+                        </p>
+                      )}
+                      {/* Said plainly whenever the stored percentage cannot land
+                          on the exact figure typed: numeric(5,2) is the limit, so
+                          Rs 800 off Rs 22,000 becomes 3.64% and takes Rs 801.
+                          Seen here rather than on the first bill. */}
+                      {discountMode === "rs" && discountRupees.trim() !== "" && applied > 0
+                        && Math.abs(applied - typedRs) > 0.004 && (
+                        <p className="text-xs text-amber/80">
+                          Closest available is {formatCurrency(applied)} — a discount is stored as a percentage, and {form.discount_percent}% is the nearest to {formatCurrency(typedRs)}.
+                        </p>
+                      )}
+                      <p className="text-xs text-muted-foreground">Rent only — never food, AC or the deposit.</p>
+                    </div>
+                  );
+                })()}
                 <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
                 {configAcMaintenance > 0 && (
                   <div className="space-y-1.5">
