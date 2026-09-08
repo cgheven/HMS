@@ -29,6 +29,7 @@ import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
 import { deriveOpeningReading, effectivePrevReading } from "@/lib/ac-billing";
 import { sendWelcomeMessageNow, type WelcomeSendResult } from "@/lib/whatsapp-welcome-action";
 import { sendSeatReservedConfirmation } from "@/lib/whatsapp-seat-reserved";
+import { sendNoticeReceivedToTenant } from "@/lib/whatsapp-notice";
 import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, CheckoutSettlement, TenantEventType, TenantFeedback } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -1942,7 +1943,7 @@ export async function giveTenantNoticeAction(
       .from("hms_tenants")
       // Reset leaving_reminder_sent_at — a fresh or changed checkout date
       // means the 7-day-out reminder to the owner should fire again for it.
-      .update({ notice_given_date: noticeGivenDate, intended_checkout_date: intendedCheckoutDate, leaving_reminder_sent_at: null })
+      .update({ notice_given_date: noticeGivenDate, intended_checkout_date: intendedCheckoutDate, leaving_reminder_sent_at: null, last_day_reminder_sent_at: null })
       .eq("id", tenantId)
       .eq("hostel_id", hostelId);
     if (error) throw new Error("Failed to record notice.");
@@ -1953,6 +1954,10 @@ export async function giveTenantNoticeAction(
       event_type: "notice_given",
       to_value: intendedCheckoutDate,
     });
+
+    // Confirm the notice to the resident (WhatsApp + email) — fire-and-forget so
+    // a slow/failed send never blocks recording the notice.
+    void sendNoticeReceivedToTenant(tenantId);
 
     revalidatePath("/tenants");
     return { success: true };
@@ -1981,7 +1986,7 @@ export async function cancelTenantNoticeAction(
 
     const { error } = await adminDb
       .from("hms_tenants")
-      .update({ notice_given_date: null, intended_checkout_date: null, leaving_reminder_sent_at: null })
+      .update({ notice_given_date: null, intended_checkout_date: null, leaving_reminder_sent_at: null, last_day_reminder_sent_at: null })
       .eq("id", tenantId)
       .eq("hostel_id", hostelId);
     if (error) throw new Error("Failed to cancel notice.");

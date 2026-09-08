@@ -15,6 +15,7 @@ import { performPaymentUndo } from "@/lib/payment-undo"
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
 import { sendAdmissionConfirmationToEmergencyContact } from "@/lib/whatsapp-admission-confirmation"
+import { sendNoticeReceivedToTenant } from "@/lib/whatsapp-notice"
 import { sendWelcomeEmailToTenant } from "@/lib/welcome-email"
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore, round2 } from "@/lib/ac-billing"
 import { carriedTransferCharges } from "@/lib/ac-transfer"
@@ -1264,7 +1265,7 @@ export async function giveTenantNoticeAsManager(
 
     const { error } = await admin
       .from("hms_tenants")
-      .update({ notice_given_date: today, intended_checkout_date: intendedCheckoutDate, leaving_reminder_sent_at: null })
+      .update({ notice_given_date: today, intended_checkout_date: intendedCheckoutDate, leaving_reminder_sent_at: null, last_day_reminder_sent_at: null })
       .eq("id", tenantId)
       .eq("hostel_id", hostelId)
     if (error) throw new Error("Failed to record notice.")
@@ -1275,6 +1276,9 @@ export async function giveTenantNoticeAsManager(
       event_type: "notice_given",
       to_value: intendedCheckoutDate,
     })
+
+    // Confirm the notice to the resident (WhatsApp + email) — fire-and-forget.
+    void sendNoticeReceivedToTenant(tenantId)
 
     revalidatePath("/portal/tenants")
     return { success: true }
@@ -1303,7 +1307,7 @@ export async function cancelTenantNoticeAsManager(
 
     const { error } = await admin
       .from("hms_tenants")
-      .update({ notice_given_date: null, intended_checkout_date: null, leaving_reminder_sent_at: null })
+      .update({ notice_given_date: null, intended_checkout_date: null, leaving_reminder_sent_at: null, last_day_reminder_sent_at: null })
       .eq("id", tenantId)
       .eq("hostel_id", hostelId)
     if (error) throw new Error("Failed to cancel notice.")

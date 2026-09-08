@@ -33,6 +33,11 @@ export const TEMPLATES = {
    *  the resident is admitted. Five body variables, in order: contact name,
    *  resident name, hostel, admission date, room. */
   admissionConfirmation: { name: "hms_admission_confirmation_emergency_contact", language: "en" },
+  /** Sent to a resident when their notice to leave is recorded. Three body
+   *  variables: name, hostel, last day (checkout date). */
+  noticeReceived: { name: "hms_notice_received", language: "en" },
+  /** Sent to a resident on their last day. Two body variables: name, hostel. */
+  lastDayReminder: { name: "hms_last_day_reminder", language: "en" },
 } as const;
 
 const pkr = (n: number) => new Intl.NumberFormat("en-PK").format(Math.round(n));
@@ -411,6 +416,42 @@ export function admissionConfirmationParams(a: AdmissionConfirmationArgs): strin
     clean(a.admissionDate ? formatDayLong(a.admissionDate) : "", "today"),
     clean(a.roomNumber ?? "", "to be assigned"),
     clean(a.hostelPhone ?? "", "the hostel management"),
+  ];
+}
+
+export interface NoticeReceivedArgs {
+  tenantName: string | null | undefined;
+  hostelName: string | null | undefined;
+  /** ISO checkout / last day. */
+  checkoutDate: string | null | undefined;
+}
+
+/**
+ * hms_notice_received — {{1}} name, {{2}} hostel, {{3}} last day.
+ * Confirms a resident's notice to leave was recorded.
+ */
+export function noticeReceivedParams(a: NoticeReceivedArgs): string[] {
+  return [
+    clean(firstName(a.tenantName), "there"),
+    clean(a.hostelName ?? "", "our hostel"),
+    clean(a.checkoutDate ? formatDayLong(a.checkoutDate) : "", "your last day"),
+  ];
+}
+
+export interface LastDayReminderArgs {
+  tenantName: string | null | undefined;
+  hostelName: string | null | undefined;
+}
+
+/**
+ * hms_last_day_reminder — {{1}} name, {{2}} hostel.
+ * Sent on the resident's last day: complete checkout, clear dues, and note that
+ * staying on adds charges per hostel policy.
+ */
+export function lastDayReminderParams(a: LastDayReminderArgs): string[] {
+  return [
+    clean(firstName(a.tenantName), "there"),
+    clean(a.hostelName ?? "", "our hostel"),
   ];
 }
 

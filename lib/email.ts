@@ -1152,6 +1152,65 @@ export async function sendWelcomeEmail(data: WelcomeEmailData): Promise<void> {
   if (error) throw new Error(`Resend: ${error.message}`);
 }
 
+export interface NoticeEmailData {
+  tenantEmail: string;
+  tenantName: string;
+  hostelName: string;
+  /** Formatted last day, e.g. "15 September 2026". */
+  lastDay: string;
+}
+
+/** Confirms to a resident that their notice to leave was recorded. */
+export async function sendNoticeReceivedEmail(data: NoticeEmailData): Promise<void> {
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Your notice is confirmed</h2>
+    <p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#c9cdd6;">
+      Assalam o Alaikum ${esc(data.tenantName)}, this confirms we&apos;ve received your notice to leave
+      <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>. Your last day with us is
+      <strong style="color:#f59e0b;">${esc(data.lastDay)}</strong>.
+    </p>
+    <p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#c9cdd6;">
+      Kindly settle any pending dues before checkout so we can complete the process smoothly.
+    </p>
+    <p style="margin:0;font-size:13px;color:#a1a1aa;">
+      Thank you for staying with us — we wish you all the best for what&apos;s ahead.
+    </p>
+  `;
+  const { error } = await resend.emails.send({
+    from: FROM,
+    to: data.tenantEmail,
+    subject: `Your notice is confirmed — ${data.hostelName}`,
+    html: baseHtml("Notice confirmed", body),
+  });
+  if (error) throw new Error(`Resend: ${error.message}`);
+}
+
+/** Reminds a resident, on their last day, to check out and clear dues. */
+export async function sendLastDayReminderEmail(data: NoticeEmailData): Promise<void> {
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Today is your last day</h2>
+    <p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#c9cdd6;">
+      Assalam o Alaikum ${esc(data.tenantName)}, a friendly reminder that
+      <strong style="color:#f59e0b;">today (${esc(data.lastDay)}) is your last day</strong> at
+      <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>.
+    </p>
+    <p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#c9cdd6;">
+      Please complete your checkout and clear any outstanding dues today. If you continue staying beyond
+      today, additional charges will apply as per hostel policy.
+    </p>
+    <p style="margin:0;font-size:13px;color:#a1a1aa;">
+      Thank you — it&apos;s been a pleasure hosting you, and we wish you all the best for the journey ahead.
+    </p>
+  `;
+  const { error } = await resend.emails.send({
+    from: FROM,
+    to: data.tenantEmail,
+    subject: `Today is your last day — ${data.hostelName}`,
+    html: baseHtml("Last day reminder", body),
+  });
+  if (error) throw new Error(`Resend: ${error.message}`);
+}
+
 export async function sendClientCredentialsEmail(data: ClientCredentialsEmailData): Promise<void> {
   const body = `
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Your Pulse account is ready</h2>

@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import { buildLeavingReminderMessage } from "@/lib/whatsapp-leaving-reminder";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { sendLastDayReminderToTenant } from "@/lib/whatsapp-notice";
 import { processInBatches } from "@/lib/batch";
 
 const SEND_CONCURRENCY = 5;
@@ -103,4 +104,41 @@ export async function runLeavingReminderPass(admin: SupabaseClient, hostelId: st
   });
 
   return { checked: tenants?.length ?? 0, sent, skipped, failed };
+}
+
+// Resident-facing "today is your last day" reminder, fired on the exact
+// intended_checkout_date. Sends WhatsApp (approved template, gated on
+// whatsapp_enabled) AND email (whenever an address is on file), so — unlike the
+// owner reminder above — it runs for EVERY hostel, not only whatsapp_enabled
+// ones. Guarded by last_day_reminder_sent_at with the same atomic-claim race
+// protection: only the caller that flips it from null actually sends.
+export async function runLastDayReminderPass(admin: SupabaseClient, hostelId: string): Promise<LeavingReminderSummary> {
+  const today = pktTodayDateString(new Date());
+
+  const { data: tenants, error } = await admin
+    .from("hms_tenants")
+    .select("id")
+    .eq("hostel_id", hostelId)
+    .eq("is_active", true)
+    .eq("intended_checkout_date", today)
+    .is("last_day_reminder_sent_at", null)
+    .returns<{ id: string }[]>();
+  if (error) throw new Error(error.message);
+
+  const due = tenants ?? [];
+  let sent = 0, skipped = 0, failed = 0;
+
+  await processInBatches(due, SEND_CONCURRENCY, async (t) => {
+    const { data: claimed } = await admin
+      .from("hms_tenants")
+      .update({ last_day_reminder_sent_at: new Date().toISOString() })
+      .eq("id", t.id)
+      .is("last_day_reminder_sent_at", null)
+      .select("id");
+    if (!claimed || claimed.length === 0) { skipped++; return; }
+    try { await sendLastDayReminderToTenant(t.id); sent++; }
+    catch (err) { failed++; console.error(`[last-day-reminder] tenant ${t.id} failed:`, err); }
+  });
+
+  return { checked: due.length, sent, skipped, failed };
 }

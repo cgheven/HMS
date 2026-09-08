@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { runLeavingReminderPass, type LeavingReminderSummary } from "@/lib/leaving-reminder-engine";
+import { runLeavingReminderPass, runLastDayReminderPass, type LeavingReminderSummary } from "@/lib/leaving-reminder-engine";
 
 export const maxDuration = 300;
 
@@ -21,19 +21,30 @@ export async function GET(request: NextRequest) {
 
   const admin = createAdminClient();
 
-  const { data: grantedHostels } = await admin
-    .from("hms_hostels")
-    .select("id")
-    .eq("whatsapp_enabled", true);
+  // The OWNER's 7-days-out reminder is WhatsApp-only, so it runs for
+  // whatsapp_enabled branches. The RESIDENT's last-day reminder also sends email,
+  // so it runs for EVERY branch.
+  const [{ data: grantedHostels }, { data: allHostels }] = await Promise.all([
+    admin.from("hms_hostels").select("id").eq("whatsapp_enabled", true),
+    admin.from("hms_hostels").select("id"),
+  ]);
+  const grantedIds = new Set((grantedHostels ?? []).map((h) => h.id));
+  const hostelIds = (allHostels ?? []).map((h) => h.id);
 
-  const hostelIds = (grantedHostels ?? []).map((h) => h.id);
-
-  // Isolated per hostel — one branch's DB error shouldn't block every other
-  // granted branch's reminders from going out.
+  // Isolated per hostel — one branch's DB error shouldn't block the others.
   const results = await Promise.all(
     hostelIds.map(async (id): Promise<LeavingReminderSummary & { error?: string }> => {
       try {
-        return await runLeavingReminderPass(admin, id);
+        const lastDay = await runLastDayReminderPass(admin, id);
+        const owner = grantedIds.has(id)
+          ? await runLeavingReminderPass(admin, id)
+          : { checked: 0, sent: 0, skipped: 0, failed: 0 };
+        return {
+          checked: lastDay.checked + owner.checked,
+          sent: lastDay.sent + owner.sent,
+          skipped: lastDay.skipped + owner.skipped,
+          failed: lastDay.failed + owner.failed,
+        };
       } catch (err) {
         console.error(`[leaving-reminders] hostel ${id} failed:`, err instanceof Error ? err.message : err);
         return { checked: 0, sent: 0, skipped: 0, failed: 0, error: err instanceof Error ? err.message : String(err) };
