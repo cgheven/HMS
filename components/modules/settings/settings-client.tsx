@@ -2074,6 +2074,14 @@ export function SettingsClient() {
                   const cov = w.coverage ?? [];
                   const chip = (on: boolean) =>
                     `px-2.5 py-1 rounded-full text-[11px] border transition ${on ? "bg-amber/20 border-amber/50 text-amber" : "border-sidebar-border text-muted-foreground hover:border-amber/40"}`;
+                  // Plain-language summary of who this network reaches, so the
+                  // meaning is never implicit.
+                  const selFloors = cov.filter((t) => t.startsWith("floor:")).map((t) => `Floor ${t.slice(6)}`);
+                  const selRooms = cov.filter((t) => t.startsWith("room:")).map((t) => `Room ${t.slice(5)}`);
+                  const coverSummary =
+                    cov.length === 0
+                      ? "Everyone — shown to all residents in this branch."
+                      : `Only residents in ${[...selFloors, ...selRooms].join(", ")}.`;
                   return (
                   <div key={w.id} className="rounded-xl border border-sidebar-border bg-card/50 p-3 space-y-3">
                     <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
@@ -2104,37 +2112,37 @@ export function SettingsClient() {
                       </Button>
                     </div>
 
-                    {/* Covers — optional. Blank = whole hostel. Tap floors/rooms this
-                        network actually reaches, and a resident only sees the WiFi that
-                        works where they sleep. */}
+                    {/* Covers — who this network is shown to. "Everyone" (nothing
+                        picked) means the whole hostel; pick floors/rooms to limit it
+                        so a resident only sees the WiFi that reaches where they sleep. */}
                     <div className="space-y-1.5 border-t border-sidebar-border/60 pt-2.5">
-                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">
-                        Covers
-                        {cov.length === 0 && (
-                          <span className="ml-1 normal-case tracking-normal text-muted-foreground/60">— whole hostel</span>
-                        )}
-                      </p>
-                      {coverageFloors.length === 0 && coverageRoomNumbers.length === 0 ? (
-                        <p className="text-[11px] text-muted-foreground/60">Add rooms to this branch to scope WiFi by floor or room.</p>
-                      ) : (
-                        <div className="flex flex-wrap gap-1.5">
-                          {coverageFloors.map((f) => {
-                            const tok = floorToken(f);
-                            return (
-                              <button key={tok} type="button" onClick={() => toggleWifiCoverage(w.id, tok)} className={chip(cov.includes(tok))}>
-                                Floor {f}
-                              </button>
-                            );
-                          })}
-                          {coverageRoomNumbers.map((rn) => {
-                            const tok = roomToken(rn);
-                            return (
-                              <button key={tok} type="button" onClick={() => toggleWifiCoverage(w.id, tok)} className={chip(cov.includes(tok))}>
-                                Room {rn}
-                              </button>
-                            );
-                          })}
-                        </div>
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Covers</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {/* Everyone = whole hostel. Active when nothing is scoped;
+                            tapping it clears any floor/room selection. */}
+                        <button type="button" onClick={() => updateWifiNetwork(w.id, { coverage: [] })} className={chip(cov.length === 0)}>
+                          Everyone
+                        </button>
+                        {coverageFloors.map((f) => {
+                          const tok = floorToken(f);
+                          return (
+                            <button key={tok} type="button" onClick={() => toggleWifiCoverage(w.id, tok)} className={chip(cov.includes(tok))}>
+                              Floor {f}
+                            </button>
+                          );
+                        })}
+                        {coverageRoomNumbers.map((rn) => {
+                          const tok = roomToken(rn);
+                          return (
+                            <button key={tok} type="button" onClick={() => toggleWifiCoverage(w.id, tok)} className={chip(cov.includes(tok))}>
+                              Room {rn}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[11px] text-muted-foreground/70">{coverSummary}</p>
+                      {coverageFloors.length === 0 && coverageRoomNumbers.length === 0 && (
+                        <p className="text-[11px] text-muted-foreground/50">Add rooms to this branch to limit a network to specific floors or rooms.</p>
                       )}
                     </div>
                   </div>
