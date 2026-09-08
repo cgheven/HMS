@@ -14,6 +14,7 @@ import { notifyOwnerPaymentRecorded, notifyOwnerPaymentUndone } from "@/lib/paym
 import { performPaymentUndo } from "@/lib/payment-undo"
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
+import { sendAdmissionConfirmationToEmergencyContact } from "@/lib/whatsapp-admission-confirmation"
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore, round2 } from "@/lib/ac-billing"
 import { carriedTransferCharges } from "@/lib/ac-transfer"
 import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, splitPaymentCharges, grossAmountOf, computeRentDiscount, combinedDiscountPercent } from "@/lib/payment-calc"
@@ -947,8 +948,10 @@ export async function addTenantAsManager(
     const tenantId = created.id as string
 
     // Fire-and-forget welcome WhatsApp — never awaited, never blocks this action.
+    // The emergency contact gets a separate one-time admission confirmation.
     if (!payload.is_waiting) {
       void sendTenantWelcomeMessageAction(tenantId)
+      void sendAdmissionConfirmationToEmergencyContact(tenantId)
     }
 
     if (room && roomId) {
@@ -1129,6 +1132,7 @@ export async function editTenantAsManager(
     // transition, not on every routine edit of an already-active tenant.
     if (existing.is_waiting && !payload.is_waiting) {
       void sendTenantWelcomeMessageAction(tenantId)
+      void sendAdmissionConfirmationToEmergencyContact(tenantId)
 
       // Attribution happens HERE for a waiting-list row, not at creation: until
       // now the tenant had no bill and no deadline to measure against, so

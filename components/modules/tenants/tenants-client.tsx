@@ -50,7 +50,7 @@ import { uploadJoiningMeterPhoto, deleteJoiningMeterPhoto } from "@/app/actions/
 import type { RedflagMatch } from "@/types";
 import { attributeReferralForTenant, detachReferralRewardsForTenant, sendReferralLinkForTenant } from "@/app/actions/referrals";
 import { ReferralAdmissionBanner } from "@/components/modules/referrals/referral-admission-banner";
-import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
+import { sendTenantWelcomeMessageAction, sendAdmissionConfirmationAction } from "@/lib/whatsapp-welcome-action";
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
 import QRCode from "qrcode";
 import { computeReferralDiscount, computeRentDiscount, percentForRupees } from "@/lib/payment-calc";
@@ -1700,8 +1700,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // so a slow/failed WhatsApp send can't delay this dialog closing.
     if (!editing && newTenantId && !form.is_waiting) {
       void sendTenantWelcomeMessageAction(newTenantId);
+      void sendAdmissionConfirmationAction(newTenantId);
     } else if (editing && editing.is_waiting && !form.is_waiting) {
       void sendTenantWelcomeMessageAction(editing.id);
+      void sendAdmissionConfirmationAction(editing.id);
       // Activation is this person's real admission — until now they had no room
       // and no bill, so the add-tenant path deliberately skipped them and the
       // referral was simply lost. The server measures the 14-day deadline from

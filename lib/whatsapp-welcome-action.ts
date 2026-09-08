@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { buildWelcomeMessage } from "@/lib/whatsapp-welcome";
+import { sendAdmissionConfirmationToEmergencyContact } from "@/lib/whatsapp-admission-confirmation";
 import { siteUrl } from "@/lib/site-url";
 
 export interface WelcomeSendResult {
@@ -162,6 +163,15 @@ export async function sendTenantWelcomeMessageAction(tenantId: string): Promise<
   } catch (err) {
     console.error(`[whatsapp-welcome] Failed to send welcome message for tenant ${tenantId}:`, err);
   }
+}
+
+// Server-action wrapper so the owner's client-side Add/Activate Tenant path
+// (which inserts straight to Postgres in the browser) can trigger the
+// emergency-contact admission confirmation. The confirmation logic itself is a
+// server-only lib function; this exposes it to the client as an action.
+// Fire-and-forget by contract — never throws, mirrors the welcome auto-send.
+export async function sendAdmissionConfirmationAction(tenantId: string): Promise<void> {
+  await sendAdmissionConfirmationToEmergencyContact(tenantId);
 }
 
 // Owner/partner/manager-facing manual resend, called from the "Resend Welcome"

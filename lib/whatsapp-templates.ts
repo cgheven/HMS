@@ -29,6 +29,10 @@ export const TEMPLATES = {
   reminderFullV2: { name: "hms_payment_reminder_full_v2", language: "en" },
   clientPaymentReceived: { name: "hms_client_payment_received", language: "en" },
   clientFirstInvoice: { name: "hms_client_first_invoice", language: "en" },
+  /** Sent to a new resident's EMERGENCY CONTACT (guardian/parent), once, when
+   *  the resident is admitted. Five body variables, in order: contact name,
+   *  resident name, hostel, admission date, room. */
+  admissionConfirmation: { name: "hms_admission_confirmation_emergency_contact", language: "en" },
 } as const;
 
 const pkr = (n: number) => new Intl.NumberFormat("en-PK").format(Math.round(n));
@@ -371,6 +375,42 @@ export function clientPaymentReceivedParams(a: ClientPaymentReceivedArgs): strin
     clean(pkr(a.amount), "0"),
     clean(a.receivedOn ? formatDayLong(a.receivedOn) : "", "today"),
     clean(a.invoiceUrl, "https://hostel.yourpulse.io"),
+  ];
+}
+
+export interface AdmissionConfirmationArgs {
+  /** The emergency contact's own name — this message greets THEM, not the
+   *  resident. */
+  emergencyContactName: string | null | undefined;
+  /** The resident being admitted — full name, so a guardian recognises who the
+   *  message is about (not the informal first-name greeting used elsewhere). */
+  residentName: string | null | undefined;
+  hostelName: string | null | undefined;
+  /** ISO admission / check-in date. */
+  admissionDate: string | null | undefined;
+  roomNumber: string | null | undefined;
+  /** The hostel's own contact number, so the emergency contact can reach the
+   *  owner/management directly if needed. */
+  hostelPhone: string | null | undefined;
+}
+
+/**
+ * hms_admission_confirmation_emergency_contact — {{1}}..{{6}} in order:
+ *   1 emergency-contact name · 2 resident name · 3 hostel · 4 admission date
+ *   5 room · 6 hostel contact number
+ *
+ * Goes to the emergency contact, not the resident, so {{1}} is the contact's
+ * name and {{2}} is the resident's full name. One-time by construction: fired
+ * from the same tenant-activation call sites as the welcome message.
+ */
+export function admissionConfirmationParams(a: AdmissionConfirmationArgs): string[] {
+  return [
+    clean(firstName(a.emergencyContactName), "there"),
+    clean(a.residentName ?? "", "your family member"),
+    clean(a.hostelName ?? "", "our hostel"),
+    clean(a.admissionDate ? formatDayLong(a.admissionDate) : "", "today"),
+    clean(a.roomNumber ?? "", "to be assigned"),
+    clean(a.hostelPhone ?? "", "the hostel management"),
   ];
 }
 

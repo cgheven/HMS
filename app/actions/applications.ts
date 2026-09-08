@@ -9,6 +9,7 @@ import { getAuthContext } from "@/lib/data";
 import { sendApplicationEmail } from "@/lib/email";
 import { validateDiscountPercent } from "@/lib/tenant-discount";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
+import { sendAdmissionConfirmationToEmergencyContact } from "@/lib/whatsapp-admission-confirmation";
 import { checkTenantRedflagAction } from "@/app/actions/redflag";
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 import type { RedflagMatch } from "@/types";
@@ -451,8 +452,10 @@ export async function convertToTenant(
   if (tenantError) return { success: false, error: tenantError.message };
 
   // Fire-and-forget welcome WhatsApp — never awaited, never blocks approval.
+  // The emergency contact gets a separate one-time admission confirmation.
   if (newTenant?.id && !extra.is_waiting) {
     void sendTenantWelcomeMessageAction(newTenant.id);
+    void sendAdmissionConfirmationToEmergencyContact(newTenant.id);
   }
 
   // Occupancy must move with the tenant insert on the server: partners cannot

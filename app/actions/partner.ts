@@ -13,6 +13,7 @@ import { performTenantCheckout } from "@/lib/tenant-checkout";
 import { splitPaymentCharges, grossAmountOf, computeRentDiscount, combinedDiscountPercent } from "@/lib/payment-calc";
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
+import { sendAdmissionConfirmationToEmergencyContact } from "@/lib/whatsapp-admission-confirmation";
 import { pktYearMonth } from "@/lib/pkt-time"
 import { isValidCnic, normalizeCnic } from "@/lib/cnic";
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
@@ -184,8 +185,10 @@ export async function addTenantAsPartner(
     const tenantId = created.id as string;
 
     // Fire-and-forget welcome WhatsApp — never awaited, never blocks this action.
+    // The emergency contact gets a separate one-time admission confirmation.
     if (!payload.is_waiting) {
       void sendTenantWelcomeMessageAction(tenantId);
+      void sendAdmissionConfirmationToEmergencyContact(tenantId);
     }
 
     if (room && roomId) {
@@ -638,6 +641,7 @@ export async function editTenantAsPartner(
     // transition, not on every routine edit of an already-active tenant.
     if (existing.is_waiting && !payload.is_waiting) {
       void sendTenantWelcomeMessageAction(tenantId);
+      void sendAdmissionConfirmationToEmergencyContact(tenantId);
 
       // Attribution happens HERE for a waiting-list row, not at creation: until
       // now the tenant had no bill and no deadline to measure against, so
