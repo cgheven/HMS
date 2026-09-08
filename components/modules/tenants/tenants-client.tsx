@@ -1128,7 +1128,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCustomInstitute(!!app.institute_name && !institutePresets.includes(app.institute_name));
     // A department saved before this list existed (or a genuine 'Other') opens
     // in free-text mode with the stored value intact, not an empty dropdown.
-    setCustomApproveDepartment(!!app.department && !departmentPresetsFor(app.type ?? "").includes(app.department));
+    setCustomApproveDepartment(!!app.department && !departmentPresetsFor(app.type ?? "", app.student_category ?? "").includes(app.department));
     setCustomApproveOrganization(!!app.organization && !organizationPresetsFor(app.organization_type).includes(app.organization));
   }
 
@@ -1335,7 +1335,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       ? INSTITUTE_PRESETS_BY_CATEGORY[t.student_category]
       : [];
     setCustomInstitute(!!t.institute_name && !institutePresets.includes(t.institute_name));
-    setCustomDepartment(!!t.department && !departmentPresetsFor(t.type ?? "").includes(t.department));
+    setCustomDepartment(!!t.department && !departmentPresetsFor(t.type ?? "", (t.student_category ?? "") as "" | StudentCategory).includes(t.department));
     setCustomOrganization(!!t.organization && !organizationPresetsFor(t.organization_type).includes(t.organization));
     setDialogOpen(true);
   }
@@ -3393,7 +3393,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         if (v === "other") { setCustomApproveDepartment(true); setApproveForm({ ...approveForm, department: "" }); }
                         else setApproveForm({ ...approveForm, department: v });
                       }}
-                      options={departmentPresetsFor(approveForm.type)}
+                      options={departmentPresetsFor(approveForm.type, approveCategory)}
                       placeholder="Select department / field"
                       searchPlaceholder={approveForm.type === "professional" ? "Search departments..." : "Search programmes..."}
                       otherLabel="Other (specify)"
@@ -4163,7 +4163,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       if (v === "other") { setCustomDepartment(true); setForm({ ...form, department: "" }); }
                       else setForm({ ...form, department: v });
                     }}
-                    options={departmentPresetsFor(form.type)}
+                    options={departmentPresetsFor(form.type, form.student_category)}
                     placeholder="Select department / field"
                     searchPlaceholder={form.type === "professional" ? "Search departments..." : "Search programmes..."}
                     otherLabel="Other (specify)"

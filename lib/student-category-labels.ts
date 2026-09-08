@@ -399,9 +399,49 @@ export const PROFESSIONAL_DEPARTMENT_PRESETS: string[] = [
   "Freelance / Self-employed",
 ];
 
+// College "department" is really the intermediate programme / group a college
+// student is enrolled in — FSc, ICS, I.Com, FA and the common diplomas — not a
+// university degree. A separate vocabulary so a College applicant isn't shown
+// BS/MBBS programmes that don't apply to them. Plain text stored, "Other" covers
+// the rest.
+export const COLLEGE_DEPARTMENT_PRESETS: string[] = [
+  // Intermediate (FSc / ICS / I.Com / FA)
+  "FSc Pre-Medical",
+  "FSc Pre-Engineering",
+  "ICS (Computer Science)",
+  "ICS (Physics, Statistics)",
+  "ICS (Physics, Economics)",
+  "I.Com (Commerce)",
+  "FA General Science",
+  "FSc General Science",
+  "FA (Arts)",
+  "FA (Humanities)",
+  "FA IT",
+  "FA Fine Arts",
+  "FA Education",
+  // Cambridge
+  "A-Levels",
+  "O-Levels",
+  // Diploma of Associate Engineering (DAE)
+  "DAE Civil",
+  "DAE Electrical",
+  "DAE Mechanical",
+  "DAE Electronics",
+  "DAE Computer Information Technology",
+  "DAE Chemical",
+  "DAE Telecommunication",
+  // Other diplomas / pre-professional
+  "D.Com (Diploma in Commerce)",
+  "Pre-Nursing",
+  "Intermediate in Medical Lab Technology",
+  "Intermediate in Dental Technology",
+];
+
 // Which preset list a given tenant type should browse. Keeps the three forms
 // (public application, Add Tenant, Approve Application) from each deciding for
 // themselves and drifting apart.
-export function departmentPresetsFor(type: string): string[] {
-  return type === "professional" ? PROFESSIONAL_DEPARTMENT_PRESETS : DEPARTMENT_PRESETS;
+export function departmentPresetsFor(type: string, category: StudentCategory | "" = ""): string[] {
+  if (type === "professional") return PROFESSIONAL_DEPARTMENT_PRESETS;
+  if (category === "college") return COLLEGE_DEPARTMENT_PRESETS;
+  return DEPARTMENT_PRESETS;
 }

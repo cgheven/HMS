@@ -100,7 +100,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
           placeholder="Academy or institute name"
           value={form.institute_name}
           onChange={(e) => setForm({ ...form, institute_name: e.target.value })}
-          required={req("institute_name")}
+          required
         />
       );
     }
@@ -270,7 +270,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
 
     if (!form.full_name.trim()) { setError("Full name is required."); return; }
     if (!form.phone.trim()) { setError("WhatsApp number is required."); return; }
-    if (show("email") && req("email") && !form.email.trim()) { setError("Email is required."); return; }
+    if (show("email") && !form.email.trim()) { setError("Email is required."); return; }
     if (show("cnic") && !form.cnic.trim()) { setError("CNIC is required."); return; }
     if (show("cnic") && form.cnic.trim() && !isValidCnic(form.cnic)) {
       setError("Enter a valid 13-digit CNIC, e.g. 42101-1234567-1.");
@@ -296,7 +296,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       setError("Father name is required.");
       return;
     }
-    if (show("purpose_of_visit") && req("purpose_of_visit") && !form.purpose_of_visit) {
+    if (show("purpose_of_visit") && !form.purpose_of_visit) {
       setError("Please select your purpose of visit.");
       return;
     }
@@ -311,19 +311,19 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       setError("Emergency contact name and phone are required.");
       return;
     }
-    if (showInstitute && req("institute_name") && !form.institute_name.trim()) {
-      setError("Institute name is required.");
+    if (showStudentCategory && !form.student_category) {
+      setError("Please select a student category.");
       return;
     }
-    if (showStudentCategory && req("student_category") && !form.student_category) {
-      setError("Please select a student category.");
+    if (showInstitute && !form.institute_name.trim()) {
+      setError("Institute name is required.");
       return;
     }
     if (showOrganization && req("organization") && !form.organization.trim()) {
       setError("Organization is required.");
       return;
     }
-    if (showDepartment && req("department") && !form.department.trim()) {
+    if (showDepartment && !form.department.trim()) {
       setError("Department / Field is required.");
       return;
     }
@@ -496,14 +496,14 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                 <div className="space-y-1.5">
                   <Label className="flex items-center gap-1.5">
                     <Mail className="w-3.5 h-3.5 text-muted-foreground" />
-                    Email {req("email") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                    Email <span className="text-destructive">*</span>
                   </Label>
                   <Input
                     type="email"
                     placeholder="ahmed@email.com"
                     value={form.email}
                     onChange={(e) => setForm({ ...form, email: e.target.value })}
-                    required={req("email")}
+                    required
                   />
                 </div>
               )}
@@ -546,7 +546,6 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                   <SelectContent>
                     <SelectItem value="student">Student</SelectItem>
                     <SelectItem value="professional">Professional</SelectItem>
-                    <SelectItem value="general">General</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -559,7 +558,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
             {show("purpose_of_visit") && (
               <div className="space-y-1.5">
                 <Label>
-                  Purpose of Visit {req("purpose_of_visit") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                  Purpose of Visit <span className="text-destructive">*</span>
                 </Label>
                 <Select
                   value={form.purpose_of_visit}
@@ -599,22 +598,24 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                 Professional Course/Skills Training — pick what you're doing before
                 where. */}
             {(showStudentCategory || showInstitute) && (
-              <div className={showSpecialization ? "space-y-1.5" : "grid grid-cols-2 gap-3"}>
+              <div className="space-y-4">
                 {showStudentCategory && (
                   <div className="space-y-1.5">
                     <Label>
-                      Student Category {req("student_category") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                      Student Category <span className="text-destructive">*</span>
                     </Label>
                     <Select
                       value={form.student_category}
                       onValueChange={(v) => {
                         const next = v as StudentCategory;
                         setCustomSpecialization(false);
-                        // Institute name is category-specific (a university name doesn't
-                        // belong to an Exam Prep record) — clear it along with
-                        // specialization instead of carrying the old category's value over.
+                        // Institute name and department are category-specific (a
+                        // university programme doesn't belong to a College record) —
+                        // clear them along with specialization instead of carrying
+                        // the old category's value over.
                         setCustomInstitute(false);
-                        setForm({ ...form, student_category: next, student_specialization: "", institute_name: "" });
+                        setCustomDepartment(false);
+                        setForm({ ...form, student_category: next, student_specialization: "", institute_name: "", department: "" });
                       }}
                     >
                       <SelectTrigger>
@@ -631,7 +632,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                 {showInstitute && !showSpecialization && (
                   <div className="space-y-1.5">
                     <Label>
-                      Institute Name {req("institute_name") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                      Institute Name <span className="text-destructive">*</span>
                     </Label>
                     {renderInstituteField()}
                   </div>
@@ -766,7 +767,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
             {showDepartment && (
               <div className="space-y-1.5">
                 <Label>
-                  Department / Field {req("department") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
+                  Department / Field <span className="text-destructive">*</span>
                 </Label>
                 {/* Both types get a dropdown — students browse academic
                     programmes, professionals browse workplace functions. */}
@@ -777,7 +778,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                       if (v === "other") { setCustomDepartment(true); setForm({ ...form, department: "" }); }
                       else setForm({ ...form, department: v });
                     }}
-                    options={departmentPresetsFor(form.type)}
+                    options={departmentPresetsFor(form.type, form.student_category)}
                     placeholder="Select department / field"
                     searchPlaceholder={form.type === "professional" ? "Search departments..." : "Search programmes..."}
                     otherLabel="Other (specify)"
@@ -788,7 +789,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                       placeholder="Type your department / field"
                       value={form.department}
                       onChange={(e) => setForm({ ...form, department: e.target.value })}
-                      required={req("department")}
+                      required
                       autoFocus
                     />
                     <Button
