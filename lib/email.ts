@@ -1160,19 +1160,39 @@ export interface NoticeEmailData {
   lastDay: string;
 }
 
+// A highlighted key-detail card (label above a large amber value) — gives the
+// resident emails a designed, at-a-glance look rather than a wall of text.
+function detailCard(label: string, value: string): string {
+  return `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin:22px 0;">
+      <tr><td style="border:1px solid #3f2d17;background:#17120a;border-radius:10px;padding:16px 18px;">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:#8a8a92;">${esc(label)}</div>
+        <div style="font-size:20px;font-weight:700;color:#f59e0b;margin-top:5px;">${esc(value)}</div>
+      </td></tr>
+    </table>`;
+}
+
+// A soft callout for a single important note (amber left-accent).
+function calloutNote(text: string): string {
+  return `
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin:6px 0 20px;">
+      <tr><td style="border-left:3px solid #f59e0b;background:#140f07;border-radius:0 8px 8px 0;padding:12px 16px;font-size:13px;line-height:1.6;color:#d8b26a;">${text}</td></tr>
+    </table>`;
+}
+
 /** Confirms to a resident that their notice to leave was recorded. */
 export async function sendNoticeReceivedEmail(data: NoticeEmailData): Promise<void> {
   const body = `
-    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Your notice is confirmed</h2>
-    <p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#c9cdd6;">
-      Assalam o Alaikum ${esc(data.tenantName)}, this confirms we&apos;ve received your notice to leave
-      <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>. Your last day with us is
-      <strong style="color:#f59e0b;">${esc(data.lastDay)}</strong>.
+    <h2 style="margin:0 0 10px;font-size:21px;font-weight:700;color:#fff;">Your notice is confirmed</h2>
+    <p style="margin:0 0 4px;font-size:14px;line-height:1.65;color:#c9cdd6;">
+      Assalam o Alaikum ${esc(data.tenantName)},
     </p>
-    <p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#c9cdd6;">
-      Kindly settle any pending dues before checkout so we can complete the process smoothly.
+    <p style="margin:0 0 4px;font-size:14px;line-height:1.65;color:#c9cdd6;">
+      This confirms we&apos;ve received your notice to leave <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>.
     </p>
-    <p style="margin:0;font-size:13px;color:#a1a1aa;">
+    ${detailCard("Your last day", data.lastDay)}
+    ${calloutNote("Kindly settle any pending dues before checkout so we can complete the process smoothly.")}
+    <p style="margin:0;font-size:13px;line-height:1.6;color:#a1a1aa;">
       Thank you for staying with us — we wish you all the best for what&apos;s ahead.
     </p>
   `;
@@ -1188,17 +1208,17 @@ export async function sendNoticeReceivedEmail(data: NoticeEmailData): Promise<vo
 /** Reminds a resident, on their last day, to check out and clear dues. */
 export async function sendLastDayReminderEmail(data: NoticeEmailData): Promise<void> {
   const body = `
-    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Today is your last day</h2>
-    <p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#c9cdd6;">
-      Assalam o Alaikum ${esc(data.tenantName)}, a friendly reminder that
-      <strong style="color:#f59e0b;">today (${esc(data.lastDay)}) is your last day</strong> at
-      <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>.
+    <h2 style="margin:0 0 10px;font-size:21px;font-weight:700;color:#fff;">Today is your last day</h2>
+    <p style="margin:0 0 4px;font-size:14px;line-height:1.65;color:#c9cdd6;">
+      Assalam o Alaikum ${esc(data.tenantName)},
     </p>
-    <p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#c9cdd6;">
-      Please complete your checkout and clear any outstanding dues today. If you continue staying beyond
-      today, additional charges will apply as per hostel policy.
+    <p style="margin:0 0 4px;font-size:14px;line-height:1.65;color:#c9cdd6;">
+      A friendly reminder that today is your last day at <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>.
+      Please complete your checkout and clear any outstanding dues today.
     </p>
-    <p style="margin:0;font-size:13px;color:#a1a1aa;">
+    ${detailCard("Checkout day", data.lastDay)}
+    ${calloutNote("Staying beyond today will add charges as per hostel policy.")}
+    <p style="margin:0;font-size:13px;line-height:1.6;color:#a1a1aa;">
       Thank you — it&apos;s been a pleasure hosting you, and we wish you all the best for the journey ahead.
     </p>
   `;
