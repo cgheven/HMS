@@ -1429,6 +1429,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       toast({ title: "Invalid CNIC", description: "Format must be XXXXX-XXXXXXX-X (13 digits)", variant: "destructive" });
       return;
     }
+    // Province and district are mandatory — the HotelEye/Smart Eye portal cannot
+    // file a guest without them, so we require them at admission rather than
+    // discovering the gap at sync time.
+    if (!form.permanent_province || !form.permanent_district) {
+      toast({ title: "Province and district required", description: "Both are needed to file the guest with Smart Eye / Hotel Eye.", variant: "destructive" });
+      return;
+    }
     if (form.billing_type === "monthly" && form.discount_percent.trim()) {
       const pct = parseFloat(form.discount_percent);
       // The owner path writes straight to Postgres from here, so without this the
@@ -4916,7 +4923,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 sync is never rejected for an unknown place. */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <Label>Province</Label>
+                <Label>Province *</Label>
                 <SearchableSelect
                   value={form.permanent_province}
                   onValueChange={(v) => setForm({ ...form, permanent_province: v, permanent_district: "" })}
@@ -4926,7 +4933,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>District</Label>
+                <Label>District *</Label>
                 <SearchableSelect
                   value={form.permanent_district}
                   onValueChange={(v) => setForm({ ...form, permanent_district: v })}

@@ -1,16 +1,17 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerOrAbove } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import { encryptSecret, decryptSecret } from "@/lib/secret-box";
 import {
-  startLogin, completeLogin, addGuest, probeSession,
+  startLogin, completeLogin, addGuest, probeSession, listFiledCnics,
   type PendingLogin, type LoginSession, type HotelEyeGuest,
 } from "@/lib/hotel-eye-client";
-import { HOTEL_EYE_PROVINCES, HOTEL_EYE_DISTRICTS, HOTEL_EYE_CHUNK_MAX } from "@/lib/hotel-eye-vocabulary";
+import { HOTEL_EYE_PROVINCES, HOTEL_EYE_DISTRICTS } from "@/lib/hotel-eye-vocabulary";
 import { visitPurposeLabel } from "@/lib/visit-purpose";
 
 // Every action here is owner-only and resolves the hostel server-side from the
@@ -131,6 +132,7 @@ export interface PendingGuest {
   status: string;
   province: string | null;
   district: string | null;
+  lastError: string | null;
 }
 
 export async function getPendingGuests(): Promise<{ guests?: PendingGuest[]; missing?: number; error?: string }> {
@@ -138,7 +140,7 @@ export async function getPendingGuests(): Promise<{ guests?: PendingGuest[]; mis
     const { id: hostelId } = await resolveHostel();
     const { data } = await createAdminClient()
       .from("hms_tenants")
-      .select("id, full_name, cnic, bed_number, room:hms_rooms(room_number), hotel_eye_status, permanent_province, permanent_district")
+      .select("id, full_name, cnic, bed_number, room:hms_rooms(room_number), hotel_eye_status, hotel_eye_last_error, permanent_province, permanent_district")
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
       .neq("hotel_eye_status", "synced")
@@ -153,6 +155,7 @@ export async function getPendingGuests(): Promise<{ guests?: PendingGuest[]; mis
         status: t.hotel_eye_status as string,
         province: (t.permanent_province as string) ?? null,
         district: (t.permanent_district as string) ?? null,
+        lastError: (t.hotel_eye_last_error as string) ?? null,
       };
     });
     // How many of those cannot be filed yet because a required field is missing.
@@ -186,12 +189,6 @@ export async function startHotelEyeSync(): Promise<{
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : "Could not reach the portal." };
   }
-}
-
-export interface SyncOutcome {
-  filed: number;
-  failed: { name: string; reason: string }[];
-  skipped: { name: string; reason: string }[];
 }
 
 // Step 1b (optional): reuse a session cached from an earlier sync, so a run a
@@ -269,120 +266,132 @@ export async function completeHotelEyeLogin(input: {
   }
 }
 
-export interface ChunkResult {
-  filed: number;
-  failed: { name: string; reason: string }[];
-  skipped: { name: string; reason: string }[];
-  // Set when the portal bounced us to login mid-chunk. `remaining` are the ids
-  // not yet attempted, so the client can resume them after one fresh CAPTCHA
-  // without re-filing anyone.
-  sessionExpired?: boolean;
-  remaining?: string[];
-}
-
-// Step 2b: file one chunk on an already-open session. Called repeatedly by the
-// client, each call filing at most HOTEL_EYE_CHUNK_MAX guests.
-export async function fileHotelEyeChunk(input: {
+// Step 2b: kick off a BACKGROUND sync of the selected guests and return at once.
+// The browser is never the driver — it hands the queue over and is free to close.
+// Filing runs server-side (Next `after`), on the session the CAPTCHA opened,
+// updating each tenant's status as it goes.
+export async function startHotelEyeBackgroundSync(input: {
   tenantIds: string[];
-}): Promise<{ result?: ChunkResult; error?: string; captchaNeeded?: boolean }> {
+}): Promise<{ queued?: number; error?: string; captchaNeeded?: boolean }> {
   try {
     const { id: hostelId, type: hostelType } = await resolveHostel();
-    const ids = input.tenantIds.slice(0, HOTEL_EYE_CHUNK_MAX);
-    if (ids.length === 0) return { error: "Nothing to file." };
+    if (input.tenantIds.length === 0) return { error: "Nothing selected to sync." };
 
     const admin = createAdminClient();
     const { data: cred } = await admin
-      .from("hms_hotel_eye_credentials")
-      // The session is read back from the row — it is never accepted from, nor
-      // returned to, the client.
-      .select("default_province, default_district, session_blob")
-      .eq("hostel_id", hostelId).maybeSingle();
+      .from("hms_hotel_eye_credentials").select("session_blob").eq("hostel_id", hostelId).maybeSingle();
     if (!cred) return { error: "Set up the portal credentials first." };
-    if (!cred.session_blob) return { captchaNeeded: true, error: "No active session — solve the CAPTCHA to continue." };
+    if (!cred.session_blob) return { captchaNeeded: true };
 
-    let session: LoginSession;
-    try { session = JSON.parse(decryptSecret(cred.session_blob)) as LoginSession; }
-    catch { await clearSession(hostelId); return { captchaNeeded: true, error: "This sync session is invalid — start again." }; }
-
-    const gender = genderForHostel(hostelType);
-    const { data: tenants } = await admin
+    // Mark the selection "queued" now, so the page shows "Syncing…" even after
+    // the browser is closed and reopened. Bounded to this hostel's own active,
+    // not-yet-synced tenants.
+    const { data: queuedRows } = await admin
       .from("hms_tenants")
-      .select("id, full_name, cnic, father_name, phone, permanent_address, permanent_province, permanent_district, check_in, bed_number, room:hms_rooms(room_number), purpose_of_visit, purpose_of_visit_detail, hotel_eye_status")
+      .update({ hotel_eye_status: "queued", hotel_eye_last_error: null, hotel_eye_last_attempt_at: new Date().toISOString() })
       .eq("hostel_id", hostelId)
-      .in("id", ids)
-      .eq("is_active", true);
+      .in("id", input.tenantIds)
+      .eq("is_active", true)
+      .neq("hotel_eye_status", "synced")
+      .select("id");
+    const ids = (queuedRows ?? []).map((r) => r.id as string);
+    if (ids.length === 0) return { queued: 0 };
 
-    // Preserve the caller's order, and keep track of what we have not attempted
-    // so a mid-chunk session expiry can report an accurate `remaining`.
-    const byId = new Map((tenants ?? []).map((t) => [t.id as string, t]));
-    const result: ChunkResult = { filed: 0, failed: [], skipped: [] };
-
-    for (let i = 0; i < ids.length; i++) {
-      const t = byId.get(ids[i]);
-      if (!t) { continue; } // vanished (deleted / deactivated) since selection
-      const name = t.full_name as string;
-      if (t.hotel_eye_status === "synced") { result.skipped.push({ name, reason: "already filed" }); continue; }
-
-      const province = (t.permanent_province as string) || cred.default_province || "";
-      const district = (t.permanent_district as string) || cred.default_district || "";
-      const missingFields = [
-        !t.cnic && "CNIC", !t.father_name && "father's name", !province && "province", !district && "district",
-      ].filter(Boolean);
-      if (missingFields.length) { result.skipped.push({ name, reason: `missing ${missingFields.join(", ")}` }); continue; }
-      if (!HOTEL_EYE_PROVINCES.includes(province) || !(HOTEL_EYE_DISTRICTS[province] ?? []).includes(district)) {
-        result.skipped.push({ name, reason: "province/district not a valid portal value" });
-        continue;
-      }
-
-      const room = (t as { room?: { room_number?: string } | null }).room;
-      const guest: HotelEyeGuest = {
-        cnic: (t.cnic as string).replace(/\D/g, ""),
-        name,
-        fatherName: t.father_name as string,
-        address: (t.permanent_address as string) || district,
-        gender,
-        cellNo: ((t.phone as string) ?? "").replace(/\D/g, ""),
-        province,
-        district,
-        roomNo: room?.room_number ?? (t.bed_number as string) ?? "",
-        checkInDate: ((t.check_in as string) ?? new Date().toISOString()).slice(0, 10),
-        visitPurpose: visitPurposeLabel(
-          t.purpose_of_visit as string | null, t.purpose_of_visit_detail as string | null
-        ) ?? "",
-      };
-
-      const res = await addGuest(session, guest);
-
-      if (res.authExpired) {
-        // Stop immediately; everything filed so far is already saved. Hand back
-        // the ids from this point on so the client can resume after a new CAPTCHA.
-        result.sessionExpired = true;
-        result.remaining = ids.slice(i);
-        await clearSession(hostelId); // the cached session is dead — don't reuse it
-        break;
-      }
-      if (res.success) {
-        result.filed += 1;
-        await admin.from("hms_tenants").update({
-          hotel_eye_status: "synced", hotel_eye_synced_at: new Date().toISOString(),
-        }).eq("id", t.id).eq("hostel_id", hostelId);
-      } else {
-        result.failed.push({ name, reason: res.error ?? "portal rejected the entry" });
-        await admin.from("hms_tenants").update({ hotel_eye_status: "failed" }).eq("id", t.id).eq("hostel_id", hostelId);
-      }
-
-      // Gentle pacing between portal writes — a tight loop of POSTs is what trips
-      // a government portal's rate limiting. Skipped after the last entry.
-      if (i < ids.length - 1) await new Promise((r) => setTimeout(r, 400));
-    }
-
-    await admin.from("hms_hotel_eye_credentials")
-      .update({ last_synced_at: new Date().toISOString() }).eq("hostel_id", hostelId);
     revalidatePath("/police-verification");
-    revalidatePath("/tenants");
-    return { result };
+    // Runs AFTER the response is sent — survives the browser closing, bounded
+    // only by the route's maxDuration (set to 300s on the page).
+    after(async () => { await drainHotelEyeQueue(hostelId, hostelType, ids); });
+    return { queued: ids.length };
   } catch (err: unknown) {
     unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : "Sync failed." };
+    return { error: err instanceof Error ? err.message : "Could not start the sync." };
   }
+}
+
+// The server-side worker. Never called from the client — only scheduled by
+// startHotelEyeBackgroundSync via `after`. Dedupes against the portal, files the
+// rest in paced order, and records the outcome per tenant.
+async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, ids: string[]): Promise<void> {
+  const admin = createAdminClient();
+  const { data: cred } = await admin
+    .from("hms_hotel_eye_credentials")
+    .select("default_province, default_district, session_blob").eq("hostel_id", hostelId).maybeSingle();
+
+  // No usable session → put the queued rows back to pending so they aren't stuck
+  // showing "Syncing…", and stop. The owner re-syncs (one CAPTCHA) next time.
+  const resetQueued = async (rest: string[]) => {
+    if (rest.length) await admin.from("hms_tenants")
+      .update({ hotel_eye_status: "not_synced" }).in("id", rest).eq("hostel_id", hostelId).eq("hotel_eye_status", "queued");
+  };
+  if (!cred?.session_blob) { await resetQueued(ids); return; }
+  let session: LoginSession;
+  try { session = JSON.parse(decryptSecret(cred.session_blob)) as LoginSession; }
+  catch { await clearSession(hostelId); await resetQueued(ids); return; }
+
+  // Read who is already on the portal — the automatic dedupe. Digits-only set.
+  const filed = await listFiledCnics(session);
+  const gender = genderForHostel(hostelType);
+
+  const { data: tenants } = await admin
+    .from("hms_tenants")
+    .select("id, full_name, cnic, father_name, phone, permanent_address, permanent_province, permanent_district, check_in, bed_number, room:hms_rooms(room_number), purpose_of_visit, purpose_of_visit_detail")
+    .eq("hostel_id", hostelId).in("id", ids);
+  const byId = new Map((tenants ?? []).map((t) => [t.id as string, t]));
+
+  const mark = (id: string, fields: Record<string, unknown>) =>
+    admin.from("hms_tenants").update(fields).eq("id", id).eq("hostel_id", hostelId);
+
+  for (let i = 0; i < ids.length; i++) {
+    const t = byId.get(ids[i]);
+    if (!t) continue; // deleted/deactivated since it was queued
+    const province = (t.permanent_province as string) || cred.default_province || "";
+    const district = (t.permanent_district as string) || cred.default_district || "";
+    const cnicDigits = ((t.cnic as string) ?? "").replace(/\D/g, "");
+
+    // Missing/invalid data → record why, don't loop on it.
+    const missing = [!cnicDigits && "CNIC", !t.father_name && "father's name", !province && "province", !district && "district"].filter(Boolean);
+    if (missing.length || !HOTEL_EYE_PROVINCES.includes(province) || !(HOTEL_EYE_DISTRICTS[province] ?? []).includes(district)) {
+      await mark(ids[i], { hotel_eye_status: "failed", hotel_eye_last_error: missing.length ? `missing ${missing.join(", ")}` : "province/district not a valid portal value", hotel_eye_last_attempt_at: new Date().toISOString() });
+      continue;
+    }
+
+    // AUTO-DEDUPE: already on the portal → mark synced, never post again.
+    if (filed && cnicDigits && filed.has(cnicDigits)) {
+      await mark(ids[i], { hotel_eye_status: "synced", hotel_eye_synced_at: new Date().toISOString(), hotel_eye_last_error: null });
+      continue;
+    }
+
+    const room = (t as { room?: { room_number?: string } | null }).room;
+    const res = await addGuest(session, {
+      cnic: cnicDigits,
+      name: t.full_name as string,
+      fatherName: t.father_name as string,
+      address: (t.permanent_address as string) || district,
+      gender,
+      cellNo: ((t.phone as string) ?? "").replace(/\D/g, ""),
+      province, district,
+      roomNo: room?.room_number ?? (t.bed_number as string) ?? "",
+      checkInDate: ((t.check_in as string) ?? new Date().toISOString()).slice(0, 10),
+      visitPurpose: visitPurposeLabel(t.purpose_of_visit as string | null, t.purpose_of_visit_detail as string | null) ?? "",
+    });
+
+    if (res.authExpired) {
+      // Session died with no human present to solve a new CAPTCHA. Leave the
+      // rest pending for the next sync and stop; nothing filed is lost.
+      await clearSession(hostelId);
+      await resetQueued(ids.slice(i));
+      break;
+    }
+    if (res.success) {
+      await mark(ids[i], { hotel_eye_status: "synced", hotel_eye_synced_at: new Date().toISOString(), hotel_eye_last_error: null });
+    } else {
+      await mark(ids[i], { hotel_eye_status: "failed", hotel_eye_last_error: res.error ?? "portal rejected the entry", hotel_eye_last_attempt_at: new Date().toISOString() });
+    }
+    // Gentle pacing between portal writes; skipped after the last one.
+    if (i < ids.length - 1) await new Promise((r) => setTimeout(r, 400));
+  }
+
+  await admin.from("hms_hotel_eye_credentials").update({ last_synced_at: new Date().toISOString() }).eq("hostel_id", hostelId);
+  revalidatePath("/police-verification");
+  revalidatePath("/tenants");
 }

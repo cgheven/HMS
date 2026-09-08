@@ -28,10 +28,3 @@ export const HOTEL_EYE_DISTRICTS: Readonly<Record<string, readonly string[]>> = 
   "Punjab": ["Faisalabad", "Gujranwala", "Multan", "Rawalpindi", "Attock", "Bahawalnagar", "Bahawalpur", "Bhakkar", "Chakwal", "Chiniot", "DERA GHAZI KHAN", "Gujrat", "Hafizabad", "Jhang", "Jhelum", "Kasur", "Khanewal", "Khushab", "Layyah", "Lodhran", "M.B.Din", "Mianwali", "Muzaffargarh", "Nankana", "Narowal", "Okara", "Pakpattan", "R.Y.Khan", "Rajanpur", "Sahiwal", "Sargodha", "Sheikhupura", "Sialkot", "T.T.Singh", "Vehari", "Lahore", "Kot Addu", "Taunsa", "Talagang", "Murree", "Wazirabad"],
   "Sindh": ["Badin", "Dadu", "Ghotki", "Hyderabad", "Jacobabad", "Jamshoro", "Karachi", "Kashmore", "Khairpur", "Larkana", "Matiari", "Mirpur Khas", "Naushahro Feroze", "Nawabshah", "Qambar Shahdadkot", "Sanghar", "Shikarpur", "Sukkur", "Tando Allah Yar", "Tando Muhammad Khan", "Tharparkar", "Thatta", "Umer Kot", "Sujawal"],
 };
-
-// Guests filed per server call: each call stays well inside the serverless time
-// limit, and the queue is walked in chunks of this size with a small pause
-// between portal writes. Also a hard per-call ceiling. Lives here (a plain
-// module) rather than the "use server" actions file, which may export only
-// async functions.
-export const HOTEL_EYE_CHUNK_MAX = 10;

@@ -171,6 +171,34 @@ export async function completeLogin(
   return { authenticated: true, session: { portalUrl: pending.portalUrl, cookies } };
 }
 
+const CNIC_RE = /\b\d{5}-?\d{7}-?\d\b/g;
+
+/**
+ * The CNICs this hotel has ALREADY filed, read from its watch list.
+ *
+ * Used to dedupe: a guest already on the portal is never posted again, so the
+ * integration can't create a second entry — and existing manual filings are
+ * recognised rather than re-sent. Digits only, so "34501-6752651-3" and
+ * "3450167526513" compare equal. Returns null (not an empty set) if the list
+ * can't be read, so the caller can tell "nobody filed" from "couldn't check".
+ */
+export async function listFiledCnics(session: LoginSession): Promise<Set<string> | null> {
+  const listUrl = new URL("/hotel/hotelwatchList", session.portalUrl).toString();
+  try {
+    const res = await fetch(listUrl, {
+      headers: { "User-Agent": UA, Cookie: cookieHeader(session.cookies) },
+      redirect: "follow",
+    });
+    if (!res.ok || res.url.toLowerCase().includes("/login")) return null;
+    const html = await res.text();
+    const set = new Set<string>();
+    for (const m of html.match(CNIC_RE) ?? []) set.add(m.replace(/\D/g, ""));
+    return set;
+  } catch {
+    return null;
+  }
+}
+
 /** Is a stored session still logged in? One cheap GET — the portal bounces a
  *  dead session to /login. Used to decide whether a sync can skip the CAPTCHA. */
 export async function probeSession(session: LoginSession): Promise<boolean> {
