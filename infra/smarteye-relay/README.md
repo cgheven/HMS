@@ -83,6 +83,14 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:8787/fetch   #
 Both `smarteye-relay` and `cloudflared` are systemd services: auto-start on
 boot, auto-restart on crash.
 
+## Health endpoints (for external monitoring)
+- `GET /health` → `200 {"ok":true}` — public, no secret. Proves the box is up,
+  the relay is running, and the tunnel is routing. Point an uptime monitor here:
+  `https://smarteye.yourpulse.io/health`.
+- `GET /health/portal` (header `x-relay-secret: <secret>`) → `200` only if the
+  portal still accepts this box's IP, else `502`. A deeper check for an IP/policy
+  change; needs a monitor that can send a custom header.
+
 ## Health check / troubleshooting
 If Smart Eye sync fails in production, check in order:
 ```bash
