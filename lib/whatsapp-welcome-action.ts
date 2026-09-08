@@ -5,6 +5,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { buildWelcomeMessage } from "@/lib/whatsapp-welcome";
 import { sendAdmissionConfirmationToEmergencyContact } from "@/lib/whatsapp-admission-confirmation";
+import { sendWelcomeEmailToTenant } from "@/lib/welcome-email";
+import { getAuthContext } from "@/lib/data";
 import { siteUrl } from "@/lib/site-url";
 
 export interface WelcomeSendResult {
@@ -165,13 +167,35 @@ export async function sendTenantWelcomeMessageAction(tenantId: string): Promise<
   }
 }
 
-// Server-action wrapper so the owner's client-side Add/Activate Tenant path
-// (which inserts straight to Postgres in the browser) can trigger the
-// emergency-contact admission confirmation. The confirmation logic itself is a
-// server-only lib function; this exposes it to the client as an action.
-// Fire-and-forget by contract — never throws, mirrors the welcome auto-send.
+// These two wrappers are reachable from the client (the owner's Add/Activate
+// Tenant path, which inserts straight to Postgres in the browser). Both take a
+// tenantId from the browser and would otherwise fire a real message/email to
+// that resident with no ownership check — an authenticated user could pass
+// another branch's tenantId and spam its residents (WiFi passwords included).
+// Gate on the caller's ACTIVE hostel: the tenant must belong to it, else we
+// silently do nothing. The server-action call sites (managers/partner/
+// applications) invoke the underlying lib functions directly and are already
+// authorised there, so they don't go through this gate.
+async function callerActiveHostelOwnsTenant(tenantId: string): Promise<boolean> {
+  try {
+    const ctx = await getAuthContext();
+    if (!ctx?.hostelId) return false;
+    const { data } = await createAdminClient()
+      .from("hms_tenants").select("id").eq("id", tenantId).eq("hostel_id", ctx.hostelId).maybeSingle();
+    return !!data;
+  } catch {
+    return false;
+  }
+}
+
 export async function sendAdmissionConfirmationAction(tenantId: string): Promise<void> {
+  if (!(await callerActiveHostelOwnsTenant(tenantId))) return;
   await sendAdmissionConfirmationToEmergencyContact(tenantId);
+}
+
+export async function sendWelcomeEmailAction(tenantId: string): Promise<void> {
+  if (!(await callerActiveHostelOwnsTenant(tenantId))) return;
+  await sendWelcomeEmailToTenant(tenantId);
 }
 
 // Owner/partner/manager-facing manual resend, called from the "Resend Welcome"

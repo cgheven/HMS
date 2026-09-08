@@ -76,10 +76,21 @@ export async function saveWelcomeSettings({
       dinner: trimMealTimeRange(meal_times.dinner),
     };
 
+    // Sanitize each network's coverage: drop blank tokens and de-duplicate, so
+    // the stored JSON is clean regardless of what the client posted. Only
+    // "floor:" / "room:" tokens are kept — anything else is discarded rather
+    // than trusted into the resident-matching later.
+    const cleanedWifi: WifiNetwork[] = (wifi_networks ?? []).map((w) => {
+      const coverage = Array.from(
+        new Set((w.coverage ?? []).map((t) => (t ?? "").trim()).filter((t) => /^(floor|room):.+/i.test(t)))
+      );
+      return { id: w.id, name: w.name, password: w.password, ...(coverage.length ? { coverage } : {}) };
+    });
+
     const { error } = await supabase
       .from("hms_hostels")
       .update({
-        wifi_networks,
+        wifi_networks: cleanedWifi,
         welcome_message_template: welcome_message_template.trim() || null,
         meal_times: cleanedMealTimes,
         updated_at: new Date().toISOString(),

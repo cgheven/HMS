@@ -14,6 +14,7 @@ import { splitPaymentCharges, grossAmountOf, computeRentDiscount, combinedDiscou
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { sendAdmissionConfirmationToEmergencyContact } from "@/lib/whatsapp-admission-confirmation";
+import { sendWelcomeEmailToTenant } from "@/lib/welcome-email";
 import { pktYearMonth } from "@/lib/pkt-time"
 import { isValidCnic, normalizeCnic } from "@/lib/cnic";
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
@@ -188,6 +189,7 @@ export async function addTenantAsPartner(
     // The emergency contact gets a separate one-time admission confirmation.
     if (!payload.is_waiting) {
       void sendTenantWelcomeMessageAction(tenantId);
+      void sendWelcomeEmailToTenant(tenantId);
       void sendAdmissionConfirmationToEmergencyContact(tenantId);
     }
 
@@ -641,6 +643,7 @@ export async function editTenantAsPartner(
     // transition, not on every routine edit of an already-active tenant.
     if (existing.is_waiting && !payload.is_waiting) {
       void sendTenantWelcomeMessageAction(tenantId);
+      void sendWelcomeEmailToTenant(tenantId);
       void sendAdmissionConfirmationToEmergencyContact(tenantId);
 
       // Attribution happens HERE for a waiting-list row, not at creation: until

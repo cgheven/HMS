@@ -21,6 +21,7 @@ import { DEFAULT_FORM_CONFIG } from "@/types";
 import { savePaymentRecoverySettings, saveWelcomeSettings } from "@/app/actions/settings";
 import { DEFAULT_REMINDER_TEMPLATE, formatAccounts, buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { DEFAULT_WELCOME_TEMPLATE, buildWelcomeMessage } from "@/lib/whatsapp-welcome";
+import { floorToken, roomToken } from "@/lib/wifi-coverage";
 import { SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
 
 type PkgPriceEntry = { no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string };
@@ -177,14 +178,51 @@ export function SettingsClient() {
   }));
   const [savingWelcome, setSavingWelcome] = useState(false);
 
+  // Rooms of this branch, so a WiFi network can be scoped to floors/rooms.
+  // Blank scope = whole hostel (the default), so this is only for owners who
+  // want the precision — the picker stays empty and harmless otherwise.
+  const [coverageRooms, setCoverageRooms] = useState<{ room_number: string; floor: number | null }[]>([]);
+  useEffect(() => {
+    if (!hostelId) { setCoverageRooms([]); return; }
+    let cancelled = false;
+    (async () => {
+      const supabase = createClient();
+      const { data } = await supabase
+        .from("hms_rooms")
+        .select("room_number, floor")
+        .eq("hostel_id", hostelId)
+        .order("floor", { ascending: true })
+        .order("room_number", { ascending: true });
+      if (!cancelled) setCoverageRooms((data as { room_number: string; floor: number | null }[] | null) ?? []);
+    })();
+    return () => { cancelled = true; };
+  }, [hostelId]);
+
+  const coverageFloors = Array.from(
+    new Set(coverageRooms.map((r) => r.floor).filter((f): f is number => f !== null && f !== undefined))
+  ).sort((a, b) => a - b);
+  // Deduped + trimmed: a branch can (rarely) have the same room number on two
+  // floors, and one chip per number keeps the token stable and the React keys
+  // unique. Room scoping is by number; floors are the tool when numbers repeat.
+  const coverageRoomNumbers = Array.from(
+    new Set(coverageRooms.map((r) => (r.room_number ?? "").trim()).filter((n) => n))
+  );
+
   function addWifiNetwork() {
-    setWifiNetworks((prev) => [...prev, { id: uid(), name: "", password: "" }]);
+    setWifiNetworks((prev) => [...prev, { id: uid(), name: "", password: "", coverage: [] }]);
   }
   function updateWifiNetwork(id: string, patch: Partial<WifiNetwork>) {
     setWifiNetworks((prev) => prev.map((w) => w.id === id ? { ...w, ...patch } : w));
   }
   function removeWifiNetwork(id: string) {
     setWifiNetworks((prev) => prev.filter((w) => w.id !== id));
+  }
+  function toggleWifiCoverage(id: string, token: string) {
+    setWifiNetworks((prev) => prev.map((w) => {
+      if (w.id !== id) return w;
+      const cur = w.coverage ?? [];
+      return { ...w, coverage: cur.includes(token) ? cur.filter((t) => t !== token) : [...cur, token] };
+    }));
   }
   function updateMealTime(meal: "breakfast" | "lunch" | "dinner", field: "from" | "to", value: string) {
     setMealTimes((prev) => ({ ...prev, [meal]: { ...prev[meal], [field]: value } }));
@@ -2032,35 +2070,76 @@ export function SettingsClient() {
               </div>
             ) : (
               <div className="space-y-2">
-                {wifiNetworks.map((w) => (
-                  <div key={w.id} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end rounded-xl border border-sidebar-border bg-card/50 p-3">
-                    <div className="space-y-1">
-                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Device Name</p>
-                      <Input
-                        placeholder="e.g. Hostel_5G"
-                        value={w.name}
-                        onChange={(e) => updateWifiNetwork(w.id, { name: e.target.value })}
-                        className="h-9 text-sm"
-                      />
+                {wifiNetworks.map((w) => {
+                  const cov = w.coverage ?? [];
+                  const chip = (on: boolean) =>
+                    `px-2.5 py-1 rounded-full text-[11px] border transition ${on ? "bg-amber/20 border-amber/50 text-amber" : "border-sidebar-border text-muted-foreground hover:border-amber/40"}`;
+                  return (
+                  <div key={w.id} className="rounded-xl border border-sidebar-border bg-card/50 p-3 space-y-3">
+                    <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
+                      <div className="space-y-1">
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Device Name</p>
+                        <Input
+                          placeholder="e.g. Hostel_5G"
+                          value={w.name}
+                          onChange={(e) => updateWifiNetwork(w.id, { name: e.target.value })}
+                          className="h-9 text-sm"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Password</p>
+                        <Input
+                          placeholder="hostel123"
+                          value={w.password ?? ""}
+                          onChange={(e) => updateWifiNetwork(w.id, { password: e.target.value })}
+                          className="h-9 text-sm"
+                        />
+                      </div>
+                      <Button
+                        variant="ghost" size="icon"
+                        onClick={() => removeWifiNetwork(w.id)}
+                        className="h-9 w-9 text-muted-foreground hover:text-rose-400 shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
                     </div>
-                    <div className="space-y-1">
-                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Password</p>
-                      <Input
-                        placeholder="hostel123"
-                        value={w.password ?? ""}
-                        onChange={(e) => updateWifiNetwork(w.id, { password: e.target.value })}
-                        className="h-9 text-sm"
-                      />
+
+                    {/* Covers — optional. Blank = whole hostel. Tap floors/rooms this
+                        network actually reaches, and a resident only sees the WiFi that
+                        works where they sleep. */}
+                    <div className="space-y-1.5 border-t border-sidebar-border/60 pt-2.5">
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">
+                        Covers
+                        {cov.length === 0 && (
+                          <span className="ml-1 normal-case tracking-normal text-muted-foreground/60">— whole hostel</span>
+                        )}
+                      </p>
+                      {coverageFloors.length === 0 && coverageRoomNumbers.length === 0 ? (
+                        <p className="text-[11px] text-muted-foreground/60">Add rooms to this branch to scope WiFi by floor or room.</p>
+                      ) : (
+                        <div className="flex flex-wrap gap-1.5">
+                          {coverageFloors.map((f) => {
+                            const tok = floorToken(f);
+                            return (
+                              <button key={tok} type="button" onClick={() => toggleWifiCoverage(w.id, tok)} className={chip(cov.includes(tok))}>
+                                Floor {f}
+                              </button>
+                            );
+                          })}
+                          {coverageRoomNumbers.map((rn) => {
+                            const tok = roomToken(rn);
+                            return (
+                              <button key={tok} type="button" onClick={() => toggleWifiCoverage(w.id, tok)} className={chip(cov.includes(tok))}>
+                                Room {rn}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                    <Button
-                      variant="ghost" size="icon"
-                      onClick={() => removeWifiNetwork(w.id)}
-                      className="h-9 w-9 text-muted-foreground hover:text-rose-400 shrink-0"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

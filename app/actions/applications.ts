@@ -10,6 +10,7 @@ import { sendApplicationEmail } from "@/lib/email";
 import { validateDiscountPercent } from "@/lib/tenant-discount";
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { sendAdmissionConfirmationToEmergencyContact } from "@/lib/whatsapp-admission-confirmation";
+import { sendWelcomeEmailToTenant } from "@/lib/welcome-email";
 import { checkTenantRedflagAction } from "@/app/actions/redflag";
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 import type { RedflagMatch } from "@/types";
@@ -455,6 +456,7 @@ export async function convertToTenant(
   // The emergency contact gets a separate one-time admission confirmation.
   if (newTenant?.id && !extra.is_waiting) {
     void sendTenantWelcomeMessageAction(newTenant.id);
+    void sendWelcomeEmailToTenant(newTenant.id);
     void sendAdmissionConfirmationToEmergencyContact(newTenant.id);
   }
 

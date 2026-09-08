@@ -154,6 +154,11 @@ export interface WifiNetwork {
   id: string;
   name: string;
   password?: string;
+  /** Where this network reaches, as tokens: "floor:<n>" and/or "room:<room_number>".
+   *  Empty or absent means it covers the whole hostel (the default). A resident
+   *  sees a network when it is blank, or its list includes their floor or their
+   *  exact room. See lib/wifi-coverage.ts. */
+  coverage?: string[];
 }
 
 export interface MealTimeRange {

@@ -1065,6 +1065,93 @@ export async function sendSeatReservedEmail(data: SeatReservedEmailData): Promis
   });
 }
 
+export interface WelcomeEmailWifi {
+  name: string;
+  password?: string | null;
+}
+
+export interface WelcomeEmailData {
+  tenantEmail: string;
+  tenantName: string;
+  hostelName: string;
+  room: string | null;
+  /** Only the networks that reach this resident's room (already filtered by the
+   *  caller). Each rendered with its password so the resident can connect. */
+  wifi: WelcomeEmailWifi[];
+  /** Absolute URL to the monthly food menu, or null when the branch has no
+   *  public menu (self-catered / not listed). */
+  menuUrl: string | null;
+  /** Lines like "Breakfast: 7:00 AM - 9:00 AM", already assembled and only for
+   *  meals the branch actually serves. */
+  mealTimeLines: string[];
+}
+
+/**
+ * Welcome email to the RESIDENT on admission — carries the WiFi they can
+ * actually use and, where the branch serves food, the menu and meal times.
+ *
+ * Sent by email rather than WhatsApp on purpose: WiFi passwords are free-form
+ * text, which Meta rejects outside a 24-hour session window a new resident has
+ * never opened. Only the networks covering their room are listed (see
+ * lib/wifi-coverage.ts). Every section is optional — a branch with no WiFi, no
+ * menu and no meal times still sends a clean welcome with none of those blocks.
+ */
+export async function sendWelcomeEmail(data: WelcomeEmailData): Promise<void> {
+  const wifiBlock = data.wifi.length
+    ? `
+      <p style="margin:24px 0 8px;font-size:13px;font-weight:600;color:#e5e5e5;">
+        ${data.wifi.length > 1 ? "WiFi networks" : "WiFi"}
+      </p>
+      ${data.wifi.map((w) => `
+        <div style="margin:0 0 10px;padding:12px 14px;background:#0f0f11;border:1px solid #27272a;border-radius:8px;">
+          <div style="font-size:13px;color:#e5e5e5;font-weight:600;">${esc(w.name)}</div>
+          ${w.password?.trim()
+            ? `<div style="margin-top:4px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;color:#f59e0b;letter-spacing:0.5px;word-break:break-all;">${esc(w.password)}</div>`
+            : `<div style="margin-top:4px;font-size:12px;color:#71717a;">Open network — no password.</div>`}
+        </div>`).join("")}
+    `
+    : "";
+
+  const mealBlock = (data.mealTimeLines.length || data.menuUrl)
+    ? `
+      <p style="margin:24px 0 8px;font-size:13px;font-weight:600;color:#e5e5e5;">Meals</p>
+      ${data.mealTimeLines.length
+        ? `<table width="100%" cellpadding="0" cellspacing="0">${data.mealTimeLines.map((line) => {
+            const [label, ...rest] = line.split(":");
+            return row(label.trim(), esc(rest.join(":").trim()));
+          }).join("")}</table>`
+        : ""}
+      ${data.menuUrl
+        ? `<p style="margin:12px 0 0;font-size:13px;">
+             <a href="${esc(data.menuUrl)}" style="color:#f59e0b;text-decoration:underline;">View the monthly food menu</a>
+           </p>`
+        : ""}
+    `
+    : "";
+
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Welcome to ${esc(data.hostelName)}</h2>
+    <p style="margin:0 0 20px;font-size:14px;color:#a1a1aa;">
+      Assalam o Alaikum ${esc(data.tenantName)}, you have been allotted
+      <strong style="color:#f59e0b;">${data.room?.trim() ? `Room ${esc(data.room)}` : "your room"}</strong>.
+      Here are the details for your stay.
+    </p>
+    ${wifiBlock}
+    ${mealBlock}
+    <p style="margin:24px 0 0;font-size:12px;color:#71717a;">
+      For any queries, contact hostel management. We hope you enjoy your stay.
+    </p>
+  `;
+
+  const { error } = await resend.emails.send({
+    from: FROM,
+    to: data.tenantEmail,
+    subject: `Welcome to ${data.hostelName}`,
+    html: baseHtml("Welcome", body),
+  });
+  if (error) throw new Error(`Resend: ${error.message}`);
+}
+
 export async function sendClientCredentialsEmail(data: ClientCredentialsEmailData): Promise<void> {
   const body = `
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Your Pulse account is ready</h2>

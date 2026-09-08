@@ -15,6 +15,7 @@ import { performPaymentUndo } from "@/lib/payment-undo"
 import { backfillTenantPaymentsAction, logTenantEvent } from "@/app/actions/tenants"
 import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action"
 import { sendAdmissionConfirmationToEmergencyContact } from "@/lib/whatsapp-admission-confirmation"
+import { sendWelcomeEmailToTenant } from "@/lib/welcome-email"
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore, round2 } from "@/lib/ac-billing"
 import { carriedTransferCharges } from "@/lib/ac-transfer"
 import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, splitPaymentCharges, grossAmountOf, computeRentDiscount, combinedDiscountPercent } from "@/lib/payment-calc"
@@ -951,6 +952,7 @@ export async function addTenantAsManager(
     // The emergency contact gets a separate one-time admission confirmation.
     if (!payload.is_waiting) {
       void sendTenantWelcomeMessageAction(tenantId)
+      void sendWelcomeEmailToTenant(tenantId)
       void sendAdmissionConfirmationToEmergencyContact(tenantId)
     }
 
@@ -1132,6 +1134,7 @@ export async function editTenantAsManager(
     // transition, not on every routine edit of an already-active tenant.
     if (existing.is_waiting && !payload.is_waiting) {
       void sendTenantWelcomeMessageAction(tenantId)
+      void sendWelcomeEmailToTenant(tenantId)
       void sendAdmissionConfirmationToEmergencyContact(tenantId)
 
       // Attribution happens HERE for a waiting-list row, not at creation: until
