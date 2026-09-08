@@ -53,3 +53,6 @@ control.txt
 *.backup
 backups/
 .vercel
+
+# Local HotelEye reconnaissance reference — never ship (CAPTCHA solver, guest-data dumps)
+hotel_eye_integration/

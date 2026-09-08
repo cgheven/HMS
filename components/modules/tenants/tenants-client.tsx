@@ -54,6 +54,7 @@ import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
 import QRCode from "qrcode";
 import { computeReferralDiscount, computeRentDiscount, percentForRupees } from "@/lib/payment-calc";
+import { HOTEL_EYE_PROVINCES, HOTEL_EYE_DISTRICTS } from "@/lib/hotel-eye-vocabulary";
 
 interface Props {
   hostelId: string | null;
@@ -270,7 +271,7 @@ const emptyForm = {
   ac_maintenance: "",
   vehicle_type: "", vehicle_number: "", vehicle_model: "",
   joining_meter_reading: "",
-  emergency_contact: "", emergency_relationship: "", emergency_phone: "", permanent_address: "", notes: "",
+  emergency_contact: "", emergency_relationship: "", emergency_phone: "", permanent_address: "", permanent_province: "", permanent_district: "", notes: "",
   father_name: "", purpose_of_visit: "" as "" | VisitPurpose, purpose_of_visit_detail: "",
   is_waiting: false,
   photo_url: "" as string,
@@ -1307,6 +1308,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       emergency_contact: t.emergency_contact ?? "",
       emergency_relationship: t.emergency_relationship ?? "",
       permanent_address: t.permanent_address ?? "",
+      permanent_province: (t as { permanent_province?: string | null }).permanent_province ?? "",
+      permanent_district: (t as { permanent_district?: string | null }).permanent_district ?? "",
       father_name: t.father_name ?? "",
       purpose_of_visit: t.purpose_of_visit ?? "",
       purpose_of_visit_detail: t.purpose_of_visit_detail ?? "",
@@ -1490,6 +1493,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       emergency_contact: form.emergency_contact || null,
       emergency_relationship: form.emergency_relationship || null,
       permanent_address: form.permanent_address.trim() || null,
+      // Structured origin for the HotelEye police-verification sync — the portal
+      // demands a province and a district from its own fixed vocabulary, which
+      // the free-text address above cannot supply.
+      permanent_province: form.permanent_province || null,
+      permanent_district: form.permanent_district || null,
       father_name: form.father_name.trim() || null,
       purpose_of_visit: form.purpose_of_visit || null,
       // Cleared unless "Other" is selected, so a preset never carries a stale
@@ -4902,6 +4910,32 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 and rent; these are details filled in afterwards, so putting
                 them up front pushed the commercial decisions below the fold.
                 Order matches the Approve Application dialog. */}
+            {/* Province + district for the HotelEye police-verification sync.
+                Fixed portal vocabulary, not free text — picking a province
+                narrows the district list to that province's valid values, so a
+                sync is never rejected for an unknown place. */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Province</Label>
+                <SearchableSelect
+                  value={form.permanent_province}
+                  onValueChange={(v) => setForm({ ...form, permanent_province: v, permanent_district: "" })}
+                  options={[...HOTEL_EYE_PROVINCES]}
+                  placeholder="Select province"
+                  searchPlaceholder="Search province…"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>District</Label>
+                <SearchableSelect
+                  value={form.permanent_district}
+                  onValueChange={(v) => setForm({ ...form, permanent_district: v })}
+                  options={[...(HOTEL_EYE_DISTRICTS[form.permanent_province] ?? [])]}
+                  placeholder={form.permanent_province ? "Select district" : "Pick a province first"}
+                  searchPlaceholder="Search district…"
+                />
+              </div>
+            </div>
             <div className="space-y-1.5">
               <Label>Permanent Address</Label>
               <textarea

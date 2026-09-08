@@ -9,11 +9,12 @@ import {
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
   MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2, Globe,
   ClipboardList, ShieldCheck, Search, Wallet, Flag, MessageSquareHeart,
-  LayoutTemplate, Layers, Share2,
+  LayoutTemplate, Layers, Share2, FileCheck2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
 import { useHostelContext } from "@/contexts/hostel-context";
+import { smartEyeName } from "@/lib/smart-eye-name";
 
 // A partner is an owner of their branch, so they see every branch-scoped page.
 // ownerOnly marks the two exceptions, which are ACCOUNT-level rather than
@@ -54,6 +55,11 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       { href: "/spaces",        label: "Spaces",        icon: BedDouble },
       { href: "/tenants",       label: "Tenants",       icon: Users },
       { href: "/payments",      label: "Payments",      icon: CreditCard },
+      // Government guest registration (Smart Eye / Hotel Eye). Sits with the
+      // residents it files, not in Operations — it is a legal must-do for every
+      // guest, so it belongs where owners look daily. Label is province-aware,
+      // relabelled at render below.
+      { href: "/police-verification", label: "Police Verification", icon: FileCheck2, ownerOnly: true },
       // Sits with the residents it is about, not down in Operations. Referrals
       // are how the next tenant arrives, and buried under Kitchen and Bills the
       // owner never opened the page at all.
@@ -165,7 +171,12 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           !(isPartner && item.ownerOnly) &&
           !(singleBranch && item.multiBranchOnly) &&
           !(item.referralOnly && !referralEnabled)
-      ).map((item) => (item.href === "/find" ? { ...item, href: publicPageHref } : item)),
+      ).map((item) =>
+        item.href === "/find" ? { ...item, href: publicPageHref }
+        // The guest-registration system is branded per province — "Smart Eye"
+        // in Punjab, "Hotel Eye" in Sindh — so the nav shows the local name.
+        : item.href === "/police-verification" ? { ...item, label: smartEyeName({ city: hostel?.city }) }
+        : item),
     }))
     .filter((group) => group.items.length > 0);
 
