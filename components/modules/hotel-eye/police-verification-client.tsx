@@ -11,18 +11,20 @@ import { toast } from "@/hooks/use-toast";
 import { FileCheck2, ShieldCheck, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import {
   saveHotelEyeCredentials, startHotelEyeSync, resumeHotelEyeSync, completeHotelEyeLogin,
-  startHotelEyeBackgroundSync, getPendingGuests,
-  type HotelEyeSettings, type PendingGuest,
+  startHotelEyeBackgroundSync, getPendingGuests, getSyncedGuests,
+  type HotelEyeSettings, type PendingGuest, type SyncedGuest,
 } from "@/app/actions/hotel-eye";
 
 export function PoliceVerificationClient({
-  systemName, settings, guests, missing,
+  systemName, settings, guests, missing, synced,
 }: {
   systemName: string;
   settings: HotelEyeSettings | null;
   guests: PendingGuest[];
   missing: number;
+  synced: SyncedGuest[];
 }) {
+  const [view, setView] = useState<"pending" | "synced">("pending");
   const [cfgOpen, setCfgOpen] = useState(!settings?.configured);
   const [username, setUsername] = useState(settings?.username ?? "");
   const [password, setPassword] = useState("");
@@ -33,6 +35,9 @@ export function PoliceVerificationClient({
   // in — rows drop off as they turn "synced", failed rows gain a reason.
   const [rows, setRows] = useState<PendingGuest[]>(guests);
   const [missingCount, setMissingCount] = useState(missing);
+  // Synced list is also kept in state so the poll refreshes it live — guests
+  // move from Pending to Synced during a background sync without a reload.
+  const [syncedRows, setSyncedRows] = useState<SyncedGuest[]>(synced);
 
   // A guest can only be filed with a CNIC, province and district present.
   const fileable = rows.filter((g) => g.cnic && g.province && g.district && g.status !== "queued");
@@ -59,8 +64,9 @@ export function PoliceVerificationClient({
     if (!anyQueued) { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } return; }
     if (pollRef.current) return;
     pollRef.current = setInterval(async () => {
-      const res = await getPendingGuests();
-      if (res.guests) { setRows(res.guests); setMissingCount(res.missing ?? 0); }
+      const [pend, syn] = await Promise.all([getPendingGuests(), getSyncedGuests()]);
+      if (pend.guests) { setRows(pend.guests); setMissingCount(pend.missing ?? 0); }
+      if (syn.guests) setSyncedRows(syn.guests);
     }, 4000);
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
   }, [anyQueued]);
@@ -189,6 +195,53 @@ export function PoliceVerificationClient({
         </Card>
       )}
 
+      {/* Pending / Synced tabs — positive confirmation of what is on the portal. */}
+      <div className="flex gap-4 border-b border-sidebar-border text-sm">
+        <button
+          onClick={() => setView("pending")}
+          className={`pb-2 -mb-px border-b-2 ${view === "pending" ? "border-amber text-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+        >
+          Pending ({rows.length})
+        </button>
+        <button
+          onClick={() => setView("synced")}
+          className={`pb-2 -mb-px border-b-2 ${view === "synced" ? "border-amber text-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+        >
+          Synced ({syncedRows.length})
+        </button>
+      </div>
+
+      {view === "synced" && (
+        <Card className="overflow-hidden">
+          <div className="px-4 py-3 border-b border-sidebar-border">
+            <p className="text-sm font-medium">Filed with {systemName} ({syncedRows.length})</p>
+          </div>
+          {syncedRows.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+              No guests filed yet. Once you run a sync, everyone on the {systemName} portal appears here.
+            </p>
+          ) : (
+            <ul className="divide-y divide-sidebar-border">
+              {syncedRows.map((g) => (
+                <li key={g.id} className="px-4 py-3 flex items-center gap-3">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-foreground truncate">{g.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {g.cnic ?? "no CNIC"}{g.room ? ` · Room ${g.room}` : ""}
+                      {g.syncedAt && <> · {new Date(g.syncedAt).toLocaleDateString()}</>}
+                      {g.viaDedupe && <span className="text-amber"> · already on portal</span>}
+                    </p>
+                  </div>
+                  <Badge variant="success">Synced</Badge>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
+
+      {view === "pending" && (
       <Card className="overflow-hidden">
         <div className="px-4 py-3 border-b border-sidebar-border flex items-center justify-between">
           <p className="text-sm font-medium">Pending guests ({rows.length})</p>
@@ -235,6 +288,7 @@ export function PoliceVerificationClient({
           </ul>
         )}
       </Card>
+      )}
 
       {settings?.lastSyncedAt && (
         <p className="text-xs text-muted-foreground">

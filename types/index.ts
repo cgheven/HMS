@@ -422,6 +422,13 @@ export interface Tenant {
   organization: string | null;
   organization_type: "private" | "government" | null;
   department: string | null;
+  /** Structured origin for the Smart Eye / Hotel Eye portal (migration 216). */
+  permanent_province?: string | null;
+  permanent_district?: string | null;
+  /** Smart Eye / Hotel Eye filing state: not_synced | queued | synced | failed.
+   *  Present on any `select *`; drives the per-tenant "Synced" badge. */
+  hotel_eye_status?: string | null;
+  hotel_eye_synced_at?: string | null;
   created_at: string;
 }
 

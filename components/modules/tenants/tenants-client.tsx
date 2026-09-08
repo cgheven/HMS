@@ -349,6 +349,15 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
           <p className="text-sm font-medium text-foreground truncate">{t.full_name}</p>
           <Badge variant="secondary" className="text-xs capitalize shrink-0">{t.type}</Badge>
           {t.billing_type === "daily" && <Badge variant="warning" className="text-xs shrink-0">Daily</Badge>}
+          {t.hotel_eye_status === "synced" && (
+            <Badge
+              variant="success"
+              className="text-xs shrink-0 gap-0.5"
+              title={t.hotel_eye_synced_at ? `Filed with Smart Eye / Hotel Eye on ${new Date(t.hotel_eye_synced_at).toLocaleDateString()}` : "Filed with Smart Eye / Hotel Eye"}
+            >
+              <ShieldCheck className="w-3 h-3" /> Synced
+            </Badge>
+          )}
         </div>
         <div className="flex flex-wrap gap-x-2 gap-y-1 mt-0.5 items-center">
           {room && (

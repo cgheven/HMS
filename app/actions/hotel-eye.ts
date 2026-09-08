@@ -167,6 +167,46 @@ export async function getPendingGuests(): Promise<{ guests?: PendingGuest[]; mis
   }
 }
 
+// ── Synced view (positive confirmation of who is on the portal) ────────────
+export interface SyncedGuest {
+  id: string;
+  name: string;
+  cnic: string | null;
+  room: string | null;
+  syncedAt: string | null;
+  /** True when this tenant was matched to an existing portal entry (dedupe)
+   *  rather than freshly filed by us — surfaced so the owner can see dedupe work. */
+  viaDedupe: boolean;
+}
+
+export async function getSyncedGuests(): Promise<{ guests?: SyncedGuest[]; error?: string }> {
+  try {
+    const { id: hostelId } = await resolveHostel();
+    const { data } = await createAdminClient()
+      .from("hms_tenants")
+      .select("id, full_name, cnic, bed_number, room:hms_rooms(room_number), hotel_eye_synced_at, hotel_eye_last_error")
+      .eq("hostel_id", hostelId)
+      .eq("is_active", true)
+      .eq("hotel_eye_status", "synced")
+      .order("hotel_eye_synced_at", { ascending: false });
+    const guests = (data ?? []).map((t) => {
+      const room = (t as { room?: { room_number?: string } | null }).room;
+      return {
+        id: t.id as string,
+        name: t.full_name as string,
+        cnic: (t.cnic as string) ?? null,
+        room: room?.room_number ?? (t.bed_number as string) ?? null,
+        syncedAt: (t.hotel_eye_synced_at as string) ?? null,
+        viaDedupe: ((t.hotel_eye_last_error as string) ?? "").startsWith("already on portal"),
+      };
+    });
+    return { guests };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Could not load synced guests." };
+  }
+}
+
 // ── The two-step, human-CAPTCHA sync ──────────────────────────────────────
 // The pending-login blob (cookies + form fields) is encrypted before it leaves
 // the server, so the browser holds an opaque token during the ~seconds the owner
@@ -222,6 +262,36 @@ export async function resumeHotelEyeSync(): Promise<{ ready?: boolean; captchaNe
 async function clearSession(hostelId: string): Promise<void> {
   await createAdminClient().from("hms_hotel_eye_credentials")
     .update({ session_blob: null, session_saved_at: null }).eq("hostel_id", hostelId);
+}
+
+// ── Watch-list mirror (local dedupe source) ────────────────────────────────
+// A copy of the portal's watch list in our own DB, so dedupe never has to hit
+// the government portal to answer "is this CNIC already filed?". Refreshed from
+// the live portal read during a sync, and written the moment we file a guest.
+type HotelEyeAdmin = ReturnType<typeof createAdminClient>;
+
+async function upsertWatchlist(
+  admin: HotelEyeAdmin,
+  hostelId: string,
+  entries: { cnic: string; name?: string }[],
+  source: "portal" | "filed_by_us",
+): Promise<void> {
+  const now = new Date().toISOString();
+  const rows = entries
+    .filter((e) => e.cnic)
+    .map((e) => {
+      const row: Record<string, unknown> = { hostel_id: hostelId, cnic: e.cnic, source, last_seen_at: now };
+      // Only set name when we actually have one, so a portal read (cnic-only)
+      // never overwrites a stored name back to null on conflict.
+      if (e.name) row.name = e.name;
+      return row;
+    });
+  if (rows.length) await admin.from("hms_hotel_eye_watchlist").upsert(rows, { onConflict: "hostel_id,cnic" });
+}
+
+async function loadWatchlistCnics(admin: HotelEyeAdmin, hostelId: string): Promise<Set<string>> {
+  const { data } = await admin.from("hms_hotel_eye_watchlist").select("cnic").eq("hostel_id", hostelId);
+  return new Set((data ?? []).map((r) => r.cnic as string));
 }
 
 // Step 2a: log in with the human-entered CAPTCHA and hand back an ENCRYPTED
@@ -328,8 +398,20 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
   try { session = JSON.parse(decryptSecret(cred.session_blob)) as LoginSession; }
   catch { await clearSession(hostelId); await resetQueued(ids); return; }
 
-  // Read who is already on the portal — the automatic dedupe. Digits-only set.
+  // Refresh our local mirror from this live portal read, then dedupe against the
+  // MIRROR (our DB) — not the portal. A failed live read skips the refresh and we
+  // fall back to whatever is already stored (resilience), so a dropped read can't
+  // silently turn dedupe off.
   const filed = await listFiledCnics(session);
+  if (filed) await upsertWatchlist(admin, hostelId, [...filed].map((c) => ({ cnic: c })), "portal");
+  const known = await loadWatchlistCnics(admin, hostelId);
+
+  // Never file blind. If the live read failed AND we have no stored mirror yet
+  // (first-ever sync for this hostel), we have nothing to dedupe against — filing
+  // now could duplicate anyone already on the portal. Put the queue back to
+  // pending and stop; the next sync re-reads the list and proceeds safely.
+  if (!filed && known.size === 0) { await resetQueued(ids); return; }
+
   const gender = genderForHostel(hostelType);
 
   const { data: tenants } = await admin
@@ -355,9 +437,11 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
       continue;
     }
 
-    // AUTO-DEDUPE: already on the portal → mark synced, never post again.
-    if (filed && cnicDigits && filed.has(cnicDigits)) {
-      await mark(ids[i], { hotel_eye_status: "synced", hotel_eye_synced_at: new Date().toISOString(), hotel_eye_last_error: null });
+    // AUTO-DEDUPE: already on the portal (per our mirror) → mark synced, never
+    // post again. hotel_eye_last_error records WHY it was skipped, so the owner
+    // can see it was a match rather than a fresh filing.
+    if (cnicDigits && known.has(cnicDigits)) {
+      await mark(ids[i], { hotel_eye_status: "synced", hotel_eye_synced_at: new Date().toISOString(), hotel_eye_last_error: "already on portal — matched existing entry" });
       continue;
     }
 
@@ -383,6 +467,13 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
       break;
     }
     if (res.success) {
+      // Record OUR filing in the mirror immediately, so a later sync never
+      // re-files this guest even before the next portal read. Also add it to the
+      // in-memory set so a DUPLICATE CNIC later in THIS same batch (two tenant
+      // rows sharing a CNIC — the column has no unique constraint) is deduped
+      // rather than posted twice.
+      await upsertWatchlist(admin, hostelId, [{ cnic: cnicDigits, name: t.full_name as string }], "filed_by_us");
+      known.add(cnicDigits);
       await mark(ids[i], { hotel_eye_status: "synced", hotel_eye_synced_at: new Date().toISOString(), hotel_eye_last_error: null });
     } else {
       await mark(ids[i], { hotel_eye_status: "failed", hotel_eye_last_error: res.error ?? "portal rejected the entry", hotel_eye_last_attempt_at: new Date().toISOString() });

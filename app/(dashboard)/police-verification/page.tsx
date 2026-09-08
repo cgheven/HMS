@@ -1,4 +1,4 @@
-import { getHotelEyeSettings, getPendingGuests } from "@/app/actions/hotel-eye";
+import { getHotelEyeSettings, getPendingGuests, getSyncedGuests } from "@/app/actions/hotel-eye";
 import { getAuthContext } from "@/lib/data";
 import { smartEyeName } from "@/lib/smart-eye-name";
 import { PoliceVerificationClient } from "@/components/modules/hotel-eye/police-verification-client";
@@ -8,8 +8,8 @@ import { PoliceVerificationClient } from "@/components/modules/hotel-eye/police-
 export const maxDuration = 300;
 
 export default async function PoliceVerificationPage() {
-  const [settingsRes, pendingRes, ctx] = await Promise.all([
-    getHotelEyeSettings(), getPendingGuests(), getAuthContext(),
+  const [settingsRes, pendingRes, syncedRes, ctx] = await Promise.all([
+    getHotelEyeSettings(), getPendingGuests(), getSyncedGuests(), getAuthContext(),
   ]);
   // The system's local name — from the province the owner configured, else the
   // hostel's city. Resolved server-side so the page title matches the sidebar.
@@ -23,6 +23,7 @@ export default async function PoliceVerificationPage() {
       settings={settingsRes.settings ?? null}
       guests={pendingRes.guests ?? []}
       missing={pendingRes.missing ?? 0}
+      synced={syncedRes.guests ?? []}
     />
   );
 }
