@@ -95,6 +95,8 @@ interface ApplicationInput {
   emergency_phone?: string;
   emergency_relationship?: string;
   permanent_address?: string;
+  permanent_province?: string;
+  permanent_district?: string;
   father_name?: string;
   purpose_of_visit?: string;
   purpose_of_visit_detail?: string;
@@ -173,6 +175,8 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     emergency_phone: data.emergency_phone?.trim() || null,
     emergency_relationship: data.emergency_relationship?.trim() || null,
     permanent_address: data.permanent_address?.trim() || null,
+    permanent_province: data.permanent_province?.trim() || null,
+    permanent_district: data.permanent_district?.trim() || null,
     father_name: data.father_name?.trim() || null,
     ...normalizeVisitPurpose(data.purpose_of_visit, data.purpose_of_visit_detail),
     notes: data.notes?.trim() || null,
@@ -306,6 +310,8 @@ export interface ConvertFormData {
   emergency_phone?: string | null;
   emergency_relationship?: string | null;
   permanent_address?: string | null;
+  permanent_province?: string | null;
+  permanent_district?: string | null;
   father_name?: string | null;
   purpose_of_visit?: string | null;
   purpose_of_visit_detail?: string | null;
@@ -423,6 +429,8 @@ export async function convertToTenant(
     // Carried over from the application so an approved applicant keeps the
     // address they submitted, unless the approver edited it in the dialog.
     permanent_address: extra.permanent_address ?? app.permanent_address ?? null,
+    permanent_province: extra.permanent_province ?? app.permanent_province ?? null,
+    permanent_district: extra.permanent_district ?? app.permanent_district ?? null,
     father_name: extra.father_name ?? app.father_name ?? null,
     purpose_of_visit: extra.purpose_of_visit ?? app.purpose_of_visit ?? null,
     // Follows purpose_of_visit rather than resolving independently: if the

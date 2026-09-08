@@ -18,6 +18,7 @@ import type { PublicHostelDetail, PublicRoom, PackageTier, FormConfig, StudentCa
 import { DEFAULT_FORM_CONFIG, RELATIONSHIP_OPTIONS } from "@/types";
 import { VISIT_PURPOSE_OPTIONS, VISIT_PURPOSE_LABELS } from "@/lib/visit-purpose";
 import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets, departmentPresetsFor } from "@/lib/student-category-labels";
+import { HOTEL_EYE_PROVINCES, HOTEL_EYE_DISTRICTS } from "@/lib/hotel-eye-vocabulary";
 
 interface Props {
   hostel: PublicHostelDetail;
@@ -57,6 +58,8 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
     package_tier: "space_only" as PackageTier,
     move_in_date: "",
     permanent_address: "",
+    permanent_province: "",
+    permanent_district: "",
     emergency_contact: "",
     emergency_phone: "",
     emergency_relationship: "",
@@ -283,6 +286,12 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       setError("Permanent address is required.");
       return;
     }
+    // Province + district are always required — the Smart Eye / Hotel Eye portal
+    // cannot file a guest without them.
+    if (!form.permanent_province || !form.permanent_district) {
+      setError("Please select your province and district.");
+      return;
+    }
     if (show("father_name") && req("father_name") && !form.father_name.trim()) {
       setError("Father name is required.");
       return;
@@ -331,6 +340,8 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       room_preference: showRoomPicker && selectedRoom ? selectedRoom.room_number : undefined,
       move_in_date: show("move_in_date") ? form.move_in_date || undefined : undefined,
       permanent_address: show("permanent_address") ? form.permanent_address || undefined : undefined,
+      permanent_province: form.permanent_province || undefined,
+      permanent_district: form.permanent_district || undefined,
       father_name: show("father_name") ? form.father_name || undefined : undefined,
       purpose_of_visit: show("purpose_of_visit") ? form.purpose_of_visit || undefined : undefined,
       purpose_of_visit_detail:
@@ -966,13 +977,36 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
             </div>
           )}
 
-          {/* Emergency Contact — configurable */}
-          {show("permanent_address") && (
-            <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
-              <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
-                <Home className="w-4 h-4 text-muted-foreground" /> Permanent Address
-                {!req("permanent_address") && <span className="text-xs font-normal text-muted-foreground">(optional)</span>}
-              </h2>
+          {/* Permanent Address — province + district are always required (the
+              Smart Eye / Hotel Eye portal needs them); the free-text address
+              below stays configurable. */}
+          <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
+            <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Home className="w-4 h-4 text-muted-foreground" /> Permanent Address
+            </h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Province <span className="text-destructive">*</span></Label>
+                <SearchableSelect
+                  value={form.permanent_province}
+                  onValueChange={(v) => setForm({ ...form, permanent_province: v, permanent_district: "" })}
+                  options={[...HOTEL_EYE_PROVINCES]}
+                  placeholder="Select province"
+                  searchPlaceholder="Search province…"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>District <span className="text-destructive">*</span></Label>
+                <SearchableSelect
+                  value={form.permanent_district}
+                  onValueChange={(v) => setForm({ ...form, permanent_district: v })}
+                  options={[...(HOTEL_EYE_DISTRICTS[form.permanent_province] ?? [])]}
+                  placeholder={form.permanent_province ? "Select district" : "Pick a province first"}
+                  searchPlaceholder="Search district…"
+                />
+              </div>
+            </div>
+            {show("permanent_address") && (
               <div className="space-y-1.5">
                 <Label>Home Address {req("permanent_address") && <span className="text-destructive">*</span>}</Label>
                 <textarea
@@ -984,8 +1018,8 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                   className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-y"
                 />
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           {show("emergency_contact") && (
             <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
