@@ -315,12 +315,50 @@ export function parseFiledEntries(html: string): FiledEntry[] {
   return entries;
 }
 
-export async function listFiledEntries(session: LoginSession): Promise<FiledEntry[] | null> {
+/**
+ * The entries this hotel has filed for a given check-in DATE (YYYY-MM-DD).
+ *
+ * The watch-list page is a server-side filter FORM: a plain GET, an empty filter,
+ * and the CNIC filter all return nothing on this portal — only a DATE filter
+ * returns rows. So dedupe queries the exact check-in dates of the guests being
+ * synced. `date`/`dateTo` bound the range (pass the same value for one day). GET
+ * first for the rotating CSRF token, then POST the filter. Returns null if the
+ * list can't be read (so the caller distinguishes "no entries that day" from
+ * "couldn't check" and never files blind on a failed read).
+ */
+export async function listFiledEntriesBetween(
+  session: LoginSession,
+  date: string,
+  dateTo: string,
+): Promise<FiledEntry[] | null> {
   const listUrl = new URL("/hotel/hotelwatchList", session.portalUrl).toString();
   try {
-    const res = await portalFetch(listUrl, {
+    const pageRes = await portalFetch(listUrl, {
       headers: { "User-Agent": UA, Cookie: cookieHeader(session.cookies) },
       redirect: "follow",
+    });
+    if (!pageRes.ok || pageRes.url.toLowerCase().includes("/login")) return null;
+    let csrf: { name: string; value: string };
+    try { csrf = csrfFromEntryForm(await pageRes.text()); }
+    catch { return null; }
+
+    const body = new URLSearchParams({
+      year: "", regins: "", dis: "", division: "", circle: "", psstation: "",
+      hotel: "", national: "", province: "", district: "",
+      date, dateto: dateTo, cnic: "",
+      [csrf.name]: csrf.value,
+    });
+    const res = await portalFetch(listUrl, {
+      method: "POST",
+      body,
+      redirect: "follow",
+      headers: {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Origin: new URL(session.portalUrl).origin,
+        Referer: listUrl,
+        Cookie: cookieHeader(session.cookies),
+      },
     });
     if (!res.ok || res.url.toLowerCase().includes("/login")) return null;
     return parseFiledEntries(await res.text());

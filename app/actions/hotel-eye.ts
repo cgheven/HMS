@@ -8,7 +8,7 @@ import { requireOwnerOrAbove } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import { encryptSecret, decryptSecret } from "@/lib/secret-box";
 import {
-  startLogin, completeLogin, addGuest, probeSession, listFiledEntries,
+  startLogin, completeLogin, addGuest, probeSession, listFiledEntriesBetween,
   type PendingLogin, type LoginSession, type HotelEyeGuest,
 } from "@/lib/hotel-eye-client";
 import { HOTEL_EYE_PROVINCES, HOTEL_EYE_DISTRICTS } from "@/lib/hotel-eye-vocabulary";
@@ -433,21 +433,6 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
   try { session = JSON.parse(decryptSecret(cred.session_blob)) as LoginSession; }
   catch { await clearSession(hostelId); await resetQueued(ids); await noteAbort("The portal session expired — please sync again."); return; }
 
-  // Refresh our local mirror from this live portal read, then dedupe against the
-  // MIRROR (our DB) — not the portal. A failed live read skips the refresh and we
-  // fall back to whatever is already stored (resilience), so a dropped read can't
-  // silently turn dedupe off. Dedupe is keyed by STAY (cnic + check-in date), so
-  // a returning guest with a new check-in is filed as a new entry, not skipped.
-  const filed = await listFiledEntries(session);
-  if (filed) await upsertWatchlist(admin, hostelId, filed, "portal");
-  const known = await loadWatchlist(admin, hostelId);
-
-  // Never file blind. If the live read failed AND we have no stored mirror yet
-  // (first-ever sync for this hostel), we have nothing to dedupe against — filing
-  // now could duplicate anyone already on the portal. Put the queue back to
-  // pending and stop; the next sync re-reads the list and proceeds safely.
-  if (!filed && known.keys.size === 0) { await resetQueued(ids); await noteAbort("Couldn't reach the portal to check for duplicates — please sync again."); return; }
-
   const gender = genderForHostel(hostelType);
   let nFiled = 0, nMatched = 0, nFailed = 0;
 
@@ -457,8 +442,39 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
     .eq("hostel_id", hostelId).in("id", ids);
   const byId = new Map((tenants ?? []).map((t) => [t.id as string, t]));
 
+  const tenantCheckIn = (t: { check_in?: unknown }) => ((t.check_in as string) ?? new Date().toISOString()).slice(0, 10);
+
+  // The portal's watch list only returns rows for a DATE filter (empty and
+  // CNIC filters return nothing). So read the exact check-in dates of THIS batch
+  // from the portal and mirror them, then dedupe by stay (cnic + check-in). Only
+  // dates we successfully read let us file; a date we couldn't read leaves its
+  // guests pending (never filed blind → no duplicate).
+  const wantedDates = Array.from(new Set((tenants ?? []).map(tenantCheckIn).filter(Boolean)));
+  const readDates = new Set<string>();
+  // The portal appears to cap a single response at ~20 rows. If a date comes back
+  // full, we can't trust "not found" for it — a guest could be on an unreturned
+  // page — so we still dedupe against what we DID read, but never FILE a new guest
+  // for that date (they defer to `unread`). Below the cap, the read is complete.
+  const HOTEL_EYE_PAGE_CAP = 20;
+  const cappedDates = new Set<string>();
+  for (const d of wantedDates) {
+    const entries = await listFiledEntriesBetween(session, d, d);
+    if (entries) {
+      readDates.add(d);
+      if (entries.length >= HOTEL_EYE_PAGE_CAP) cappedDates.add(d);
+      if (entries.length) await upsertWatchlist(admin, hostelId, entries, "portal");
+    }
+    await new Promise((r) => setTimeout(r, 300)); // gentle pacing on reads
+  }
+  const known = await loadWatchlist(admin, hostelId);
+
+  // If not a single date could be read AND we have no stored mirror to fall back
+  // on, we can't dedupe at all — abort rather than file blind.
+  if (readDates.size === 0 && known.keys.size === 0) { await resetQueued(ids); await noteAbort("Couldn't reach the portal to check for duplicates — please sync again."); return; }
+
   const mark = (id: string, fields: Record<string, unknown>) =>
     admin.from("hms_tenants").update(fields).eq("id", id).eq("hostel_id", hostelId);
+  const unread: string[] = []; // queued rows we couldn't verify this run
 
   for (let i = 0; i < ids.length; i++) {
     const t = byId.get(ids[i]);
@@ -466,7 +482,7 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
     const province = (t.permanent_province as string) || cred.default_province || "";
     const district = (t.permanent_district as string) || cred.default_district || "";
     const cnicDigits = ((t.cnic as string) ?? "").replace(/\D/g, "");
-    const checkIn = ((t.check_in as string) ?? new Date().toISOString()).slice(0, 10);
+    const checkIn = tenantCheckIn(t);
 
     // Missing/invalid data → record why, don't loop on it.
     const missing = [!cnicDigits && "CNIC", !t.father_name && "father's name", !province && "province", !district && "district"].filter(Boolean);
@@ -485,6 +501,12 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
       nMatched++;
       continue;
     }
+
+    // We only FILE when this run FULLY read the guest's check-in date from the
+    // portal (so "not found" is trustworthy). If the date couldn't be read, or came
+    // back at the response cap (possibly truncated), leave them pending rather than
+    // risk a duplicate.
+    if (!readDates.has(checkIn) || cappedDates.has(checkIn)) { unread.push(ids[i]); continue; }
 
     const room = (t as { room?: { room_number?: string } | null }).room;
     const res = await addGuest(session, {
@@ -525,6 +547,10 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
     if (i < ids.length - 1) await new Promise((r) => setTimeout(r, 400));
   }
 
+  // Guests whose check-in date we couldn't read this run: put them back to
+  // pending (not stuck on "Syncing…") — the next sync re-reads their date.
+  await resetQueued(unread);
+
   // Persist the run's result so the owner sees it whenever they return, even
   // though the sync ran in the background after the browser was free to close.
   await admin.from("hms_hotel_eye_credentials").update({
@@ -533,7 +559,9 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
     last_sync_matched: nMatched,
     last_sync_failed: nFailed,
     last_sync_at: new Date().toISOString(),
-    last_sync_note: null,   // a completed run clears any earlier abort note
+    // A completed run clears any earlier abort note — unless some guests couldn't
+    // be verified against the portal, in which case say so.
+    last_sync_note: unread.length ? `${unread.length} guest${unread.length === 1 ? "" : "s"} couldn't be checked against the portal — please sync again.` : null,
   }).eq("hostel_id", hostelId);
   revalidatePath("/police-verification");
   revalidatePath("/tenants");
