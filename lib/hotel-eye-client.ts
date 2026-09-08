@@ -18,7 +18,7 @@ import "server-only";
 // ── tiny cookie jar ───────────────────────────────────────────────────────
 export type CookieJar = Record<string, string>;
 
-function absorb(jar: CookieJar, res: Response): CookieJar {
+function absorb(jar: CookieJar, res: { headers: { getSetCookie(): string[] } }): CookieJar {
   const next = { ...jar };
   for (const line of res.headers.getSetCookie()) {
     const pair = line.split(";", 1)[0];
@@ -35,6 +35,73 @@ function cookieHeader(jar: CookieJar): string {
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
+
+// ── portal transport ──────────────────────────────────────────────────────
+// The provincial portals only answer Pakistani IPs. Production runs on Vercel
+// (foreign IPs), which the portal drops, so every portal request is routed
+// through a small relay on a Pakistani box (HOTEL_EYE_PROXY_URL) when that env
+// is set. With it unset — local dev on a Pakistani connection — calls go direct,
+// so nothing about the parsing/flow changes.
+//
+// The relay is a faithful forwarder: it must preserve the FINAL url after
+// redirects (several checks below read res.url to spot a /login bounce), the
+// Set-Cookie array, arbitrary response headers, and the raw body bytes (the
+// CAPTCHA is binary). PortalResponse is the exact slice of the fetch Response
+// this module uses, so a real Response satisfies it directly on the local path.
+interface PortalResponse {
+  ok: boolean;
+  status: number;
+  url: string;
+  headers: { get(name: string): string | null; getSetCookie(): string[] };
+  text(): Promise<string>;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+interface PortalInit {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: URLSearchParams | string;
+  redirect?: "follow" | "manual";
+}
+
+async function portalFetch(url: string, init: PortalInit = {}): Promise<PortalResponse> {
+  const headers = init.headers ?? {};
+  const body = init.body == null ? undefined : typeof init.body === "string" ? init.body : init.body.toString();
+  const redirect = init.redirect ?? "follow";
+  const method = init.method ?? "GET";
+
+  const proxyUrl = process.env.HOTEL_EYE_PROXY_URL;
+  const secret = process.env.HOTEL_EYE_PROXY_SECRET;
+  if (!proxyUrl || !secret) {
+    return fetch(url, { method, headers, body, redirect });
+  }
+
+  const relayRes = await fetch(proxyUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-relay-secret": secret },
+    body: JSON.stringify({ method, url, headers, body, redirect }),
+  });
+  if (!relayRes.ok) throw new Error(`Smart Eye relay error ${relayRes.status}`);
+  const d = (await relayRes.json()) as {
+    status: number;
+    url: string;
+    headers: Record<string, string>;
+    setCookie: string[];
+    bodyBase64: string;
+  };
+  const buf = Buffer.from(d.bodyBase64 ?? "", "base64");
+  return {
+    ok: d.status >= 200 && d.status < 300,
+    status: d.status,
+    url: d.url,
+    headers: {
+      get: (name: string) => d.headers?.[name.toLowerCase()] ?? null,
+      getSetCookie: () => d.setCookie ?? [],
+    },
+    text: async () => new TextDecoder().decode(buf),
+    arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer,
+  };
+}
 
 // ── login-page parsing ────────────────────────────────────────────────────
 const FORM_RE = /<form\b[^>]*\bid=["']login["'][^>]*\baction=["']([^"']+)["']/i;
@@ -93,12 +160,12 @@ export interface StartLoginResult {
 /** Step 1: fetch the login page and the CAPTCHA image for the owner to read. */
 export async function startLogin(portalUrl: string): Promise<StartLoginResult> {
   const loginUrl = new URL("/login/", portalUrl).toString();
-  const pageRes = await fetch(loginUrl, { headers: { "User-Agent": UA }, redirect: "manual" });
+  const pageRes = await portalFetch(loginUrl, { headers: { "User-Agent": UA }, redirect: "manual" });
   if (!pageRes.ok) throw new Error(`HotelEye login page returned ${pageRes.status}.`);
   const cookies = absorb({}, pageRes);
   const page = parseLoginPage(await pageRes.text(), loginUrl);
 
-  const imgRes = await fetch(page.captchaUrl, {
+  const imgRes = await portalFetch(page.captchaUrl, {
     headers: { "User-Agent": UA, Referer: loginUrl, Cookie: cookieHeader(cookies) },
   });
   if (!imgRes.ok) throw new Error(`HotelEye CAPTCHA image returned ${imgRes.status}.`);
@@ -142,7 +209,7 @@ export async function completeLogin(
   body.set("captcha", captchaText.trim());
   if (!body.has("submit")) body.set("submit", "");
 
-  const res = await fetch(pending.action, {
+  const res = await portalFetch(pending.action, {
     method: "POST",
     body,
     redirect: "follow",
@@ -185,7 +252,7 @@ const CNIC_RE = /\b\d{5}-?\d{7}-?\d\b/g;
 export async function listFiledCnics(session: LoginSession): Promise<Set<string> | null> {
   const listUrl = new URL("/hotel/hotelwatchList", session.portalUrl).toString();
   try {
-    const res = await fetch(listUrl, {
+    const res = await portalFetch(listUrl, {
       headers: { "User-Agent": UA, Cookie: cookieHeader(session.cookies) },
       redirect: "follow",
     });
@@ -204,7 +271,7 @@ export async function listFiledCnics(session: LoginSession): Promise<Set<string>
 export async function probeSession(session: LoginSession): Promise<boolean> {
   const entryUrl = new URL("/hotel/addwatchentries", session.portalUrl).toString();
   try {
-    const res = await fetch(entryUrl, {
+    const res = await portalFetch(entryUrl, {
       headers: { "User-Agent": UA, Cookie: cookieHeader(session.cookies) },
       redirect: "follow",
     });
@@ -260,7 +327,7 @@ export async function addGuest(
   const entryUrl = new URL("/hotel/addwatchentries", session.portalUrl).toString();
   const listUrl = new URL("/hotel/hotelwatchList", session.portalUrl).toString();
 
-  const formRes = await fetch(entryUrl, {
+  const formRes = await portalFetch(entryUrl, {
     headers: { "User-Agent": UA, Referer: listUrl, Cookie: cookieHeader(session.cookies) },
     redirect: "follow",
   });
@@ -308,7 +375,7 @@ export async function addGuest(
     "data[gue_expected]": "0",
   });
 
-  const res = await fetch(entryUrl, {
+  const res = await portalFetch(entryUrl, {
     method: "POST",
     body,
     redirect: "follow",
