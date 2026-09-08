@@ -8,7 +8,7 @@ import { requireOwnerOrAbove } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import { encryptSecret, decryptSecret } from "@/lib/secret-box";
 import {
-  startLogin, completeLogin, addGuest, probeSession, listFiledCnics,
+  startLogin, completeLogin, addGuest, probeSession, listFiledEntries,
   type PendingLogin, type LoginSession, type HotelEyeGuest,
 } from "@/lib/hotel-eye-client";
 import { HOTEL_EYE_PROVINCES, HOTEL_EYE_DISTRICTS } from "@/lib/hotel-eye-vocabulary";
@@ -39,6 +39,10 @@ export interface HotelEyeSettings {
   defaultProvince: string | null;
   defaultDistrict: string | null;
   lastSyncedAt: string | null;
+  /** Summary of the most recent sync run, shown so the owner sees the result of a
+   *  background sync whenever they return. null until the first run finishes.
+   *  `note` is set (and counts stale) when a run couldn't complete. */
+  lastSync: { filed: number; matched: number; failed: number; at: string; note: string | null } | null;
 }
 
 export async function getHotelEyeSettings(): Promise<{ settings?: HotelEyeSettings; error?: string }> {
@@ -47,7 +51,7 @@ export async function getHotelEyeSettings(): Promise<{ settings?: HotelEyeSettin
     const { data } = await createAdminClient()
       .from("hms_hotel_eye_credentials")
       // password_encrypted deliberately NOT selected — it never leaves the server.
-      .select("username, portal_url, default_province, default_district, last_synced_at")
+      .select("username, portal_url, default_province, default_district, last_synced_at, last_sync_filed, last_sync_matched, last_sync_failed, last_sync_at, last_sync_note")
       .eq("hostel_id", hostelId)
       .maybeSingle();
     return {
@@ -58,6 +62,9 @@ export async function getHotelEyeSettings(): Promise<{ settings?: HotelEyeSettin
         defaultProvince: data?.default_province ?? null,
         defaultDistrict: data?.default_district ?? null,
         lastSyncedAt: data?.last_synced_at ?? null,
+        lastSync: data?.last_sync_at
+          ? { filed: data.last_sync_filed ?? 0, matched: data.last_sync_matched ?? 0, failed: data.last_sync_failed ?? 0, at: data.last_sync_at, note: data.last_sync_note ?? null }
+          : null,
       },
     };
   } catch (err: unknown) {
@@ -177,6 +184,9 @@ export interface SyncedGuest {
   /** True when this tenant was matched to an existing portal entry (dedupe)
    *  rather than freshly filed by us — surfaced so the owner can see dedupe work. */
   viaDedupe: boolean;
+  /** The stay's check-in date (YYYY-MM-DD). For a dedupe match this is the date
+   *  of the entry already on the portal — shown next to "Already on portal". */
+  checkIn: string | null;
 }
 
 export async function getSyncedGuests(): Promise<{ guests?: SyncedGuest[]; error?: string }> {
@@ -184,7 +194,7 @@ export async function getSyncedGuests(): Promise<{ guests?: SyncedGuest[]; error
     const { id: hostelId } = await resolveHostel();
     const { data } = await createAdminClient()
       .from("hms_tenants")
-      .select("id, full_name, cnic, bed_number, room:hms_rooms(room_number), hotel_eye_synced_at, hotel_eye_last_error")
+      .select("id, full_name, cnic, bed_number, check_in, room:hms_rooms(room_number), hotel_eye_synced_at, hotel_eye_last_error")
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
       .eq("hotel_eye_status", "synced")
@@ -198,6 +208,7 @@ export async function getSyncedGuests(): Promise<{ guests?: SyncedGuest[]; error
         room: room?.room_number ?? (t.bed_number as string) ?? null,
         syncedAt: (t.hotel_eye_synced_at as string) ?? null,
         viaDedupe: ((t.hotel_eye_last_error as string) ?? "").startsWith("already on portal"),
+        checkIn: ((t.check_in as string) ?? "").slice(0, 10) || null,
       };
     });
     return { guests };
@@ -270,28 +281,47 @@ async function clearSession(hostelId: string): Promise<void> {
 // the live portal read during a sync, and written the moment we file a guest.
 type HotelEyeAdmin = ReturnType<typeof createAdminClient>;
 
+// The dedupe key is the STAY, not the person: same CNIC + same check-in date.
+const stayKey = (cnic: string, checkIn: string) => `${cnic}|${(checkIn ?? "").slice(0, 10)}`;
+
 async function upsertWatchlist(
   admin: HotelEyeAdmin,
   hostelId: string,
-  entries: { cnic: string; name?: string }[],
+  entries: { cnic: string; checkIn: string; name?: string | null }[],
   source: "portal" | "filed_by_us",
 ): Promise<void> {
   const now = new Date().toISOString();
   const rows = entries
     .filter((e) => e.cnic)
     .map((e) => {
-      const row: Record<string, unknown> = { hostel_id: hostelId, cnic: e.cnic, source, last_seen_at: now };
-      // Only set name when we actually have one, so a portal read (cnic-only)
-      // never overwrites a stored name back to null on conflict.
+      const row: Record<string, unknown> = { hostel_id: hostelId, cnic: e.cnic, check_in: (e.checkIn ?? "").slice(0, 10), source, last_seen_at: now };
+      // Only set name when we actually have one, so a portal read never
+      // overwrites a stored name back to null on conflict.
       if (e.name) row.name = e.name;
       return row;
     });
-  if (rows.length) await admin.from("hms_hotel_eye_watchlist").upsert(rows, { onConflict: "hostel_id,cnic" });
+  if (rows.length) await admin.from("hms_hotel_eye_watchlist").upsert(rows, { onConflict: "hostel_id,cnic,check_in" });
 }
 
-async function loadWatchlistCnics(admin: HotelEyeAdmin, hostelId: string): Promise<Set<string>> {
-  const { data } = await admin.from("hms_hotel_eye_watchlist").select("cnic").eq("hostel_id", hostelId);
-  return new Set((data ?? []).map((r) => r.cnic as string));
+/**
+ * What this hostel already has on the portal, per our mirror:
+ *  - keys: "cnic|checkIn" stay keys (the normal, precise dedupe).
+ *  - wildcardCnics: CNICs whose stored check-in couldn't be read (''). We can't
+ *    tell which stay those are, so we treat ANY tenant with that CNIC as already
+ *    filed — erring toward NOT duplicating on the government portal when a portal
+ *    date is unparseable (a defensive fallback; normal rows carry a real date).
+ */
+async function loadWatchlist(admin: HotelEyeAdmin, hostelId: string): Promise<{ keys: Set<string>; wildcardCnics: Set<string> }> {
+  const { data } = await admin.from("hms_hotel_eye_watchlist").select("cnic, check_in").eq("hostel_id", hostelId);
+  const keys = new Set<string>();
+  const wildcardCnics = new Set<string>();
+  for (const r of data ?? []) {
+    const cnic = r.cnic as string;
+    const ci = ((r.check_in as string) ?? "").slice(0, 10);
+    keys.add(stayKey(cnic, ci));
+    if (!ci) wildcardCnics.add(cnic);
+  }
+  return { keys, wildcardCnics };
 }
 
 // Step 2a: log in with the human-entered CAPTCHA and hand back an ENCRYPTED
@@ -393,26 +423,33 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
     if (rest.length) await admin.from("hms_tenants")
       .update({ hotel_eye_status: "not_synced" }).in("id", rest).eq("hostel_id", hostelId).eq("hotel_eye_status", "queued");
   };
-  if (!cred?.session_blob) { await resetQueued(ids); return; }
+  // Records a run that couldn't complete, so the queue reverting to pending isn't
+  // silent — the owner sees WHY on the page instead of guessing.
+  const noteAbort = async (note: string) =>
+    admin.from("hms_hotel_eye_credentials").update({ last_sync_at: new Date().toISOString(), last_sync_note: note }).eq("hostel_id", hostelId);
+
+  if (!cred?.session_blob) { await resetQueued(ids); await noteAbort("The portal session wasn't ready — please sync again."); return; }
   let session: LoginSession;
   try { session = JSON.parse(decryptSecret(cred.session_blob)) as LoginSession; }
-  catch { await clearSession(hostelId); await resetQueued(ids); return; }
+  catch { await clearSession(hostelId); await resetQueued(ids); await noteAbort("The portal session expired — please sync again."); return; }
 
   // Refresh our local mirror from this live portal read, then dedupe against the
   // MIRROR (our DB) — not the portal. A failed live read skips the refresh and we
   // fall back to whatever is already stored (resilience), so a dropped read can't
-  // silently turn dedupe off.
-  const filed = await listFiledCnics(session);
-  if (filed) await upsertWatchlist(admin, hostelId, [...filed].map((c) => ({ cnic: c })), "portal");
-  const known = await loadWatchlistCnics(admin, hostelId);
+  // silently turn dedupe off. Dedupe is keyed by STAY (cnic + check-in date), so
+  // a returning guest with a new check-in is filed as a new entry, not skipped.
+  const filed = await listFiledEntries(session);
+  if (filed) await upsertWatchlist(admin, hostelId, filed, "portal");
+  const known = await loadWatchlist(admin, hostelId);
 
   // Never file blind. If the live read failed AND we have no stored mirror yet
   // (first-ever sync for this hostel), we have nothing to dedupe against — filing
   // now could duplicate anyone already on the portal. Put the queue back to
   // pending and stop; the next sync re-reads the list and proceeds safely.
-  if (!filed && known.size === 0) { await resetQueued(ids); return; }
+  if (!filed && known.keys.size === 0) { await resetQueued(ids); await noteAbort("Couldn't reach the portal to check for duplicates — please sync again."); return; }
 
   const gender = genderForHostel(hostelType);
+  let nFiled = 0, nMatched = 0, nFailed = 0;
 
   const { data: tenants } = await admin
     .from("hms_tenants")
@@ -429,19 +466,23 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
     const province = (t.permanent_province as string) || cred.default_province || "";
     const district = (t.permanent_district as string) || cred.default_district || "";
     const cnicDigits = ((t.cnic as string) ?? "").replace(/\D/g, "");
+    const checkIn = ((t.check_in as string) ?? new Date().toISOString()).slice(0, 10);
 
     // Missing/invalid data → record why, don't loop on it.
     const missing = [!cnicDigits && "CNIC", !t.father_name && "father's name", !province && "province", !district && "district"].filter(Boolean);
     if (missing.length || !HOTEL_EYE_PROVINCES.includes(province) || !(HOTEL_EYE_DISTRICTS[province] ?? []).includes(district)) {
       await mark(ids[i], { hotel_eye_status: "failed", hotel_eye_last_error: missing.length ? `missing ${missing.join(", ")}` : "province/district not a valid portal value", hotel_eye_last_attempt_at: new Date().toISOString() });
+      nFailed++;
       continue;
     }
 
-    // AUTO-DEDUPE: already on the portal (per our mirror) → mark synced, never
-    // post again. hotel_eye_last_error records WHY it was skipped, so the owner
-    // can see it was a match rather than a fresh filing.
-    if (cnicDigits && known.has(cnicDigits)) {
-      await mark(ids[i], { hotel_eye_status: "synced", hotel_eye_synced_at: new Date().toISOString(), hotel_eye_last_error: "already on portal — matched existing entry" });
+    // AUTO-DEDUPE by STAY: this exact stay (same CNIC + check-in) is already on
+    // the portal → mark synced, never post again. The marker carries the matched
+    // stay's check-in date so the owner sees it was a match, not a fresh filing.
+    // A returning guest with a NEW check-in does NOT match here and is filed below.
+    if (cnicDigits && (known.keys.has(stayKey(cnicDigits, checkIn)) || known.wildcardCnics.has(cnicDigits))) {
+      await mark(ids[i], { hotel_eye_status: "synced", hotel_eye_synced_at: new Date().toISOString(), hotel_eye_last_error: `already on portal — check-in ${checkIn}` });
+      nMatched++;
       continue;
     }
 
@@ -467,22 +508,33 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
       break;
     }
     if (res.success) {
-      // Record OUR filing in the mirror immediately, so a later sync never
-      // re-files this guest even before the next portal read. Also add it to the
-      // in-memory set so a DUPLICATE CNIC later in THIS same batch (two tenant
-      // rows sharing a CNIC — the column has no unique constraint) is deduped
+      // Record OUR filing (this stay) in the mirror immediately, so a later sync
+      // never re-files it even before the next portal read. Also add its stay key
+      // to the in-memory set so the SAME stay later in THIS batch (two tenant rows
+      // sharing a CNIC + check-in — the column has no unique constraint) is deduped
       // rather than posted twice.
-      await upsertWatchlist(admin, hostelId, [{ cnic: cnicDigits, name: t.full_name as string }], "filed_by_us");
-      known.add(cnicDigits);
+      await upsertWatchlist(admin, hostelId, [{ cnic: cnicDigits, checkIn, name: t.full_name as string }], "filed_by_us");
+      known.keys.add(stayKey(cnicDigits, checkIn));
       await mark(ids[i], { hotel_eye_status: "synced", hotel_eye_synced_at: new Date().toISOString(), hotel_eye_last_error: null });
+      nFiled++;
     } else {
       await mark(ids[i], { hotel_eye_status: "failed", hotel_eye_last_error: res.error ?? "portal rejected the entry", hotel_eye_last_attempt_at: new Date().toISOString() });
+      nFailed++;
     }
     // Gentle pacing between portal writes; skipped after the last one.
     if (i < ids.length - 1) await new Promise((r) => setTimeout(r, 400));
   }
 
-  await admin.from("hms_hotel_eye_credentials").update({ last_synced_at: new Date().toISOString() }).eq("hostel_id", hostelId);
+  // Persist the run's result so the owner sees it whenever they return, even
+  // though the sync ran in the background after the browser was free to close.
+  await admin.from("hms_hotel_eye_credentials").update({
+    last_synced_at: new Date().toISOString(),
+    last_sync_filed: nFiled,
+    last_sync_matched: nMatched,
+    last_sync_failed: nFailed,
+    last_sync_at: new Date().toISOString(),
+    last_sync_note: null,   // a completed run clears any earlier abort note
+  }).eq("hostel_id", hostelId);
   revalidatePath("/police-verification");
   revalidatePath("/tenants");
 }

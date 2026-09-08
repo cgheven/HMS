@@ -238,18 +238,84 @@ export async function completeLogin(
   return { authenticated: true, session: { portalUrl: pending.portalUrl, cookies } };
 }
 
-const CNIC_RE = /\b\d{5}-?\d{7}-?\d\b/g;
+const ROW_RE = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+const CELL_RE = /<td\b[^>]*>([\s\S]*?)<\/td>/gi;
+const ROW_CNIC_RE = /\b\d{5}-?\d{7}-?\d\b/;
+const MONTHS: Record<string, string> = {
+  jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+  jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
+};
+
+function stripTags(s: string): string {
+  return s.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim();
+}
 
 /**
- * The CNICs this hotel has ALREADY filed, read from its watch list.
+ * Normalize a watch-list check-in cell to YYYY-MM-DD, or "" if it holds no date.
  *
- * Used to dedupe: a guest already on the portal is never posted again, so the
- * integration can't create a second entry — and existing manual filings are
- * recognised rather than re-sent. Digits only, so "34501-6752651-3" and
- * "3450167526513" compare equal. Returns null (not an empty set) if the list
- * can't be read, so the caller can tell "nobody filed" from "couldn't check".
+ * The portal's confirmed format is YYYY-MM-DD (optionally time-suffixed). The
+ * other forms are defensive: dedupe compares this against a tenant's YYYY-MM-DD
+ * check-in, so a portal date rendered differently must still normalize to the
+ * same string — otherwise a returning-vs-existing stay could be misjudged and a
+ * duplicate filed. Day-first is assumed for the DD-MM-YYYY forms (PK convention).
  */
-export async function listFiledCnics(session: LoginSession): Promise<Set<string> | null> {
+function normalizeCheckInDate(cell: string): string {
+  const s = cell.trim();
+  let m = s.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = s.match(/\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b/);
+  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  m = s.match(/\b(\d{1,2})[\s-]([A-Za-z]{3})[a-z]*[,\s-]+(\d{4})\b/);
+  if (m && MONTHS[m[2].toLowerCase()]) return `${m[3]}-${MONTHS[m[2].toLowerCase()]}-${m[1].padStart(2, "0")}`;
+  return "";
+}
+
+/** One filed guest as read back from the portal watch list. */
+export interface FiledEntry {
+  /** Digits only, so "34501-6752651-3" and "3450167526513" compare equal. */
+  cnic: string;
+  /** Check-in date YYYY-MM-DD (the STAY), or "" if the cell couldn't be read. */
+  checkIn: string;
+  name: string | null;
+}
+
+/**
+ * Entries this hotel has ALREADY filed, read from its watch list — CNIC,
+ * check-in date and name per row.
+ *
+ * Dedupe keys on (cnic, checkIn) — the STAY, not just the person. Hostels see the
+ * same guest return for new stays; each stay is a fresh, legally-required filing,
+ * so a returning CNIC with a NEW check-in date must be filed again rather than
+ * skipped as a duplicate. Only a same-CNIC + same-check-in match is a true
+ * duplicate. Returns null (not an empty list) if the list can't be read, so the
+ * caller distinguishes "nobody filed" from "couldn't check".
+ *
+ * Parsing is robust to column shifts: the CNIC is found by pattern in any cell,
+ * and the check-in is the first cell that begins with a YYYY-MM-DD date (which
+ * precedes check-out in the table), with the name taken from the cell before the
+ * CNIC.
+ */
+/** Pure parser (exported for testing) — see listFiledEntries for the contract. */
+export function parseFiledEntries(html: string): FiledEntry[] {
+  const entries: FiledEntry[] = [];
+  for (const row of html.matchAll(ROW_RE)) {
+    const cells = [...row[1].matchAll(CELL_RE)].map((m) => stripTags(m[1]));
+    if (cells.length < 3) continue; // header / non-data row
+    let cnic = "", cnicIdx = -1;
+    for (let i = 0; i < cells.length; i++) {
+      const m = cells[i].match(ROW_CNIC_RE);
+      if (m) { cnic = m[0].replace(/\D/g, ""); cnicIdx = i; break; }
+    }
+    if (!cnic) continue;
+    // First cell that yields a date is the check-in (it precedes check-out).
+    let checkIn = "";
+    for (const c of cells) { const d = normalizeCheckInDate(c); if (d) { checkIn = d; break; } }
+    entries.push({ cnic, checkIn, name: cnicIdx > 0 ? cells[cnicIdx - 1] || null : null });
+  }
+  return entries;
+}
+
+export async function listFiledEntries(session: LoginSession): Promise<FiledEntry[] | null> {
   const listUrl = new URL("/hotel/hotelwatchList", session.portalUrl).toString();
   try {
     const res = await portalFetch(listUrl, {
@@ -257,10 +323,7 @@ export async function listFiledCnics(session: LoginSession): Promise<Set<string>
       redirect: "follow",
     });
     if (!res.ok || res.url.toLowerCase().includes("/login")) return null;
-    const html = await res.text();
-    const set = new Set<string>();
-    for (const m of html.match(CNIC_RE) ?? []) set.add(m.replace(/\D/g, ""));
-    return set;
+    return parseFiledEntries(await res.text());
   } catch {
     return null;
   }

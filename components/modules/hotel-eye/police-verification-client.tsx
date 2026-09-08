@@ -11,9 +11,19 @@ import { toast } from "@/hooks/use-toast";
 import { FileCheck2, ShieldCheck, Loader2, AlertTriangle, CheckCircle2 } from "lucide-react";
 import {
   saveHotelEyeCredentials, startHotelEyeSync, resumeHotelEyeSync, completeHotelEyeLogin,
-  startHotelEyeBackgroundSync, getPendingGuests, getSyncedGuests,
+  startHotelEyeBackgroundSync, getPendingGuests, getSyncedGuests, getHotelEyeSettings,
   type HotelEyeSettings, type PendingGuest, type SyncedGuest,
 } from "@/app/actions/hotel-eye";
+
+function timeAgo(iso: string): string {
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hr ago`;
+  return new Date(iso).toLocaleString();
+}
 
 export function PoliceVerificationClient({
   systemName, settings, guests, missing, synced,
@@ -38,6 +48,9 @@ export function PoliceVerificationClient({
   // Synced list is also kept in state so the poll refreshes it live — guests
   // move from Pending to Synced during a background sync without a reload.
   const [syncedRows, setSyncedRows] = useState<SyncedGuest[]>(synced);
+  // Last-sync summary, refreshed when a background run finishes, so the result is
+  // visible even if the browser was closed during the sync.
+  const [lastSync, setLastSync] = useState<HotelEyeSettings["lastSync"]>(settings?.lastSync ?? null);
 
   // A guest can only be filed with a CNIC, province and district present.
   const fileable = rows.filter((g) => g.cnic && g.province && g.district && g.status !== "queued");
@@ -60,8 +73,28 @@ export function PoliceVerificationClient({
   // watches rows clear without touching the browser. Stops when nothing is
   // queued anymore. Never drives the filing itself.
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wasSyncingRef = useRef(false);
   useEffect(() => {
-    if (!anyQueued) { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } return; }
+    if (!anyQueued) {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      // A background run just finished (was syncing, now nothing queued): refresh
+      // the lists + last-sync summary and toast the result — works even if the
+      // browser was closed during the sync and reopened after.
+      if (wasSyncingRef.current) {
+        wasSyncingRef.current = false;
+        (async () => {
+          const [set, syn, pend] = await Promise.all([getHotelEyeSettings(), getSyncedGuests(), getPendingGuests()]);
+          if (syn.guests) setSyncedRows(syn.guests);
+          if (pend.guests) { setRows(pend.guests); setMissingCount(pend.missing ?? 0); }
+          const ls = set.settings?.lastSync ?? null;
+          if (ls) setLastSync(ls);
+          if (ls?.note) toast({ title: "Sync didn't complete", description: ls.note, variant: "destructive" });
+          else if (ls) toast({ title: "Sync complete", description: `${ls.filed} filed · ${ls.matched} already on portal · ${ls.failed} failed` });
+        })();
+      }
+      return;
+    }
+    wasSyncingRef.current = true;
     if (pollRef.current) return;
     pollRef.current = setInterval(async () => {
       const [pend, syn] = await Promise.all([getPendingGuests(), getSyncedGuests()]);
@@ -195,6 +228,22 @@ export function PoliceVerificationClient({
         </Card>
       )}
 
+      {lastSync && (
+        <Card className={`p-3 ${lastSync.note ? "border-amber/40 bg-amber/[0.06]" : "border-sidebar-border bg-white/[0.02]"}`}>
+          <p className="text-xs text-muted-foreground">
+            {lastSync.note ? (
+              <><span className="text-amber font-medium">Last sync {timeAgo(lastSync.at)} didn&apos;t complete</span> — {lastSync.note}</>
+            ) : (
+              <>Last sync {timeAgo(lastSync.at)} —{" "}
+                <span className="text-emerald-400 font-medium">{lastSync.filed} filed</span>
+                {" · "}<span className="text-sky-400 font-medium">{lastSync.matched} already on portal</span>
+                {lastSync.failed > 0 && <>{" · "}<span className="text-rose-400 font-medium">{lastSync.failed} failed</span></>}
+              </>
+            )}
+          </p>
+        </Card>
+      )}
+
       {/* Pending / Synced tabs — positive confirmation of what is on the portal. */}
       <div className="flex gap-4 border-b border-sidebar-border text-sm">
         <button
@@ -215,6 +264,11 @@ export function PoliceVerificationClient({
         <Card className="overflow-hidden">
           <div className="px-4 py-3 border-b border-sidebar-border">
             <p className="text-sm font-medium">Filed with {systemName} ({syncedRows.length})</p>
+            {syncedRows.length > 0 && (
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                {syncedRows.filter((g) => !g.viaDedupe).length} filed · {syncedRows.filter((g) => g.viaDedupe).length} already on portal
+              </p>
+            )}
           </div>
           {syncedRows.length === 0 ? (
             <p className="px-4 py-8 text-center text-sm text-muted-foreground">
@@ -224,16 +278,19 @@ export function PoliceVerificationClient({
             <ul className="divide-y divide-sidebar-border">
               {syncedRows.map((g) => (
                 <li key={g.id} className="px-4 py-3 flex items-center gap-3">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <CheckCircle2 className={`w-4 h-4 shrink-0 ${g.viaDedupe ? "text-sky-400" : "text-emerald-400"}`} />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-foreground truncate">{g.name}</p>
                     <p className="text-xs text-muted-foreground">
                       {g.cnic ?? "no CNIC"}{g.room ? ` · Room ${g.room}` : ""}
-                      {g.syncedAt && <> · {new Date(g.syncedAt).toLocaleDateString()}</>}
-                      {g.viaDedupe && <span className="text-amber"> · already on portal</span>}
+                      {g.viaDedupe
+                        ? <span className="text-sky-400"> · already on portal{g.checkIn ? ` (check-in ${g.checkIn})` : ""}</span>
+                        : g.syncedAt && <> · filed {new Date(g.syncedAt).toLocaleDateString()}</>}
                     </p>
                   </div>
-                  <Badge variant="success">Synced</Badge>
+                  {g.viaDedupe
+                    ? <Badge variant="outline" className="shrink-0 border-sky-500/40 text-sky-400">On portal</Badge>
+                    : <Badge variant="success" className="shrink-0">Filed</Badge>}
                 </li>
               ))}
             </ul>
