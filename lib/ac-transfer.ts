@@ -31,10 +31,23 @@ export interface CarriedACCharge {
  *
  * Idempotent by construction: callers ADD this to a freshly computed share and
  * overwrite, so re-running an Apply lands on the same total.
+ *
+ * NOT scoped by hostel_id, deliberately. A BRANCH transfer leaves the mover's
+ * closing reading in the OLD branch (that room's own month-end Apply still needs
+ * it to re-split the roommates who stayed), while the mover — and their bill —
+ * live in the NEW branch. If this were hostel-scoped, the new branch's Apply
+ * would not see the old branch's closing row, compute carried = 0, and overwrite
+ * ac_charge with only the new room's share — silently erasing the source-branch
+ * electricity the mover genuinely owes. The rows are keyed by tenant_id (globally
+ * unique, one owner) and this month, so summing a tenant's transfer readings
+ * across branches is exactly right; a tenant who never crossed a branch has none
+ * elsewhere, so the within-branch result is unchanged. hostelId is kept in the
+ * signature for call-site clarity but is intentionally not a filter.
  */
 export async function carriedTransferCharges(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   admin: SupabaseClient<any, any, any>,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   hostelId: string,
   forMonth: string,
   excludeRoomId: string | null,
@@ -46,7 +59,6 @@ export async function carriedTransferCharges(
   let q = admin
     .from("hms_room_ac_checkout_readings")
     .select("tenant_id, room_id, units_consumed, ac_charge")
-    .eq("hostel_id", hostelId)
     .eq("for_month", forMonth)
     .not("transferred_to_room_id", "is", null)
     .in("tenant_id", tenantIds);

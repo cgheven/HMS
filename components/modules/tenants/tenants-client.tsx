@@ -6,7 +6,8 @@ import {
   LogOut, Clock, UserCheck, Phone, Mail, CreditCard, Eye,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
   FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check, UtensilsCrossed,
-  CalendarClock, CalendarX, MessageCircle, Car, Download, Printer, Zap,
+  CalendarClock, CalendarX, Car, Download, Printer, Zap,
+  Building2, ArrowRight,
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
@@ -34,7 +35,7 @@ import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplica
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction, getRoomTransferPreviewAction, transferTenantRoomAction, getRoomTransferCorrectionAction, correctRoomTransferAction, type RoomTransferPreview } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction, getRoomTransferPreviewAction, transferTenantRoomAction, getRoomTransferCorrectionAction, correctRoomTransferAction, getBranchTransferRoomsAction, getBranchTransferPreviewAction, branchTransferTenantAction, type RoomTransferPreview, type BranchTransferTarget, type BranchTransferRoom } from "@/app/actions/tenants";
 // Straight from the module that declares it. Re-exporting it through the
 // "use server" file as `export type { RoomTransferResult }` did not survive
 // Turbopack — a re-exported import binding is emitted as a real runtime export,
@@ -97,6 +98,19 @@ interface Props {
   // read hms_package_configs from the browser, so without it every suggested
   // rent and deposit in the Add Tenant dialog would be blank.
   initialPackageConfig?: PackageConfig | null;
+  /** The owner's OTHER branches. Non-empty only for a multi-branch owner (never
+   *  for managers/partners) — its presence is what surfaces the "Move to another
+   *  branch" control on each active member. */
+  branchTargets?: BranchTransferTarget[];
+}
+
+// A typed meter reading → number, or null for blank/garbage. Shared by the
+// room-transfer save and the branch-transfer flow.
+function parseReading(v: string): number | null {
+  const t = v.trim();
+  if (t === "") return null;
+  const n = parseFloat(t);
+  return Number.isFinite(n) ? n : null;
 }
 
 const PACKAGE_TIER_LABELS: Record<PackageTier, string> = {
@@ -314,9 +328,11 @@ interface TenantRowProps {
   onGiveNotice?: (t: Tenant) => void;
   onSendWelcome?: (t: Tenant) => void;
   onRecordDeposit?: (t: Tenant) => void;
+  /** Owner + multi-branch only. Undefined hides the "Move to another branch" control. */
+  onMoveBranch?: (t: Tenant) => void;
 }
 
-function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, showSendWelcome = false, showRecordDeposit = false, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, sendingWelcome = false, printingForm = false, onView, onPrintForm, onCheckout, onActivate, onEdit, onDelete, onGiveNotice, onSendWelcome, onRecordDeposit }: TenantRowProps) {
+function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, showSendWelcome = false, showRecordDeposit = false, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, sendingWelcome = false, printingForm = false, onView, onPrintForm, onCheckout, onActivate, onEdit, onDelete, onGiveNotice, onSendWelcome, onRecordDeposit, onMoveBranch }: TenantRowProps) {
   const room = t.room_id ? roomMap[t.room_id] : null;
   const foodCharge = calcFoodAddonCharge(t, foodAddonRates);
   const initials = t.full_name[0].toUpperCase();
@@ -534,16 +550,18 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
             <span className="hidden sm:inline text-xs ml-1.5">Check Out</span>
           </Button>
         )}
-        {showSendWelcome && onSendWelcome && t.phone && (
+        {onMoveBranch && (
+          // Shown on mobile too — it is a first-class action for multi-branch
+          // operators. Only rendered when the caller actually has a destination
+          // branch (the handler is undefined otherwise).
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10"
-            onClick={() => onSendWelcome(t)}
-            disabled={sendingWelcome}
-            title="Resend Welcome Message (WiFi + Mess Link)"
+            className="h-8 w-8 text-violet-400 hover:text-violet-300 hover:bg-violet-500/10"
+            title="Move to another branch"
+            onClick={() => onMoveBranch(t)}
           >
-            {sendingWelcome ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MessageCircle className="w-3.5 h-3.5" />}
+            <Building2 className="w-3.5 h-3.5" />
           </Button>
         )}
         {onPrintForm && (
@@ -688,7 +706,7 @@ function RedflagWarningDialog({
   );
 }
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, mealTimes = null, acMaintenanceRate = 0, meterAllRooms = false, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, mealTimes = null, acMaintenanceRate = 0, meterAllRooms = false, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null, branchTargets = [] }: Props) {
   const isPartner = !!partnerTier;
   const canFullTier = !partnerTier || partnerTier === "full";
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
@@ -751,6 +769,23 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [correctTo, setCorrectTo] = useState("");
   const [correcting, setCorrecting] = useState(false);
   const [transferToReading, setTransferToReading] = useState("");
+
+  // ── Branch transfer ─────────────────────────────────────────────────────
+  // A separate, single-purpose flow from the room transfer above: pick a branch,
+  // pick a room, confirm. The whole member moves as-is. Owner + multi-branch only
+  // (branchTargets is empty otherwise, so the control never appears).
+  const [branchMoveTenant, setBranchMoveTenant] = useState<Tenant | null>(null);
+  const [branchMoveToHostel, setBranchMoveToHostel] = useState("");
+  const [branchMoveRooms, setBranchMoveRooms] = useState<BranchTransferRoom[]>([]);
+  const [branchMoveRoomsLoading, setBranchMoveRoomsLoading] = useState(false);
+  const [branchMoveToRoom, setBranchMoveToRoom] = useState("");
+  const [branchMovePreview, setBranchMovePreview] = useState<RoomTransferPreview | null>(null);
+  const [branchMovePreviewLoading, setBranchMovePreviewLoading] = useState(false);
+  const [branchMoveFromReading, setBranchMoveFromReading] = useState("");
+  const [branchMoveToReading, setBranchMoveToReading] = useState("");
+  const [branchMoveSubmitting, setBranchMoveSubmitting] = useState(false);
+  const branchPreviewReqRef = useRef(0);
+  const branchRoomsReqRef = useRef(0);
 
   const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; registration_fee_charge: number; ac_maintenance_charge: number; late_fee: number; discount_percent: number; referral_percent: number; carried_ac_charge?: number } | null>(null);
   const [checkoutPaymentLoading, setCheckoutPaymentLoading] = useState(false);
@@ -1057,6 +1092,99 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       .eq("hostel_id", hostelId)
       .order("applied_at", { ascending: false });
     setApplications((data ?? []) as TenantApplication[]);
+  }
+
+  // ── Branch transfer handlers ───────────────────────────────────────────
+  function resetBranchMove() {
+    setBranchMoveTenant(null);
+    setBranchMoveToHostel("");
+    setBranchMoveRooms([]);
+    setBranchMoveRoomsLoading(false);
+    setBranchMoveToRoom("");
+    setBranchMovePreview(null);
+    setBranchMovePreviewLoading(false);
+    setBranchMoveFromReading("");
+    setBranchMoveToReading("");
+    setBranchMoveSubmitting(false);
+  }
+
+  function openBranchMove(t: Tenant) {
+    resetBranchMove();
+    setBranchMoveTenant(t);
+  }
+
+  // Load the destination branch's rooms when a branch is picked.
+  async function selectBranchMoveHostel(toHostelId: string) {
+    setBranchMoveToHostel(toHostelId);
+    setBranchMoveToRoom("");
+    setBranchMovePreview(null);
+    setBranchMoveFromReading("");
+    setBranchMoveToReading("");
+    setBranchMoveRooms([]);
+    if (!toHostelId) return;
+    const reqId = ++branchRoomsReqRef.current;
+    setBranchMoveRoomsLoading(true);
+    const res = await getBranchTransferRoomsAction(toHostelId);
+    if (reqId !== branchRoomsReqRef.current) return; // a newer branch pick superseded this
+    setBranchMoveRoomsLoading(false);
+    if (res.error) {
+      toast({ title: "Could not load rooms", description: res.error, variant: "destructive" });
+      return;
+    }
+    setBranchMoveRooms(res.rooms);
+  }
+
+  // Fetch the metered/prefill preview when a destination room is picked.
+  async function selectBranchMoveRoom(toRoomId: string) {
+    setBranchMoveToRoom(toRoomId);
+    setBranchMovePreview(null);
+    setBranchMoveFromReading("");
+    setBranchMoveToReading("");
+    if (!branchMoveTenant || !branchMoveToHostel || !toRoomId) return;
+    const reqId = ++branchPreviewReqRef.current;
+    setBranchMovePreviewLoading(true);
+    const preview = await getBranchTransferPreviewAction(branchMoveTenant.id, branchMoveToHostel, toRoomId);
+    if (reqId !== branchPreviewReqRef.current) return; // a newer pick superseded this
+    setBranchMovePreviewLoading(false);
+    setBranchMovePreview(preview);
+    // Deliberately left EMPTY, never prefilled. fromLastReading/toLastReading are
+    // each room's LAST recorded reading, which mid-month is the month's OPENING —
+    // and accepting that unchanged closes the old room at zero units and opens the
+    // new one at offset zero, so the mover pays nothing where they lived and is
+    // billed at the destination for everything burned before they arrived. The
+    // within-branch room-transfer panel was rewritten to stop prefilling for
+    // exactly this reason; the operator reads the meter and types what it says.
+  }
+
+  async function confirmBranchMove() {
+    if (!branchMoveTenant || !branchMoveToHostel || !branchMoveToRoom) return;
+    setBranchMoveSubmitting(true);
+    const res = await branchTransferTenantAction({
+      tenantId: branchMoveTenant.id,
+      toHostelId: branchMoveToHostel,
+      toRoomId: branchMoveToRoom,
+      fromRoomReading: branchMovePreview?.fromMetered ? parseReading(branchMoveFromReading) : null,
+      toRoomReading: branchMovePreview?.toMetered ? parseReading(branchMoveToReading) : null,
+    });
+    setBranchMoveSubmitting(false);
+    if (!res.success) {
+      toast({ title: "Branch transfer not saved", description: res.error, variant: "destructive" });
+      return;
+    }
+    const r = res.result!;
+    const branchName = branchTargets.find((b) => b.id === branchMoveToHostel)?.name ?? "the new branch";
+    if (r.warning) {
+      toast({ title: "Moved — one thing left to finish", description: r.warning, variant: "destructive" });
+    } else if (r.closedMeter && r.closedCharge > 0) {
+      toast({
+        title: `Moved to ${branchName}`,
+        description: `Room ${r.fromRoomNumber}: ${r.closedUnits} units (${formatCurrency(r.closedCharge)}) billed up to the move. Everything else moved as-is.`,
+      });
+    } else {
+      toast({ title: `Moved to ${branchName}`, description: `${branchMoveTenant.full_name} now lives in room ${r.toRoomNumber}. Everything moved as-is.` });
+    }
+    resetBranchMove();
+    await reload();
   }
 
   async function handleRejectApp(appId: string) {
@@ -1564,12 +1692,6 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const isMeteredTransfer = !!(editing && transferPreview && prevRoomIdEarly && payload.room_id && prevRoomIdEarly !== payload.room_id);
     let transferOutcome: RoomTransferResult | null = null;
     if (isMeteredTransfer) {
-      const parseReading = (v: string): number | null => {
-        const t = v.trim();
-        if (t === "") return null;
-        const n = parseFloat(t);
-        return Number.isFinite(n) ? n : null;
-      };
       const res = await transferTenantRoomAction({
         tenantId: editing!.id,
         toRoomId: payload.room_id!,
@@ -2864,6 +2986,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   onDelete={openDeleteDialog}
                   onGiveNotice={openNoticeDialog}
                   onSendWelcome={handleSendWelcome}
+                  onMoveBranch={branchTargets.length > 0 ? openBranchMove : undefined}
                 />
               ))}
               </div>
@@ -5779,6 +5902,117 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               {noticeSubmitting
                 ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
                 : <><CalendarClock className="w-4 h-4" /> {noticeDialogTenant?.intended_checkout_date ? "Update Notice" : "Save Notice"}</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+
+      {/* Branch transfer — move a member to a room in another branch, as-is */}
+      <Dialog open={!!branchMoveTenant} onOpenChange={(open) => { if (!open && !branchMoveSubmitting) resetBranchMove(); }}>
+        <DialogContent className="sm:max-w-[440px] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Building2 className="w-4 h-4 text-violet-400" />
+              Move to another branch
+            </DialogTitle>
+            <DialogDescription>{branchMoveTenant?.full_name}</DialogDescription>
+          </DialogHeader>
+
+          <div className={cn("space-y-4 py-1", branchMoveSubmitting && "pointer-events-none opacity-50")}>
+            {/* Step 1 — branch */}
+            <div className="space-y-1.5">
+              <Label>Which branch?</Label>
+              <Select value={branchMoveToHostel} onValueChange={selectBranchMoveHostel}>
+                <SelectTrigger><SelectValue placeholder="Choose a branch" /></SelectTrigger>
+                <SelectContent>
+                  {branchTargets.map((b) => (
+                    <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Step 2 — room */}
+            {branchMoveToHostel && (
+              <div className="space-y-1.5">
+                <Label>Which room?</Label>
+                {branchMoveRoomsLoading ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground py-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading rooms…</div>
+                ) : branchMoveRooms.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">That branch has no rooms yet.</p>
+                ) : (
+                  <Select value={branchMoveToRoom} onValueChange={selectBranchMoveRoom}>
+                    <SelectTrigger><SelectValue placeholder="Choose a room" /></SelectTrigger>
+                    <SelectContent>
+                      {branchMoveRooms.map((r) => {
+                        const full = r.occupied >= r.capacity;
+                        return (
+                          <SelectItem key={r.id} value={r.id} disabled={full}>
+                            Room {r.room_number} · {r.occupied}/{r.capacity}{full ? " (full)" : ""}{r.has_ac ? " · AC" : ""}
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            )}
+
+            {/* Step 3 — meter readings, only when metered */}
+            {branchMovePreviewLoading && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-1"><Loader2 className="w-4 h-4 animate-spin" /> Checking…</div>
+            )}
+            {branchMovePreview?.toBlocked && (
+              <p className="text-sm rounded-lg border border-amber/20 bg-amber/5 text-amber px-3 py-2">{branchMovePreview.toBlocked}</p>
+            )}
+            {branchMovePreview && !branchMovePreview.error && !branchMovePreview.toBlocked && (branchMovePreview.fromMetered || branchMovePreview.toMetered) && (
+              <div className="space-y-3 rounded-lg border border-sidebar-border bg-background/40 p-3">
+                <p className="text-xs text-muted-foreground flex items-center gap-1.5"><Zap className="w-3.5 h-3.5 text-amber" /> Read the electricity meter now to settle it on both rooms.</p>
+                {branchMovePreview.fromMetered && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="bm-from">Room {branchMovePreview.fromRoomNumber} meter (leaving)</Label>
+                    <Input id="bm-from" inputMode="numeric" value={branchMoveFromReading} onChange={(e) => setBranchMoveFromReading(e.target.value)} placeholder="Current reading" />
+                  </div>
+                )}
+                {branchMovePreview.toMetered && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="bm-to">Room {branchMovePreview.toRoomNumber} meter (joining)</Label>
+                    <Input id="bm-to" inputMode="numeric" value={branchMoveToReading} onChange={(e) => setBranchMoveToReading(e.target.value)} placeholder="Current reading" />
+                  </div>
+                )}
+              </div>
+            )}
+            {branchMovePreview?.error && (
+              <p className="text-sm rounded-lg border border-rose-500/20 bg-rose-500/5 text-rose-400 px-3 py-2">{branchMovePreview.error}</p>
+            )}
+
+            {/* Plain-language reassurance — the whole pitch of this flow */}
+            {branchMoveToRoom && !branchMovePreview?.error && (
+              <p className="text-xs text-muted-foreground rounded-lg bg-violet-500/5 border border-violet-500/15 px-3 py-2">
+                Rent, deposit, and the full history move with them. Any unpaid bills follow the new branch&apos;s food &amp; AC rates; already-paid bills are untouched. You can adjust the profile afterwards.
+              </p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={resetBranchMove} disabled={branchMoveSubmitting}>Cancel</Button>
+            <Button
+              onClick={confirmBranchMove}
+              disabled={
+                branchMoveSubmitting ||
+                !branchMoveToRoom ||
+                branchMovePreviewLoading ||
+                !!branchMovePreview?.toBlocked ||
+                !!branchMovePreview?.error ||
+                (!!branchMovePreview?.fromMetered && branchMoveFromReading.trim() === "") ||
+                (!!branchMovePreview?.toMetered && branchMoveToReading.trim() === "")
+              }
+              className="gap-2 bg-violet-600 hover:bg-violet-600/90 text-white"
+            >
+              {branchMoveSubmitting
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Moving…</>
+                : <><ArrowRight className="w-4 h-4" /> Confirm move</>}
             </Button>
           </DialogFooter>
         </DialogContent>

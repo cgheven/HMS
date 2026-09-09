@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, FileText, Loader2, ArrowLeftRight, Wallet, CalendarClock, MessageSquareHeart } from "lucide-react";
+import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, FileText, Loader2, ArrowLeftRight, Wallet, CalendarClock, MessageSquareHeart, Building2 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -84,6 +84,8 @@ export function EventIcon({ type }: { type: TimelineEvent["type"] }) {
       return <AlertCircle className="w-4 h-4 text-blue-400" />;
     case "room_changed":
       return <ArrowLeftRight className="w-4 h-4 text-blue-400" />;
+    case "branch_changed":
+      return <Building2 className="w-4 h-4 text-violet-400" />;
     case "deposit_collected":
       return <Wallet className="w-4 h-4 text-emerald-400" />;
     case "deposit_returned":
@@ -115,6 +117,7 @@ export function eventDotColor(type: TimelineEvent["type"]): string {
     case "check_out":     return "bg-rose-500 border-rose-400";
     case "package_changed": return "bg-blue-500 border-blue-400";
     case "room_changed":  return "bg-blue-500 border-blue-400";
+    case "branch_changed": return "bg-violet-500 border-violet-400";
     case "deposit_collected": return "bg-emerald-600 border-emerald-400";
     case "deposit_returned":  return "bg-blue-500 border-blue-400";
     case "deposit_forfeited": return "bg-rose-500 border-rose-400";

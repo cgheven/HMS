@@ -106,6 +106,12 @@ interface Props {
     ac_charge?: number | null; transferred_to_room_id?: string | null;
   }[];
   acJoinReadings?: { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[];
+  /** Per tenant id: when this month's AC charge is a CARRIED TRANSFER charge
+   *  (electricity from a room they moved out of), whether that room was in this
+   *  branch ("room") or another branch ("branch"). Drives the tiny "prev. room /
+   *  prev. branch" label under the AC amount so the charge is self-explanatory on
+   *  a member who now sits in a non-AC room. */
+  carriedTransferByTenant?: Record<string, "room" | "branch">;
   // Tenants currently on the waiting list — a payment row can outlive an
   // active tenant being edited back to waiting, so the headline stats below
   // exclude these tenants' rows the same way the visible list already does.
@@ -337,7 +343,7 @@ function waTick(m: { status: string; error_code: number | null } | undefined):
 const NO_AC_CHECKOUTS: { room_id: string; for_month: string; meter_reading: number | null }[] = [];
 const NO_AC_READINGS: NonNullable<Props["acReadings"]> = [];
 
-export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, meterAllRooms = false, acReadings: allAcReadings = NO_AC_READINGS, acCheckoutReadings = NO_AC_CHECKOUTS, acJoinReadings = [], lastWhatsApp = {}, partnerTier = null, managerPermissions = null, waitingTenantIds = [] }: Props) {
+export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, meterAllRooms = false, acReadings: allAcReadings = NO_AC_READINGS, acCheckoutReadings = NO_AC_CHECKOUTS, acJoinReadings = [], lastWhatsApp = {}, partnerTier = null, managerPermissions = null, waitingTenantIds = [], carriedTransferByTenant = {} }: Props) {
   const isPartner = !!partnerTier;
   const isManager = !!managerPermissions;
   const canCollect = managerPermissions?.includes("collect_payments") ?? false;
@@ -1546,6 +1552,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     // the total never look like they disagree.
     const charges = splitPaymentCharges(p);
     const basis = dailyBasis(p);
+    // When this month's AC is a carried transfer charge, whether it trailed in
+    // from another room in this branch or from another branch entirely.
+    const carriedScope = p.tenant_id ? carriedTransferByTenant[p.tenant_id] : undefined;
 
     const statusColors: Record<PaymentStatus, string> = {
       paid:    "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
@@ -1675,6 +1684,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   {charges.acMaintenance > 0 && (
                     <span className="text-muted-foreground"> +{formatCurrency(charges.acMaintenance)} mnt</span>
                   )}
+                  {carriedScope && (
+                    <span className="text-[10px] text-muted-foreground"> · ⚡ prev. {carriedScope}</span>
+                  )}
                 </p>
               )}
               {charges.ac === 0 && charges.acMaintenance > 0 && (
@@ -1768,7 +1780,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               It belongs with the other fixed extras under Total anyway. */}
           <div className="text-right">
             {charges.ac > 0 ? (
-              <p className="text-sm text-cyan-400 tabular-nums">{formatCurrency(charges.ac)}</p>
+              <>
+                <p className="text-sm text-cyan-400 tabular-nums">{formatCurrency(charges.ac)}</p>
+                {carriedScope && (
+                  <p className="text-[10px] text-muted-foreground whitespace-nowrap" title={carriedScope === "branch" ? "Includes electricity from the room they left in another branch, billed up to the branch move" : "Includes electricity from the room they moved out of, billed up to the move"}>
+                    ⚡ prev. {carriedScope}
+                  </p>
+                )}
+              </>
             ) : (
               <p className="text-sm text-muted-foreground/30">—</p>
             )}
@@ -2665,12 +2684,23 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                                 {/* Their bill is higher than this line, and the operator
                                     will compare the two. Say why here rather than leave
                                     the difference looking like an error. */}
-                                {r.carried.units > 0 && (
-                                  <span className="text-muted-foreground/50">
-                                    {" "}— plus {r.carried.units} units from room{r.carried.from.length > 1 ? "s" : ""}{" "}
-                                    {r.carried.from.map(id => rooms.find(rm => rm.id === id)?.room_number ?? "?").join(", ")}, on the same bill
-                                  </span>
-                                )}
+                                {r.carried.units > 0 && (() => {
+                                  // A carried unit's source room may be in ANOTHER branch (a
+                                  // branch transfer), where this branch's `rooms` list can't
+                                  // name it — say "another branch" rather than "room ?".
+                                  const known = r.carried.from
+                                    .map(id => rooms.find(rm => rm.id === id)?.room_number)
+                                    .filter(Boolean) as string[];
+                                  const hasCrossBranch = known.length < r.carried.from.length;
+                                  const source = known.length === 0
+                                    ? "another branch"
+                                    : `room${known.length > 1 ? "s" : ""} ${known.join(", ")}${hasCrossBranch ? " and another branch" : ""}`;
+                                  return (
+                                    <span className="text-muted-foreground/50">
+                                      {" "}— plus {r.carried.units} units from {source}, on the same bill
+                                    </span>
+                                  );
+                                })()}
                               </span>
                               <span className="tabular-nums text-foreground">{r.units} units</span>
                               <span className="text-muted-foreground/40">·</span>

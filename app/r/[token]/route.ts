@@ -23,11 +23,20 @@ function pdfResponse(
   stamp: string,
   immutable: boolean
 ): NextResponse {
+  // HTTP header values must be Latin-1. A tenant name with an em-dash — or, far
+  // more commonly here, Urdu characters — is outside that range and throws when
+  // set as a raw filename. Provide an ASCII-only fallback plus an RFC 5987
+  // filename* so modern clients still get the readable UTF-8 name.
+  const asciiName = filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "");
+  // encodeURIComponent throws on a lone surrogate; fall back to the ASCII name so
+  // a malformed tenant name can never 500 the receipt.
+  let utf8Name: string;
+  try { utf8Name = encodeURIComponent(filename); } catch { utf8Name = asciiName; }
   return new NextResponse(bytes, {
     status: 200,
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="${filename}"`,
+      "Content-Disposition": `inline; filename="${asciiName}"; filename*=UTF-8''${utf8Name}`,
       // An installment receipt is a frozen snapshot and can be cached hard. A
       // payment-scoped one tracks the live row, so it revalidates every time —
       // but the ETag turns that into a 304 rather than a re-download.
@@ -144,7 +153,7 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, referral_percent, discount_amount, discount_percent, payment_method, payment_date, receipt_number, payment_package_tier, status, is_reservation, billed_days, daily_rate_billed, updated_at, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, is_active, billing_type, daily_rate, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
+        "id, tenant_id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, referral_percent, discount_amount, discount_percent, payment_method, payment_date, receipt_number, payment_package_tier, status, is_reservation, billed_days, daily_rate_billed, updated_at, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, is_active, billing_type, daily_rate, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
       )
       .eq("id", paymentId)
       .single(),
@@ -243,9 +252,38 @@ export async function GET(
   // food_charge/ac_charge/ac_units_consumed/security_deposit_charge come from the
   // live payment row — these reflect the month's fixed bill composition and don't
   // change between installments, so it's safe to use them even for a historical snapshot.
+  // If this bill's AC charge is a CARRIED TRANSFER charge (electricity from a
+  // room the member moved out of this month), name the source for the receipt
+  // sub-line. Not hostel-scoped — a branch transfer's closing row lives in the
+  // OLD branch, exactly like carriedTransferCharges (lib/ac-transfer.ts). Scoped
+  // to this bill's own tenant + month, so it exposes nothing beyond this member.
+  let carriedAc: { scope: "room" | "branch"; source: string } | null = null;
+  if (Number(payment.ac_charge ?? 0) > 0 && (payment as { tenant_id?: string }).tenant_id) {
+    const { data: xferRows } = await supabase
+      .from("hms_room_ac_checkout_readings")
+      .select("hostel_id, ac_charge, checkout_date, room:hms_rooms!hms_room_ac_checkout_readings_room_id_fkey(room_number)")
+      .eq("for_month", payment.for_month)
+      .not("transferred_to_room_id", "is", null)
+      .eq("tenant_id", (payment as { tenant_id: string }).tenant_id)
+      .order("checkout_date", { ascending: false });
+    const rows = (xferRows ?? []) as { hostel_id: string; ac_charge: number | null; room: { room_number?: string } | null }[];
+    if (rows.length > 0) {
+      const crossRows = rows.filter((r) => r.hostel_id !== link.hostel_id);
+      const chosen = crossRows[0] ?? rows[0];
+      const roomNum = chosen.room?.room_number ?? "?";
+      if (crossRows.length > 0) {
+        const { data: srcHostel } = await supabase.from("hms_hostels").select("name").eq("id", chosen.hostel_id).maybeSingle();
+        carriedAc = { scope: "branch", source: `${(srcHostel as { name?: string })?.name ?? "another branch"}, Room ${roomNum}` };
+      } else {
+        carriedAc = { scope: "room", source: `Room ${roomNum}` };
+      }
+    }
+  }
+
   const pdfBytes = generateReceiptPDF(
     {
       receipt_number: installmentSnapshot?.receipt_number ?? payment.receipt_number,
+      carried_ac: carriedAc,
       for_month: payment.for_month,
       amount: installmentSnapshot ? (installmentSnapshot.total_due - installmentSnapshot.late_fee) : Number(payment.amount),
       amount_paid: installmentSnapshot

@@ -73,6 +73,10 @@ export const getAuthContext = cache(async () => {
       hostels,
       hostelId: (hostel?.id ?? null) as string | null,
       partnerTier: (hostel ? tierByHostel.get(hostel.id) ?? null : null) as PartnerTier | null,
+      // Per-branch tier for every branch this partner is on — the active one's
+      // tier is `partnerTier` above, but a cross-branch action (e.g. branch
+      // transfer) needs to know the tier on the OTHER branch too.
+      partnerTierByHostel: Object.fromEntries(tierByHostel) as Record<string, PartnerTier>,
       partnerFeatureFlags: (hostel ? flagsByHostel.get(hostel.id) ?? {} : {}) as PartnerFeatureFlags,
     };
   }
@@ -127,6 +131,7 @@ export const getAuthContext = cache(async () => {
     hostels,
     hostelId: (hostel?.id ?? null) as string | null,
     partnerTier: null as PartnerTier | null,
+    partnerTierByHostel: {} as Record<string, PartnerTier>,
     partnerFeatureFlags: {} as PartnerFeatureFlags,
   };
 });
@@ -956,7 +961,7 @@ export async function updatePaymentCharges(
 
 export async function getPaymentsPageData(forMonth: string) {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, meterAllRooms: false, acReadings: [], acCheckoutReadings: [], acJoinReadings: [], waitingTenantIds: [] };
+  if (!ctx?.hostelId) return { hostelId: null, payments: [], carriedTransferByTenant: {} as Record<string, "room" | "branch">, tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, meterAllRooms: false, acReadings: [], acCheckoutReadings: [], acJoinReadings: [], waitingTenantIds: [] };
   const { supabase, hostelId, hostel } = ctx;
 
   const [
@@ -1053,9 +1058,46 @@ export async function getPaymentsPageData(forMonth: string) {
     throw new Error(`Payments page could not load for ${forMonth}: ${readErr.message}`);
   }
 
+  // Which members' AC charge this month is really a CARRIED TRANSFER charge —
+  // electricity from a room they moved out of — and whether that room was in
+  // this branch (a room move, "prev. room") or another branch (a branch
+  // transfer, "prev. branch"). Lets the Payments row explain an AC line on a
+  // member who now sits in a non-AC room. Read via the admin client and keyed to
+  // THIS page's tenant ids, and deliberately NOT hostel-scoped: a branch
+  // transfer's closing row lives in the OLD branch, exactly like
+  // carriedTransferCharges (lib/ac-transfer.ts).
+  const carriedTransferByTenant: Record<string, "room" | "branch"> = {};
+  // Cross-branch closing readings for this page's members. They live in the OTHER
+  // branch, so the hostel-scoped acCheckoutReadings above misses them — the AC
+  // Billing card would then count a mover's carried units as THIS room's and
+  // (falsely) flag the split as "above the meter". Merged in below so the card
+  // subtracts them, exactly as it already does for a within-branch move.
+  const crossBranchCheckouts: { room_id: string; for_month: string; meter_reading: number | null; tenant_id: string; units_consumed: number | null; ac_charge: number | null; transferred_to_room_id: string | null }[] = [];
+  const payTenantIds = [...new Set(((payments ?? []) as Payment[]).map((p) => p.tenant_id).filter(Boolean) as string[])];
+  if (payTenantIds.length > 0) {
+    const { data: xferRows } = await createAdminClient()
+      .from("hms_room_ac_checkout_readings")
+      .select("tenant_id, hostel_id, room_id, for_month, meter_reading, units_consumed, ac_charge, transferred_to_room_id")
+      .eq("for_month", forMonth)
+      .not("transferred_to_room_id", "is", null)
+      .in("tenant_id", payTenantIds);
+    for (const r of (xferRows ?? []) as { tenant_id: string; hostel_id: string; room_id: string; for_month: string; meter_reading: number | null; units_consumed: number | null; ac_charge: number | null; transferred_to_room_id: string | null }[]) {
+      if (Number(r.ac_charge ?? 0) <= 0) continue;
+      // A cross-branch source wins: if any part of the carried charge came from
+      // another branch, the member reads it as "prev. branch".
+      if (carriedTransferByTenant[r.tenant_id] !== "branch") {
+        carriedTransferByTenant[r.tenant_id] = r.hostel_id === hostelId ? "room" : "branch";
+      }
+      if (r.hostel_id !== hostelId) {
+        crossBranchCheckouts.push({ room_id: r.room_id, for_month: r.for_month, meter_reading: r.meter_reading, tenant_id: r.tenant_id, units_consumed: r.units_consumed, ac_charge: r.ac_charge, transferred_to_room_id: r.transferred_to_room_id });
+      }
+    }
+  }
+
   return {
     hostelId,
     payments: (payments ?? []) as Payment[],
+    carriedTransferByTenant,
     tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "deposit_collected_amount" | "registration_fee" | "food_breakfast" | "food_lunch" | "food_dinner" | "joining_meter_reading" | "ac_maintenance" | "discount_percent"> & { package_tier: PackageTier })[],
     rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor" | "has_ac">[],
     packageConfig,
@@ -1066,7 +1108,7 @@ export async function getPaymentsPageData(forMonth: string) {
     autoReminderEnabled: hostel?.whatsapp_enabled ?? false,
     meterAllRooms: hostel?.meter_all_rooms ?? false,
     acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; meter_photo?: string | null; recorded_while_vacant?: boolean | null }[],
-    acCheckoutReadings: (acCheckoutReadings ?? []) as { room_id: string; for_month: string; meter_reading: number | null }[],
+    acCheckoutReadings: [...(acCheckoutReadings ?? []), ...crossBranchCheckouts] as { room_id: string; for_month: string; meter_reading: number | null }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     // Newest first from the query, so the FIRST row seen per tenant is the
     // latest — no sorting or comparison needed.

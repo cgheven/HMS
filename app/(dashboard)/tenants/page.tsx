@@ -46,6 +46,28 @@ export default async function TenantsPage() {
     waitlistEntries = (waitlistResult.data ?? []) as WaitlistEntry[];
   }
 
+  // The OTHER branches this caller may move a member into — the destinations for
+  // the "Move to another branch" control. An owner holds edit rights on every
+  // branch they own; a partner needs FULL tier on both the current branch and the
+  // destination, so partners see only their other full-tier branches. Managers use
+  // the /portal tenants page, which computes its own list. The server action
+  // re-checks all of this. An empty list hides the control.
+  const role = ctx?.profile?.role;
+  let branchTargets: { id: string; name: string }[] = [];
+  if (ctx?.hostelId) {
+    if (role === "owner" || role === "super_admin") {
+      branchTargets = (ctx.hostels ?? []).filter((h) => h.id !== ctx.hostelId).map((h) => ({ id: h.id, name: h.name }));
+    } else if (role === "partner" && ctx.partnerTier === "full") {
+      const tierByHostel = ctx.partnerTierByHostel ?? {};
+      // Same owner only — a partner may be full on branches of DIFFERENT owners,
+      // but a transfer never crosses owners (the server enforces this too).
+      const activeOwnerId = (ctx.hostels ?? []).find((h) => h.id === ctx.hostelId)?.owner_id;
+      branchTargets = (ctx.hostels ?? [])
+        .filter((h) => h.id !== ctx.hostelId && tierByHostel[h.id] === "full" && h.owner_id === activeOwnerId)
+        .map((h) => ({ id: h.id, name: h.name }));
+    }
+  }
+
   return (
     <TenantsClient
       key={data.hostelId ?? ''}
@@ -58,6 +80,7 @@ export default async function TenantsPage() {
       meterAllRooms={meterAllRooms}
       waitlistEntries={waitlistEntries}
       partnerTier={ctx?.partnerTier}
+      branchTargets={branchTargets}
     />
   );
 }

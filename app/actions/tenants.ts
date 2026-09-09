@@ -369,6 +369,7 @@ export type TimelineEventType =
   | "payment"
   | "package_changed"
   | "room_changed"
+  | "branch_changed"
   | "deposit_collected"
   | "deposit_returned"
   | "deposit_forfeited"
@@ -754,6 +755,19 @@ export async function getTenantTimeline(
           detail: e.notes ?? undefined,
           ...(e.amount != null && Number(e.amount) > 0 ? { acCharge: Number(e.amount) } : {}),
         });
+      } else if (e.event_type === "branch_changed") {
+        // A branch transfer carries the whole member across, unchanged. The note
+        // holds the room-to-room move and any closing meter evidence, exactly as
+        // room_changed does, so a two-branch AC charge is still traceable.
+        events.push({
+          id: `event-${e.id}`,
+          type: "branch_changed",
+          date: e.created_at,
+          label: "Moved to another branch",
+          sub: `${e.from_value ?? "None"} → ${e.to_value ?? "None"}`,
+          detail: e.notes ?? undefined,
+          ...(e.amount != null && Number(e.amount) > 0 ? { acCharge: Number(e.amount) } : {}),
+        });
       } else if (e.event_type === "plan_changed") {
         const fromLabel = TIMELINE_TIER_LABELS[e.from_value ?? ""] ?? e.from_value ?? "Unknown";
         const toLabel = TIMELINE_TIER_LABELS[e.to_value ?? ""] ?? e.to_value ?? "Unknown";
@@ -872,6 +886,7 @@ export async function getTenantTimeline(
       joined: 0,
       deposit_collected: 1,
       room_changed: 2,
+      branch_changed: 2,
       package_changed: 2,
       notice_given: 2,
       notice_cancelled: 2,
@@ -2423,6 +2438,451 @@ export async function correctRoomTransferAction(input: {
     revalidatePath("/tenants");
     revalidatePath("/payments");
     return { success: true, result: { ...result, warning: reapplyWarning ?? result.warning } };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Branch transfer — moving a member from a room in one branch to a room in
+// ANOTHER branch of the same owner.
+//
+// The whole member travels unchanged: same rent, same deposit, the same bills
+// and the same ledger — a branch transfer is the same person in a different
+// building, not a checkout-and-readmit. Mechanically that is
+//   1. the room-transfer engine, told the destination lives in another branch
+//      (toHostelId), so it settles the electricity meter on BOTH rooms in their
+//      own branches and switches the member's hostel_id + room_id together;
+//   2. re-homing the member's own tenant-scoped rows (payments, installments,
+//      ledger events, WhatsApp log) to the new branch, so their money and
+//      history follow them.
+//
+// Owner-only. It needs access to two branches at once; a manager is scoped to
+// one, and a partner's tier is per-branch and cannot be verified for the
+// destination from the active branch, so neither is given this.
+//
+// Deliberately NOT re-homed: the AC meter rows (they belong to the physical
+// rooms, which stay in their branches — the engine already writes each in the
+// right branch) and the referral rows (modelled per-OWNER, and a single row can
+// tie two members who now live in different branches, so relocating them could
+// misattribute a referral; a transfer within one owner leaves referral
+// eligibility intact either way). Collected bills keep their exact billed
+// amounts (the pricing trigger freezes a paid/partially-paid row); an UNPAID
+// bill re-prices its food and AC-maintenance to the new branch's rates when it
+// moves, while its base rent is preserved — the member eats and cools at the
+// new branch from here on. See supabase/migrations/223_branch_transfer.sql.
+// ---------------------------------------------------------------------------
+
+export interface BranchTransferTarget {
+  id: string;
+  name: string;
+}
+
+export interface BranchTransferRoom {
+  id: string;
+  room_number: string;
+  has_ac: boolean;
+  capacity: number;
+  /** Live count of active members, recounted rather than read from the cached
+   *  rooms.occupied column, so a full room reads as full. */
+  occupied: number;
+}
+
+// The gate every branch-transfer action goes through. A branch transfer needs
+// edit-members rights on BOTH the source (the caller's active branch) and the
+// destination branch, and the two branches must belong to the same owner.
+// Returns the source branch and whether the caller is a manager (so the caller
+// can re-run the source room's Apply as the right actor).
+//
+//   * Owner / super_admin: implicitly holds edit rights on every branch they
+//     own, so both branches simply have to be in ctx.hostels.
+//   * Manager: hms_manager_permissions is GLOBAL to the manager (no hostel_id),
+//     so edit_members applies to every branch they are attached to — both
+//     branches must be in their managed list (getManagerContext().hostels).
+//   * Partner: the partner TIER is per-branch, so `full` is required on the
+//     source (the active branch) AND independently verified on the destination.
+async function resolveBranchTransfer(destHostelId: string): Promise<{ srcHostelId: string; isManager: boolean }> {
+  let srcHostelId: string;
+  let isManager: boolean;
+
+  const mgr = await getManagerContext();
+  if (mgr?.activeHostel) {
+    if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+    srcHostelId = mgr.activeHostel.id;
+    const managed = new Set((mgr.hostels ?? []).map((h) => h.id));
+    if (!managed.has(srcHostelId)) throw new Error("Access denied");
+    if (!managed.has(destHostelId)) throw new Error("That branch is not one you manage.");
+    if (destHostelId === srcHostelId) throw new Error("That member is already in this branch — pick a different one.");
+    isManager = true;
+  } else {
+    const ctx = await getAuthContext();
+    if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
+    srcHostelId = ctx.hostelId;
+    if (!(ctx.hostels ?? []).some((h) => h.id === destHostelId)) {
+      throw new Error("That branch is not one of yours.");
+    }
+    if (destHostelId === srcHostelId) {
+      throw new Error("That member is already in this branch — pick a different one.");
+    }
+    const role = ctx.profile?.role;
+    if (role === "owner" || role === "super_admin") {
+      isManager = false;
+    } else if (role === "partner") {
+      // ctx.partnerTier is the tier on the ACTIVE (source) branch. Require full
+      // there, then verify full on the destination branch independently — a
+      // partner may be full on one branch and read-only on another.
+      if (ctx.partnerTier !== "full") {
+        throw new Error("You need full access on this branch to move members between branches.");
+      }
+      const { data: destPart } = await createAdminClient()
+        .from("hms_partnerships")
+        .select("tier, is_active")
+        .eq("partner_id", ctx.user.id)
+        .eq("hostel_id", destHostelId)
+        .eq("is_active", true)
+        .maybeSingle();
+      if (!destPart || (destPart as { tier?: string }).tier !== "full") {
+        throw new Error("You need full access on the destination branch to move members there.");
+      }
+      isManager = false;
+    } else {
+      throw new Error("Access denied");
+    }
+  }
+
+  // SAME-OWNER INVARIANT — a branch transfer never crosses owners. Redundant for
+  // owners (ctx.hostels is one owner's) and managers (a manager is tied to one
+  // owner), but LOAD-BEARING for partners: a partner can hold full tier on
+  // branches of DIFFERENT owners, and without this could move a member from one
+  // owner's branch into another owner's branch — a cross-owner data breach. The
+  // owner_id is read server-side from the two hostels, never trusted from input.
+  const { data: pair } = await createAdminClient()
+    .from("hms_hostels")
+    .select("id, owner_id")
+    .in("id", [srcHostelId, destHostelId]);
+  const rows = (pair ?? []) as { id: string; owner_id: string }[];
+  const srcOwner = rows.find((r) => r.id === srcHostelId)?.owner_id;
+  const destOwner = rows.find((r) => r.id === destHostelId)?.owner_id;
+  if (!srcOwner || !destOwner || srcOwner !== destOwner) {
+    throw new Error("Both branches must belong to the same owner.");
+  }
+
+  return { srcHostelId, isManager };
+}
+
+/** Rooms in the destination branch, with a live occupancy count for the picker. */
+export async function getBranchTransferRoomsAction(toHostelId: string): Promise<{ rooms: BranchTransferRoom[]; error?: string }> {
+  try {
+    await resolveBranchTransfer(toHostelId);
+    const adminDb = createAdminClient();
+    const [{ data: rooms }, { data: actives }] = await Promise.all([
+      adminDb.from("hms_rooms").select("id, room_number, has_ac, capacity").eq("hostel_id", toHostelId).order("room_number"),
+      adminDb.from("hms_tenants").select("room_id").eq("hostel_id", toHostelId).eq("is_active", true),
+    ]);
+    const occ = new Map<string, number>();
+    for (const a of actives ?? []) if (a.room_id) occ.set(a.room_id as string, (occ.get(a.room_id as string) ?? 0) + 1);
+    return {
+      rooms: (rooms ?? []).map((r) => ({
+        id: r.id as string,
+        room_number: r.room_number as string,
+        has_ac: !!r.has_ac,
+        capacity: Number(r.capacity ?? 0),
+        occupied: occ.get(r.id as string) ?? 0,
+      })),
+    };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { rooms: [], error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Whether the destination room is metered and what to prefill its reading with
+ *  — the cross-branch twin of getRoomTransferPreviewAction. Read-only. */
+export async function getBranchTransferPreviewAction(
+  tenantId: string,
+  toHostelId: string,
+  toRoomId: string
+): Promise<RoomTransferPreview> {
+  const empty: RoomTransferPreview = {
+    fromRoomNumber: null, toRoomNumber: null, fromMetered: false, toMetered: false,
+    fromLastReading: null, toLastReading: null, toBlocked: null,
+  };
+  try {
+    const { srcHostelId } = await resolveBranchTransfer(toHostelId);
+    const adminDb = createAdminClient();
+
+    const { data: tenant } = await adminDb
+      .from("hms_tenants").select("id, room_id").eq("id", tenantId).eq("hostel_id", srcHostelId).maybeSingle();
+    if (!tenant) return { ...empty, error: "Member not found in this branch." };
+
+    const [{ data: toRoom }, { data: fromRoom }, { data: srcHostel }, { data: destHostel }] = await Promise.all([
+      adminDb.from("hms_rooms").select("id, room_number, has_ac").eq("id", toRoomId).eq("hostel_id", toHostelId).maybeSingle(),
+      tenant.room_id
+        ? adminDb.from("hms_rooms").select("id, room_number, has_ac").eq("id", tenant.room_id).eq("hostel_id", srcHostelId).maybeSingle()
+        : Promise.resolve({ data: null }),
+      adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", srcHostelId).single(),
+      adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", toHostelId).single(),
+    ]);
+    if (!toRoom) return { ...empty, error: "Destination room not found." };
+
+    const fromMetered = isMeteredRoom(fromRoom, !!srcHostel?.meter_all_rooms);
+    const toMetered = isMeteredRoom(toRoom, !!destHostel?.meter_all_rooms);
+
+    // Both readings are scoped to the room's OWN branch — the from-room in the
+    // source, the to-room in the destination.
+    const lastReadingFor = async (roomId: string | null | undefined, hostelId: string): Promise<number | null> => {
+      if (!roomId) return null;
+      const [{ data: rd }, { data: co }] = await Promise.all([
+        adminDb.from("hms_room_ac_readings").select("meter_reading").eq("room_id", roomId)
+          .eq("hostel_id", hostelId).not("meter_reading", "is", null)
+          .order("for_month", { ascending: false }).limit(1).maybeSingle(),
+        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId)
+          .eq("hostel_id", hostelId).order("for_month", { ascending: false })
+          .order("meter_reading", { ascending: false }).limit(1).maybeSingle(),
+      ]);
+      const a = rd?.meter_reading != null ? Math.round(Number(rd.meter_reading)) : null;
+      const b = co?.meter_reading != null ? Math.round(Number(co.meter_reading)) : null;
+      if (a == null) return b;
+      if (b == null) return a;
+      return Math.max(a, b);
+    };
+
+    const forMonth = pktTodayDateString().slice(0, 7);
+    const [y, mo] = forMonth.split("-").map(Number);
+    const pd = new Date(y, mo - 2, 1);
+    const prevMonth = `${pd.getFullYear()}-${String(pd.getMonth() + 1).padStart(2, "0")}`;
+
+    const openingFor = async (roomId: string, hostelId: string): Promise<number | null> => {
+      const [{ data: prevRow }, { data: prevCheckouts }, { data: roommates }] = await Promise.all([
+        adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonth).maybeSingle(),
+        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonth),
+        adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", roomId).eq("is_active", true),
+      ]);
+      const storedPrev = effectivePrevReading(prevRow, prevCheckouts);
+      return storedPrev != null ? storedPrev : deriveOpeningReading(roommates ?? [], forMonth);
+    };
+
+    const [fromLastReading, toLastReading, toOpening] = await Promise.all([
+      fromMetered ? lastReadingFor(fromRoom?.id, srcHostelId) : Promise.resolve(null),
+      toMetered ? lastReadingFor(toRoom.id, toHostelId) : Promise.resolve(null),
+      toMetered ? openingFor(toRoom.id, toHostelId) : Promise.resolve(null),
+    ]);
+
+    return {
+      fromRoomNumber: fromRoom?.room_number ?? null,
+      toRoomNumber: toRoom.room_number,
+      fromMetered,
+      toMetered,
+      fromLastReading,
+      toLastReading,
+      toBlocked: toMetered && toOpening == null
+        ? `That room has no opening meter reading for this month yet. Record it in the destination branch under Payments → AC Billing first — otherwise the member would be billed there for units used before they arrived.`
+        : null,
+    };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { ...empty, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function branchTransferTenantAction(input: {
+  tenantId: string;
+  toHostelId: string;
+  toRoomId: string;
+  fromRoomReading?: number | null;
+  toRoomReading?: number | null;
+}): Promise<{ success: boolean; result?: RoomTransferResult; error?: string }> {
+  try {
+    const { srcHostelId, isManager } = await resolveBranchTransfer(input.toHostelId);
+    const adminDb = createAdminClient();
+
+    // Branch names for the ledger line, and the member's pre-move state, captured
+    // BEFORE anything changes so the transfer can be rolled back cleanly if the
+    // re-home fails partway.
+    const [{ data: srcHostelRow }, { data: destHostelRow }, { data: preTenant }] = await Promise.all([
+      adminDb.from("hms_hostels").select("name").eq("id", srcHostelId).single(),
+      adminDb.from("hms_hostels").select("name").eq("id", input.toHostelId).single(),
+      adminDb.from("hms_tenants").select("id, room_id, joining_meter_reading, is_active").eq("id", input.tenantId).eq("hostel_id", srcHostelId).single(),
+    ]);
+    if (!preTenant) throw new Error("Member not found in this branch.");
+    if (!preTenant.is_active) throw new Error("This member is not active.");
+
+    // Defensive: a feedback row or token pins (tenant_id, hostel_id) to this
+    // branch (migration 161), which would block the hostel_id move. Those exist
+    // only for a CHECKED-OUT member — this one is active — so this is a
+    // can't-happen guard that fails clearly instead of surfacing a raw foreign
+    // key error, rather than a case that is expected to be hit.
+    const [{ count: fbCount }, { count: tokCount }] = await Promise.all([
+      adminDb.from("hms_tenant_feedback").select("id", { count: "exact", head: true }).eq("tenant_id", input.tenantId).eq("hostel_id", srcHostelId),
+      adminDb.from("hms_feedback_tokens").select("id", { count: "exact", head: true }).eq("tenant_id", input.tenantId).eq("hostel_id", srcHostelId),
+    ]);
+    if ((fbCount ?? 0) > 0 || (tokCount ?? 0) > 0) {
+      throw new Error("This member has a feedback record tied to this branch and cannot be moved automatically. Contact support.");
+    }
+
+    const forMonth = pktTodayDateString().slice(0, 7);
+    const origRoomId = (preTenant.room_id as string | null) ?? null;
+    const origJoiningMeter = preTenant.joining_meter_reading as number | null;
+    // The current-month bill as it stands now — the one thing performRoomTransfer
+    // may rewrite (the closing AC charge for the room being left). Snapshotted so
+    // a failed re-home can restore it exactly.
+    const { data: prelBill } = await adminDb
+      .from("hms_payments")
+      .select("id, ac_charge, ac_units_consumed, amount, status")
+      .eq("tenant_id", input.tenantId)
+      .eq("hostel_id", srcHostelId)
+      .eq("for_month", forMonth)
+      .maybeSingle();
+    const billSnapshot = prelBill
+      ? { id: prelBill.id as string, ac_charge: Number(prelBill.ac_charge ?? 0), ac_units_consumed: Number(prelBill.ac_units_consumed ?? 0), amount: Number(prelBill.amount ?? 0), status: prelBill.status as string }
+      : null;
+
+    // No feedback handling needed: the composite-FK pins on hms_tenant_feedback
+    // and hms_feedback_tokens (migration 161) are left intact, and the defensive
+    // guard above has already refused the move if any such row exists — which it
+    // never should for an active member, since those are minted at checkout.
+
+    // The move: settles the meter on both rooms in their own branches, switches
+    // hostel_id + room_id together, and bills the room being left on this month's
+    // bill (still in the old branch at that instant, so priced at the old branch).
+    const result = await performRoomTransfer(adminDb, srcHostelId, {
+      tenantId: input.tenantId,
+      toRoomId: input.toRoomId,
+      fromRoomReading: input.fromRoomReading,
+      toRoomReading: input.toRoomReading,
+      toHostelId: input.toHostelId,
+    });
+
+    // Undo everything performRoomTransfer did, to put the member back exactly
+    // where they started. Used only when the re-home below fails: the member is
+    // physically still here, so nothing may be left claiming otherwise.
+    const rollbackMove = async () => {
+      await adminDb.from("hms_room_ac_checkout_readings").delete()
+        .eq("room_id", origRoomId ?? "").eq("tenant_id", input.tenantId).eq("for_month", forMonth);
+      await adminDb.from("hms_room_ac_join_readings").delete()
+        .eq("hostel_id", input.toHostelId).eq("room_id", input.toRoomId).eq("tenant_id", input.tenantId).eq("for_month", forMonth);
+      await adminDb.from("hms_tenants")
+        .update({ hostel_id: srcHostelId, room_id: origRoomId, joining_meter_reading: origJoiningMeter })
+        .eq("id", input.tenantId);
+      if (billSnapshot) {
+        // Back in the old branch and old room now, so the trigger re-prices this
+        // to exactly what it was; status is set explicitly since the trigger
+        // never touches it.
+        await adminDb.from("hms_payments").update({
+          ac_charge: billSnapshot.ac_charge,
+          ac_units_consumed: billSnapshot.ac_units_consumed,
+          amount: billSnapshot.amount,
+          status: billSnapshot.status,
+          updated_at: new Date().toISOString(),
+        }).eq("id", billSnapshot.id);
+      } else {
+        // There was NO current-month bill before the move — but performRoomTransfer
+        // may have CREATED one (ensureMonthlyPaymentRows) to hang the closing AC
+        // charge on. Left as-is, that row would survive the rollback carrying a
+        // charge for a move that never happened, with no checkout reading to back
+        // it (that reading was just deleted above). Zero the AC charge back out;
+        // the trigger re-prices the amount without it.
+        const { data: created } = await adminDb
+          .from("hms_payments").select("id, ac_charge, ac_units_consumed")
+          .eq("tenant_id", input.tenantId).eq("hostel_id", srcHostelId).eq("for_month", forMonth).maybeSingle();
+        if (created && (Number(created.ac_charge ?? 0) !== 0 || Number(created.ac_units_consumed ?? 0) !== 0)) {
+          await adminDb.from("hms_payments").update({
+            ac_charge: 0, ac_units_consumed: 0, updated_at: new Date().toISOString(),
+          }).eq("id", created.id);
+        }
+      }
+      // Occupancy on both rooms recounted from truth.
+      for (const [rid, hid] of [[origRoomId, srcHostelId], [input.toRoomId, input.toHostelId]] as const) {
+        if (!rid) continue;
+        const { count } = await adminDb.from("hms_tenants").select("id", { count: "exact", head: true }).eq("hostel_id", hid).eq("room_id", rid).eq("is_active", true);
+        const { data: r } = await adminDb.from("hms_rooms").select("capacity").eq("id", rid).maybeSingle();
+        await adminDb.from("hms_rooms").update({
+          occupied: count ?? 0,
+          status: (count ?? 0) >= Number(r?.capacity ?? 0) ? "occupied" : "available",
+          updated_at: new Date().toISOString(),
+        }).eq("id", rid);
+      }
+    };
+
+    // Re-home the member's money FIRST — it is the one re-home that can be
+    // rejected (the pricing trigger re-prices an unpaid bill against the new
+    // branch and can raise on a daily bill whose new food rate would exceed it).
+    // One UPDATE statement, so it is all-or-nothing: on failure nothing has moved
+    // but the member's position, which rollbackMove restores before re-raising.
+    const { error: payErr } = await adminDb
+      .from("hms_payments").update({ hostel_id: input.toHostelId })
+      .eq("tenant_id", input.tenantId).eq("hostel_id", srcHostelId);
+    if (payErr) {
+      await rollbackMove();
+      throw new Error(
+        `The move was rolled back: this member's bills could not be re-priced for ${destHostelRow?.name ?? "the destination branch"} (${payErr.message}). ` +
+        `This usually means a daily-rate bill whose food or AC charges do not fit that branch's rates. Adjust the branch's rates or the member's plan, then try again.`
+      );
+    }
+
+    // ── PAST THE POINT OF NO RETURN ────────────────────────────────────────
+    // The member and their money are now in the new branch, consistently. Every
+    // step below is history/log housekeeping or a best-effort re-split — none of
+    // it can be cleanly undone, and none of it is worth telling the operator the
+    // move "failed" (a retry would then hit "member not found in this branch",
+    // because they ARE in the new branch now). So anything that throws here is
+    // caught and surfaced as a WARNING on an otherwise successful move.
+    let postWarning: string | undefined;
+    try {
+      // The member's own history, keyed by tenant_id. No pricing trigger, so
+      // these do not re-price; they simply follow the member.
+      for (const table of ["hms_payment_installments", "hms_tenant_events", "hms_whatsapp_messages", "hms_whatsapp_failures"]) {
+        const { error } = await adminDb.from(table).update({ hostel_id: input.toHostelId }).eq("tenant_id", input.tenantId).eq("hostel_id", srcHostelId);
+        if (error) throw new Error(`${table}: ${error.message}`);
+      }
+
+      // Re-split the SOURCE room if its month-end Apply already ran (the departure
+      // changed the roommates' share). The source is the owner's active branch, so
+      // the standard Apply reaches it. The DEST room, if also stale, is in another
+      // branch and cannot be applied from here — the owner is told to finish it there.
+      const srcReapply = result.reapply.filter((r) => r.roomId !== input.toRoomId);
+      const destReapply = result.reapply.filter((r) => r.roomId === input.toRoomId);
+      const reapplyWarning = await reapplyStaleRooms(srcReapply, isManager);
+      if (reapplyWarning) postWarning = reapplyWarning;
+      if (destReapply.length > 0) {
+        const dn = destHostelRow?.name ?? "the destination branch";
+        const msg =
+          `Room ${destReapply[0].roomNumber} in ${dn} had AC units applied earlier this month. ` +
+          `Switch to ${dn} and press Apply on it under Payments → AC Billing, or the members there are billed for each other's units.`;
+        postWarning = postWarning ? `${postWarning} ${msg}` : msg;
+      }
+
+      // Ledger entry on the NEW branch — where the member's history is read now.
+      const noteParts: string[] = [`${srcHostelRow?.name ?? "Old branch"} → ${destHostelRow?.name ?? "New branch"}`];
+      if (result.closedMeter) {
+        noteParts.push(
+          `${result.fromRoomNumber} meter: ${Math.round(Number(input.fromRoomReading))} · ${result.closedUnits} units` +
+          (result.closedCharge > 0 ? ` → Rs ${result.closedCharge.toLocaleString()}` : "")
+        );
+      }
+      if (result.openedMeter) noteParts.push(`${result.toRoomNumber} meter: ${Math.round(Number(input.toRoomReading))}`);
+
+      const { error: evErr } = await adminDb.from("hms_tenant_events").insert({
+        hostel_id: input.toHostelId,
+        tenant_id: input.tenantId,
+        event_type: "branch_changed",
+        from_value: result.fromRoomNumber ? `${srcHostelRow?.name ?? ""} · ${result.fromRoomNumber}`.trim() : (srcHostelRow?.name ?? null),
+        to_value: `${destHostelRow?.name ?? ""} · ${result.toRoomNumber}`.trim(),
+        amount: result.closedCharge > 0 ? result.closedCharge : null,
+        notes: noteParts.join(" · "),
+      });
+      if (evErr) throw new Error(`ledger entry: ${evErr.message}`);
+    } catch (postErr: unknown) {
+      unstable_rethrow(postErr);
+      const detail = postErr instanceof Error ? postErr.message : String(postErr);
+      const tail = `The move to ${destHostelRow?.name ?? "the new branch"} went through, but part of the member's history did not follow (${detail}). Open their profile to confirm, and contact support if the ledger looks incomplete.`;
+      postWarning = postWarning ? `${postWarning} ${tail}` : tail;
+    }
+
+    revalidatePath("/tenants");
+    revalidatePath("/payments");
+    return { success: true, result: { ...result, warning: postWarning ?? result.warning } };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };

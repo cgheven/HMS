@@ -543,7 +543,7 @@ export interface CheckoutSettlement {
   depositForfeited: number;
 }
 
-export type TenantEventType = "room_changed" | "plan_changed" | "deposit_collected" | "deposit_returned" | "deposit_forfeited" | "deposit_applied" | "notice_given" | "notice_cancelled";
+export type TenantEventType = "room_changed" | "plan_changed" | "deposit_collected" | "deposit_returned" | "deposit_forfeited" | "deposit_applied" | "notice_given" | "notice_cancelled" | "branch_changed";
 
 export interface TenantEvent {
   id: string;

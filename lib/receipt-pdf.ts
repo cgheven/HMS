@@ -16,6 +16,11 @@ interface ReceiptPayment {
   ac_charge?: number;
   ac_units_consumed?: number | null;
   ac_per_unit_rate?: number;
+  /** When the AC charge is a CARRIED TRANSFER charge (electricity from a room the
+   *  member moved out of this month), the source for the receipt sub-line —
+   *  scope 'room' (a room move within this branch) or 'branch' (a branch
+   *  transfer), and a short label naming the source room (and branch, if cross). */
+  carried_ac?: { scope: "room" | "branch"; source: string } | null;
   /** Deposit actually billed as part of THIS payment's amount (first month only) */
   security_deposit_charge?: number;
   /** Deposit to be refunded — shown only on a checkout receipt, unrelated to `amount` */
@@ -72,8 +77,27 @@ interface ReceiptHostel {
   acChargeLabel?: string | null;
 }
 
-function encodePdfString(str: string): string {
+// The receipt uses the base Helvetica fonts, which are single-byte (Latin-1)
+// encoded, but the content stream is written as UTF-8. Any character outside
+// ASCII — an em-dash, a curly quote, or an Urdu/accented tenant name — is emitted
+// as multi-byte UTF-8 and rendered one garbled Latin-1 glyph per byte ("—" → "â").
+// Normalise to ASCII-safe text first: map the punctuation these fonts can't show
+// to plain equivalents, strip diacritics so "José" prints "Jose", and replace any
+// remaining unsupported character with "?" rather than mojibake.
+function sanitizeForPdf(str: string): string {
   return str
+    .replace(/[‐-―]/g, "-")            // hyphens, en/em dashes
+    .replace(/[‘’‚‛]/g, "'") // curly single quotes
+    .replace(/[“”„‟]/g, '"') // curly double quotes
+    .replace(/[•·‧]/g, "-")       // bullet, middle dot
+    .replace(/…/g, "...")                   // ellipsis
+    .replace(/ /g, " ")                     // non-breaking space
+    .normalize("NFKD").replace(/[̀-ͯ]/g, "") // strip diacritics
+    .replace(/[^\x20-\x7E]/g, "?");              // anything still non-ASCII
+}
+
+function encodePdfString(str: string): string {
+  return sanitizeForPdf(str)
     .replace(/\\/g, "\\\\")
     .replace(/\(/g, "\\(")
     .replace(/\)/g, "\\)")
@@ -307,6 +331,11 @@ export function generateReceiptPDF(
     }
     if ((payment.ac_charge ?? 0) > 0) {
       addKv(hostel.acChargeLabel?.trim() || "AC Charges", pk(payment.ac_charge!)); nl(11);
+      if (payment.carried_ac) {
+        // Explains an AC line on a member who now sits in a non-AC room: the
+        // charge is electricity from the room they left, up to the move.
+        add(ML + 4, `incl. from previous ${payment.carried_ac.scope} - ${payment.carried_ac.source}`, 6, false); nl(9);
+      }
       const realRate = payment.ac_per_unit_rate && payment.ac_per_unit_rate > 0 ? payment.ac_per_unit_rate : 0;
       const storedUnits = Number(payment.ac_units_consumed ?? 0);
       if (realRate > 0) {

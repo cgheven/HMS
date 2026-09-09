@@ -126,7 +126,7 @@ export async function getManagerTenants() {
 export async function getManagerPaymentsPageData(forMonth: string) {
   const scope = await resolveManagerHostel();
   if (!scope) {
-    return { hostelId: null, payments: [], tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, meterAllRooms: false, acReadings: [], acCheckoutReadings: [], acJoinReadings: [], waitingTenantIds: [] };
+    return { hostelId: null, payments: [], carriedTransferByTenant: {} as Record<string, "room" | "branch">, tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, meterAllRooms: false, acReadings: [], acCheckoutReadings: [], acJoinReadings: [], waitingTenantIds: [] };
   }
 
   const { hostelId } = scope;
@@ -195,9 +195,37 @@ export async function getManagerPaymentsPageData(forMonth: string) {
 
   const h = hostel as Pick<Hostel, "id" | "name" | "phone" | "whatsapp" | "payment_methods" | "reminder_template" | "meter_all_rooms"> | null;
 
+  // See getPaymentsPageData (lib/data.ts): whether each member's AC charge this
+  // month is a carried transfer charge, and from this branch ("room") or another
+  // ("branch"). NOT hostel-scoped, keyed to this page's tenant ids.
+  const carriedTransferByTenant: Record<string, "room" | "branch"> = {};
+  // Cross-branch closing readings (see getPaymentsPageData) — merged into
+  // acCheckoutReadings so the AC Billing card subtracts a mover's carried units
+  // instead of flagging them as "above the meter".
+  const crossBranchCheckouts: { room_id: string; for_month: string; meter_reading: number | null; tenant_id: string; units_consumed: number | null; ac_charge: number | null; transferred_to_room_id: string | null }[] = [];
+  const payTenantIds = [...new Set(((payments ?? []) as Payment[]).map((p) => p.tenant_id).filter(Boolean) as string[])];
+  if (payTenantIds.length > 0) {
+    const { data: xferRows } = await admin
+      .from("hms_room_ac_checkout_readings")
+      .select("tenant_id, hostel_id, room_id, for_month, meter_reading, units_consumed, ac_charge, transferred_to_room_id")
+      .eq("for_month", forMonth)
+      .not("transferred_to_room_id", "is", null)
+      .in("tenant_id", payTenantIds);
+    for (const r of (xferRows ?? []) as { tenant_id: string; hostel_id: string; room_id: string; for_month: string; meter_reading: number | null; units_consumed: number | null; ac_charge: number | null; transferred_to_room_id: string | null }[]) {
+      if (Number(r.ac_charge ?? 0) <= 0) continue;
+      if (carriedTransferByTenant[r.tenant_id] !== "branch") {
+        carriedTransferByTenant[r.tenant_id] = r.hostel_id === hostelId ? "room" : "branch";
+      }
+      if (r.hostel_id !== hostelId) {
+        crossBranchCheckouts.push({ room_id: r.room_id, for_month: r.for_month, meter_reading: r.meter_reading, tenant_id: r.tenant_id, units_consumed: r.units_consumed, ac_charge: r.ac_charge, transferred_to_room_id: r.transferred_to_room_id });
+      }
+    }
+  }
+
   return {
     hostelId,
     payments: (payments ?? []) as Payment[],
+    carriedTransferByTenant,
     tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "deposit_collected_amount" | "registration_fee" | "food_breakfast" | "food_lunch" | "food_dinner" | "joining_meter_reading" | "ac_maintenance" | "discount_percent"> & { package_tier: PackageTier })[],
     rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor" | "has_ac">[],
     packageConfig,
@@ -207,7 +235,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     reminderTemplate: h?.reminder_template ?? null,
     meterAllRooms: h?.meter_all_rooms ?? false,
     acReadings: (acReadings ?? []) as { room_id: string; for_month: string; total_units: number; meter_reading?: number | null; per_unit_rate: number; tenant_count: number; recorded_while_vacant?: boolean | null }[],
-    acCheckoutReadings: (acCheckoutReadings ?? []) as { room_id: string; for_month: string; meter_reading: number | null }[],
+    acCheckoutReadings: [...(acCheckoutReadings ?? []), ...crossBranchCheckouts] as { room_id: string; for_month: string; meter_reading: number | null }[],
     acJoinReadings: (acJoinReadings ?? []) as { room_id: string; tenant_id: string; units_at_join: number; for_month: string }[],
     waitingTenantIds: (waitingTenants ?? []).map((t) => t.id as string),
   };

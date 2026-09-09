@@ -14,6 +14,12 @@ export interface RoomTransferInput {
   /** Meter reading on the room being JOINED, at the moment of the move. Required
    *  only when that room is metered. */
   toRoomReading?: number | null;
+  /** BRANCH TRANSFER: the destination room lives in a DIFFERENT branch of the
+   *  same owner. When set (and different from the source hostelId), the tenant's
+   *  hostel_id moves too, and every destination-side lookup/write is scoped to
+   *  this branch. Omitted (or equal to hostelId) = a normal within-branch move.
+   *  The caller (branch-transfer action) verifies same-owner ownership first. */
+  toHostelId?: string;
 }
 
 export interface RoomTransferResult {
@@ -81,6 +87,10 @@ export async function performRoomTransfer(
 ): Promise<RoomTransferResult> {
   const today = pktTodayDateString();
   const forMonth = today.slice(0, 7);
+  // Destination branch. Equals the source for a within-branch move; a real other
+  // branch for a branch transfer. Every destination-side query below uses this.
+  const destHostelId = input.toHostelId ?? hostelId;
+  const crossBranch = destHostelId !== hostelId;
 
   const { data: tenant, error: tErr } = await adminDb
     .from("hms_tenants")
@@ -90,20 +100,24 @@ export async function performRoomTransfer(
     .single();
   if (tErr || !tenant) throw new Error("Member not found in this branch.");
   if (!tenant.is_active) throw new Error("This member is not active.");
-  if (tenant.room_id === input.toRoomId) throw new Error("That is the room they are already in.");
+  if (!crossBranch && tenant.room_id === input.toRoomId) throw new Error("That is the room they are already in.");
 
-  const [{ data: toRoom }, { data: fromRoom }, { data: hostel }] = await Promise.all([
-    adminDb.from("hms_rooms").select("id, room_number, has_ac, capacity").eq("id", input.toRoomId).eq("hostel_id", hostelId).maybeSingle(),
+  const [{ data: toRoom }, { data: fromRoom }, { data: hostel }, { data: destHostel }] = await Promise.all([
+    adminDb.from("hms_rooms").select("id, room_number, has_ac, capacity").eq("id", input.toRoomId).eq("hostel_id", destHostelId).maybeSingle(),
     tenant.room_id
       ? adminDb.from("hms_rooms").select("id, room_number, has_ac").eq("id", tenant.room_id).eq("hostel_id", hostelId).maybeSingle()
       : Promise.resolve({ data: null }),
     adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).single(),
+    crossBranch
+      ? adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", destHostelId).single()
+      : Promise.resolve({ data: null }),
   ]);
   if (!toRoom) throw new Error("Destination room not found in this branch.");
 
   const meterAll = !!hostel?.meter_all_rooms;
+  const destMeterAll = crossBranch ? !!destHostel?.meter_all_rooms : meterAll;
   const fromMetered = isMeteredRoom(fromRoom, meterAll);
-  const toMetered = isMeteredRoom(toRoom, meterAll);
+  const toMetered = isMeteredRoom(toRoom, destMeterAll);
 
   // Capacity is a real operational limit, not advisory — two people cannot share
   // one bed. Counted fresh rather than trusted from rooms.occupied, which is a
@@ -111,7 +125,7 @@ export async function performRoomTransfer(
   const { count: toOccupied } = await adminDb
     .from("hms_tenants")
     .select("id", { count: "exact", head: true })
-    .eq("hostel_id", hostelId)
+    .eq("hostel_id", destHostelId)
     .eq("room_id", input.toRoomId)
     .eq("is_active", true);
   if ((toOccupied ?? 0) >= Number(toRoom.capacity ?? 0)) {
@@ -134,7 +148,7 @@ export async function performRoomTransfer(
   const { data: alreadyLeft } = await adminDb
     .from("hms_room_ac_checkout_readings")
     .select("meter_reading")
-    .eq("hostel_id", hostelId)
+    .eq("hostel_id", destHostelId)
     .eq("room_id", input.toRoomId)
     .eq("tenant_id", input.tenantId)
     .eq("for_month", forMonth)
@@ -172,7 +186,7 @@ export async function performRoomTransfer(
     }
     for (const rid of writtenJoin) {
       await adminDb.from("hms_room_ac_join_readings").delete()
-        .eq("hostel_id", hostelId).eq("room_id", rid)
+        .eq("hostel_id", destHostelId).eq("room_id", rid)
         .eq("tenant_id", input.tenantId).eq("for_month", forMonth);
     }
   };
@@ -314,9 +328,9 @@ export async function performRoomTransfer(
 
       const prevMonth = prevMonthOf(forMonth);
       const [{ data: prevRow }, { data: prevCheckouts }, { data: roommates }] = await Promise.all([
-        adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", toRoom.id).eq("hostel_id", hostelId).eq("for_month", prevMonth).maybeSingle(),
-        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", toRoom.id).eq("hostel_id", hostelId).eq("for_month", prevMonth),
-        adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", toRoom.id).eq("is_active", true),
+        adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", toRoom.id).eq("hostel_id", destHostelId).eq("for_month", prevMonth).maybeSingle(),
+        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", toRoom.id).eq("hostel_id", destHostelId).eq("for_month", prevMonth),
+        adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", destHostelId).eq("room_id", toRoom.id).eq("is_active", true),
       ]);
 
       const storedPrev = effectivePrevReading(prevRow, prevCheckouts);
@@ -354,7 +368,7 @@ export async function performRoomTransfer(
         // Mid-Month Joiners box stores, so the engine needs no new concept.
         const { error: jErr } = await adminDb.from("hms_room_ac_join_readings").upsert(
           {
-            hostel_id: hostelId,
+            hostel_id: destHostelId,
             room_id: toRoom.id,
             tenant_id: input.tenantId,
             for_month: forMonth,
@@ -453,6 +467,12 @@ export async function performRoomTransfer(
     const { error: moveErr } = await adminDb
       .from("hms_tenants")
       .update({
+        // On a branch transfer the member physically changes branch, so their
+        // hostel_id moves with them. Equal to hostelId for a within-branch move,
+        // so this is a no-op there. Everything else about them — rent, deposit,
+        // dues — is left untouched; the pending payment rows are re-homed to the
+        // new branch by the caller, after this returns.
+        hostel_id: destHostelId,
         room_id: input.toRoomId,
         joining_meter_reading: toMetered && input.toRoomReading != null
           ? Math.round(Number(input.toRoomReading))
@@ -469,12 +489,19 @@ export async function performRoomTransfer(
   }
 
   // Occupancy counts on both rooms, recounted from truth rather than adjusted.
+  // On a branch transfer the two rooms live in different branches, so each is
+  // counted against its own hostel_id — the source room in hostelId, the
+  // destination in destHostelId. Equal for a within-branch move.
   const stillOccupied = new Map<string, number>();
-  for (const rid of [fromRoom?.id, toRoom.id].filter(Boolean) as string[]) {
+  const roomBranches: { id: string; hostelId: string }[] = [
+    ...(fromRoom?.id ? [{ id: fromRoom.id, hostelId }] : []),
+    { id: toRoom.id, hostelId: destHostelId },
+  ];
+  for (const { id: rid, hostelId: rHostelId } of roomBranches) {
     const { count } = await adminDb
       .from("hms_tenants")
       .select("id", { count: "exact", head: true })
-      .eq("hostel_id", hostelId)
+      .eq("hostel_id", rHostelId)
       .eq("room_id", rid)
       .eq("is_active", true);
     stillOccupied.set(rid, count ?? 0);
@@ -492,12 +519,12 @@ export async function performRoomTransfer(
   // Which of the two rooms already has this month's reading on file — see the
   // `reapply` note on RoomTransferResult.
   const reapply: { roomId: string; roomNumber: string; reading: number }[] = [];
-  for (const room of [fromRoom, toRoom]) {
+  for (const [room, rHostelId] of [[fromRoom, hostelId], [toRoom, destHostelId]] as const) {
     if (!room) continue;
     const { data: rd } = await adminDb
       .from("hms_room_ac_readings")
       .select("meter_reading")
-      .eq("hostel_id", hostelId).eq("room_id", room.id).eq("for_month", forMonth)
+      .eq("hostel_id", rHostelId).eq("room_id", room.id).eq("for_month", forMonth)
       .maybeSingle();
     // Nobody left to re-split. The only person this room metered has gone, their
     // share is on the breakpoint, and there is no roommate whose number could be
