@@ -56,12 +56,16 @@ export async function createPlanCheckoutAction(input: {
     const effectivePlan: PlanKey | null = useCustom ? serverPlan : inputPlan;
     const priceId = getPlanPriceId(effectivePlan ?? "basic", cycle);
 
-    // Locked quantity: the owner's real branch count, counted server-side.
+    // Locked quantity: the owner's BILLABLE branch count, counted server-side.
+    // Mirrors lib/invoice-generation.ts — a branch paused from billing
+    // (billing_active = false, the super-admin toggle) stays fully usable to the
+    // client but is not charged, so it must not inflate the card charge either.
     const admin = createAdminClient();
     const { count } = await admin
       .from("hms_hostels")
       .select("id", { count: "exact", head: true })
-      .eq("owner_id", ownerId);
+      .eq("owner_id", ownerId)
+      .eq("billing_active", true);
     const quantity = Math.max(1, count ?? 1);
 
     const paddle = getPaddleServer();
