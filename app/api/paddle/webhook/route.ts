@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getPaddleServer } from "@/lib/paddle-server";
 import { asPlan, applyPlanEntitlements } from "@/lib/entitlements";
+import { pktTodayDateString } from "@/lib/pkt-time";
 
 // Node runtime: the Paddle SDK + signature verification need Node crypto, not edge.
 export const runtime = "nodejs";
@@ -168,13 +169,16 @@ export async function POST(req: NextRequest) {
       // cancel it. Fully-past arrears (period_end on/before the payment date) are
       // left owed. After the first payment there is nothing to cancel (manual
       // generation is skipped for Paddle owners), so this is a no-op on renewals.
+      // Compare against the payment's Asia/Karachi calendar date — period_end is a
+      // PKT business date, and paidAt's raw UTC slice is a day behind for a payment
+      // landing 00:00–04:59 PKT, which could drop a real arrear a day early.
       if (ownerId) {
         mustOk(await admin
           .from("hms_platform_invoices")
           .update({ status: "cancelled" })
           .eq("owner_id", ownerId)
           .eq("status", "unpaid")
-          .gt("period_end", paidAt.slice(0, 10)), "supersede overlapping manual invoices");
+          .gt("period_end", pktTodayDateString(new Date(paidAt))), "supersede overlapping manual invoices");
       }
 
       // Receipt row for the /billing invoice history. Only when we can tie it to
