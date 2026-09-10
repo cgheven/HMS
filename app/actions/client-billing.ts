@@ -180,7 +180,7 @@ export async function markInvoiceStatus(
     // second "we received your payment" for money that arrived once.
     const { data: before } = await admin
       .from("hms_platform_invoices")
-      .select("status")
+      .select("status, owner_id")
       .eq("id", invoiceId)
       .maybeSingle();
     const wasUnpaid = before?.status === "unpaid";
@@ -194,6 +194,20 @@ export async function markInvoiceStatus(
       })
       .eq("id", invoiceId);
     if (error) throw error;
+
+    // Auto-unfreeze on a bank/manual payment: once this owner has NO remaining
+    // unpaid invoices, lift any account suspension (mirrors the Paddle webhook,
+    // which clears frozen on a card payment). Only on a real unpaid -> paid.
+    if (status === "paid" && wasUnpaid && before?.owner_id) {
+      const { count: stillUnpaid } = await admin
+        .from("hms_platform_invoices")
+        .select("id", { count: "exact", head: true })
+        .eq("owner_id", before.owner_id)
+        .eq("status", "unpaid");
+      if ((stillUnpaid ?? 0) === 0) {
+        await admin.from("hms_profiles").update({ frozen: false }).eq("id", before.owner_id);
+      }
+    }
 
     // Both channels, fire-and-forget: the payment is already recorded, and an
     // outage at Meta or Resend must never fail marking an invoice paid.

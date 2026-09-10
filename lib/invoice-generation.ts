@@ -19,6 +19,19 @@ export async function generateInvoiceForOwner(
     return { generated: false, reason: "Billing rate not configured for this client" };
   }
 
+  // Reconciliation: a client on Paddle card auto-pay is billed by Paddle (their
+  // subscription auto-charges each cycle), so we must NOT also generate a manual
+  // PulseHub invoice — that would double-bill them. Bank/manual clients have no
+  // active subscription and fall through to normal generation.
+  const { data: sub } = await admin
+    .from("hms_paddle_subscriptions")
+    .select("status")
+    .eq("owner_id", ownerId)
+    .maybeSingle();
+  if (sub && ["active", "trialing"].includes((sub as { status?: string }).status ?? "")) {
+    return { generated: false, reason: "Client is on Paddle auto-pay" };
+  }
+
   const anchor = billing.next_invoice_date
     ? new Date(`${billing.next_invoice_date}T00:00:00Z`)
     : new Date(`${pktTodayDateString()}T00:00:00Z`);
