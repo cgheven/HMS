@@ -395,7 +395,7 @@ export async function getDashboardData() {
 // so this deliberately does NOT depend on ctx.hostelId / the branch switcher.
 export async function getOwnerBilling() {
   const ctx = await getAuthContext();
-  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1, subscription: null as OwnerPaddleSubscription | null, paddlePayments: [] as OwnerPaddlePayment[] };
+  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1, subscription: null as OwnerPaddleSubscription | null, paddlePayments: [] as OwnerPaddlePayment[], plan: null as Plan | null, customUnitAmountUsd: null as number | null };
   const { supabase, user } = ctx;
 
   const [{ data: billing }, { data: invoices }, { count: branchCount }, { data: subscription }, { data: paddlePayments }] = await Promise.all([
@@ -427,6 +427,8 @@ export async function getOwnerBilling() {
     branchCount: branchCount ?? 1,
     subscription: (subscription as OwnerPaddleSubscription | null) ?? null,
     paddlePayments: (paddlePayments ?? []) as OwnerPaddlePayment[],
+    plan: asPlan(ctx.profile?.plan),
+    customUnitAmountUsd: ctx.profile?.custom_unit_amount_usd != null ? Number(ctx.profile.custom_unit_amount_usd) : null,
   };
 }
 

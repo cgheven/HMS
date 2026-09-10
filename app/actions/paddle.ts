@@ -50,11 +50,21 @@ export async function createPlanCheckoutAction(input: {
 
     const paddle = getPaddleServer();
 
+    // A grandfathered client has a negotiated per-branch USD rate. When present we
+    // charge THAT instead of the standard plan price — a fixed rate with no
+    // per-country overrides. It's a monthly figure; annual mirrors the catalog's
+    // pay-10-get-12 (× 10). Read server-side (guarded column), never client input.
+    const customMonthly = ctx.profile?.custom_unit_amount_usd;
+    const useCustom = customMonthly != null && Number(customMonthly) > 0;
+
     // Pull the catalog price and mirror it into an inline price whose quantity
     // is pinned (min === max === branch count) so the checkout stepper is hidden
     // and the amount is fixed. Copying the catalog price keeps the localized
     // per-country pricing identical to what the plan card shows.
     const catalog = await paddle.prices.get(priceId);
+    const customAmount = useCustom
+      ? String(Math.round(Number(customMonthly) * (cycle === "annual" ? 10 : 1) * 100))
+      : null;
     const inlinePrice = {
       productId: catalog.productId,
       description: catalog.description,
@@ -62,11 +72,16 @@ export async function createPlanCheckoutAction(input: {
       billingCycle: catalog.billingCycle
         ? { interval: catalog.billingCycle.interval, frequency: catalog.billingCycle.frequency }
         : null,
-      unitPrice: { amount: catalog.unitPrice.amount, currencyCode: catalog.unitPrice.currencyCode },
-      unitPriceOverrides: catalog.unitPriceOverrides.map((o) => ({
-        countryCodes: o.countryCodes,
-        unitPrice: { amount: o.unitPrice.amount, currencyCode: o.unitPrice.currencyCode },
-      })),
+      unitPrice: customAmount
+        ? { amount: customAmount, currencyCode: "USD" as const }
+        : { amount: catalog.unitPrice.amount, currencyCode: catalog.unitPrice.currencyCode },
+      // A negotiated rate is a single fixed USD figure — no per-country overrides.
+      unitPriceOverrides: useCustom
+        ? []
+        : catalog.unitPriceOverrides.map((o) => ({
+            countryCodes: o.countryCodes,
+            unitPrice: { amount: o.unitPrice.amount, currencyCode: o.unitPrice.currencyCode },
+          })),
       quantity: { minimum: quantity, maximum: quantity },
     };
 

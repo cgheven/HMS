@@ -57,6 +57,9 @@ export interface Profile {
   /** Account-level Pulse plan (migration 227). NULL = no explicit plan → legacy
    *  per-capability flags govern. Set by the Paddle webhook / Super Admin only. */
   plan?: "basic" | "standard" | null;
+  /** Negotiated per-branch price in USD (migration 228). NULL = standard catalog
+   *  pricing. Set for grandfathered/legacy clients only (Super Admin). */
+  custom_unit_amount_usd?: number | null;
   primary_hostel_id: string | null;
   is_active: boolean;
   created_at: string;

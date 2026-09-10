@@ -51,6 +51,11 @@ interface Props {
   } | null;
   /** Paddle card-payment receipts, newest first. */
   paddlePayments: PaddlePayment[];
+  /** The owner's account plan (features). NULL if unset. */
+  plan: "basic" | "standard" | null;
+  /** A grandfathered per-branch USD rate. When set, this owner pays their
+   *  negotiated rate on their fixed plan — no plan picker. */
+  customUnitAmountUsd: number | null;
   /** True when the owner just came back from a completed Paddle checkout. */
   checkoutSuccess: boolean;
 }
@@ -69,7 +74,7 @@ function statusBadge(status: PlatformInvoice["status"]) {
   return { label: "Unpaid", cls: "text-amber bg-amber/10 border-amber/20", icon: Clock };
 }
 
-export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEmail, paddle, subscription, paddlePayments, checkoutSuccess }: Props) {
+export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEmail, paddle, subscription, paddlePayments, plan, customUnitAmountUsd, checkoutSuccess }: Props) {
   const outstanding = invoices.filter((i) => i.status === "unpaid").reduce((s, i) => s + Number(i.amount), 0);
   const qty = Math.max(1, branchCount);
 
@@ -181,6 +186,13 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
     : null;
   const currentDiscountPct = billing?.monthly_rate != null ? clientDiscountPct(billing.monthly_rate) : 0;
 
+  // Grandfathered client: a fixed negotiated USD rate on their existing plan —
+  // no plan choice, just their rate. Annual mirrors the pay-10-get-12 (× 10).
+  const isLegacy = paddleEnabled && customUnitAmountUsd != null && customUnitAmountUsd > 0;
+  const legacyPlan: PlanKey = plan === "standard" ? "standard" : "basic";
+  const legacyPerBranch = (customUnitAmountUsd ?? 0) * (cycle === "annual" ? 10 : 1);
+  const legacyTotal = legacyPerBranch * qty;
+
   return (
     <div className="space-y-6">
       <div>
@@ -247,6 +259,38 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
           {subscription!.last_paid_at && (
             <div className="text-right"><p className="text-xs text-muted-foreground">Last payment</p><p className="text-sm font-semibold">{formatDate(subscription!.last_paid_at)}</p></div>
           )}
+        </div>
+      ) : isLegacy ? (
+        <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-5">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <p className="text-sm font-semibold">Pay by card</p>
+              <p className="text-xs text-muted-foreground">Your negotiated rate — renews automatically, no manual transfers.</p>
+            </div>
+            <div className="inline-flex rounded-lg border border-sidebar-border p-0.5 text-xs">
+              <button onClick={() => setCycle("monthly")} className={cn("px-3 py-1.5 rounded-md font-medium", cycle === "monthly" ? "bg-white/10 text-foreground" : "text-muted-foreground")}>Monthly</button>
+              <button onClick={() => setCycle("annual")} className={cn("px-3 py-1.5 rounded-md font-medium", cycle === "annual" ? "bg-white/10 text-foreground" : "text-muted-foreground")}>Annual <span className="text-emerald-400">· 2 months free</span></button>
+            </div>
+          </div>
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-5 flex items-end justify-between gap-4 flex-wrap">
+            <div>
+              <p className="text-sm font-bold capitalize">{legacyPlan} <span className="ml-1 text-[10px] font-semibold text-amber uppercase tracking-wide align-middle">Your rate</span></p>
+              <p className="mt-1 text-2xl font-bold">
+                {formatMoney(legacyTotal, "USD")}
+                <span className="text-xs font-normal text-muted-foreground"> / {cycle === "monthly" ? "month" : "year"}</span>
+              </p>
+              <p className="text-[11px] text-muted-foreground">{formatMoney(legacyPerBranch, "USD")}/{cycle === "monthly" ? "mo" : "yr"} per branch · {qty} {qty > 1 ? "branches" : "branch"}</p>
+            </div>
+            <button
+              onClick={() => choose(legacyPlan)}
+              disabled={!paddleInst || !!choosing}
+              className="inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium px-4 py-2 transition-colors disabled:opacity-50 bg-emerald-600 hover:bg-emerald-600/90 text-white"
+            >
+              {choosing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
+              {choosing ? "Opening…" : "Pay by card"}
+            </button>
+          </div>
+          {checkoutError && <p className="text-xs text-rose-400">{checkoutError}</p>}
         </div>
       ) : paddleEnabled ? (
         <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-5">

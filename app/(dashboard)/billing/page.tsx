@@ -19,7 +19,7 @@ export default async function BillingPage({
   if (ctx?.profile?.role !== "owner" && ctx?.profile?.role !== "super_admin") redirect("/dashboard");
 
   const { checkout } = await searchParams;
-  const { billing, invoices, branchCount, subscription, paddlePayments } = await getOwnerBilling();
+  const { billing, invoices, branchCount, subscription, paddlePayments, plan, customUnitAmountUsd } = await getOwnerBilling();
   return (
     <BillingClient
       billing={billing}
@@ -27,6 +27,8 @@ export default async function BillingPage({
       branchCount={branchCount}
       subscription={subscription}
       paddlePayments={paddlePayments}
+      plan={plan}
+      customUnitAmountUsd={customUnitAmountUsd}
       checkoutSuccess={checkout === "success"}
       ownerId={ctx?.user?.id ?? ""}
       ownerEmail={ctx?.user?.email ?? ""}
