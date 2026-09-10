@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 import { ArrowRight, Building2, CreditCard, Users, Bell, ShieldCheck, BarChart3, Mail, Phone } from "lucide-react";
 import { LegalFooter } from "@/components/legal/legal-footer";
 
@@ -16,7 +17,15 @@ export function LandingPage() {
     <div className="min-h-screen bg-background text-foreground">
       {/* Nav */}
       <nav className="flex items-center justify-between px-6 py-5 max-w-6xl mx-auto">
-        <span className="font-serif text-2xl tracking-tight">Pulse</span>
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-amber/10 border border-amber/20 overflow-hidden">
+            <Image src="/logo-mark.jpg" alt="Pulse" width={36} height={36} className="w-full h-full object-cover" />
+          </div>
+          <div>
+            <p className="text-foreground font-bold text-sm tracking-tight leading-none">Pulse</p>
+            <p className="text-amber/70 text-[10px] mt-0.5 font-semibold tracking-[0.15em] uppercase">Pulse of Your Business</p>
+          </div>
+        </div>
         <div className="flex items-center gap-4">
           <Link href="/login" className="text-sm text-muted-foreground hover:text-foreground transition-colors">Sign in</Link>
           <Link href="/pricing" className="h-9 inline-flex items-center px-4 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors">Get Started</Link>
