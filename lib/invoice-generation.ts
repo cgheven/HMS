@@ -43,7 +43,13 @@ export async function generateInvoiceForOwner(
   }
   const subStatus = (sub as { status?: string } | null)?.status ?? null;
   if (subStatus && ["active", "trialing", "past_due", "paused"].includes(subStatus)) {
-    await admin.from("hms_client_billing").update({ next_invoice_date: periodEnd }).eq("owner_id", ownerId);
+    // Advance the schedule only when the invoice is actually DUE (the cron path,
+    // next_invoice_date <= today). This keeps the anchor current so a cancel
+    // resumes cleanly, while a repeated manual "Generate Now" click (anchor
+    // already in the future) can't keep pushing next_invoice_date further out.
+    if (!billing.next_invoice_date || billing.next_invoice_date <= pktTodayDateString()) {
+      await admin.from("hms_client_billing").update({ next_invoice_date: periodEnd }).eq("owner_id", ownerId);
+    }
     return { generated: false, reason: "Client is on Paddle billing" };
   }
 
