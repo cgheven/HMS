@@ -7,6 +7,7 @@ import { calcDailyRent } from "@/lib/daily-billing";
 import { effectivePaymentStatus } from "@/lib/payment-calc";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { feedbackBucket, VERDICT_LABEL } from "@/lib/feedback-options";
+import { asPlan, type Plan } from "@/lib/entitlements";
 import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
@@ -78,6 +79,10 @@ export const getAuthContext = cache(async () => {
       // transfer) needs to know the tier on the OTHER branch too.
       partnerTierByHostel: Object.fromEntries(tierByHostel) as Record<string, PartnerTier>,
       partnerFeatureFlags: (hostel ? flagsByHostel.get(hostel.id) ?? {} : {}) as PartnerFeatureFlags,
+      // A partner has no plan of their own; entitlement on the branch they work
+      // reaches them through the branch's capability flags, which the owner's
+      // plan already drives.
+      plan: null as Plan | null,
     };
   }
 
@@ -133,6 +138,7 @@ export const getAuthContext = cache(async () => {
     partnerTier: null as PartnerTier | null,
     partnerTierByHostel: {} as Record<string, PartnerTier>,
     partnerFeatureFlags: {} as PartnerFeatureFlags,
+    plan: asPlan((profile as Profile | null)?.plan),
   };
 });
 

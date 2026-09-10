@@ -54,6 +54,9 @@ export interface Profile {
   /** Appearance of the owner's PUBLIC page only — the dashboard is always dark.
    *  NULL means light, which is what every client is served today. */
   public_theme?: "light" | "dark" | null;
+  /** Account-level Pulse plan (migration 227). NULL = no explicit plan → legacy
+   *  per-capability flags govern. Set by the Paddle webhook / Super Admin only. */
+  plan?: "basic" | "standard" | null;
   primary_hostel_id: string | null;
   is_active: boolean;
   created_at: string;

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getPaddleServer } from "@/lib/paddle-server";
+import { asPlan, applyPlanEntitlements } from "@/lib/entitlements";
 
 // Node runtime: the Paddle SDK + signature verification need Node crypto, not edge.
 export const runtime = "nodejs";
@@ -32,6 +33,10 @@ type TxnLike = {
 function ownerIdOf(custom: Record<string, unknown> | null | undefined): string | null {
   const v = custom?.["owner_id"];
   return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+function planOf(custom: Record<string, unknown> | null | undefined) {
+  return asPlan(typeof custom?.["plan"] === "string" ? (custom!["plan"] as string) : null);
 }
 
 export async function POST(req: NextRequest) {
@@ -104,6 +109,19 @@ export async function POST(req: NextRequest) {
           .from("hms_paddle_subscriptions")
           .update({ last_transaction_id: t.id ?? null, last_paid_at: paidAt, updated_at: now })
           .eq("paddle_subscription_id", t.subscriptionId);
+      }
+
+      // Set the account's plan from the checkout's custom_data and make the
+      // capability flags match it. Our subscriptions use an inline (non-catalog)
+      // price, so price_id can't be reverse-mapped to a plan — custom_data.plan,
+      // set server-side at checkout, is the reliable source. Only the first
+      // payment of a plan carries it; renewals without it leave the plan intact.
+      if (ownerId) {
+        const plan = planOf(t.customData);
+        if (plan) {
+          await admin.from("hms_profiles").update({ plan }).eq("id", ownerId);
+          await applyPlanEntitlements(admin, ownerId, plan);
+        }
       }
 
       // Receipt row for the /billing invoice history. Only when we can tie it to
