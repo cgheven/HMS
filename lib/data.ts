@@ -405,7 +405,11 @@ export async function getOwnerBilling() {
       .select("*")
       .eq("owner_id", user.id)
       .order("period_start", { ascending: false }),
-    supabase.from("hms_hostels").select("id", { count: "exact", head: true }).eq("owner_id", user.id),
+    // BILLABLE branches only — a branch paused from billing (billing_active=false)
+    // stays usable but isn't charged, so it must not inflate the amount the
+    // billing page shows or the Paddle checkout quantity. Matches the charge
+    // (app/actions/paddle.ts) and the invoice rail (lib/invoice-generation.ts).
+    supabase.from("hms_hostels").select("id", { count: "exact", head: true }).eq("owner_id", user.id).eq("billing_active", true),
     // Paddle self-payment mirror (kept in sync by the webhook). Null until the
     // owner sets up automatic card payment.
     supabase
