@@ -16,17 +16,19 @@ const securityHeaders = [
     key: "Content-Security-Policy",
     value: [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' https://*.supabase.co data: blob:",
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
-      "font-src 'self' data:",
+      // https://*.paddle.com: Paddle.js + the hosted checkout overlay for the
+      // owner's Pulse subscription. Scoped to Paddle's domains only.
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.paddle.com",
+      "style-src 'self' 'unsafe-inline' https://*.paddle.com",
+      "img-src 'self' https://*.supabase.co https://*.paddle.com data: blob:",
+      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.paddle.com",
+      "font-src 'self' https://*.paddle.com data:",
       "media-src 'self' blob:",
       // Receipts and invoices are previewed in-app rather than in a new tab.
       // The PDF is fetched same-origin and rendered from a blob: URL, so this
       // adds blob: to what an <iframe> may load — it does NOT relax
       // frame-ancestors below, which still forbids anyone framing US.
-      "frame-src 'self' blob:",
+      "frame-src 'self' https://*.paddle.com blob:",
       "frame-ancestors 'none'",
       "form-action 'self'",
       "base-uri 'self'",
@@ -44,6 +46,11 @@ const nextConfig: NextConfig = {
   distDir: process.env.HMS_DIST_DIR || ".next",
   compress: true,
   poweredByHeader: false,
+  // Dev-only: the stage app is reached through the Cloudflare tunnel domain
+  // (stage.yourpulse.io → localhost:3001) for Paddle sandbox checkout testing.
+  // Without this, Next's dev cross-origin guard rejects Server Actions / _next
+  // requests from that host. Ignored in production builds.
+  allowedDevOrigins: ["stage.yourpulse.io"],
   images: {
     remotePatterns: [{ protocol: "https", hostname: "*.supabase.co" }],
     formats: ["image/avif", "image/webp"],

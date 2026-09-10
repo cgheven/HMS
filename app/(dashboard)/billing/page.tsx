@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getOwnerBilling, getAuthContext } from "@/lib/data";
+import { getPaddleClientConfig } from "@/lib/paddle";
 import { BillingClient } from "@/components/modules/billing/billing-client";
 
 export default async function BillingPage() {
@@ -10,6 +11,16 @@ export default async function BillingPage() {
   const ctx = await getAuthContext();
   if (ctx?.profile?.role === "partner") redirect("/dashboard");
 
-  const { billing, invoices, branchCount } = await getOwnerBilling();
-  return <BillingClient billing={billing} invoices={invoices} branchCount={branchCount} />;
+  const { billing, invoices, branchCount, subscription } = await getOwnerBilling();
+  return (
+    <BillingClient
+      billing={billing}
+      invoices={invoices}
+      branchCount={branchCount}
+      subscription={subscription}
+      ownerId={ctx?.user?.id ?? ""}
+      ownerEmail={ctx?.user?.email ?? ""}
+      paddle={getPaddleClientConfig()}
+    />
+  );
 }

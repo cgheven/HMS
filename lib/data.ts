@@ -389,10 +389,10 @@ export async function getDashboardData() {
 // so this deliberately does NOT depend on ctx.hostelId / the branch switcher.
 export async function getOwnerBilling() {
   const ctx = await getAuthContext();
-  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1 };
+  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1, subscription: null as OwnerPaddleSubscription | null };
   const { supabase, user } = ctx;
 
-  const [{ data: billing }, { data: invoices }, { count: branchCount }] = await Promise.all([
+  const [{ data: billing }, { data: invoices }, { count: branchCount }, { data: subscription }] = await Promise.all([
     supabase.from("hms_client_billing").select("*").eq("owner_id", user.id).maybeSingle(),
     supabase
       .from("hms_platform_invoices")
@@ -400,14 +400,32 @@ export async function getOwnerBilling() {
       .eq("owner_id", user.id)
       .order("period_start", { ascending: false }),
     supabase.from("hms_hostels").select("id", { count: "exact", head: true }).eq("owner_id", user.id),
+    // Paddle self-payment mirror (kept in sync by the webhook). Null until the
+    // owner sets up automatic card payment.
+    supabase
+      .from("hms_paddle_subscriptions")
+      .select("status, quantity, unit_amount, currency_code, current_period_end, last_paid_at")
+      .eq("owner_id", user.id)
+      .maybeSingle(),
   ]);
 
   return {
     billing: (billing as ClientBilling | null) ?? null,
     invoices: (invoices ?? []) as PlatformInvoice[],
     branchCount: branchCount ?? 1,
+    subscription: (subscription as OwnerPaddleSubscription | null) ?? null,
   };
 }
+
+/** The owner-facing view of their Paddle subscription (mirror read-model). */
+export type OwnerPaddleSubscription = {
+  status: string;
+  quantity: number | null;
+  unit_amount: number | null;
+  currency_code: string | null;
+  current_period_end: string | null;
+  last_paid_at: string | null;
+};
 
 export async function getRooms() {
   const ctx = await getAuthContext();

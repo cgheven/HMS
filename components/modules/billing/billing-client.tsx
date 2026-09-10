@@ -1,6 +1,8 @@
 "use client";
 
-import { Wallet, CheckCircle2, Clock, Download } from "lucide-react";
+import { useEffect, useState, useCallback } from "react";
+import { initializePaddle, type Paddle } from "@paddle/paddle-js";
+import { Wallet, CheckCircle2, Clock, Download, CreditCard, Loader2 } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import { clientDiscountPct } from "@/lib/pricing";
 import type { ClientBilling, PlatformInvoice } from "@/types";
@@ -9,6 +11,22 @@ interface Props {
   billing: ClientBilling | null;
   invoices: PlatformInvoice[];
   branchCount: number;
+  /** The account holder (auth user) — used to prefill checkout and tag the
+   *  subscription so the webhook can link it back. */
+  ownerId: string;
+  ownerEmail: string;
+  /** Paddle config read on the server. Empty tokens = feature off (control hidden). */
+  paddle: { environment: "sandbox" | "production"; clientToken: string; priceId: string };
+  /** The owner's Paddle subscription (mirror), or null if they haven't set up
+   *  automatic card payment yet. */
+  subscription: {
+    status: string;
+    quantity: number | null;
+    unit_amount: number | null;
+    currency_code: string | null;
+    current_period_end: string | null;
+    last_paid_at: string | null;
+  } | null;
 }
 
 function statusBadge(status: PlatformInvoice["status"]) {
@@ -21,8 +39,42 @@ function statusBadge(status: PlatformInvoice["status"]) {
   return { label: "Unpaid", cls: "text-amber bg-amber/10 border-amber/20", icon: Clock };
 }
 
-export function BillingClient({ billing, invoices, branchCount }: Props) {
+export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEmail, paddle, subscription }: Props) {
   const outstanding = invoices.filter((i) => i.status === "unpaid").reduce((s, i) => s + Number(i.amount), 0);
+
+  const subActive = !!subscription && ["active", "trialing"].includes(subscription.status);
+  const subMonthly = subscription && subscription.unit_amount != null
+    ? Number(subscription.unit_amount) * (subscription.quantity ?? 1)
+    : null;
+
+  // Paddle.js checkout for the owner's own Pulse subscription. Initialised once
+  // when the token is present; the button stays disabled until it's ready.
+  const paddleEnabled = !!paddle.clientToken && !!paddle.priceId;
+  const [paddleInst, setPaddleInst] = useState<Paddle | undefined>(undefined);
+  const [checkoutOpening, setCheckoutOpening] = useState(false);
+
+  useEffect(() => {
+    if (!paddleEnabled) return;
+    let cancelled = false;
+    initializePaddle({ environment: paddle.environment, token: paddle.clientToken })
+      .then((p) => { if (!cancelled && p) setPaddleInst(p); })
+      .catch(() => {/* control simply stays disabled */});
+    return () => { cancelled = true; };
+  }, [paddleEnabled, paddle.environment, paddle.clientToken]);
+
+  const openCheckout = useCallback(() => {
+    if (!paddleInst) return;
+    setCheckoutOpening(true);
+    paddleInst.Checkout.open({
+      items: [{ priceId: paddle.priceId, quantity: Math.max(1, branchCount) }],
+      // Prefill and tag the transaction so the webhook can match it to this
+      // account. custom_data flows through to the subscription + every event.
+      ...(ownerEmail ? { customer: { email: ownerEmail } } : {}),
+      customData: { owner_id: ownerId },
+      settings: { displayMode: "overlay", theme: "dark", allowLogout: false },
+    });
+    setCheckoutOpening(false);
+  }, [paddleInst, paddle.priceId, branchCount, ownerEmail, ownerId]);
 
   const cycleTotal = billing?.monthly_rate != null
     ? billing.monthly_rate * (billing.billing_cycle === "annual" ? 12 : 1) * branchCount
@@ -78,6 +130,53 @@ export function BillingClient({ billing, invoices, branchCount }: Props) {
           </div>
         </div>
       )}
+
+      {subActive ? (
+        <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-6 flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold">
+                Automatic card payment active{subscription!.status === "trialing" ? " (trial)" : ""}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {subMonthly != null && (
+                  <>{formatCurrency(subMonthly)}/month{subscription!.quantity ? ` · ${subscription!.quantity} branch${subscription!.quantity > 1 ? "es" : ""}` : ""} · </>
+                )}
+                Renews {subscription!.current_period_end ? formatDate(subscription!.current_period_end) : "—"}
+              </p>
+            </div>
+          </div>
+          {subscription!.last_paid_at && (
+            <div className="text-right">
+              <p className="text-xs text-muted-foreground">Last payment</p>
+              <p className="text-sm font-semibold">{formatDate(subscription!.last_paid_at)}</p>
+            </div>
+          )}
+        </div>
+      ) : paddleEnabled ? (
+        <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-6 flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+              <CreditCard className="w-4 h-4 text-emerald-400" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold">Pay automatically by card</p>
+              <p className="text-xs text-muted-foreground">Set up your Pulse subscription once — it renews each cycle with no manual transfers.</p>
+            </div>
+          </div>
+          <button
+            onClick={openCheckout}
+            disabled={!paddleInst || checkoutOpening}
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 hover:bg-emerald-600/90 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 transition-colors"
+          >
+            {!paddleInst ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
+            {paddleInst ? "Set up card payment" : "Loading…"}
+          </button>
+        </div>
+      ) : null}
 
       <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
         <div className="px-5 py-3 border-b border-sidebar-border">
