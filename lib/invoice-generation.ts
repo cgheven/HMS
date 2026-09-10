@@ -19,23 +19,33 @@ export async function generateInvoiceForOwner(
     return { generated: false, reason: "Billing rate not configured for this client" };
   }
 
-  // Reconciliation: a client on Paddle card auto-pay is billed by Paddle (their
-  // subscription auto-charges each cycle), so we must NOT also generate a manual
-  // PulseHub invoice — that would double-bill them. Bank/manual clients have no
-  // active subscription and fall through to normal generation.
-  const { data: sub } = await admin
-    .from("hms_paddle_subscriptions")
-    .select("status")
-    .eq("owner_id", ownerId)
-    .maybeSingle();
-  if (sub && ["active", "trialing"].includes((sub as { status?: string }).status ?? "")) {
-    return { generated: false, reason: "Client is on Paddle auto-pay" };
-  }
-
   const anchor = billing.next_invoice_date
     ? new Date(`${billing.next_invoice_date}T00:00:00Z`)
     : new Date(`${pktTodayDateString()}T00:00:00Z`);
   const { periodStart, periodEnd, label } = computeInvoicePeriod(billing.billing_cycle as BillingCycle, anchor);
+
+  // Reconciliation: a client on Paddle card billing is charged by Paddle each
+  // cycle — never also generate a manual PulseHub invoice (double-billing). We
+  // skip while the subscription is active / trialing / past_due / paused (Paddle
+  // still owns the cycle, INCLUDING a temporary card failure it is retrying),
+  // and resume manual billing only once it is canceled. On skip we ADVANCE
+  // next_invoice_date so the manual schedule stays current — otherwise a stale
+  // anchor would replay a burst of back-dated invoices the day the sub cancels.
+  // On a query error we fail CLOSED (skip, retry next run) rather than risk a
+  // double-bill.
+  const { data: sub, error: subErr } = await admin
+    .from("hms_paddle_subscriptions")
+    .select("status")
+    .eq("owner_id", ownerId)
+    .maybeSingle();
+  if (subErr) {
+    return { generated: false, reason: "Could not verify Paddle status — skipped to avoid double-billing" };
+  }
+  const subStatus = (sub as { status?: string } | null)?.status ?? null;
+  if (subStatus && ["active", "trialing", "past_due", "paused"].includes(subStatus)) {
+    await admin.from("hms_client_billing").update({ next_invoice_date: periodEnd }).eq("owner_id", ownerId);
+    return { generated: false, reason: "Client is on Paddle billing" };
+  }
 
   // Due date is Net 7 — 7 days from when the invoice is actually issued, not the
   // billing period it covers. Tying it to period_start meant an invoice for a

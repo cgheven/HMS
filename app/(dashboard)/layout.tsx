@@ -47,16 +47,25 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // Suppressed once frozen (the suspension banner takes over).
   let dueSoon: { due_date: string } | null = null;
   if (!accountFrozen && accountOwnerId) {
-    const in7 = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const { data } = await admin
-      .from("hms_platform_invoices")
-      .select("due_date")
-      .eq("owner_id", accountOwnerId)
-      .eq("status", "unpaid")
-      .lte("due_date", in7)
-      .order("due_date", { ascending: true })
-      .limit(1);
-    if (data && data.length > 0) dueSoon = data[0] as { due_date: string };
+    // Don't nudge owners on Paddle card billing — Paddle charges them and handles
+    // its own card dunning; the manual "please pay" strip is for bank clients.
+    const { data: subRow } = await admin
+      .from("hms_paddle_subscriptions").select("status").eq("owner_id", accountOwnerId).maybeSingle();
+    const onPaddle = ["active", "trialing", "past_due", "paused"].includes(
+      (subRow as { status?: string } | null)?.status ?? ""
+    );
+    if (!onPaddle) {
+      const in7 = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const { data } = await admin
+        .from("hms_platform_invoices")
+        .select("due_date")
+        .eq("owner_id", accountOwnerId)
+        .eq("status", "unpaid")
+        .lte("due_date", in7)
+        .order("due_date", { ascending: true })
+        .limit(1);
+      if (data && data.length > 0) dueSoon = data[0] as { due_date: string };
+    }
   }
 
   return (

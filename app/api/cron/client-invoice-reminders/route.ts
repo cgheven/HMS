@@ -23,12 +23,20 @@ export async function GET(request: NextRequest) {
 
   const { data: due, error } = await admin
     .from("hms_platform_invoices")
-    .select("id, last_reminder_at, first_sent_at")
+    .select("id, owner_id, last_reminder_at, first_sent_at")
     .eq("status", "unpaid")
     .not("first_sent_at", "is", null)
     .or(`last_reminder_at.is.null,last_reminder_at.lte.${cutoff}`);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // Never chase an owner on Paddle card billing — Paddle charges them and runs
+  // its own card dunning; a manual reminder for the same account is double-dunning.
+  const { data: paddleRows } = await admin
+    .from("hms_paddle_subscriptions")
+    .select("owner_id")
+    .in("status", ["active", "trialing", "past_due", "paused"]);
+  const paddleOwners = new Set((paddleRows ?? []).map((r: { owner_id: string }) => r.owner_id));
 
   let sent = 0;
   let whatsappSent = 0;
@@ -36,6 +44,7 @@ export async function GET(request: NextRequest) {
   const whatsappSkipped: string[] = [];
 
   for (const inv of due ?? []) {
+    if (paddleOwners.has(inv.owner_id)) { skipped.push(`on paddle: ${inv.id}`); continue; }
     // Email first — it carries the full breakdown and is what updates
     // last_reminder_at, so the 4-day clock is driven by one channel only.
     try {
