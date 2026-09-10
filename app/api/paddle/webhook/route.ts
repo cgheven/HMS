@@ -39,6 +39,13 @@ function planOf(custom: Record<string, unknown> | null | undefined) {
   return asPlan(typeof custom?.["plan"] === "string" ? (custom!["plan"] as string) : null);
 }
 
+// supabase-js returns { error } instead of throwing. Bubble it up so the webhook
+// handler's try/catch returns 500 and Paddle retries the (idempotent) event,
+// rather than swallowing a failed write and marking the event processed.
+function mustOk(res: { error: { message: string } | null }, label: string) {
+  if (res.error) throw new Error(`${label}: ${res.error.message}`);
+}
+
 export async function POST(req: NextRequest) {
   const secret = process.env.PADDLE_WEBHOOK_SECRET;
   // 500 (not 400) so Paddle retries once the secret is configured, rather than
@@ -72,11 +79,19 @@ export async function POST(req: NextRequest) {
   try {
     if (type.startsWith("subscription.")) {
       const s = event.data as SubLike;
-      const ownerId = ownerIdOf(s.customData);
+      // owner_id may not ride on the subscription event; fall back to the row the
+      // first payment already linked by subscription id.
+      let ownerId = ownerIdOf(s.customData);
+      if (!ownerId && s.id) {
+        const { data, error } = await admin
+          .from("hms_paddle_subscriptions").select("owner_id").eq("paddle_subscription_id", s.id).maybeSingle();
+        mustOk({ error }, "lookup owner by subscription");
+        ownerId = (data?.owner_id as string | undefined) ?? null;
+      }
       if (ownerId && s.id) {
         const item = s.items?.[0];
         const unit = item?.price?.unitPrice?.amount;
-        await admin.from("hms_paddle_subscriptions").upsert(
+        mustOk(await admin.from("hms_paddle_subscriptions").upsert(
           {
             owner_id: ownerId,
             paddle_subscription_id: s.id,
@@ -90,7 +105,15 @@ export async function POST(req: NextRequest) {
             updated_at: now,
           },
           { onConflict: "owner_id" }
-        );
+        ), "upsert subscription");
+      }
+      // Definitive cancellation revokes Standard entitlement: drop to Basic. Only
+      // on `canceled` (terminal) — a past_due card retry keeps their access. This
+      // cannot take down a live subdomain (migration 167 never releases a claimed
+      // one); it turns referral off and locks the Standard upsells.
+      if (type === "subscription.canceled" && ownerId) {
+        mustOk(await admin.from("hms_profiles").update({ plan: "basic" }).eq("id", ownerId), "downgrade plan on cancel");
+        await applyPlanEntitlements(admin, ownerId, "basic");
       }
     } else if (type === "transaction.completed" || type === "transaction.paid") {
       // A real payment. Record it against the owner's subscription row — this is
@@ -100,15 +123,15 @@ export async function POST(req: NextRequest) {
       const ownerId = ownerIdOf(t.customData);
       const paidAt = t.billedAt ?? now;
       if (ownerId) {
-        await admin.from("hms_paddle_subscriptions").upsert(
+        mustOk(await admin.from("hms_paddle_subscriptions").upsert(
           { owner_id: ownerId, last_transaction_id: t.id ?? null, last_paid_at: paidAt, updated_at: now },
           { onConflict: "owner_id" }
-        );
+        ), "record payment on subscription");
       } else if (t.subscriptionId) {
-        await admin
+        mustOk(await admin
           .from("hms_paddle_subscriptions")
           .update({ last_transaction_id: t.id ?? null, last_paid_at: paidAt, updated_at: now })
-          .eq("paddle_subscription_id", t.subscriptionId);
+          .eq("paddle_subscription_id", t.subscriptionId), "record payment by subscription id");
       }
 
       // Set the account's plan from the checkout's custom_data and make the
@@ -116,11 +139,18 @@ export async function POST(req: NextRequest) {
       // price, so price_id can't be reverse-mapped to a plan — custom_data.plan,
       // set server-side at checkout, is the reliable source. Only the first
       // payment of a plan carries it; renewals without it leave the plan intact.
+      // Only propagate when the plan actually CHANGES, so a repeat payment can't
+      // re-clobber the owner's branch flags.
       if (ownerId) {
         const plan = planOf(t.customData);
         if (plan) {
-          await admin.from("hms_profiles").update({ plan }).eq("id", ownerId);
-          await applyPlanEntitlements(admin, ownerId, plan);
+          const { data: prof, error: readErr } = await admin
+            .from("hms_profiles").select("plan").eq("id", ownerId).maybeSingle();
+          mustOk({ error: readErr }, "read current plan");
+          if (prof?.plan !== plan) {
+            mustOk(await admin.from("hms_profiles").update({ plan }).eq("id", ownerId), "set plan");
+            await applyPlanEntitlements(admin, ownerId, plan);
+          }
         }
       }
 
@@ -128,7 +158,7 @@ export async function POST(req: NextRequest) {
       // an owner (owner_id in custom_data) and it's a real charge with an id.
       if (ownerId && t.id) {
         const grand = t.details?.totals?.grandTotal;
-        await admin.from("hms_paddle_transactions").upsert(
+        mustOk(await admin.from("hms_paddle_transactions").upsert(
           {
             transaction_id: t.id,
             owner_id: ownerId,
@@ -140,12 +170,13 @@ export async function POST(req: NextRequest) {
             billed_at: paidAt,
           },
           { onConflict: "transaction_id" }
-        );
+        ), "upsert receipt");
       }
     }
   } catch (e) {
     // Return 500 so Paddle retries; the event is NOT recorded as processed, so
-    // the retry runs the handler again (all writes above are idempotent upserts).
+    // the retry re-runs the handler (every write above is an idempotent upsert /
+    // update, and mustOk turns a swallowed DB error into this retry).
     return new NextResponse(`handler error: ${e instanceof Error ? e.message : String(e)}`, { status: 500 });
   }
 

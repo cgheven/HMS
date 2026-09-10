@@ -44,8 +44,13 @@ export async function applyPlanEntitlements(
   plan: Plan
 ): Promise<void> {
   const ent = entitlementsForPlan(plan);
-  await Promise.all([
+  const [profRes, hostelRes] = await Promise.all([
     admin.from("hms_profiles").update({ subdomain_enabled: ent.brandedSubdomain }).eq("id", ownerId),
     admin.from("hms_hostels").update({ referral_enabled: ent.referralEngine }).eq("owner_id", ownerId),
   ]);
+  // supabase-js does NOT throw on a DB error — it returns { error }. Surface it so
+  // the caller (the webhook) fails loudly and retries, rather than silently
+  // leaving a paid account un-entitled.
+  if (profRes.error) throw new Error(`applyPlanEntitlements(subdomain): ${profRes.error.message}`);
+  if (hostelRes.error) throw new Error(`applyPlanEntitlements(referral): ${hostelRes.error.message}`);
 }
