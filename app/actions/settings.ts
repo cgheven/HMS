@@ -2,7 +2,7 @@
 import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { requireOwnerOrPartnerTierWrite } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import type { PaymentMethodAccount, WifiNetwork, MealTimes } from "@/types";
 
@@ -18,7 +18,7 @@ export async function savePaymentRecoverySettings({
     // branch's tenants), so a full-tier partner may edit them. The write itself
     // goes through the session client and is additionally gated by the
     // members_update_hostels RLS policy, which is full-tier only.
-    await requireOwnerOrPartnerTier("full");
+    await requireOwnerOrPartnerTierWrite("full");
     const ctx = await getAuthContext();
     if (!ctx?.hostelId) throw new Error("No active hostel");
     const { hostelId } = ctx;
@@ -62,7 +62,7 @@ export async function saveWelcomeSettings({
   try {
     // Same branch-scoped, full-tier-partner-editable shape as
     // savePaymentRecoverySettings above.
-    await requireOwnerOrPartnerTier("full");
+    await requireOwnerOrPartnerTierWrite("full");
     const ctx = await getAuthContext();
     if (!ctx?.hostelId) throw new Error("No active hostel");
     const { hostelId } = ctx;

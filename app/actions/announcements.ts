@@ -2,7 +2,7 @@
 
 import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { requireOwnerOrPartnerTierWrite } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import { sendWhatsAppMessage } from "@/lib/whatsapp";
 import { processInBatches } from "@/lib/batch";
@@ -34,7 +34,7 @@ export async function sendAnnouncementToWhatsAppAction(
   announcementId: string
 ): Promise<{ data?: AnnouncementSendSummary; error?: string }> {
   try {
-    await requireOwnerOrPartnerTier("standard");
+    await requireOwnerOrPartnerTierWrite("standard");
     const hostelId = await resolveHostelId();
     const admin = createAdminClient();
 

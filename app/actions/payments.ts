@@ -23,7 +23,7 @@ import { performPaymentUndo } from "@/lib/payment-undo";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
-import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { requireOwnerOrPartnerTier, requireOwnerOrPartnerTierWrite, requireNotFrozenByHostel } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
@@ -174,6 +174,9 @@ export async function syncMonthAction(
     // runs requireOwnerOrPartnerTier("read_only") + resolveHostelId() unchanged
     // for every non-manager caller.
     const { hostelId } = await resolvePaymentsReadScope();
+    // This materializes pending rows (a write), so block it for a frozen account
+    // even though the read scope allows any tier.
+    await requireNotFrozenByHostel(hostelId);
     if (!MONTH_RE.test(month)) throw new Error(`Invalid month format: "${month}"`);
 
     // Admin client: partners have no write RLS grant on hms_payments (the
@@ -221,7 +224,7 @@ export async function sendBulkRemindersAction(
   try {
     // Same tier as recording a payment — this sends a real WhatsApp message to
     // every unpaid tenant, so read-only partners stay excluded.
-    await requireOwnerOrPartnerTier("standard");
+    await requireOwnerOrPartnerTierWrite("standard");
     const hostelId = await resolveHostelId();
     if (!MONTH_RE.test(month)) throw new Error(`Invalid month format: "${month}"`);
 
@@ -260,7 +263,7 @@ export async function sendDueTodayRemindersAction(
   month: string
 ): Promise<{ data?: ReminderSummary; error?: string }> {
   try {
-    await requireOwnerOrPartnerTier("standard");
+    await requireOwnerOrPartnerTierWrite("standard");
     const hostelId = await resolveHostelId();
     if (!MONTH_RE.test(month)) throw new Error(`Invalid month format: "${month}"`);
 
@@ -320,7 +323,7 @@ export async function markPaymentPaidAction(
     // standard-tier partner passes this same guard and can call this endpoint
     // directly, so gating the owner alert on the file would let exactly the
     // person it watches opt out of it.
-    const profile = await requireOwnerOrPartnerTier("standard");
+    const profile = await requireOwnerOrPartnerTierWrite("standard");
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
     // Pulled up from below so recorded_by can go inside the single UPDATE.
@@ -709,7 +712,7 @@ export async function undoLastPaymentAction(
   paymentId: string
 ): Promise<{ undone?: { amount: number; forMonth: string; tenantName: string | null }; error?: string }> {
   try {
-    const profile = await requireOwnerOrPartnerTier("standard");
+    const profile = await requireOwnerOrPartnerTierWrite("standard");
     const hostelId = await resolveHostelId();
     const ctx = await getAuthContext();
     // Admin client: partners have no write RLS grant on hms_payments, the same
@@ -774,7 +777,7 @@ export async function markPaymentWaivedAction(
     // — until now these actions had no authorization check at all and leaned
     // entirely on hms_payments having no partner write policy. That is a
     // coincidence of the current policy set, not a guard.
-    await requireOwnerOrPartnerTier("full");
+    await requireOwnerOrPartnerTierWrite("full");
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
@@ -805,7 +808,7 @@ export async function markPaymentOverdueAction(
 ): Promise<{ error?: string }> {
   try {
     // Flagging a bill overdue is day-to-day collections work.
-    await requireOwnerOrPartnerTier("standard");
+    await requireOwnerOrPartnerTierWrite("standard");
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
@@ -897,7 +900,7 @@ export async function applyRoomACUnitsAction(
     // resolvable hostel" and a write here — no RLS backstop for this one. The
     // roomId is re-scoped to ctx.hostelId below, so a partner cannot bill a room
     // belonging to another branch.
-    await requireOwnerOrPartnerTier("standard");
+    await requireOwnerOrPartnerTierWrite("standard");
     const ctx = await getAuthContext();
     if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
     const { hostelId } = ctx;
@@ -1499,7 +1502,7 @@ export async function saveACJoinReadingAction(
     // Standard tier — same reasoning as applyRoomACUnitsAction: admin-client
     // write with no RLS backstop, roomId and tenantId both re-scoped to
     // ctx.hostelId below.
-    await requireOwnerOrPartnerTier("standard");
+    await requireOwnerOrPartnerTierWrite("standard");
     const ctx = await getAuthContext();
     if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
     const { hostelId } = ctx;

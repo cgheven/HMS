@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isValidCnic, normalizeCnic } from "@/lib/cnic";
-import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { requireOwnerOrPartnerTier, requireNotFrozenByHostel } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import { sendApplicationEmail } from "@/lib/email";
@@ -269,6 +269,7 @@ export async function updateApplicationStatus(
   if (!(await actorHasAccess(actor, app.hostel_id))) {
     return { success: false, error: "Unauthorized" };
   }
+  await requireNotFrozenByHostel(app.hostel_id);
 
   const { error } = await admin
     .from("hms_tenant_applications")
@@ -370,6 +371,7 @@ export async function convertToTenant(
   if (!(await actorHasAccess(actor, app.hostel_id))) {
     return { success: false, error: "Unauthorized" };
   }
+  await requireNotFrozenByHostel(app.hostel_id);
 
   // Advisory RedFlag check against the applicant's own submitted CNIC/phone —
   // the approver cannot edit either, so it has to happen here. Any failure of

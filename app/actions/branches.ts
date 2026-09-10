@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { requireOwnerOrAbove } from "@/lib/auth";
+import { requireOwnerWrite, requireNotFrozen } from "@/lib/auth";
 import type { Hostel } from "@/types";
 
 const COOKIE_NAME = "hms_active_hostel";
@@ -133,6 +133,7 @@ export async function renameBranch(data: {
       .maybeSingle();
 
     if (!owned) return { error: "You do not own this branch." };
+    await requireNotFrozen(user.id);
 
     const { error } = await supabase
       .from("hms_hostels")
@@ -170,7 +171,7 @@ export async function createBranch(data: {
     // row they insert with their own id — so every logged-in user (partner,
     // manager, sales rep) could previously call this action directly and mint
     // a hostel they owned outright, regardless of what the sidebar showed.
-    await requireOwnerOrAbove();
+    await requireOwnerWrite();
 
     const { supabase, user } = await getAuthedUser();
 

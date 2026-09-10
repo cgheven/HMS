@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireOwnerOrAbove, requireOwnerOrPartnerTier } from "@/lib/auth";
+import { requireOwnerOrAbove, requireOwnerOrPartnerTier, requireNotFrozen } from "@/lib/auth";
 import { logActivity } from "@/lib/audit";
 import { getAuthContext } from "@/lib/data";
 import { getProfile } from "@/lib/auth";
@@ -112,6 +112,15 @@ async function resolveBranch(minTier?: PartnerTier): Promise<{
     .eq("id", hostelId)
     .single();
   if (error) throw error;
+
+  // Every referral WRITE resolves its branch through here (directly or via
+  // requireEnabledBranch); the only READ, getReferralOverview, passes
+  // "read_only". So block a frozen account on anything but a read — one gate
+  // covers the whole file. (System paths never reach here: the guards above
+  // require a user session.)
+  if (minTier !== "read_only") {
+    await requireNotFrozen((hostel?.owner_id as string | null) ?? null);
+  }
 
   return {
     hostelId,

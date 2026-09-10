@@ -25,7 +25,7 @@ import { unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
-import { getProfile, requireOwnerOrPartnerTier } from "@/lib/auth";
+import { getProfile, requireOwnerOrPartnerTier, requireNotFrozenByHostel } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { normalizeCnic } from "@/lib/cnic";
 import { normalizePhoneDigits, formatPhoneDisplay } from "@/lib/phone";
@@ -406,6 +406,7 @@ export async function reportDefaulterAction(input: {
     // reachable from surfaces a manager can load.
     const { scope, error } = await resolveScope("standard", { allowManager: false });
     if (error || !scope) return { error };
+    await requireNotFrozenByHostel(scope.hostelId);
 
     // The legal confirmation is a server-side precondition, not a UI courtesy.
     if (input.confirmed !== true) {
@@ -631,6 +632,7 @@ export async function resolveRedflagAction(
     // Managers are refused with a plain { error }, never a redirect.
     const { scope, error } = await resolveScope("standard", { allowManager: false });
     if (error || !scope) return { error };
+    await requireNotFrozenByHostel(scope.hostelId);
     if (!id || !UUID_RE.test(id)) return { error: "Invalid report id." };
 
     const supabase = await createClient();

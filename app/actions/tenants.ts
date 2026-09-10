@@ -7,7 +7,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { billLinkForPayment } from "@/lib/bill-link";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
-import { requireOwnerOrAbove, requireOwnerOrPartnerTier } from "@/lib/auth";
+import { requireOwnerOrPartnerTier, requireOwnerOrPartnerTierWrite, requireOwnerWrite, requireNotFrozen } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { applyRoomACUnitsAction } from "@/app/actions/payments";
 import { applyRoomACUnitsAsManager } from "@/app/actions/managers";
@@ -128,9 +128,10 @@ export async function uploadTenantPhoto(
     if (mgr) {
       if (!mgr.permissions.has("add_members")) throw new Error("Access denied");
       if (!mgr.activeHostel) throw new Error("Unauthorized: no active hostel");
+      await requireNotFrozen(mgr.manager.owner_id);
       hostelId = mgr.activeHostel.id;
     } else {
-      await requireOwnerOrPartnerTier("standard");
+      await requireOwnerOrPartnerTierWrite("standard");
 
       // Verify caller owns this hostelId
       const ownedHostelId = await resolveHostelId();
@@ -227,7 +228,7 @@ export async function uploadTenantDocument(
   formData: FormData
 ): Promise<{ document?: TenantDocument; error?: string }> {
   try {
-    await requireOwnerOrPartnerTier("full");
+    await requireOwnerOrPartnerTierWrite("full");
     const hostelId = await resolveHostelId(); // F1: caller must have an active hostel
     // Admin client: same hybrid rationale as uploadTenantPhoto above — no
     // storage/table RLS grant exists for partners, so writes go through the
@@ -302,7 +303,7 @@ export async function deleteTenantDocument(
   docId: string
 ): Promise<{ error?: string }> {
   try {
-    await requireOwnerOrPartnerTier("full");
+    await requireOwnerOrPartnerTierWrite("full");
     const hostelId = await resolveHostelId(); // F1
     const supabase = createAdminClient();
     await assertTenantOwnership(supabase, tenantId, hostelId); // F1: IDOR fix
@@ -1128,7 +1129,7 @@ export async function backfillTenantPaymentsAction(
   try {
     // Full tier — this rewrites historical payment records, same class of
     // action as checkout, not a day-to-day operation.
-    await requireOwnerOrPartnerTier("full");
+    await requireOwnerOrPartnerTierWrite("full");
     const ctx = await getAuthContext();
     if (!ctx?.hostelId) throw new Error("Unauthorized");
     const { hostelId } = ctx;
@@ -1307,7 +1308,7 @@ export async function recordReservationDepositAction(
   input: RecordReservationDepositInput
 ): Promise<{ success: boolean; paymentId?: string; receiptNumber?: string; collectedOn?: string; amount?: number; remainingDeposit?: number; error?: string }> {
   try {
-    await requireOwnerOrAbove();
+    await requireOwnerWrite();
     const hostelId = await resolveHostelId();
     const adminDb = createAdminClient();
 
@@ -1868,7 +1869,7 @@ export async function logTenantEvent(input: {
     // Standard tier — a lightweight audit-trail entry, needed by both the
     // standard-gated add-tenant flow (deposit_collected) and the full-gated
     // edit-tenant flow (room_changed/plan_changed).
-    await requireOwnerOrPartnerTier("standard");
+    await requireOwnerOrPartnerTierWrite("standard");
     const hostelId = await resolveHostelId();
     const adminDb = createAdminClient();
 
@@ -1934,7 +1935,7 @@ export async function giveTenantNoticeAction(
   intendedCheckoutDate: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await requireOwnerOrPartnerTier("standard");
+    await requireOwnerOrPartnerTierWrite("standard");
     const hostelId = await resolveHostelId();
     const adminDb = createAdminClient();
 
@@ -1986,7 +1987,7 @@ export async function cancelTenantNoticeAction(
   tenantId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await requireOwnerOrPartnerTier("standard");
+    await requireOwnerOrPartnerTierWrite("standard");
     const hostelId = await resolveHostelId();
     const adminDb = createAdminClient();
 
@@ -2034,7 +2035,7 @@ export async function checkoutTenantAction(
   input: CheckoutInput
 ): Promise<{ success: boolean; error?: string; warning?: string; settlement?: CheckoutSettlement }> {
   try {
-    await requireOwnerOrAbove();
+    await requireOwnerWrite();
     const hostelId = await resolveHostelId();
     return await performTenantCheckout(hostelId, input);
   } catch (err: unknown) {
@@ -2103,7 +2104,7 @@ export async function deleteTenantAction(
   tenantId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await requireOwnerOrPartnerTier("full");
+    await requireOwnerOrPartnerTierWrite("full");
     const hostelId = await resolveHostelId();
     const adminDb = createAdminClient();
 
@@ -2320,9 +2321,10 @@ export async function transferTenantRoomAction(input: {
     let hostelId: string;
     if (mgr?.activeHostel) {
       if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      await requireNotFrozen(mgr.manager.owner_id);
       hostelId = mgr.activeHostel.id;
     } else {
-      await requireOwnerOrPartnerTier("full");
+      await requireOwnerOrPartnerTierWrite("full");
       hostelId = await resolveHostelId();
     }
     const adminDb = createAdminClient();
@@ -2399,9 +2401,10 @@ export async function correctRoomTransferAction(input: {
     let hostelId: string;
     if (mgr?.activeHostel) {
       if (!mgr.permissions.has("edit_members")) throw new Error("Access denied");
+      await requireNotFrozen(mgr.manager.owner_id);
       hostelId = mgr.activeHostel.id;
     } else {
-      await requireOwnerOrPartnerTier("full");
+      await requireOwnerOrPartnerTierWrite("full");
       hostelId = await resolveHostelId();
     }
     const adminDb = createAdminClient();
@@ -2567,6 +2570,8 @@ async function resolveBranchTransfer(destHostelId: string): Promise<{ srcHostelI
   if (!srcOwner || !destOwner || srcOwner !== destOwner) {
     throw new Error("Both branches must belong to the same owner.");
   }
+  // Same (single) owner across both branches — block the write if frozen.
+  await requireNotFrozen(srcOwner);
 
   return { srcHostelId, isManager };
 }

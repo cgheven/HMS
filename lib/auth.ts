@@ -107,6 +107,23 @@ export async function requireOwnerOrPartnerTierWrite(minTier: PartnerTier): Prom
   return profile;
 }
 
+/**
+ * Frozen block when the owner can only be reached via a (server-resolved) hostel
+ * id — resolves hms_hostels.owner_id, then requireNotFrozen. For actions whose
+ * shared resolver returns a hostelId (redflag, applications, branch transfer,
+ * month sync). Never pass a client-supplied hostelId.
+ */
+export async function requireNotFrozenByHostel(hostelId: string | null | undefined): Promise<void> {
+  if (!hostelId) return;
+  const admin = createAdminClient();
+  const { data } = await admin
+    .from("hms_hostels")
+    .select("owner_id")
+    .eq("id", hostelId)
+    .maybeSingle();
+  await requireNotFrozen((data?.owner_id as string | undefined) ?? null);
+}
+
 const TIER_RANK: Record<PartnerTier, number> = { read_only: 0, standard: 1, full: 2 };
 
 /**

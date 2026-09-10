@@ -3,6 +3,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import type { PartnerTier, PartnerFeatureFlags } from "@/types";
+import { requireNotFrozen } from "@/lib/auth";
 
 const VALID_TIERS = new Set<PartnerTier>(["read_only", "standard", "full"]);
 
@@ -111,6 +112,7 @@ export async function createPartner(
 ): Promise<PartnerResult> {
   try {
     const caller = await requireOwnerOrAbove();
+    await requireNotFrozen(caller.id);
 
     if (!input.name?.trim()) throw new Error("Full name is required");
     if (!input.email?.trim()) throw new Error("Email is required");
@@ -300,6 +302,7 @@ export async function removePartner(
 ): Promise<{ error?: string }> {
   try {
     const caller = await requireOwnerOrAbove();
+    await requireNotFrozen(caller.id);
     const admin = createAdminClient();
 
     // Fetch the partnership to verify hostel ownership
@@ -390,6 +393,7 @@ export async function updatePartnerTier(
 ): Promise<{ error?: string }> {
   try {
     const caller = await requireOwnerOrAbove();
+    await requireNotFrozen(caller.id);
     if (!VALID_TIERS.has(tier)) throw new Error("Invalid tier");
 
     const admin = createAdminClient();
@@ -429,6 +433,7 @@ export async function updatePartnerFeatureFlags(
 ): Promise<{ error?: string }> {
   try {
     const caller = await requireOwnerOrAbove();
+    await requireNotFrozen(caller.id);
     const admin = createAdminClient();
 
     const { data: partnership, error: fetchErr } = await admin
@@ -536,6 +541,7 @@ export async function addPartnerToHostel(
 ): Promise<{ error?: string }> {
   try {
     const caller = await requireOwnerOrAbove();
+    await requireNotFrozen(caller.id);
     if (!VALID_TIERS.has(tier)) throw new Error("Invalid tier");
 
     const owns = await verifyOwnsHostel(caller.id, hostelId);

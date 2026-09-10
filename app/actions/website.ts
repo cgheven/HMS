@@ -6,7 +6,7 @@
 // you. Keep every export an async function.
 import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
-import { getProfile, requireOwnerOrAbove } from "@/lib/auth";
+import { getProfile, requireOwnerWrite, requireNotFrozen } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizeSubdomain, subdomainError } from "@/lib/subdomain";
 import { normalizeFacebook, normalizeInstagram, socialUrl } from "@/lib/social";
@@ -32,7 +32,7 @@ export async function claimMySubdomain(
   subdomain: string
 ): Promise<{ subdomain?: string; error?: string }> {
   try {
-    const profile = await requireOwnerOrAbove();
+    const profile = await requireOwnerWrite();
 
     const value = normalizeSubdomain(subdomain);
     const reason = subdomainError(value);
@@ -118,6 +118,7 @@ export async function saveWebsiteBranding({
   try {
     const profile = await getProfile();
     if (!profile) return { error: "Not signed in" };
+    await requireNotFrozen(profile.id);
 
     // NULL, not "", so the public page falls back to full_name rather than
     // headlining an empty string.
@@ -159,7 +160,7 @@ export async function saveWebsiteSocials({
     // Owner-only: this card is never rendered for partners, so the redirect in
     // requireOwnerOrAbove is unreachable, and the public page reads the branch
     // OWNER's profile row — a partner writing their own would be a silent no-op.
-    const profile = await requireOwnerOrAbove();
+    const profile = await requireOwnerWrite();
 
     const ig = normalizeInstagram(instagram);
     const fb = normalizeFacebook(facebook);
@@ -213,7 +214,7 @@ export async function saveWebsitePublicTheme(
 ): Promise<{ success?: boolean; error?: string }> {
   try {
     // Owner-only, like the subdomain: this is account-level, not per branch.
-    const profile = await requireOwnerOrAbove();
+    const profile = await requireOwnerWrite();
 
     // The parameter type is erased on the wire, so this check is the only thing
     // between a hand-crafted request and the column. Compare against the literal

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireOwnerOrAbove } from "@/lib/auth";
+import { requireOwnerOrAbove, requireNotFrozenByHostel } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import { encryptSecret, decryptSecret } from "@/lib/secret-box";
 import {
@@ -82,6 +82,7 @@ export async function saveHotelEyeCredentials(input: {
 }): Promise<{ success: boolean; error?: string }> {
   try {
     const { id: hostelId } = await resolveHostel();
+    await requireNotFrozenByHostel(hostelId);
     const username = input.username.trim();
     if (!username) return { success: false, error: "Username is required." };
     if (!/^https:\/\/[\w.-]+\.gov\.pk\/?$/i.test(input.portalUrl.trim())) {
@@ -333,6 +334,7 @@ export async function completeHotelEyeLogin(input: {
 }): Promise<{ success?: boolean; error?: string }> {
   try {
     const { id: hostelId } = await resolveHostel();
+    await requireNotFrozenByHostel(hostelId);
     if (!input.captchaText.trim()) return { error: "Type the CAPTCHA before syncing." };
 
     const admin = createAdminClient();
@@ -375,6 +377,7 @@ export async function startHotelEyeBackgroundSync(input: {
 }): Promise<{ queued?: number; error?: string; captchaNeeded?: boolean }> {
   try {
     const { id: hostelId, type: hostelType } = await resolveHostel();
+    await requireNotFrozenByHostel(hostelId);
     if (input.tenantIds.length === 0) return { error: "Nothing selected to sync." };
 
     const admin = createAdminClient();

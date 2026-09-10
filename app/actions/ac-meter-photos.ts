@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isRealImage } from "@/lib/image-bytes";
-import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { requireOwnerOrPartnerTierWrite, requireNotFrozen } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
 import type { StaffPermission } from "@/types";
@@ -61,9 +61,10 @@ async function guard(managerPermissions: StaffPermission[]): Promise<string> {
     if (!managerPermissions.some((p) => manager.permissions.has(p))) {
       throw new Error("Your access level does not permit this action.");
     }
+    await requireNotFrozen(manager.manager.owner_id);
     return manager.activeHostel.id;
   }
-  await requireOwnerOrPartnerTier("standard");
+  await requireOwnerOrPartnerTierWrite("standard");
   return resolveHostelId();
 }
 

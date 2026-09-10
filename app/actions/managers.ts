@@ -4,7 +4,7 @@ import { randomBytes } from "crypto"
 import { revalidatePath } from "next/cache"
 import { after } from "next/server"
 import { unstable_rethrow } from "next/navigation"
-import { requireOwnerOrAbove } from "@/lib/auth"
+import { requireOwnerWrite } from "@/lib/auth"
 import { getAuthContext } from "@/lib/data"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { requireManagerWrite } from "@/lib/manager-auth"
@@ -92,7 +92,7 @@ export async function createManager(
   name: string,
   phone: string,
 ): Promise<{ manager: Manager | null; error: string | null }> {
-  await requireOwnerOrAbove()
+  await requireOwnerWrite()
   const ownerId = await resolveOwnerId()
 
   const normalizedPhone = phone.replace(/\D/g, "")
@@ -135,7 +135,7 @@ export async function updateManagerPermissions(
   managerId: string,
   permissions: StaffPermission[],
 ): Promise<{ error: string | null }> {
-  await requireOwnerOrAbove()
+  await requireOwnerWrite()
   const ownerId = await resolveOwnerId()
 
   const admin = createAdminClient()
@@ -173,7 +173,7 @@ export async function updateManagerHostels(
   managerId: string,
   hostelIds: string[],
 ): Promise<{ error: string | null }> {
-  await requireOwnerOrAbove()
+  await requireOwnerWrite()
   const ownerId = await resolveOwnerId()
 
   const admin = createAdminClient()
@@ -214,7 +214,7 @@ export async function updateManagerHostels(
 export async function createManagerLogin(
   managerId: string,
 ): Promise<{ phone: string; password: string } | { error: string }> {
-  await requireOwnerOrAbove()
+  await requireOwnerWrite()
   const ownerId = await resolveOwnerId()
 
   const admin = createAdminClient()
@@ -264,7 +264,7 @@ export async function createManagerLogin(
 export async function resetManagerPassword(
   managerId: string,
 ): Promise<{ password: string } | { error: string }> {
-  await requireOwnerOrAbove()
+  await requireOwnerWrite()
   const ownerId = await resolveOwnerId()
 
   const admin = createAdminClient()
@@ -294,7 +294,7 @@ export async function resetManagerPassword(
 export async function deleteManager(
   managerId: string,
 ): Promise<{ error: string | null }> {
-  await requireOwnerOrAbove()
+  await requireOwnerWrite()
   const ownerId = await resolveOwnerId()
 
   const admin = createAdminClient()

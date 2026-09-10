@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { requireOwnerOrPartnerTierWrite } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 
 // Salary advances — see migration 160.
@@ -22,7 +22,7 @@ async function guard(): Promise<string> {
   // Same gate as recording a salary payment: this hands over real cash.
   // Managers never see the staff page at all, so owner/partner-full is the
   // whole surface.
-  await requireOwnerOrPartnerTier("full");
+  await requireOwnerOrPartnerTierWrite("full");
   const ctx = await getAuthContext();
   if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
   return ctx.hostelId;
