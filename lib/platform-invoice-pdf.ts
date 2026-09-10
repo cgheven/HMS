@@ -177,7 +177,30 @@ function badgedIcon(doc: jsPDF, name: IconName, cx: number, cy: number, badgeR: 
   drawIcon(doc, name, cx - size / 2, cy - size / 2, size, [190, 140, 40]);
 }
 
-export function generatePlatformInvoicePDF(invoice: InvoiceData, client: InvoiceClient): Uint8Array {
+// The embedded PDF font has a limited glyph set (no em-dash etc.), and jsPDF
+// throws when it can't measure/draw a missing glyph. Normalize any data-derived
+// text to ASCII so a client's name, an odd period label, etc. can never 500 the
+// invoice. Same treatment as lib/receipt-pdf.ts.
+function sanitizePdf(str: string | null | undefined): string {
+  return (str ?? "")
+    .replace(/[‐-―]/g, "-")   // hyphens, en/em dashes
+    .replace(/[‘’‚‛]/g, "'")
+    .replace(/[“”„‟]/g, '"')
+    .replace(/[•·‧]/g, "-")
+    .replace(/…/g, "...")
+    .replace(/ /g, " ")
+    .normalize("NFKD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^\x20-\x7E]/g, "?");
+}
+
+export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: InvoiceClient): Uint8Array {
+  // Sanitize every data-derived string up front so nothing non-ASCII reaches jsPDF.
+  const invoice: InvoiceData = { ...invoiceIn, period_label: sanitizePdf(invoiceIn.period_label) };
+  const client: InvoiceClient = {
+    owner_name: sanitizePdf(clientIn.owner_name),
+    owner_email: clientIn.owner_email ? sanitizePdf(clientIn.owner_email) : null,
+    owner_phone: clientIn.owner_phone ? sanitizePdf(clientIn.owner_phone) : null,
+  };
   const W = 480;
   const ML = 24;
   const MR = W - 24;
@@ -510,7 +533,7 @@ export function generatePlatformInvoicePDF(invoice: InvoiceData, client: Invoice
       if (onboardingWaived > 0) {
         doc.setFont("helvetica", "normal");
         doc.setTextColor(...GRAY);
-        doc.text(`Standard ${pk(ONBOARDING_FEE)} — waived for this client`, ML + rowBadgeR * 2 + 8, y + 14);
+        doc.text(`Standard ${pk(ONBOARDING_FEE)} - waived for this client`, ML + rowBadgeR * 2 + 8, y + 14);
       }
     }
     if (invoice.is_first_invoice) y += 30;

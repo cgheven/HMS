@@ -55,7 +55,10 @@ export async function GET(
     }
   );
 
-  const filename = `pulse_invoice_${invoice.period_label.replace(/\s+/g, "_")}.pdf`;
+  // Content-Disposition is a Latin-1 header, so strip the label to ASCII first —
+  // a non-Latin-1 char (em-dash, accented name) would otherwise throw on send.
+  const asciiLabel = invoice.period_label.normalize("NFKD").replace(/[^\x20-\x7E]/g, " ").replace(/\s+/g, "_");
+  const filename = `pulse_invoice_${asciiLabel}.pdf`;
 
   return new NextResponse(Buffer.from(pdfBytes), {
     status: 200,
