@@ -5,6 +5,9 @@ import { createAdminClient } from "@/lib/supabase/admin";
 export default async function Home() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
+  // Signed-out visitors go straight to sign-in — this is a customer app, not a
+  // public marketing site (payments use redirect-checkout on the approved
+  // yourpulse.io domain, so root needs no public marketing surface).
   if (!user) redirect("/login");
 
   // hms_managers / hms_sales_reps have RLS enabled with zero policies (default-deny

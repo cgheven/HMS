@@ -77,8 +77,8 @@ export async function updateSession(request: NextRequest) {
     // Redirect-checkout page: opens Paddle checkout for a ?_ptxn transaction on
     // an approved domain. Public — the buyer may not have an app session here.
     pathname === "/checkout" ||
-    // Public legal pages (required for Paddle domain approval; linked from the
-    // login + pricing footers). Exact match — no future sibling inherits access.
+    // Public legal pages (linked from the login + pricing footers). Exact match
+    // — no future sibling inherits access.
     pathname === "/terms" ||
     pathname === "/privacy" ||
     pathname === "/refund" ||
