@@ -78,6 +78,9 @@ export async function createPlanCheckoutAction(input: {
     return { transactionId: txn.id };
   } catch (err: unknown) {
     unstable_rethrow(err);
-    return { error: err instanceof Error ? err.message : String(err) };
+    // Log the real cause server-side; hand the client a generic message so
+    // internal/config details (price-not-configured, Paddle/DB errors) don't leak.
+    console.error("[paddle] createPlanCheckoutAction failed:", err);
+    return { error: "Could not start checkout. Please try again." };
   }
 }
