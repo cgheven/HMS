@@ -1,11 +1,15 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { LandingPage } from "@/components/landing/landing-page";
 
 export default async function Home() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+  // Signed-out visitors get the public marketing landing (product, pricing,
+  // contact, legal) with a prominent Sign in — a proper front door, and the
+  // public root Paddle's domain review needs. Signed-in users route on below.
+  if (!user) return <LandingPage />;
 
   // hms_managers / hms_sales_reps have RLS enabled with zero policies (default-deny
   // even for the row owner) — these self-lookups must use the admin client, not the

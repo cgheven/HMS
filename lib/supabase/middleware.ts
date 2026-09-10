@@ -74,8 +74,13 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/invoice/") ||
     pathname.startsWith("/partner/login") ||
     pathname.startsWith("/pricing") ||
-    // Public legal pages (required for Paddle domain approval; linked from the
-    // login + pricing footers). Exact match — no future sibling inherits access.
+    // Public marketing surface (required for Paddle domain approval + a proper
+    // front door). Root renders a landing page for signed-out visitors (app/page
+    // .tsx) and routes signed-in ones to their dashboard. Exact matches — no
+    // future sibling inherits access.
+    pathname === "/" ||
+    pathname === "/contact" ||
+    // Public legal pages (linked from every footer).
     pathname === "/terms" ||
     pathname === "/privacy" ||
     pathname === "/refund" ||

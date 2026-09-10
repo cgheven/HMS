@@ -15,7 +15,7 @@ export function LegalFooter() {
           <Link href="/terms" className="hover:text-foreground transition-colors">Terms of Service</Link>
           <Link href="/privacy" className="hover:text-foreground transition-colors">Privacy Notice</Link>
           <Link href="/refund" className="hover:text-foreground transition-colors">Refund Policy</Link>
-          <a href="mailto:hello@yourpulse.io" className="hover:text-foreground transition-colors">Contact</a>
+          <Link href="/contact" className="hover:text-foreground transition-colors">Contact</Link>
         </nav>
       </div>
     </footer>
