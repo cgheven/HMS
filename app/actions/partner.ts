@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireOwnerOrPartnerTier } from "@/lib/auth";
+import { requireOwnerOrPartnerTier, requireNotFrozen } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import { logActivity } from "@/lib/audit";
 import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation";
@@ -38,6 +38,7 @@ async function requirePartnerHostelId(minTier: "standard" | "full"): Promise<str
   await requireOwnerOrPartnerTier(minTier);
   const ctx = await getAuthContext();
   if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
+  await requireNotFrozen(ctx.hostel?.owner_id);
   return ctx.hostelId;
 }
 

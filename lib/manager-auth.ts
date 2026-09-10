@@ -83,6 +83,25 @@ export async function requireManagerPermissionAny(
   return ctx as BoundContext
 }
 
+// Write-only twin of requireManagerPermission: same permission check, plus a
+// block when the OWNER's account is frozen (unpaid dues). Manager WRITE actions
+// call this instead of requireManagerPermission so a frozen account's staff
+// can't keep mutating data. Read pages keep using requireManagerPermission.
+export async function requireManagerWrite(
+  permission: StaffPermission,
+): Promise<BoundContext> {
+  const ctx = await requireManagerPermission(permission)
+  const admin = createAdminClient()
+  const { data, error } = await admin
+    .from("hms_profiles")
+    .select("frozen")
+    .eq("id", ctx.manager.owner_id)
+    .maybeSingle()
+  if (error) throw new Error("Could not verify account status. Please try again.")
+  if (data?.frozen) throw new Error("This account is suspended for unpaid dues and cannot be modified.")
+  return ctx
+}
+
 export async function requireManagerAuth(): Promise<BoundContext> {
   const ctx = await getManagerContext()
   if (!ctx) redirect("/login")

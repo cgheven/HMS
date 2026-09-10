@@ -54,6 +54,59 @@ export async function requireOwnerOrAbove(): Promise<Profile> {
   return profile;
 }
 
+/**
+ * Guard: the account must not be frozen. A frozen account (unpaid dues) can log
+ * in and READ but cannot WRITE. Call this at the entry of every service-role
+ * WRITE action, passing the ACCOUNT OWNER's id:
+ *   - owner acting on self → the owner's own id (profile.id / ctx.user.id)
+ *   - partner             → ctx.hostel.owner_id
+ *   - manager             → managerContext.manager.owner_id
+ * Direct browser writes are blocked separately by DB triggers (migration 229);
+ * this covers the service-role action paths, which bypass RLS and those triggers.
+ *
+ * Do NOT call this on the pay-to-unfreeze path (createPlanCheckoutAction / the
+ * Paddle webhook), on super-admin actions, or in system crons.
+ *
+ * Throws (not redirect) so the action's try/catch surfaces it as a toast.
+ */
+export async function requireNotFrozen(ownerId: string | null | undefined): Promise<void> {
+  if (!ownerId) return;
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("hms_profiles")
+    .select("frozen")
+    .eq("id", ownerId)
+    .maybeSingle();
+  if (error) throw new Error("Could not verify account status. Please try again.");
+  if (data?.frozen) {
+    throw new Error("Your account is suspended for unpaid dues. Please clear your balance to make changes.");
+  }
+}
+
+/**
+ * WRITE guard for owner-only actions: requireOwnerOrAbove + a frozen-account
+ * block. Use this in place of requireOwnerOrAbove at the entry of owner WRITE
+ * actions (reads keep using requireOwnerOrAbove). super_admin is never frozen.
+ */
+export async function requireOwnerWrite(): Promise<Profile> {
+  const profile = await requireOwnerOrAbove();
+  if (profile.role !== "super_admin") await requireNotFrozen(profile.id);
+  return profile;
+}
+
+/**
+ * WRITE guard for owner/partner shared actions: requireOwnerOrPartnerTier + a
+ * frozen block on the ACCOUNT owner (ctx.hostel.owner_id — works whether the
+ * caller is the owner or a partner on that owner's branch). Use in write actions
+ * only; reads keep using requireOwnerOrPartnerTier.
+ */
+export async function requireOwnerOrPartnerTierWrite(minTier: PartnerTier): Promise<Profile> {
+  const profile = await requireOwnerOrPartnerTier(minTier);
+  const ctx = await getAuthContext();
+  await requireNotFrozen(ctx?.hostel?.owner_id);
+  return profile;
+}
+
 const TIER_RANK: Record<PartnerTier, number> = { read_only: 0, standard: 1, full: 2 };
 
 /**

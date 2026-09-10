@@ -7,7 +7,7 @@ import { unstable_rethrow } from "next/navigation"
 import { requireOwnerOrAbove } from "@/lib/auth"
 import { getAuthContext } from "@/lib/data"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { requireManagerPermission } from "@/lib/manager-auth"
+import { requireManagerWrite } from "@/lib/manager-auth"
 import { logActivity } from "@/lib/audit"
 import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation"
 import { notifyOwnerPaymentRecorded, notifyOwnerPaymentUndone } from "@/lib/payment-notifications"
@@ -339,7 +339,7 @@ export async function applyRoomACUnitsAsManager(
   openingReading?: number,
 ): Promise<{ error: string | null; eligibleCount?: number; perTenantUnits?: number; perTenantCharge?: number; derivedUnits?: number; prevMonthReading?: number; currentReading?: number; vacant?: boolean }> {
   try {
-    const ctx = await requireManagerPermission("collect_payments")
+    const ctx = await requireManagerWrite("collect_payments")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -747,7 +747,7 @@ export async function saveACJoinReadingAsManager(
   openingReading?: number,
 ): Promise<{ error: string | null }> {
   try {
-    const ctx = await requireManagerPermission("collect_payments")
+    const ctx = await requireManagerWrite("collect_payments")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -870,7 +870,7 @@ export async function addTenantAsManager(
   payload: ManagerTenantPayload
 ): Promise<{ error: string | null; tenantId?: string }> {
   try {
-    const ctx = await requireManagerPermission("add_members")
+    const ctx = await requireManagerWrite("add_members")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1042,7 +1042,7 @@ export async function editTenantAsManager(
   payload: ManagerTenantPayload
 ): Promise<{ error: string | null }> {
   try {
-    const ctx = await requireManagerPermission("edit_members")
+    const ctx = await requireManagerWrite("edit_members")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1243,7 +1243,7 @@ export async function giveTenantNoticeAsManager(
   intendedCheckoutDate: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const ctx = await requireManagerPermission("edit_members")
+    const ctx = await requireManagerWrite("edit_members")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1292,7 +1292,7 @@ export async function cancelTenantNoticeAsManager(
   tenantId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const ctx = await requireManagerPermission("edit_members")
+    const ctx = await requireManagerWrite("edit_members")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1335,7 +1335,7 @@ export async function checkoutTenantAsManager(
   input: CheckoutInput
 ): Promise<{ success: boolean; error?: string; warning?: string; settlement?: CheckoutSettlement }> {
   try {
-    const ctx = await requireManagerPermission("edit_members")
+    const ctx = await requireManagerWrite("edit_members")
     const hostelId = ctx.activeHostel.id
     return await performTenantCheckout(hostelId, input)
   } catch (err: unknown) {
@@ -1363,7 +1363,7 @@ export async function recordPaymentAsManager(
   discountPercent?: number,
 ): Promise<{ payment?: Payment; installmentId?: string; error: string | null }> {
   try {
-    const ctx = await requireManagerPermission("collect_payments")
+    const ctx = await requireManagerWrite("collect_payments")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1623,7 +1623,7 @@ export async function undoLastPaymentAsManager(
   paymentId: string,
 ): Promise<{ undone?: { amount: number; forMonth: string; tenantName: string | null }; error?: string }> {
   try {
-    const ctx = await requireManagerPermission("collect_payments")
+    const ctx = await requireManagerWrite("collect_payments")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1680,7 +1680,7 @@ export async function addExpenseAsManager(
   notes?: string,
 ): Promise<{ error: string | null }> {
   try {
-    const ctx = await requireManagerPermission("add_expenses")
+    const ctx = await requireManagerWrite("add_expenses")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1722,7 +1722,7 @@ export async function updateExpenseAsManager(
   notes?: string,
 ): Promise<{ error: string | null }> {
   try {
-    const ctx = await requireManagerPermission("edit_expenses")
+    const ctx = await requireManagerWrite("edit_expenses")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1762,7 +1762,7 @@ export async function addKitchenDailyItemsAsManager(
   date: string,
 ): Promise<{ error: string | null }> {
   try {
-    const ctx = await requireManagerPermission("add_kitchen_expenses")
+    const ctx = await requireManagerWrite("add_kitchen_expenses")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1805,7 +1805,7 @@ export async function updateKitchenItemAsManager(
   notes?: string,
 ): Promise<{ error: string | null }> {
   try {
-    const ctx = await requireManagerPermission("edit_kitchen_expenses")
+    const ctx = await requireManagerWrite("edit_kitchen_expenses")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1846,7 +1846,7 @@ export async function addKitchenGroceryItemAsManager(
   notes?: string,
 ): Promise<{ error: string | null }> {
   try {
-    const ctx = await requireManagerPermission("add_kitchen_expenses")
+    const ctx = await requireManagerWrite("add_kitchen_expenses")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1937,7 +1937,7 @@ export async function addRoomAsManager(
   formData: FormData,
 ): Promise<{ error: string | null; roomId?: string }> {
   try {
-    const ctx = await requireManagerPermission("manage_rooms")
+    const ctx = await requireManagerWrite("manage_rooms")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
@@ -1967,7 +1967,7 @@ export async function updateRoomAsManager(
   formData: FormData,
 ): Promise<{ error: string | null }> {
   try {
-    const ctx = await requireManagerPermission("manage_rooms")
+    const ctx = await requireManagerWrite("manage_rooms")
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
