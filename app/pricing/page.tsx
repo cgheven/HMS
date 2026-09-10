@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { ArrowRight, Check, Building2, CheckCircle2, Star } from "lucide-react";
 import { submitDemoRequest } from "@/app/actions/demo-request";
+import { LegalFooter } from "@/components/legal/legal-footer";
 import {
   Dialog,
   DialogContent,
@@ -427,6 +428,10 @@ export default function PricingPage() {
             ))}
           </div>
         </div>
+      </div>
+
+      <div className="mx-auto max-w-6xl px-4 pb-8">
+        <LegalFooter />
       </div>
 
       {/* Get Started dialog */}

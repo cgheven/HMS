@@ -74,6 +74,11 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/invoice/") ||
     pathname.startsWith("/partner/login") ||
     pathname.startsWith("/pricing") ||
+    // Public legal pages (required for Paddle domain approval; linked from the
+    // login + pricing footers). Exact match — no future sibling inherits access.
+    pathname === "/terms" ||
+    pathname === "/privacy" ||
+    pathname === "/refund" ||
     // Server-to-server cron invocation — no user cookie, authenticates via
     // CRON_SECRET bearer token inside the route handler itself.
     pathname.startsWith("/api/cron/");

@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "@/hooks/use-toast";
+import { LegalFooter } from "@/components/legal/legal-footer";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -254,6 +255,10 @@ export default function LoginPage() {
           </p>
         </div>
 
+      </div>
+
+      <div className="absolute inset-x-0 bottom-0 z-10 pb-4">
+        <LegalFooter />
       </div>
     </div>
   );
