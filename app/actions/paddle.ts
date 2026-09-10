@@ -6,6 +6,7 @@ import { getAuthContext } from "@/lib/data";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getPaddleServer } from "@/lib/paddle-server";
 import { getPlanPriceId, type PlanKey, type BillingCycle } from "@/lib/paddle";
+import { asPlan } from "@/lib/entitlements";
 
 /**
  * Create a Paddle transaction for the owner's chosen plan, then hand its id to
@@ -36,9 +37,24 @@ export async function createPlanCheckoutAction(input: {
     const ownerId = ctx.user.id;
 
     // Sanitise to the known enums — never trust the raw input for pricing.
-    const plan: PlanKey = input.plan === "standard" ? "standard" : "basic";
+    const inputPlan: PlanKey = input.plan === "standard" ? "standard" : "basic";
     const cycle: BillingCycle = input.cycle === "annual" ? "annual" : "monthly";
-    const priceId = getPlanPriceId(plan, cycle);
+
+    // A grandfathered client has a negotiated per-branch USD rate. When present we
+    // charge THAT instead of the standard plan price — a fixed rate with no
+    // per-country overrides. It's a monthly figure; annual mirrors the catalog's
+    // pay-10-get-12 (× 10). Read server-side (guarded column), never client input.
+    const customMonthly = ctx.profile?.custom_unit_amount_usd;
+    const useCustom = customMonthly != null && Number(customMonthly) > 0;
+
+    // For a custom-rate owner the plan is NOT chosen at checkout — the price is
+    // decoupled from the plan, so trusting input.plan would let them pay their
+    // fixed rate while self-granting a higher tier's features (the webhook applies
+    // entitlements from customData.plan). Use the super-admin-set plan; if they
+    // have none, stamp no plan at all so the webhook makes no entitlement change.
+    const serverPlan = asPlan(ctx.profile?.plan);
+    const effectivePlan: PlanKey | null = useCustom ? serverPlan : inputPlan;
+    const priceId = getPlanPriceId(effectivePlan ?? "basic", cycle);
 
     // Locked quantity: the owner's real branch count, counted server-side.
     const admin = createAdminClient();
@@ -49,13 +65,6 @@ export async function createPlanCheckoutAction(input: {
     const quantity = Math.max(1, count ?? 1);
 
     const paddle = getPaddleServer();
-
-    // A grandfathered client has a negotiated per-branch USD rate. When present we
-    // charge THAT instead of the standard plan price — a fixed rate with no
-    // per-country overrides. It's a monthly figure; annual mirrors the catalog's
-    // pay-10-get-12 (× 10). Read server-side (guarded column), never client input.
-    const customMonthly = ctx.profile?.custom_unit_amount_usd;
-    const useCustom = customMonthly != null && Number(customMonthly) > 0;
 
     // Pull the catalog price and mirror it into an inline price whose quantity
     // is pinned (min === max === branch count) so the checkout stepper is hidden
@@ -85,9 +94,13 @@ export async function createPlanCheckoutAction(input: {
       quantity: { minimum: quantity, maximum: quantity },
     };
 
+    // Stamp the plan only when we have an authoritative one — omitting it makes
+    // the webhook leave the owner's plan/entitlements untouched.
+    const customData: Record<string, unknown> = { owner_id: ownerId, cycle };
+    if (effectivePlan) customData.plan = effectivePlan;
     const txn = await paddle.transactions.create({
       items: [{ price: inlinePrice, quantity }],
-      customData: { owner_id: ownerId, plan, cycle },
+      customData,
     });
 
     return { transactionId: txn.id };
