@@ -26,12 +26,17 @@ export type PaddleClientConfig = {
   /** Price ids for the four plan/cycle combos — used only for localized price
    *  PREVIEW in the browser (display); the charge is set server-side. */
   prices: { basicMonthly: string; standardMonthly: string; basicAnnual: string; standardAnnual: string };
+  /** Where the buyer is redirected to complete payment — a checkout page on an
+   *  APPROVED domain (prod: https://yourpulse.io/checkout). Defaults to this
+   *  app's own /checkout (fine on sandbox, where every domain is approved). */
+  checkoutUrl: string;
 };
 
 export function getPaddleClientConfig(): PaddleClientConfig {
   return {
     environment: process.env.PADDLE_ENV === "production" ? "production" : "sandbox",
     clientToken: process.env.NEXT_PUBLIC_PADDLE_CLIENT_TOKEN ?? "",
+    checkoutUrl: process.env.NEXT_PUBLIC_PADDLE_CHECKOUT_URL || "/checkout",
     prices: {
       basicMonthly: process.env.PADDLE_PRICE_ID_BASIC_MONTHLY ?? "",
       standardMonthly: process.env.PADDLE_PRICE_ID_STANDARD_MONTHLY ?? "",

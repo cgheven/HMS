@@ -39,6 +39,7 @@ interface Props {
     environment: "sandbox" | "production";
     clientToken: string;
     prices: { basicMonthly: string; standardMonthly: string; basicAnnual: string; standardAnnual: string };
+    checkoutUrl: string;
   };
   /** The owner's Paddle subscription (mirror), or null if not set up yet. */
   subscription: {
@@ -150,31 +151,31 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
   }, [paddleInst, subActive, qty, paddle.prices]);
 
   const choose = useCallback(async (plan: PlanKey) => {
-    if (!paddleInst || choosing) return;
+    if (choosing) return;
     setCheckoutError(null);
     setChoosing(plan);
     try {
       const res = await createPlanCheckoutAction({ plan, cycle });
       if (res.error || !res.transactionId) {
         setCheckoutError(res.error ?? "Could not start checkout. Please try again.");
+        setChoosing(null);
         return;
       }
-      // Transaction-based checkout: line items (and quantity) are locked server-side.
-      // successUrl brings the owner back to /billing after payment so the page
-      // refreshes into the active-subscription state and shows the new receipt.
-      paddleInst.Checkout.open({
-        transactionId: res.transactionId,
-        settings: {
-          displayMode: "overlay",
-          theme: "dark",
-          allowLogout: false,
-          successUrl: `${window.location.origin}/billing?checkout=success`,
-        },
-      });
-    } finally {
+      // Redirect to the checkout page on an APPROVED domain (prod: yourpulse.io).
+      // That page opens Paddle for this transaction, so THIS app domain never
+      // launches Paddle.js checkout and doesn't need domain approval. `return`
+      // tells it where to send the buyer after a successful payment. The line
+      // items + quantity are already locked server-side on the transaction.
+      const base = paddle.checkoutUrl || "/checkout";
+      const sep = base.includes("?") ? "&" : "?";
+      window.location.href =
+        `${base}${sep}_ptxn=${encodeURIComponent(res.transactionId)}` +
+        `&return=${encodeURIComponent(window.location.origin)}`;
+    } catch {
+      setCheckoutError("Could not start checkout. Please try again.");
       setChoosing(null);
     }
-  }, [paddleInst, choosing, cycle]);
+  }, [choosing, cycle, paddle.checkoutUrl]);
 
   const priceIdFor = (plan: PlanKey): string =>
     plan === "basic"
@@ -283,7 +284,7 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
             </div>
             <button
               onClick={() => choose(legacyPlan)}
-              disabled={!paddleInst || !!choosing}
+              disabled={!!choosing}
               className="inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium px-4 py-2 transition-colors disabled:opacity-50 bg-emerald-600 hover:bg-emerald-600/90 text-white"
             >
               {choosing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
@@ -331,7 +332,7 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
                   </ul>
                   <button
                     onClick={() => choose(plan)}
-                    disabled={!paddleInst || !!choosing}
+                    disabled={!!choosing}
                     className={cn("inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium px-4 py-2 transition-colors disabled:opacity-50",
                       isStd ? "bg-emerald-600 hover:bg-emerald-600/90 text-white" : "border border-sidebar-border hover:bg-white/5")}
                   >
