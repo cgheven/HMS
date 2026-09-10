@@ -112,8 +112,9 @@ export async function POST(req: NextRequest) {
       // cannot take down a live subdomain (migration 167 never releases a claimed
       // one); it turns referral off and locks the Standard upsells.
       if (type === "subscription.canceled" && ownerId) {
-        mustOk(await admin.from("hms_profiles").update({ plan: "basic" }).eq("id", ownerId), "downgrade plan on cancel");
+        // Entitlements first, plan last (same commit-marker ordering as above).
         await applyPlanEntitlements(admin, ownerId, "basic");
+        mustOk(await admin.from("hms_profiles").update({ plan: "basic" }).eq("id", ownerId), "downgrade plan on cancel");
       }
     } else if (type === "transaction.completed" || type === "transaction.paid") {
       // A real payment. Record it against the owner's subscription row — this is
@@ -148,8 +149,13 @@ export async function POST(req: NextRequest) {
             .from("hms_profiles").select("plan").eq("id", ownerId).maybeSingle();
           mustOk({ error: readErr }, "read current plan");
           if (prof?.plan !== plan) {
-            mustOk(await admin.from("hms_profiles").update({ plan }).eq("id", ownerId), "set plan");
+            // Apply entitlements FIRST, then persist plan as the commit marker.
+            // The plan-change guard above uses `plan` as its idempotency key, so
+            // if the (non-atomic) entitlement writes throw, plan must stay
+            // unchanged — otherwise a retry would see the new plan and skip the
+            // half-applied entitlements, leaving a paid owner un-entitled.
             await applyPlanEntitlements(admin, ownerId, plan);
+            mustOk(await admin.from("hms_profiles").update({ plan }).eq("id", ownerId), "set plan");
           }
         }
       }
