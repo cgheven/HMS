@@ -5,7 +5,7 @@ import { requireOwnerOrAbove } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getPaddleServer } from "@/lib/paddle-server";
-import { getPlanPriceId, type PlanKey, type BillingCycle } from "@/lib/paddle";
+import { getPlanPriceId, ONBOARDING_FEE_USD, type PlanKey, type BillingCycle } from "@/lib/paddle";
 import { asPlan } from "@/lib/entitlements";
 
 /**
@@ -68,6 +68,17 @@ export async function createPlanCheckoutAction(input: {
       .eq("billing_active", true);
     const quantity = Math.max(1, count ?? 1);
 
+    // Onboarding fee: a one-time charge added to the FIRST card payment for a
+    // manually-onboarded client who hasn't settled it. Owed = not waived (self-
+    // onboarded clients are waived) AND not already paid (bank or card). Read
+    // server-side — the charge is never client-controlled.
+    const { data: billingRow } = await admin
+      .from("hms_client_billing")
+      .select("waive_onboarding, onboarding_paid")
+      .eq("owner_id", ownerId)
+      .maybeSingle();
+    const owesOnboarding = !!billingRow && !billingRow.waive_onboarding && !billingRow.onboarding_paid;
+
     const paddle = getPaddleServer();
 
     // Pull the catalog price and mirror it into an inline price whose quantity
@@ -98,14 +109,34 @@ export async function createPlanCheckoutAction(input: {
       quantity: { minimum: quantity, maximum: quantity },
     };
 
+    // One-time onboarding line item — non-recurring (billingCycle null → charged
+    // on THIS transaction only, never part of the subscription). Same inline-price
+    // shape as the plan item so it renders next to it in the checkout. Flat fee,
+    // quantity 1 (not per-branch), no per-country overrides.
+    const onboardingPrice = owesOnboarding
+      ? {
+          productId: catalog.productId,
+          description: "One-time onboarding fee",
+          taxMode: catalog.taxMode,
+          billingCycle: null,
+          unitPrice: { amount: String(ONBOARDING_FEE_USD * 100), currencyCode: "USD" as const },
+          unitPriceOverrides: [] as { countryCodes: string[]; unitPrice: { amount: string; currencyCode: string } }[],
+          quantity: { minimum: 1, maximum: 1 },
+        }
+      : null;
+
     // Stamp the plan only when we have an authoritative one — omitting it makes
     // the webhook leave the owner's plan/entitlements untouched.
     const customData: Record<string, unknown> = { owner_id: ownerId, cycle };
     if (effectivePlan) customData.plan = effectivePlan;
-    const txn = await paddle.transactions.create({
-      items: [{ price: inlinePrice, quantity }],
-      customData,
-    });
+    // Tell the webhook the onboarding fee rode along on this payment so it marks
+    // it collected — charged exactly once across both rails.
+    if (owesOnboarding) customData.onboarding = true;
+
+    const items = [{ price: inlinePrice, quantity }];
+    if (onboardingPrice) items.push({ price: onboardingPrice as typeof inlinePrice, quantity: 1 });
+
+    const txn = await paddle.transactions.create({ items, customData });
 
     return { transactionId: txn.id };
   } catch (err: unknown) {

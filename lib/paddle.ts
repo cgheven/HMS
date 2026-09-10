@@ -3,6 +3,12 @@ import "server-only";
 export type PlanKey = "basic" | "standard";
 export type BillingCycle = "monthly" | "annual";
 
+/** One-time onboarding fee in USD (≈ Rs 10,000 at the ~275 PKR/$ subscription
+ *  rate). Charged once, as a one-time line item on the first card payment, for a
+ *  manually-onboarded client who hasn't settled it (see hms_client_billing
+ *  .onboarding_paid / .waive_onboarding). Self-onboarded clients are waived. */
+export const ONBOARDING_FEE_USD = 36;
+
 const PRICE_ENV: Record<PlanKey, Record<BillingCycle, string>> = {
   basic: { monthly: "PADDLE_PRICE_ID_BASIC_MONTHLY", annual: "PADDLE_PRICE_ID_BASIC_ANNUAL" },
   standard: { monthly: "PADDLE_PRICE_ID_STANDARD_MONTHLY", annual: "PADDLE_PRICE_ID_STANDARD_ANNUAL" },

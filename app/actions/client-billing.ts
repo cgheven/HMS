@@ -180,7 +180,7 @@ export async function markInvoiceStatus(
     // second "we received your payment" for money that arrived once.
     const { data: before } = await admin
       .from("hms_platform_invoices")
-      .select("status, owner_id")
+      .select("status, owner_id, onboarding_fee_charged")
       .eq("id", invoiceId)
       .maybeSingle();
     const wasUnpaid = before?.status === "unpaid";
@@ -199,6 +199,11 @@ export async function markInvoiceStatus(
     // unpaid invoices, lift any account suspension (mirrors the Paddle webhook,
     // which clears frozen on a card payment). Only on a real unpaid -> paid.
     if (status === "paid" && wasUnpaid && before?.owner_id) {
+      // If this invoice carried the one-time onboarding fee, mark onboarding
+      // collected — so a later switch to card never re-charges it.
+      if (Number(before.onboarding_fee_charged ?? 0) > 0) {
+        await admin.from("hms_client_billing").update({ onboarding_paid: true }).eq("owner_id", before.owner_id);
+      }
       const { count: stillUnpaid } = await admin
         .from("hms_platform_invoices")
         .select("id", { count: "exact", head: true })

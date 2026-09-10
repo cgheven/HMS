@@ -181,6 +181,13 @@ export async function POST(req: NextRequest) {
           .gt("period_end", pktTodayDateString(new Date(paidAt))), "supersede overlapping manual invoices");
       }
 
+      // The one-time onboarding fee was added to this payment (custom_data.onboarding,
+      // set server-side at checkout only when it was owed) — mark it collected so no
+      // later checkout charges it again. Idempotent.
+      if (ownerId && t.customData?.["onboarding"] === true) {
+        mustOk(await admin.from("hms_client_billing").update({ onboarding_paid: true }).eq("owner_id", ownerId), "mark onboarding paid");
+      }
+
       // Receipt row for the /billing invoice history. Only when we can tie it to
       // an owner (owner_id in custom_data) and it's a real charge with an id.
       if (ownerId && t.id) {
