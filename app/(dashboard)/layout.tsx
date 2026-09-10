@@ -25,9 +25,29 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // A partner with no active branch (all partnerships removed) has nothing to see here.
   if (ctx.profile?.role === "partner" && !ctx.hostel) redirect("/login");
 
+  // Account suspension (unpaid dues): owner = own flag; partner = the account
+  // owner's flag. Reads still work; the banner explains why writes are blocked.
+  let accountFrozen = false;
+  if (ctx.profile?.role === "owner") {
+    accountFrozen = !!ctx.profile.frozen;
+  } else if (ctx.hostel?.owner_id) {
+    const { data } = await createAdminClient()
+      .from("hms_profiles").select("frozen").eq("id", ctx.hostel.owner_id).maybeSingle();
+    accountFrozen = !!(data as { frozen?: boolean } | null)?.frozen;
+  }
+
   return (
     <HostelProvider profile={ctx.profile} hostel={ctx.hostel} hostels={ctx.hostels ?? []} partnerTier={ctx.partnerTier}>
-      <DashboardShell>{children}</DashboardShell>
+      <DashboardShell>
+        {accountFrozen && (
+          <div className="mb-4 rounded-xl border border-amber/30 bg-amber/10 px-4 py-3 text-sm">
+            <span className="font-semibold text-amber">Account suspended.</span>{" "}
+            Your account has unpaid dues, so changes are disabled — you can still view everything.
+            Clear your balance to restore full access.
+          </div>
+        )}
+        {children}
+      </DashboardShell>
     </HostelProvider>
   );
 }

@@ -364,6 +364,38 @@ export async function setBranchBillingActive(
   }
 }
 
+// Suspend / restore an account for unpaid dues. Service-role write, so it passes
+// the frozen guard + block triggers (auth.uid() is NULL here). Enforcement lives
+// in the DB triggers + requireNotFrozen; this is the control that sets the flag.
+export async function setAccountFrozen(
+  ownerId: string,
+  frozen: boolean
+): Promise<{ success?: boolean; error?: string }> {
+  try {
+    const caller = await requireSuperAdmin();
+    const admin = createAdminClient();
+
+    const { error } = await admin
+      .from("hms_profiles")
+      .update({ frozen })
+      .eq("id", ownerId);
+    if (error) throw error;
+
+    await writeAuditLog({
+      actor_id: caller.id,
+      actor_email: caller.email ?? "",
+      action: "super_admin.set_account_frozen",
+      entity: "profile",
+      entity_id: ownerId,
+      meta: { frozen },
+    });
+
+    return { success: true };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to update account status" };
+  }
+}
+
 export async function setWhatsappEnabled(
   hostelId: string,
   enabled: boolean

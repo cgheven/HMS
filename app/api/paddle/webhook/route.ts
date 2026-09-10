@@ -128,6 +128,8 @@ export async function POST(req: NextRequest) {
           { owner_id: ownerId, last_transaction_id: t.id ?? null, last_paid_at: paidAt, updated_at: now },
           { onConflict: "owner_id" }
         ), "record payment on subscription");
+        // A successful payment settles dues — lift any freeze automatically.
+        mustOk(await admin.from("hms_profiles").update({ frozen: false }).eq("id", ownerId), "unfreeze on payment");
       } else if (t.subscriptionId) {
         mustOk(await admin
           .from("hms_paddle_subscriptions")

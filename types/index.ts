@@ -60,6 +60,9 @@ export interface Profile {
   /** Negotiated per-branch price in USD (migration 228). NULL = standard catalog
    *  pricing. Set for grandfathered/legacy clients only (Super Admin). */
   custom_unit_amount_usd?: number | null;
+  /** Account suspended for unpaid dues (migration 229). true = read-only: the
+   *  owner can log in and view but every write is blocked until dues clear. */
+  frozen?: boolean | null;
   primary_hostel_id: string | null;
   is_active: boolean;
   created_at: string;
