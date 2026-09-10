@@ -185,6 +185,20 @@ export async function markInvoiceStatus(
       .maybeSingle();
     const wasUnpaid = before?.status === "unpaid";
 
+    // If this first invoice carried the one-time onboarding fee, record onboarding
+    // collected BEFORE flipping the invoice to paid, and FAIL LOUDLY if the write
+    // errors. Order + throw matter on this money flag: a silent failure would leave
+    // the invoice paid but onboarding_paid false, and a later card checkout would
+    // re-add the $36. Setting it first keeps a mid-write failure retryable (the
+    // invoice stays unpaid). Idempotent.
+    if (status === "paid" && wasUnpaid && before?.owner_id && Number(before.onboarding_fee_charged ?? 0) > 0) {
+      const { error: obErr } = await admin
+        .from("hms_client_billing")
+        .update({ onboarding_paid: true })
+        .eq("owner_id", before.owner_id);
+      if (obErr) throw obErr;
+    }
+
     const { error } = await admin
       .from("hms_platform_invoices")
       .update({
@@ -199,11 +213,6 @@ export async function markInvoiceStatus(
     // unpaid invoices, lift any account suspension (mirrors the Paddle webhook,
     // which clears frozen on a card payment). Only on a real unpaid -> paid.
     if (status === "paid" && wasUnpaid && before?.owner_id) {
-      // If this invoice carried the one-time onboarding fee, mark onboarding
-      // collected — so a later switch to card never re-charges it.
-      if (Number(before.onboarding_fee_charged ?? 0) > 0) {
-        await admin.from("hms_client_billing").update({ onboarding_paid: true }).eq("owner_id", before.owner_id);
-      }
       const { count: stillUnpaid } = await admin
         .from("hms_platform_invoices")
         .select("id", { count: "exact", head: true })
