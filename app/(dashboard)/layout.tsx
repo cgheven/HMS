@@ -45,7 +45,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // Advance warning: an unpaid invoice due within the next 7 days (or already
   // overdue) — shown as a "please pay" strip so a freeze is never a surprise.
   // Suppressed once frozen (the suspension banner takes over).
-  let dueSoon: { due_date: string } | null = null;
+  let dueSoon: { due_date: string; freeze_date: string; overdue: boolean } | null = null;
   if (!accountFrozen && accountOwnerId) {
     // Don't nudge owners on Paddle card billing — Paddle charges them and handles
     // its own card dunning; the manual "please pay" strip is for bank clients.
@@ -55,16 +55,36 @@ export default async function DashboardLayout({ children }: { children: React.Re
       (subRow as { status?: string } | null)?.status ?? ""
     );
     if (!onPaddle) {
-      const in7 = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const { data } = await admin
         .from("hms_platform_invoices")
-        .select("due_date")
+        .select("due_date, first_sent_at")
         .eq("owner_id", accountOwnerId)
         .eq("status", "unpaid")
-        .lte("due_date", in7)
+        // Only warn about invoices that can actually trigger a freeze: the
+        // account-freeze cron only suspends for a SENT unpaid invoice, so an
+        // unsent one must not claim a suspension date it won't cause.
+        .not("first_sent_at", "is", null)
         .order("due_date", { ascending: true })
         .limit(1);
-      if (data && data.length > 0) dueSoon = data[0] as { due_date: string };
+      if (data && data.length > 0) {
+        const inv = data[0] as { due_date: string; first_sent_at: string };
+        // Effective freeze date mirrors hms_freeze_overdue_accounts(): the LATER
+        // of the due date and 7 days after the invoice was sent (the grace floor
+        // that protects a back-dated / catch-up invoice). Showing due_date alone
+        // would name a suspension date that has already passed for such invoices.
+        const dueMs = new Date(`${inv.due_date}T00:00:00Z`).getTime();
+        const sentPlus7Ms = new Date(inv.first_sent_at).getTime() + 7 * 24 * 60 * 60 * 1000;
+        const freezeMs = Math.max(dueMs, sentPlus7Ms);
+        // Surface it only within a week of the freeze (or once overdue) — a
+        // timely warning, not a month-out nag.
+        if (freezeMs <= Date.now() + 7 * 24 * 60 * 60 * 1000) {
+          dueSoon = {
+            due_date: inv.due_date,
+            freeze_date: new Date(freezeMs).toISOString().slice(0, 10),
+            overdue: freezeMs < Date.now(),
+          };
+        }
+      }
     }
   }
 
@@ -83,8 +103,17 @@ export default async function DashboardLayout({ children }: { children: React.Re
             className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-amber/30 bg-amber/10 px-4 py-2.5 text-sm transition-colors hover:bg-amber/15"
           >
             <span>
-              <span className="font-semibold text-amber">Payment due {formatDate(dueSoon.due_date)}.</span>{" "}
-              Please pay to avoid any inconvenience — your account will be suspended if it stays unpaid.
+              {dueSoon.overdue ? (
+                <>
+                  <span className="font-semibold text-amber">Payment overdue.</span>{" "}
+                  Pay now to avoid suspension of your account.
+                </>
+              ) : (
+                <>
+                  <span className="font-semibold text-amber">Payment due {formatDate(dueSoon.due_date)}.</span>{" "}
+                  Pay before then — your account will be suspended on {formatDate(dueSoon.freeze_date)} if it stays unpaid.
+                </>
+              )}
             </span>
             <span className="whitespace-nowrap font-semibold text-amber">Pay now →</span>
           </Link>

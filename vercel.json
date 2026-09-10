@@ -24,6 +24,10 @@
       "schedule": "0 4 * * *"
     },
     {
+      "path": "/api/cron/account-freeze",
+      "schedule": "30 4 * * *"
+    },
+    {
       "path": "/api/cron/owner-daily-summary",
       "schedule": "30 18 * * *"
     },

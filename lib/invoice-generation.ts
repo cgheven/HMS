@@ -53,12 +53,14 @@ export async function generateInvoiceForOwner(
     return { generated: false, reason: "Client is on Paddle billing" };
   }
 
-  // Due date is Net 7 — 7 days from when the invoice is actually issued, not the
-  // billing period it covers. Tying it to period_start meant an invoice for a
-  // period starting in the future looked "due" the same day service starts,
-  // with zero time to actually pay it.
-  const issueDate = new Date(`${pktTodayDateString()}T00:00:00Z`);
-  const dueDate = new Date(Date.UTC(issueDate.getUTCFullYear(), issueDate.getUTCMonth(), issueDate.getUTCDate() + 7))
+  // Due date is the billing date + 7: the client gets 7 days from the START of
+  // their billing period (their join date, then each monthly renewal) to pay.
+  // On the due date the account-freeze cron suspends the account if the invoice
+  // is still unpaid (and was actually sent). Anchoring to period_start makes the
+  // deadline predictable — a Sep 5 period is always due Sep 12 — independent of
+  // when the cron happens to run and generate the invoice.
+  const ps = new Date(`${periodStart}T00:00:00Z`);
+  const dueDate = new Date(Date.UTC(ps.getUTCFullYear(), ps.getUTCMonth(), ps.getUTCDate() + 7))
     .toISOString()
     .slice(0, 10);
 
