@@ -186,6 +186,11 @@ export async function POST(req: NextRequest) {
     return new NextResponse(`handler error: ${e instanceof Error ? e.message : String(e)}`, { status: 500 });
   }
 
-  await admin.from("hms_paddle_webhook_events").insert({ event_id: event.eventId, event_type: type });
+  // Best-effort dedup record. A failure here is safe (a redelivery just re-runs
+  // the idempotent handler) but should be visible — a persistently failing insert
+  // would silently mean every event reprocesses.
+  const { error: recordErr } = await admin
+    .from("hms_paddle_webhook_events").insert({ event_id: event.eventId, event_type: type });
+  if (recordErr) console.error("[paddle] failed to record webhook event", event.eventId, recordErr.message);
   return NextResponse.json({ ok: true });
 }
