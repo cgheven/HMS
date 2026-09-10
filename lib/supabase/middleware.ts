@@ -74,10 +74,6 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/invoice/") ||
     pathname.startsWith("/partner/login") ||
     pathname.startsWith("/pricing") ||
-    // Root: the app-domain home. Public so the domain is reachable without a
-    // login wall (Paddle's checkout-domain review fetches it). app/page.tsx
-    // sends signed-out visitors on to /pricing and signed-in ones to their home.
-    pathname === "/" ||
     // Public legal pages (required for Paddle domain approval; linked from the
     // login + pricing footers). Exact match — no future sibling inherits access.
     pathname === "/terms" ||

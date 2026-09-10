@@ -5,11 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 export default async function Home() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
-  // Signed-out visitors get the public pricing page (a reachable landing with our
-  // product + legal footer) rather than a login wall — the app domain must be
-  // publicly reachable for Paddle's checkout-domain review. Owners/staff sign in
-  // from there or via /login directly.
-  if (!user) redirect("/pricing");
+  if (!user) redirect("/login");
 
   // hms_managers / hms_sales_reps have RLS enabled with zero policies (default-deny
   // even for the row owner) — these self-lookups must use the admin client, not the
