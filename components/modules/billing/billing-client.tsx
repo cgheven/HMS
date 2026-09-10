@@ -65,8 +65,8 @@ type PlanKey = "basic" | "standard";
 type Cycle = "monthly" | "annual";
 
 const PLAN_FEATURES: Record<PlanKey, string[]> = {
-  basic: ["Core HMS", "Reports & billing", "RedFlag", "Multi-branch", "Hotel Eye", "WhatsApp automation (Pakistan)"],
-  standard: ["Everything in Basic", "Branded subdomain", "Email reminders", "Referral engine"],
+  basic: ["Core HMS", "Reports & billing", "RedFlag", "Multi-branch", "Hotel Eye"],
+  standard: ["Everything in Basic", "Branded subdomain", "Email reminders", "WhatsApp automation (Pakistan)", "Referral engine"],
 };
 
 function statusBadge(status: PlatformInvoice["status"]) {
