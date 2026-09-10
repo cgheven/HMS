@@ -1,12 +1,30 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { initializePaddle, type Paddle } from "@paddle/paddle-js";
 import { Wallet, CheckCircle2, Clock, Download, CreditCard, Loader2, Check } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import { clientDiscountPct } from "@/lib/pricing";
 import { createPlanCheckoutAction } from "@/app/actions/paddle";
 import type { ClientBilling, PlatformInvoice } from "@/types";
+
+type PaddlePayment = {
+  transaction_id: string;
+  amount: number | null;
+  currency_code: string | null;
+  status: string | null;
+  invoice_number: string | null;
+  billed_at: string | null;
+};
+
+function formatMoney(amount: number | null, currency: string | null): string {
+  if (amount == null) return "—";
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: currency ?? "USD" }).format(amount);
+  } catch {
+    return `${currency ?? ""} ${amount.toFixed(2)}`.trim();
+  }
+}
 
 interface Props {
   billing: ClientBilling | null;
@@ -31,6 +49,10 @@ interface Props {
     current_period_end: string | null;
     last_paid_at: string | null;
   } | null;
+  /** Paddle card-payment receipts, newest first. */
+  paddlePayments: PaddlePayment[];
+  /** True when the owner just came back from a completed Paddle checkout. */
+  checkoutSuccess: boolean;
 }
 
 type PlanKey = "basic" | "standard";
@@ -47,11 +69,34 @@ function statusBadge(status: PlatformInvoice["status"]) {
   return { label: "Unpaid", cls: "text-amber bg-amber/10 border-amber/20", icon: Clock };
 }
 
-export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEmail, paddle, subscription }: Props) {
+export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEmail, paddle, subscription, paddlePayments, checkoutSuccess }: Props) {
   const outstanding = invoices.filter((i) => i.status === "unpaid").reduce((s, i) => s + Number(i.amount), 0);
   const qty = Math.max(1, branchCount);
 
   const subActive = !!subscription && ["active", "trialing"].includes(subscription.status);
+
+  // After a completed checkout Paddle redirects back here. The webhook that flips
+  // the subscription to active lands a beat later, so if we're not active yet,
+  // reload ONCE after a short delay to pick it up. sessionStorage guards against
+  // a reload loop (this is post-checkout only, not an every-mount sync).
+  const refreshedRef = useRef(false);
+  useEffect(() => {
+    if (!checkoutSuccess || subActive || refreshedRef.current) return;
+    let seen = 0;
+    try { seen = Number(sessionStorage.getItem("pulse_checkout_refresh") ?? "0"); } catch {}
+    if (seen >= 3) return;
+    refreshedRef.current = true;
+    const t = setTimeout(() => {
+      try { sessionStorage.setItem("pulse_checkout_refresh", String(seen + 1)); } catch {}
+      window.location.reload();
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [checkoutSuccess, subActive]);
+
+  // Clear the guard once the subscription is live so a future checkout starts fresh.
+  useEffect(() => {
+    if (subActive) { try { sessionStorage.removeItem("pulse_checkout_refresh"); } catch {} }
+  }, [subActive]);
   const subMonthly = subscription && subscription.unit_amount != null
     ? Number(subscription.unit_amount) * (subscription.quantity ?? 1)
     : null;
@@ -103,9 +148,16 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
         return;
       }
       // Transaction-based checkout: line items (and quantity) are locked server-side.
+      // successUrl brings the owner back to /billing after payment so the page
+      // refreshes into the active-subscription state and shows the new receipt.
       paddleInst.Checkout.open({
         transactionId: res.transactionId,
-        settings: { displayMode: "overlay", theme: "dark", allowLogout: false },
+        settings: {
+          displayMode: "overlay",
+          theme: "dark",
+          allowLogout: false,
+          successUrl: `${window.location.origin}/billing?checkout=success`,
+        },
       });
     } finally {
       setChoosing(null);
@@ -128,6 +180,16 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
         <h1 className="text-xl font-bold">Billing</h1>
         <p className="text-sm text-muted-foreground">Your Pulse subscription and invoice history</p>
       </div>
+
+      {checkoutSuccess && (
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 flex items-center gap-3">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <p className="text-sm">
+            <span className="font-semibold">Payment received.</span>{" "}
+            {subActive ? "Your subscription is active." : "Activating your subscription — this can take a few seconds."}
+          </p>
+        </div>
+      )}
 
       {/* Legacy manual plan card — shown only when there is no active Paddle
           subscription, so nothing about the existing manual-billing view changes
@@ -237,10 +299,27 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
         <div className="px-5 py-3 border-b border-sidebar-border">
           <p className="text-sm font-semibold">Invoice History</p>
         </div>
-        {invoices.length === 0 ? (
+        {invoices.length === 0 && paddlePayments.length === 0 ? (
           <div className="px-5 py-10 text-center text-sm text-muted-foreground">No invoices yet.</div>
         ) : (
           <div className="divide-y divide-sidebar-border/60">
+            {paddlePayments.map((p) => (
+              <div key={p.transaction_id} className="flex items-center justify-between gap-3 px-5 py-3">
+                <div>
+                  <p className="text-sm font-medium">Card payment{p.invoice_number ? ` · ${p.invoice_number}` : ""}</p>
+                  <p className="text-xs text-muted-foreground">{p.billed_at ? formatDate(p.billed_at) : "—"}</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold">{formatMoney(p.amount, p.currency_code)}</span>
+                  <span className="inline-flex items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-medium border text-emerald-400 bg-emerald-500/10 border-emerald-500/20">
+                    <CheckCircle2 className="w-3 h-3" /> Paid
+                  </span>
+                  <a href={`/billing/invoice/${p.transaction_id}`} target="_blank" rel="noreferrer" className="p-1.5 rounded-lg border border-sidebar-border text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors" title="Download invoice PDF">
+                    <Download className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              </div>
+            ))}
             {invoices.map((inv) => {
               const badge = statusBadge(inv.status);
               const Icon = badge.icon;

@@ -14,8 +14,13 @@ import { getPlanPriceId, type PlanKey, type BillingCycle } from "@/lib/paddle";
  *   - plan/cycle are re-validated to a fixed enum and mapped to a price id here;
  *   - quantity = the owner's ACTUAL branch count (not sent by the client);
  *   - owner_id (for webhook linking) is the authenticated user.
- * Opening checkout with this transaction id also LOCKS the line items, so the
- * quantity stepper can't be edited in the overlay.
+ *
+ * Quantity is LOCKED: Paddle only hides the checkout quantity stepper when a
+ * price's minimum === maximum. Catalog prices are shared (branch count varies
+ * per owner), so we charge with an INLINE price built by copying the catalog
+ * price's unit price + per-country overrides and pinning quantity to exactly
+ * the branch count. Same numbers the plan card previews (no drift), but the
+ * stepper is gone and the customer can't pay for fewer branches than they run.
  *
  * Owner-only: billing is account-level (partners are redirected off /billing;
  * managers have no owner context). requireOwnerOrAbove enforces it.
@@ -43,8 +48,30 @@ export async function createPlanCheckoutAction(input: {
       .eq("owner_id", ownerId);
     const quantity = Math.max(1, count ?? 1);
 
-    const txn = await getPaddleServer().transactions.create({
-      items: [{ priceId, quantity }],
+    const paddle = getPaddleServer();
+
+    // Pull the catalog price and mirror it into an inline price whose quantity
+    // is pinned (min === max === branch count) so the checkout stepper is hidden
+    // and the amount is fixed. Copying the catalog price keeps the localized
+    // per-country pricing identical to what the plan card shows.
+    const catalog = await paddle.prices.get(priceId);
+    const inlinePrice = {
+      productId: catalog.productId,
+      description: catalog.description,
+      taxMode: catalog.taxMode,
+      billingCycle: catalog.billingCycle
+        ? { interval: catalog.billingCycle.interval, frequency: catalog.billingCycle.frequency }
+        : null,
+      unitPrice: { amount: catalog.unitPrice.amount, currencyCode: catalog.unitPrice.currencyCode },
+      unitPriceOverrides: catalog.unitPriceOverrides.map((o) => ({
+        countryCodes: o.countryCodes,
+        unitPrice: { amount: o.unitPrice.amount, currencyCode: o.unitPrice.currencyCode },
+      })),
+      quantity: { minimum: quantity, maximum: quantity },
+    };
+
+    const txn = await paddle.transactions.create({
+      items: [{ price: inlinePrice, quantity }],
       customData: { owner_id: ownerId, plan, cycle },
     });
 

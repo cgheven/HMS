@@ -389,10 +389,10 @@ export async function getDashboardData() {
 // so this deliberately does NOT depend on ctx.hostelId / the branch switcher.
 export async function getOwnerBilling() {
   const ctx = await getAuthContext();
-  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1, subscription: null as OwnerPaddleSubscription | null };
+  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1, subscription: null as OwnerPaddleSubscription | null, paddlePayments: [] as OwnerPaddlePayment[] };
   const { supabase, user } = ctx;
 
-  const [{ data: billing }, { data: invoices }, { count: branchCount }, { data: subscription }] = await Promise.all([
+  const [{ data: billing }, { data: invoices }, { count: branchCount }, { data: subscription }, { data: paddlePayments }] = await Promise.all([
     supabase.from("hms_client_billing").select("*").eq("owner_id", user.id).maybeSingle(),
     supabase
       .from("hms_platform_invoices")
@@ -407,6 +407,12 @@ export async function getOwnerBilling() {
       .select("status, quantity, unit_amount, currency_code, current_period_end, last_paid_at")
       .eq("owner_id", user.id)
       .maybeSingle(),
+    // Paddle payment receipts (card-payment invoice history).
+    supabase
+      .from("hms_paddle_transactions")
+      .select("transaction_id, amount, currency_code, status, invoice_number, billed_at")
+      .eq("owner_id", user.id)
+      .order("billed_at", { ascending: false }),
   ]);
 
   return {
@@ -414,6 +420,7 @@ export async function getOwnerBilling() {
     invoices: (invoices ?? []) as PlatformInvoice[],
     branchCount: branchCount ?? 1,
     subscription: (subscription as OwnerPaddleSubscription | null) ?? null,
+    paddlePayments: (paddlePayments ?? []) as OwnerPaddlePayment[],
   };
 }
 
@@ -425,6 +432,16 @@ export type OwnerPaddleSubscription = {
   currency_code: string | null;
   current_period_end: string | null;
   last_paid_at: string | null;
+};
+
+/** A single Paddle card payment (invoice-history row). */
+export type OwnerPaddlePayment = {
+  transaction_id: string;
+  amount: number | null;
+  currency_code: string | null;
+  status: string | null;
+  invoice_number: string | null;
+  billed_at: string | null;
 };
 
 export async function getRooms() {

@@ -23,6 +23,10 @@ type TxnLike = {
   customerId?: string;
   customData?: Record<string, unknown> | null;
   billedAt?: string | null;
+  status?: string;
+  invoiceNumber?: string | null;
+  currencyCode?: string;
+  details?: { totals?: { grandTotal?: string | null; currencyCode?: string } | null } | null;
 };
 
 function ownerIdOf(custom: Record<string, unknown> | null | undefined): string | null {
@@ -100,6 +104,25 @@ export async function POST(req: NextRequest) {
           .from("hms_paddle_subscriptions")
           .update({ last_transaction_id: t.id ?? null, last_paid_at: paidAt, updated_at: now })
           .eq("paddle_subscription_id", t.subscriptionId);
+      }
+
+      // Receipt row for the /billing invoice history. Only when we can tie it to
+      // an owner (owner_id in custom_data) and it's a real charge with an id.
+      if (ownerId && t.id) {
+        const grand = t.details?.totals?.grandTotal;
+        await admin.from("hms_paddle_transactions").upsert(
+          {
+            transaction_id: t.id,
+            owner_id: ownerId,
+            paddle_subscription_id: t.subscriptionId ?? null,
+            amount: grand != null ? Number(grand) / 100 : null,
+            currency_code: t.details?.totals?.currencyCode ?? t.currencyCode ?? null,
+            status: t.status ?? "completed",
+            invoice_number: t.invoiceNumber ?? null,
+            billed_at: paidAt,
+          },
+          { onConflict: "transaction_id" }
+        );
       }
     }
   } catch (e) {
