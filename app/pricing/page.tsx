@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import { ArrowRight, Check, Building2, CheckCircle2, Star } from "lucide-react";
+import { ArrowRight, Check, CheckCircle2, Star } from "lucide-react";
 import { submitDemoRequest } from "@/app/actions/demo-request";
 import { LegalFooter } from "@/components/legal/legal-footer";
 import {
@@ -13,67 +13,51 @@ import {
 } from "@/components/ui/dialog";
 
 // ── Pricing data ──────────────────────────────────────────────────────────────
+// Priced PER BRANCH. Annual = pay for 10 months, get 12 (2 months free).
 
 type BillingPeriod = "monthly" | "annual";
 
-const PLANS = [
-  {
-    key:         "1",
-    name:        "1 Branch",
-    tagline:     "One hostel, fully managed.",
-    monthly:     8000,
-    annual:      80000,
-    highlight:   false,
-  },
-  {
-    key:         "2",
-    name:        "2 Branches",
-    tagline:     "Grow across multiple locations.",
-    monthly:     16000,
-    annual:      160000,
-    highlight:   false,
-  },
-  {
-    key:         "3",
-    name:        "3 Branches",
-    tagline:     "The sweet spot for growing networks.",
-    monthly:     24000,
-    annual:      240000,
-    highlight:   true,
-    badge:       "Most Popular",
-  },
-  {
-    key:         "4",
-    name:        "4 Branches",
-    tagline:     "Built for expanding networks.",
-    monthly:     32000,
-    annual:      320000,
-    highlight:   false,
-  },
-  {
-    key:         "10",
-    name:        "10 Branches",
-    tagline:     "Enterprise-scale hostel management.",
-    monthly:     80000,
-    annual:      800000,
-    highlight:   false,
-  },
-] as const;
-
-const FEATURES = [
+const BASIC_FEATURES = [
   "Tenant management & profiles",
-  "Package-based pricing & billing",
-  "AC unit metered billing",
-  "Monthly payment tracking",
-  "Security deposit management",
-  "Public hostel listing page",
-  "Online applications & waitlist",
-  "Partner portal access",
-  "Food menu management",
-  "Reports & analytics",
+  "Package pricing & AC metered billing",
+  "Payment tracking & security deposits",
+  "Public listing page & online applications",
+  "Food menu, expenses & reports",
   "Multi-branch dashboard",
+  "RedFlag defaulter database",
+  "Hotel Eye — police verification sync",
   "WhatsApp payment reminders",
 ];
+
+const STANDARD_EXTRAS = [
+  "Branded subdomain (your-name.hostel.yourpulse.io)",
+  "Email payment reminders",
+  "Referral & rewards engine",
+];
+
+const PLANS = [
+  {
+    key:        "basic",
+    name:       "Basic",
+    tagline:    "Everything you need to run your hostel.",
+    monthly:    6000,
+    annual:     60000,
+    highlight:  false,
+    features:   BASIC_FEATURES,
+    extrasNote: "",
+  },
+  {
+    key:        "standard",
+    name:       "Standard",
+    tagline:    "Basic, plus the tools to grow.",
+    monthly:    8000,
+    annual:     80000,
+    highlight:  true,
+    badge:      "Most Popular",
+    features:   STANDARD_EXTRAS,
+    extrasNote: "Everything in Basic, plus:",
+  },
+] as const;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -96,53 +80,37 @@ function PlanCard({
   period: BillingPeriod;
   onGetStarted: () => void;
 }) {
-  const price    = period === "monthly" ? plan.monthly : plan.annual;
-  const free     = monthsFree(plan);
-  const perMonth = Math.round(plan.annual / 12);
+  const price = period === "monthly" ? plan.monthly : plan.annual;
+  const free  = monthsFree(plan);
 
   return (
     <div
-      className={`group/card relative flex flex-col gap-5 overflow-hidden rounded-2xl border p-6 transition-all duration-300 hover:-translate-y-1 ${
+      className={`group/card relative flex flex-col gap-5 overflow-hidden rounded-2xl border p-7 transition-all duration-300 hover:-translate-y-1 ${
         plan.highlight
           ? "border-primary/40 bg-gradient-to-b from-primary/[0.07] to-transparent shadow-[0_0_60px_-10px] shadow-primary/20 hover:shadow-[0_0_70px_-8px] hover:shadow-primary/30"
           : "border-sidebar-border bg-card hover:border-primary/25 hover:shadow-xl hover:shadow-black/20"
       }`}
     >
-      {/* Accent bar for the highlighted plan */}
       {plan.highlight && (
         <div className="absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-primary/30 via-primary to-primary/30" />
       )}
 
-      {/* Badge — inline so it never overlaps adjacent cards */}
       {"badge" in plan && plan.badge ? (
-        <div className="flex items-center gap-2">
+        <div>
           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary text-primary-foreground text-xs font-bold uppercase tracking-wider shadow-md shadow-primary/30">
             <Star className="w-3 h-3 fill-current" /> {plan.badge}
           </span>
         </div>
       ) : (
-        <div className="h-6" /> /* spacer keeps all cards the same top alignment */
+        <div className="h-6" />
       )}
 
       {/* Header */}
       <div>
-        <div className="flex items-center gap-2.5 mb-4">
-          <div
-            className={`flex items-center justify-center w-9 h-9 rounded-xl border transition-colors ${
-              plan.highlight
-                ? "bg-primary/15 border-primary/30"
-                : "bg-primary/10 border-primary/15 group-hover/card:border-primary/25"
-            }`}
-          >
-            <Building2 className="w-4 h-4 text-primary" />
-          </div>
-          <p className="text-sm font-bold text-foreground tracking-tight">
-            {plan.name}
-          </p>
-        </div>
+        <p className="text-lg font-bold text-foreground tracking-tight">{plan.name}</p>
+        <p className="text-xs text-muted-foreground mt-0.5">{plan.tagline}</p>
 
-        {/* Price — suffix on its own line to prevent overflow on 6-digit annual numbers */}
-        <div className="mb-1">
+        <div className="mt-4">
           <div className="flex items-baseline gap-1.5">
             <span className="text-sm text-muted-foreground">PKR</span>
             <span className="text-4xl font-black text-foreground tabular-nums tracking-tight leading-none">
@@ -150,34 +118,34 @@ function PlanCard({
             </span>
           </div>
           <span className="text-sm text-muted-foreground">
-            {period === "monthly" ? "per month" : "per year"}
+            per branch · {period === "monthly" ? "per month" : "per year"}
           </span>
         </div>
 
-        {period === "annual" ? (
+        {period === "annual" && (
           <p className="text-xs text-muted-foreground mt-2">
-            ≈ PKR {fmt(perMonth)}/mo ·{" "}
-            <span className="font-semibold text-primary">
-              {free} month{free === 1 ? "" : "s"} free
-            </span>
+            <span className="font-semibold text-primary">{free} months free</span> vs. monthly
           </p>
-        ) : (
-          <p className="text-xs text-muted-foreground mt-2">{plan.tagline}</p>
         )}
       </div>
 
-      {/* Annual equivalent shown in monthly view */}
-      {period === "monthly" && (
-        <div className="rounded-xl border border-sidebar-border bg-sidebar/50 px-3 py-2.5 flex items-center justify-between text-xs">
-          <span className="text-muted-foreground">Annual plan</span>
-          <span className="font-semibold text-foreground tabular-nums">
-            PKR {fmt(plan.annual)}/yr
-          </span>
-        </div>
-      )}
+      {/* Features */}
+      <div className="space-y-2.5">
+        {plan.extrasNote && (
+          <p className="text-xs font-semibold text-foreground/80">{plan.extrasNote}</p>
+        )}
+        {plan.features.map((f) => (
+          <div key={f} className="flex items-start gap-2.5">
+            <div className="mt-0.5 flex items-center justify-center w-4 h-4 rounded-full bg-primary/10 shrink-0">
+              <Check className="w-2.5 h-2.5 text-primary" />
+            </div>
+            <span className="text-sm text-muted-foreground">{f}</span>
+          </div>
+        ))}
+      </div>
 
       {/* CTA */}
-      <div className="mt-auto">
+      <div className="mt-auto pt-2">
         <button
           onClick={onGetStarted}
           className={`group flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold transition-all duration-200 ${
@@ -200,11 +168,8 @@ const INPUT_CLS =
   "w-full h-11 rounded-lg border border-sidebar-border bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none transition focus:ring-2 focus:ring-primary/30 focus:border-primary";
 
 const PLAN_LABELS: Record<string, string> = {
-  "1":  "1 Branch",
-  "2":  "2 Branches",
-  "3":  "3 Branches",
-  "4":  "4 Branches",
-  "10": "10 Branches",
+  basic:    "Basic",
+  standard: "Standard",
 };
 
 function GetStartedForm({ initialPlan = "" }: { initialPlan?: string }) {
@@ -363,10 +328,10 @@ export default function PricingPage() {
       <div className="relative z-10 text-center px-4 pt-12 pb-10 max-w-2xl mx-auto">
         <p className="text-xs font-semibold text-primary uppercase tracking-widest mb-4">Pricing</p>
         <h1 className="font-serif text-4xl sm:text-5xl text-foreground tracking-tight leading-tight text-balance mb-4">
-          Simple pricing for every hostel
+          Simple pricing, priced per branch
         </h1>
         <p className="text-muted-foreground text-base">
-          All plans include full setup, training, and support.
+          Pay only for the branches you run. Every plan includes full setup, training, and support.
         </p>
       </div>
 
@@ -395,8 +360,8 @@ export default function PricingPage() {
       </div>
 
       {/* Plan cards */}
-      <div className="relative z-10 max-w-6xl mx-auto px-4 pb-16">
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-5">
+      <div className="relative z-10 max-w-3xl mx-auto px-4 pb-16">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
           {PLANS.map((plan) => (
             <PlanCard
               key={plan.key}
@@ -407,27 +372,11 @@ export default function PricingPage() {
           ))}
         </div>
 
-        {/* Tagline */}
-        <p className="text-center text-sm text-muted-foreground/60 mt-8">
-          All plans include full setup, training, and support
+        <p className="text-center text-sm text-muted-foreground/70 mt-8">
+          Prices are per branch. A 3-branch hostel on Basic pays PKR {fmt(6000 * 3)}/month.
+          <br className="hidden sm:block" />
+          Full setup, training, and support are included in every plan.
         </p>
-
-        {/* Features grid */}
-        <div className="mt-16 rounded-2xl border border-sidebar-border bg-gradient-to-b from-card to-card/60 p-8">
-          <p className="text-xs font-semibold text-primary uppercase tracking-widest mb-6 text-center">
-            Everything included in every plan
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {FEATURES.map((f) => (
-              <div key={f} className="flex items-center gap-2.5">
-                <div className="flex items-center justify-center w-5 h-5 rounded-full bg-primary/10 shrink-0">
-                  <Check className="w-3 h-3 text-primary" />
-                </div>
-                <span className="text-sm text-muted-foreground">{f}</span>
-              </div>
-            ))}
-          </div>
-        </div>
       </div>
 
       <div className="mx-auto max-w-6xl px-4 pb-8">
