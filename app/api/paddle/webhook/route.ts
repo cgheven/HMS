@@ -162,6 +162,21 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // A card payment SUPERSEDES any overlapping bank/manual invoice. The Paddle
+      // subscription covers from the payment date forward, so an unpaid platform
+      // invoice whose period extends past that date would double-bill the owner —
+      // cancel it. Fully-past arrears (period_end on/before the payment date) are
+      // left owed. After the first payment there is nothing to cancel (manual
+      // generation is skipped for Paddle owners), so this is a no-op on renewals.
+      if (ownerId) {
+        mustOk(await admin
+          .from("hms_platform_invoices")
+          .update({ status: "cancelled" })
+          .eq("owner_id", ownerId)
+          .eq("status", "unpaid")
+          .gt("period_end", paidAt.slice(0, 10)), "supersede overlapping manual invoices");
+      }
+
       // Receipt row for the /billing invoice history. Only when we can tie it to
       // an owner (owner_id in custom_data) and it's a real charge with an id.
       if (ownerId && t.id) {
