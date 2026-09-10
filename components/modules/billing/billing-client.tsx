@@ -97,9 +97,16 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
   useEffect(() => {
     if (subActive) { try { sessionStorage.removeItem("pulse_checkout_refresh"); } catch {} }
   }, [subActive]);
-  const subMonthly = subscription && subscription.unit_amount != null
-    ? Number(subscription.unit_amount) * (subscription.quantity ?? 1)
-    : null;
+  // What the owner actually pays each cycle. The subscription mirror only stores
+  // the LIST unit price (the per-country override lands on the real charge), so
+  // the last payment is the accurate figure and currency to show.
+  const lastPayment = paddlePayments[0] ?? null;
+  const subAmountLabel =
+    lastPayment?.amount != null
+      ? formatMoney(lastPayment.amount, lastPayment.currency_code)
+      : subscription?.unit_amount != null
+        ? formatMoney(Number(subscription.unit_amount) * (subscription.quantity ?? 1), subscription.currency_code)
+        : null;
 
   const paddleEnabled = !!paddle.clientToken && !!paddle.prices.basicMonthly && !!paddle.prices.standardMonthly;
   const [paddleInst, setPaddleInst] = useState<Paddle | undefined>(undefined);
@@ -232,7 +239,7 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
             <div>
               <p className="text-sm font-semibold">Automatic card payment active{subscription!.status === "trialing" ? " (trial)" : ""}</p>
               <p className="text-xs text-muted-foreground">
-                {subMonthly != null && <>{formatCurrency(subMonthly)}{subscription!.quantity ? ` · ${subscription!.quantity} branch${subscription!.quantity > 1 ? "es" : ""}` : ""} · </>}
+                {subAmountLabel && <>{subAmountLabel}{subscription!.quantity ? ` · ${subscription!.quantity} branch${subscription!.quantity > 1 ? "es" : ""}` : ""} · </>}
                 Renews {subscription!.current_period_end ? formatDate(subscription!.current_period_end) : "—"}
               </p>
             </div>
