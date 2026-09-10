@@ -1,6 +1,8 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getAuthContext } from "@/lib/data";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { formatDate } from "@/lib/utils";
 import { HostelProvider } from "@/contexts/hostel-context";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 
@@ -10,10 +12,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
   if (!ctx?.user) redirect("/login");
   if (ctx.profile?.role === "super_admin") redirect("/super-admin");
 
+  const admin = createAdminClient();
+
   // Defense-in-depth: an auth user linked to hms_sales_reps must never reach the
   // owner dashboard, independent of hms_profiles.role — this closes the gap even
   // if a future signup-trigger regression again mislabels a staff account as 'owner'.
-  const { data: salesRep } = await createAdminClient()
+  const { data: salesRep } = await admin
     .from("hms_sales_reps")
     .select("id")
     .eq("supabase_user_id", ctx.user.id)
@@ -25,27 +29,57 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // A partner with no active branch (all partnerships removed) has nothing to see here.
   if (ctx.profile?.role === "partner" && !ctx.hostel) redirect("/login");
 
-  // Account suspension (unpaid dues): owner = own flag; partner = the account
-  // owner's flag. Reads still work; the banner explains why writes are blocked.
+  // Billing status is account-level. owner = self; partner = the account owner.
+  const accountOwnerId = ctx.profile?.role === "owner" ? ctx.user.id : (ctx.hostel?.owner_id ?? null);
+
+  // Account suspension (unpaid dues): reads still work; the banner explains why
+  // writes are blocked.
   let accountFrozen = false;
   if (ctx.profile?.role === "owner") {
     accountFrozen = !!ctx.profile.frozen;
-  } else if (ctx.hostel?.owner_id) {
-    const { data } = await createAdminClient()
-      .from("hms_profiles").select("frozen").eq("id", ctx.hostel.owner_id).maybeSingle();
+  } else if (accountOwnerId) {
+    const { data } = await admin.from("hms_profiles").select("frozen").eq("id", accountOwnerId).maybeSingle();
     accountFrozen = !!(data as { frozen?: boolean } | null)?.frozen;
+  }
+
+  // Advance warning: an unpaid invoice due within the next 7 days (or already
+  // overdue) — shown as a "please pay" strip so a freeze is never a surprise.
+  // Suppressed once frozen (the suspension banner takes over).
+  let dueSoon: { due_date: string } | null = null;
+  if (!accountFrozen && accountOwnerId) {
+    const in7 = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const { data } = await admin
+      .from("hms_platform_invoices")
+      .select("due_date")
+      .eq("owner_id", accountOwnerId)
+      .eq("status", "unpaid")
+      .lte("due_date", in7)
+      .order("due_date", { ascending: true })
+      .limit(1);
+    if (data && data.length > 0) dueSoon = data[0] as { due_date: string };
   }
 
   return (
     <HostelProvider profile={ctx.profile} hostel={ctx.hostel} hostels={ctx.hostels ?? []} partnerTier={ctx.partnerTier}>
       <DashboardShell>
-        {accountFrozen && (
+        {accountFrozen ? (
           <div className="mb-4 rounded-xl border border-amber/30 bg-amber/10 px-4 py-3 text-sm">
             <span className="font-semibold text-amber">Account suspended.</span>{" "}
             Your account has unpaid dues, so changes are disabled — you can still view everything.
             Clear your balance to restore full access.
           </div>
-        )}
+        ) : dueSoon ? (
+          <Link
+            href="/billing"
+            className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-amber/30 bg-amber/10 px-4 py-2.5 text-sm transition-colors hover:bg-amber/15"
+          >
+            <span>
+              <span className="font-semibold text-amber">Payment due {formatDate(dueSoon.due_date)}.</span>{" "}
+              Please pay to avoid any inconvenience — your account will be suspended if it stays unpaid.
+            </span>
+            <span className="whitespace-nowrap font-semibold text-amber">Pay now →</span>
+          </Link>
+        ) : null}
         {children}
       </DashboardShell>
     </HostelProvider>
