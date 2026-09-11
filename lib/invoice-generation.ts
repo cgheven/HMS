@@ -127,7 +127,13 @@ export async function generateInvoiceForOwner(
 
   const actualSubtotal = Number(billing.monthly_rate) * months * billableBranches;
   const discountPct = clientDiscountPct(Number(billing.monthly_rate), ownerPlan);
-  const onboardingFeeCharged = isFirstInvoice && !billing.waive_onboarding ? ONBOARDING_FEE : 0;
+  // onboarding_paid (migration 233) is the cross-rail guard: charge onboarding at
+  // most once whether it's collected on the first bank invoice or the first card
+  // checkout. Without this read, a client who paid onboarding on Paddle and later
+  // moved to bank billing would be re-charged on their first manual invoice
+  // (isFirstInvoice is true — they have no prior MANUAL invoice).
+  const onboardingFeeCharged =
+    isFirstInvoice && !billing.waive_onboarding && !billing.onboarding_paid ? ONBOARDING_FEE : 0;
   const amount = Math.round((actualSubtotal + onboardingFeeCharged) * 100) / 100;
 
   const { data: invoice, error: insertErr } = await admin
