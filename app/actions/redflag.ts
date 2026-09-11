@@ -160,17 +160,16 @@ async function countRecentLookups(userId: string): Promise<number> {
 // ---------------------------------------------------------------------------
 
 type ScopeKind = "owner" | "manager";
-type Scope = { hostelId: string; userId: string; kind: ScopeKind };
+type Scope = { hostelId: string; userId: string; kind: ScopeKind; country?: string };
 
-/** RedFlag is a Pakistan-only registry (CNIC-keyed, PK-market-specific). True
- *  only when the hostel's country enables it. Null/unknown falls open to PK. */
-async function hostelHasRedflag(hostelId: string): Promise<boolean> {
-  const { data } = await createAdminClient()
-    .from("hms_hostels").select("country").eq("id", hostelId).maybeSingle();
-  const country = (data as { country?: string } | null)?.country ?? DEFAULT_COUNTRY;
-  // Fail CLOSED: a PK-only feature is enabled only for a SUPPORTED country that
-  // explicitly turns it on (never via getCountryConfig's fail-open-to-PK).
-  return isSupportedCountry(country) && getCountryConfig(country).redflag;
+/** RedFlag is a Pakistan-only registry (CNIC-keyed, PK-market-specific). Enabled
+ *  only for a SUPPORTED country that explicitly turns it on — fail CLOSED, never
+ *  via getCountryConfig's fail-open-to-PK. Pure: the country comes from the scope
+ *  (already loaded from the auth context), so gating adds NO DB round trip on the
+ *  admission critical path where checkTenantRedflagAction must never block. */
+function redflagEnabled(country: string | null | undefined): boolean {
+  const c = country ?? DEFAULT_COUNTRY;
+  return isSupportedCountry(c) && getCountryConfig(c).redflag;
 }
 
 /** Roles that reach RedFlag through the owner/partner guard. Anything else is
@@ -231,7 +230,7 @@ async function resolveScope(
     if (!accepted) return { error: "DISCLAIMER_NOT_ACCEPTED" };
   }
 
-  return { scope: { hostelId: ctx.hostelId, userId: ctx.user.id, kind: "owner" } };
+  return { scope: { hostelId: ctx.hostelId, userId: ctx.user.id, kind: "owner", country: ctx.hostel?.country } };
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +285,7 @@ export async function checkTenantRedflagAction(
 
     // RedFlag is Pakistan-only. For a hostel in a country where it doesn't apply,
     // skip the check entirely — "switched off, not failed", same as the flag above.
-    if (!(await hostelHasRedflag(scope.hostelId))) return { matches: [] };
+    if (!redflagEnabled(scope.country)) return { matches: [] };
 
     // Fail open, silently — see MANAGERS above. Not an error: an error string
     // here would surface as a scary toast on a perfectly normal tenant add.
@@ -422,7 +421,7 @@ export async function reportDefaulterAction(input: {
     // reachable from surfaces a manager can load.
     const { scope, error } = await resolveScope("standard", { allowManager: false });
     if (error || !scope) return { error };
-    if (!(await hostelHasRedflag(scope.hostelId))) return { error: "RedFlag isn't available in this country." };
+    if (!redflagEnabled(scope.country)) return { error: "RedFlag isn't available in this country." };
     await requireNotFrozenByHostel(scope.hostelId);
 
     // The legal confirmation is a server-side precondition, not a UI courtesy.
@@ -649,7 +648,7 @@ export async function resolveRedflagAction(
     // Managers are refused with a plain { error }, never a redirect.
     const { scope, error } = await resolveScope("standard", { allowManager: false });
     if (error || !scope) return { error };
-    if (!(await hostelHasRedflag(scope.hostelId))) return { error: "RedFlag isn't available in this country." };
+    if (!redflagEnabled(scope.country)) return { error: "RedFlag isn't available in this country." };
     await requireNotFrozenByHostel(scope.hostelId);
     if (!id || !UUID_RE.test(id)) return { error: "Invalid report id." };
 
@@ -707,7 +706,7 @@ export async function listRedflagsAction(
     // manager route mounts. Refused with an { error }, never a redirect.
     const { scope, error } = await resolveScope("read_only", { allowManager: false });
     if (error || !scope) return { error };
-    if (!(await hostelHasRedflag(scope.hostelId))) return { error: "RedFlag isn't available in this country." };
+    if (!redflagEnabled(scope.country)) return { error: "RedFlag isn't available in this country." };
 
     // Both are hostile input — this is a public RPC endpoint. Clamped here and
     // clamped again by the SQL function's own ceiling; a caller asking for
@@ -814,7 +813,7 @@ export async function listReportableTenantsAction(): Promise<{
   try {
     const { scope, error } = await resolveScope("standard", { allowManager: false });
     if (error || !scope) return { error };
-    if (!(await hostelHasRedflag(scope.hostelId))) return { error: "RedFlag isn't available in this country." };
+    if (!redflagEnabled(scope.country)) return { error: "RedFlag isn't available in this country." };
 
     const supabase = await createClient();
     const [{ data: tenants, error: tErr }, { data: mine, error: mineErr }] = await Promise.all([
