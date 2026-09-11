@@ -186,6 +186,34 @@ export async function POST(req: NextRequest) {
       // later checkout charges it again. Idempotent.
       if (ownerId && t.customData?.["onboarding"] === true) {
         mustOk(await admin.from("hms_client_billing").update({ onboarding_paid: true }).eq("owner_id", ownerId), "mark onboarding paid");
+
+        // Onboarding just got collected on the card. Strip the onboarding component
+        // from any STILL-UNPAID manual invoice that carried it — the supersede above
+        // only cancels invoices whose period extends past today, so a stale first
+        // bank invoice (period already elapsed, e.g. a frozen client who never paid
+        // then self-subscribes by card) is left owed WITH its Rs onboarding line. If
+        // that arrear were later settled, onboarding would be collected twice. We
+        // keep the monthly portion owed (real money) but zero the onboarding portion.
+        // Idempotent (a second run finds onboarding_fee_charged already 0).
+        const { data: unpaidWithOnboarding } = await admin
+          .from("hms_platform_invoices")
+          .select("id, amount, onboarding_fee_charged")
+          .eq("owner_id", ownerId)
+          .eq("status", "unpaid")
+          .gt("onboarding_fee_charged", 0);
+        for (const inv of unpaidWithOnboarding ?? []) {
+          const fee = Number(inv.onboarding_fee_charged ?? 0);
+          mustOk(
+            await admin
+              .from("hms_platform_invoices")
+              .update({
+                amount: Math.round((Number(inv.amount) - fee) * 100) / 100,
+                onboarding_fee_charged: 0,
+              })
+              .eq("id", inv.id),
+            "strip onboarding from unpaid arrear"
+          );
+        }
       }
 
       // Receipt row for the /billing invoice history. Only when we can tie it to

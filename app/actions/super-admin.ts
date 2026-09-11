@@ -323,6 +323,12 @@ export async function listAllHostels(): Promise<{
 // hostel doesn't buy reminders and announcements separately. Pinned against
 // owner self-grant by a DB trigger (migration 110) since RLS alone can't
 // express a column-level restriction.
+//
+// COEXISTENCE NOTE: whatsapp_enabled is now ALSO plan-driven — applyPlanEntitlements
+// (lib/entitlements.ts) sets it from the account plan (Standard on, Basic off) on
+// every Paddle plan-change / cancel. The plan is the source of truth, so a manual
+// grant here on a BASIC-plan branch will be silently reverted at the owner's next
+// plan-application webhook. To keep WhatsApp on for a client, put them on Standard.
 
 /**
  * Pause or resume a branch for PLATFORM BILLING only (migration 162).
