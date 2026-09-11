@@ -9,13 +9,12 @@ ALTER TABLE public.hms_platform_invoices
   CHECK (plan IS NULL OR plan IN ('basic','standard'));
 
 COMMENT ON COLUMN public.hms_platform_invoices.plan IS
-  'Package snapshot (basic|standard) at generation time — drives the "Package" line on the invoice PDF. Historical: never rewritten on a later plan change.';
+  'Package snapshot (basic|standard) at generation time — drives the "Package" line + the package-relative discount on the invoice PDF. Historical: never rewritten on a later plan change.';
 
--- Backfill existing invoices from the owner's CURRENT plan (the historical plan
--- was not recorded, so this is the best available). New invoices snapshot the
--- plan at generation. A client who has since changed plans may need a specific
--- past invoice corrected by hand.
-UPDATE public.hms_platform_invoices i
-SET plan = p.plan
-FROM public.hms_profiles p
-WHERE p.id = i.owner_id AND p.plan IS NOT NULL AND i.plan IS NULL;
+-- Deliberately NO backfill. Existing invoices keep plan = NULL, so they render on
+-- the OLD path (list back-derived from their own snapshotted discount_pct) exactly
+-- as they were issued — stamping the current plan onto an old discount snapshot
+-- would show an inconsistent discount (e.g. "Basic Price 6,000 · Discount 38% ·
+-- −1,000", where −1,000 is really 16.7%). Only NEW / regenerated invoices carry a
+-- plan and use the two-package model. A specific past invoice can be opted in by
+-- hand (safe only when its rate equals its package list, i.e. 0 discount).
