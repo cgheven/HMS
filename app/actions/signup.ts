@@ -99,6 +99,10 @@ export async function requestSignup(input: {
     const tokenHash = sha256(rawToken);
     const expiresAt = new Date(Date.now() + LINK_TTL_MINUTES * 60_000).toISOString();
 
+    // Opportunistic housekeeping: drop expired rows so the table can't grow
+    // unbounded and old PII doesn't linger (no cron needed).
+    await admin.from("hms_pending_signups").delete().lt("expires_at", new Date().toISOString());
+
     // Replace any prior LIVE pending row for this canonical (re-request), then
     // insert. The partial unique index guards against a concurrent double-insert.
     await admin.from("hms_pending_signups").delete().eq("normalized_email", normalized).is("consumed_at", null);
@@ -149,6 +153,16 @@ export async function verifySignupAndProvision(
 
   try {
     const admin = createAdminClient();
+
+    // Per-IP ceiling (parity with /auth/confirm) — junk-token floods cost one
+    // indexed read each; bound them. Fails closed.
+    const { ip } = await requestContext();
+    const { data: ipOk, error: ipErr } = await admin.rpc("hms_auth_rate_hit", {
+      p_bucket: `verifysignup:ip:${ip}`,
+      p_limit: 30,
+    });
+    if (ipErr || ipOk === false) return { error: "Too many attempts. Please try again shortly." };
+
     const tokenHash = sha256(token.trim());
 
     const { data: pending, error: lookErr } = await admin
@@ -186,14 +200,17 @@ export async function verifySignupAndProvision(
     });
     if (authErr || !created?.user) {
       console.warn("[verifySignup] createUser failed:", authErr?.message ?? "no user");
-      return { error: "An account for this email already exists. Please sign in instead." };
+      // Un-consume so a transient failure's link stays usable (a genuine canonical
+      // collision simply fails again — harmless). Don't reveal which it was.
+      await admin.from("hms_pending_signups").update({ consumed_at: null }).eq("id", pending.id);
+      return { error: "We couldn't finish creating your account. Please try the link again in a moment, or sign in if you already have an account." };
     }
     const ownerId = created.user.id;
 
     // Set the account's country + details via the service role (the country guard
     // blocks user sessions, not the admin client). Unpublish the starter hostel the
     // profile trigger auto-created so an empty listing never leaks; stamp its country.
-    const [{ error: profErr }] = await Promise.all([
+    const [{ error: profErr }, { error: hostErr }] = await Promise.all([
       admin.from("hms_profiles")
         .update({ country: pending.country, full_name: pending.owner_name || null, phone: pending.phone || null })
         .eq("id", ownerId),
@@ -201,10 +218,16 @@ export async function verifySignupAndProvision(
         .update({ country: pending.country, listing_enabled: false })
         .eq("owner_id", ownerId),
     ]);
-    if (profErr) {
-      // Roll back rather than leave a half-provisioned, mis-countried account.
-      await admin.auth.admin.deleteUser(ownerId);
-      return { error: "Something went wrong creating your account. Please try again." };
+    if (profErr || hostErr) {
+      // Check BOTH — supabase-js returns {error}, never throws. Roll back rather
+      // than leave a half-provisioned account or a mis-countried hostel; free the
+      // token so the owner can retry the link. (The starter hostel is already
+      // created unlisted by the trigger, so there is no publish window here.)
+      console.error("[verifySignup] provision update failed:", profErr?.message ?? hostErr?.message);
+      const { error: delErr } = await admin.auth.admin.deleteUser(ownerId);
+      if (delErr) console.error("[verifySignup] rollback deleteUser failed:", delErr.message);
+      await admin.from("hms_pending_signups").update({ consumed_at: null }).eq("id", pending.id);
+      return { error: "Something went wrong creating your account. Please try the link again." };
     }
 
     // Hand the browser a set-password link (token_hash consumed server-side at
