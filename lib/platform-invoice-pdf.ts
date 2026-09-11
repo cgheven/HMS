@@ -416,14 +416,8 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
       );
     }
 
-    if (doc) {
-      drawIcon(doc, "pin", COL_FROM, leftY - iconSize * 0.68, iconSize, GRAY);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(8);
-      doc.setTextColor(...GRAY);
-      doc.text("Karachi, Pakistan", COL_FROM + textX, leftY);
-    }
-    leftY += 15;
+    // No location line on the FROM block — Pulse is marketed internationally, so
+    // the invoice deliberately omits a country.
 
     const colContentH = Math.max(leftY, rightY) - sectionTop;
 
