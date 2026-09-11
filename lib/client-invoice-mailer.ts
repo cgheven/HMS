@@ -2,7 +2,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendClientInvoiceEmail } from "@/lib/email";
 import { pktTodayDateString } from "@/lib/pkt-time";
-import { ONBOARDING_FEE, listSubtotalFromDiscount } from "@/lib/pricing";
+import { ONBOARDING_FEE, listSubtotalFromDiscount, packageListRate } from "@/lib/pricing";
 import { siteUrl } from "@/lib/site-url";
 
 const SITE_URL = siteUrl();
@@ -67,7 +67,12 @@ export async function sendInvoiceMail(
   const cycleWord = invoice.billing_cycle === "monthly" ? "month" : "year";
   const branchCount = invoice.branch_count;
   const actualSubtotal = Number(invoice.monthly_rate) * months * branchCount;
-  const listSubtotal = listSubtotalFromDiscount(actualSubtotal, Number(invoice.discount_pct));
+  // Package list price (exact), falling back to the snapshotted discount for a
+  // pre-snapshot invoice with no plan — matches lib/platform-invoice-pdf.ts.
+  const pkgList = packageListRate(invoice.plan as "basic" | "standard" | null | undefined);
+  const listSubtotal = pkgList != null
+    ? pkgList * months * branchCount
+    : listSubtotalFromDiscount(actualSubtotal, Number(invoice.discount_pct));
   const discount = listSubtotal - actualSubtotal;
   const standardOnboarding = invoice.is_first_invoice ? ONBOARDING_FEE : 0;
   const onboardingWaived = standardOnboarding - Number(invoice.onboarding_fee_charged);

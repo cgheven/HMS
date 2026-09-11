@@ -8,7 +8,7 @@
 import { jsPDF } from "jspdf";
 import fs from "fs";
 import path from "path";
-import { ONBOARDING_FEE, listSubtotalFromDiscount } from "@/lib/pricing";
+import { ONBOARDING_FEE, listSubtotalFromDiscount, packageListRate } from "@/lib/pricing";
 
 interface InvoiceData {
   id: string;
@@ -254,7 +254,13 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
   // recomputed live. Onboarding stays flat account-level, not per branch.
   const months = invoice.billing_cycle === "monthly" ? 1 : 12;
   const actualSubtotal = invoice.monthly_rate * months * invoice.branch_count;
-  const listSubtotal = listSubtotalFromDiscount(actualSubtotal, invoice.discount_pct);
+  // The list is the client's PACKAGE list price (exact) — Basic 6K / Standard 8K.
+  // Fall back to back-deriving from the snapshotted discount for a pre-snapshot
+  // invoice with no plan, so old invoices still render.
+  const pkgList = packageListRate(invoice.plan);
+  const listSubtotal = pkgList != null
+    ? pkgList * months * invoice.branch_count
+    : listSubtotalFromDiscount(actualSubtotal, invoice.discount_pct);
   const discount = listSubtotal - actualSubtotal;
   // The onboarding fee is fixed platform-wide — if it was waived, onboarding_fee_charged
   // is 0, but the "everything included" reference still needs to show what it would've been.
