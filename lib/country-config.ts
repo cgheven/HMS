@@ -24,6 +24,11 @@ export interface NationalIdRule {
   label: string;
   /** Human example shown as placeholder / in errors. */
   example?: string;
+  /** Valid digit counts, ignoring separators (PK CNIC = [13]; BD NID = [10, 17]). */
+  digitLengths: number[];
+  /** Optional display grouping via dashes, e.g. PK [5,7,1] → 42101-1234567-1.
+   *  Omitted → the digits are shown as typed. */
+  groups?: number[];
 }
 
 export interface CountryConfig {
@@ -43,6 +48,12 @@ export interface CountryConfig {
   dialCode: string;
   /** National identity document rule (CNIC in PK, NID in BD, …). */
   nationalId: NationalIdRule;
+  /** Whether tenants must be filed with a government guest-registration portal.
+   *  When true, province + district are required on admission and the Hotel-Eye-
+   *  style integration applies (Pakistan only today). When false, that geography
+   *  is optional and the integration is hidden. GATE on this / isSupportedCountry,
+   *  never on getCountryConfig().code (which fails open to PK). */
+  guestRegistration: boolean;
 }
 
 export const DEFAULT_COUNTRY: CountryCode = "PK";
@@ -56,7 +67,8 @@ export const COUNTRY_CONFIG: Record<CountryCode, CountryConfig> = {
     locale: "en-PK",
     timezone: "Asia/Karachi",
     dialCode: "92",
-    nationalId: { label: "CNIC", example: "42101-1234567-1" },
+    nationalId: { label: "CNIC", example: "42101-1234567-1", digitLengths: [13], groups: [5, 7, 1] },
+    guestRegistration: true,
   },
   // Future countries plug in here — e.g. BD (Bangladesh, BDT, ৳, Asia/Dhaka, 880,
   // NID). Left out until the primitives that consume this registry are wired up,

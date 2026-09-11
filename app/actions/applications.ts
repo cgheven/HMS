@@ -2,7 +2,8 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { isValidCnic, normalizeCnic } from "@/lib/cnic";
+import { isValidNationalId, normalizeNationalId } from "@/lib/national-id";
+import { getCountryConfig, DEFAULT_COUNTRY } from "@/lib/country-config";
 import { requireOwnerOrPartnerTier, requireNotFrozenByHostel } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
 import { getAuthContext } from "@/lib/data";
@@ -116,28 +117,32 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
   if (!hostelId) return { success: false, error: "Hostel not found" };
   if (!data.full_name?.trim()) return { success: false, error: "Full name is required" };
   if (!data.phone?.trim()) return { success: false, error: "Phone number is required" };
-  // The public form is unauthenticated and directly callable, so the format is
-  // enforced here too — not just in the browser. Digits-only input is accepted
-  // and normalised rather than rejected, matching what the field does on screen.
-  if (data.cnic?.trim() && !isValidCnic(normalizeCnic(data.cnic))) {
-    return { success: false, error: "Enter a valid 13-digit CNIC, e.g. 42101-1234567-1" };
-  }
 
-  // F-005: Phone-based rate limit — max 3 applications per phone in 24 hours.
-  // This mirrors the DB-level trigger in migration 024 as an early-exit check
-  // so the error message is user-friendly rather than a raw DB exception.
   const admin = createAdminClient();
 
   // SECURITY: only accept applications for hostels that are publicly listed —
   // this is the sole application entry point now that the room-card popup
-  // (which had its own listing_enabled check) has been removed.
+  // (which had its own listing_enabled check) has been removed. Resolve the
+  // hostel's country up front: it drives which national-ID format is valid.
   const { data: targetHostel } = await admin
     .from("hms_hostels")
-    .select("id")
+    .select("id, country")
     .eq("id", hostelId)
     .eq("listing_enabled", true)
     .maybeSingle();
   if (!targetHostel) return { success: false, error: "Hostel not found" };
+  const country = (targetHostel as { country?: string }).country ?? DEFAULT_COUNTRY;
+
+  // The public form is unauthenticated and directly callable, so the format is
+  // enforced here too. ID format is COUNTRY-DRIVEN (CNIC in PK, NID elsewhere);
+  // digits-only input is accepted and normalised rather than rejected.
+  if (data.cnic?.trim() && !isValidNationalId(country, data.cnic)) {
+    const rule = getCountryConfig(country).nationalId;
+    return { success: false, error: `Enter a valid ${rule.label}${rule.example ? `, e.g. ${rule.example}` : ""}` };
+  }
+
+  // F-005: Phone-based rate limit — max 3 applications per phone in 24 hours.
+  // Mirrors the DB-level trigger in migration 024 as a friendly early-exit.
 
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const { count: recentCount } = await admin
@@ -167,7 +172,7 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     full_name: data.full_name.trim(),
     phone: data.phone.trim(),
     email: data.email?.trim() || null,
-    cnic: normalizeCnic(data.cnic),
+    cnic: normalizeNationalId(country, data.cnic),
     type: data.type || "general",
     package_tier: data.package_tier,
     room_preference: data.room_preference || null,
@@ -397,14 +402,19 @@ export async function convertToTenant(
     }
   }
 
+  // Resolve the hostel's country so the ID is normalised per its own format.
+  const { data: appHostel } = await admin
+    .from("hms_hostels").select("country").eq("id", app.hostel_id).maybeSingle();
+  const appCountry = (appHostel as { country?: string } | null)?.country ?? DEFAULT_COUNTRY;
+
   const { data: newTenant, error: tenantError } = await admin.from("hms_tenants").insert({
     hostel_id: app.hostel_id,
     full_name: app.full_name,
     phone: app.phone,
     email: app.email,
     // Normalised on the way through: 38 legacy applications hold digits-only
-    // CNICs, and approving one must not carry that malformed value onto the tenant.
-    cnic: normalizeCnic(app.cnic),
+    // national IDs, and approving one must not carry that malformed value onto the tenant.
+    cnic: normalizeNationalId(appCountry, app.cnic),
     type: extra.type,
     package_tier: extra.package_tier,
     check_in: extra.check_in,
