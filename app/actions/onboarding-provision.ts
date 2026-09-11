@@ -6,6 +6,7 @@ import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { requireSuperAdmin } from "@/lib/auth";
+import { normalizeEmail, isDisposableEmailDomain } from "@/lib/email-normalize";
 import { writeAuditLog } from "@/lib/audit";
 import { sendClientCredentialsEmail } from "@/lib/email";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
@@ -74,17 +75,21 @@ export async function provisionOnboarding(submissionId: string): Promise<Provisi
     const data = row.data as OnboardingData;
     const ownerEmail = data.owner?.email?.trim().toLowerCase() ?? "";
     const ownerName = data.owner?.name?.trim() ?? "";
+    const ownerNormalizedEmail = normalizeEmail(ownerEmail);
 
     if (!EMAIL_RE.test(ownerEmail)) throw new Error("Submission has no valid owner email.");
+    if (isDisposableEmailDomain(ownerEmail)) throw new Error("Disposable email addresses are not allowed.");
     if (!data.branches?.length) throw new Error("Submission has no branches.");
     if (data.branches.some((b) => !b.name?.trim())) throw new Error("Every branch must have a name.");
 
-    // 1. Owner auth user. An existing email is a hard stop rather than a silent
-    //    reuse — provisioning twice onto a real account would be destructive.
+    // 1. Owner auth user. An existing account is a hard stop rather than a silent
+    //    reuse — provisioning twice onto a real account would be destructive. Match
+    //    on the CANONICAL email so +tag / Gmail-dot aliases can't slip a duplicate
+    //    past this; the DB unique index on normalized_email is the race-safe backstop.
     const { data: existingProfile } = await admin
-      .from("hms_profiles").select("id").eq("email", ownerEmail).maybeSingle();
+      .from("hms_profiles").select("id, email").eq("normalized_email", ownerNormalizedEmail).maybeSingle();
     if (existingProfile) {
-      throw new Error(`An account already exists for ${ownerEmail}. Resolve the duplicate before provisioning.`);
+      throw new Error(`An account already exists for ${existingProfile.email ?? ownerEmail}. Resolve the duplicate before provisioning.`);
     }
 
     const ownerPassword = genPassword();
@@ -101,6 +106,7 @@ export async function provisionOnboarding(submissionId: string): Promise<Provisi
       {
         id: ownerId,
         email: ownerEmail,
+        normalized_email: ownerNormalizedEmail,
         full_name: ownerName || null,
         phone: data.owner?.phone?.trim() || null,
         role: "owner",

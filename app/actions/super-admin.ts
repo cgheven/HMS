@@ -1,5 +1,6 @@
 "use server";
 import { getProfile } from "@/lib/auth";
+import { normalizeEmail, isDisposableEmailDomain } from "@/lib/email-normalize";
 
 import { randomBytes } from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -603,6 +604,10 @@ export async function createHostelForClient(data: {
     const caller = await requireSuperAdmin();
     if (!data.ownerEmail) throw new Error("Owner email is required");
 
+    const ownerEmail = data.ownerEmail.trim().toLowerCase();
+    const ownerNormalizedEmail = normalizeEmail(ownerEmail);
+    if (isDisposableEmailDomain(ownerEmail)) throw new Error("Disposable email addresses are not allowed");
+
     const branches: BranchInput[] =
       data.branches && data.branches.length > 0
         ? data.branches
@@ -614,10 +619,19 @@ export async function createHostelForClient(data: {
 
     const admin = createAdminClient();
 
+    // Reject a duplicate on the CANONICAL email so +tag / Gmail-dot aliases can't
+    // create a second account for the same person (the DB unique index on
+    // normalized_email is the race-safe backstop).
+    const { data: existingProfile } = await admin
+      .from("hms_profiles").select("id, email").eq("normalized_email", ownerNormalizedEmail).maybeSingle();
+    if (existingProfile) {
+      throw new Error(`An account already exists for ${existingProfile.email ?? ownerEmail}`);
+    }
+
     // 1. Create auth user
     const tempPassword = `Pulse${randomBytes(12).toString("base64url")}!`;
     const { data: created, error: authErr } = await admin.auth.admin.createUser({
-      email: data.ownerEmail,
+      email: ownerEmail,
       password: tempPassword,
       email_confirm: true,
       user_metadata: { full_name: data.ownerName },
@@ -627,7 +641,7 @@ export async function createHostelForClient(data: {
 
     // 2. Upsert profile
     await admin.from("hms_profiles").upsert(
-      { id: userId, full_name: data.ownerName || null, phone: data.ownerPhone || null, role: "owner", is_active: true },
+      { id: userId, email: ownerEmail, normalized_email: ownerNormalizedEmail, full_name: data.ownerName || null, phone: data.ownerPhone || null, role: "owner", is_active: true },
       { onConflict: "id" }
     );
 
