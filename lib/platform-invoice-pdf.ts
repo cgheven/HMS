@@ -26,6 +26,9 @@ interface InvoiceData {
   discount_pct: number;
   onboarding_fee_charged: number;
   is_first_invoice: boolean;
+  /** The package this invoice is for (snapshot). null when the owner had no
+   *  explicit plan — the "Package" line is then omitted. */
+  plan?: "basic" | "standard" | null;
 }
 
 interface InvoiceClient {
@@ -415,11 +418,15 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
     const colContentH = Math.max(leftY, rightY) - sectionTop;
 
     // Dark billing-details box — sits alongside FROM/BILLED TO as the third column
+    // The package (Basic/Standard). The billing CYCLE already shows in "Billing
+    // Period" above, so this row names the plan tier, not the cycle.
+    const packageLabel =
+      invoice.plan === "standard" ? "Standard Package" : invoice.plan === "basic" ? "Basic Package" : null;
     const boxRows: [IconName, string, string][] = [
       ["calendar", "Billing Period", `${invoice.period_label} (${invoice.billing_cycle === "monthly" ? "Monthly" : "Annual"})`],
       ["calendar", "Issue Date", fmtDate(invoice.created_at)],
       ["calendar", "Due Date", fmtDate(invoice.due_date)],
-      ["package", "Plan", invoice.billing_cycle === "monthly" ? "Monthly" : "Annual"],
+      ...(packageLabel ? ([["package", "Package", packageLabel]] as [IconName, string, string][]) : []),
     ];
     const boxPad = 10;
     const boxRowH = 18;

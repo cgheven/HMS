@@ -122,6 +122,11 @@ export async function generateInvoiceForOwner(
   const onboardingFeeCharged = isFirstInvoice && !billing.waive_onboarding ? ONBOARDING_FEE : 0;
   const amount = Math.round((actualSubtotal + onboardingFeeCharged) * 100) / 100;
 
+  // Snapshot the owner's package (plan) so the invoice PDF can show Basic/Standard
+  // — a historical record, like the rate/discount snapshot above.
+  const { data: ownerProfile } = await admin
+    .from("hms_profiles").select("plan").eq("id", ownerId).maybeSingle();
+
   const { data: invoice, error: insertErr } = await admin
     .from("hms_platform_invoices")
     .insert({
@@ -138,6 +143,7 @@ export async function generateInvoiceForOwner(
       discount_pct: discountPct,
       onboarding_fee_charged: onboardingFeeCharged,
       is_first_invoice: isFirstInvoice,
+      plan: (ownerProfile?.plan as "basic" | "standard" | null) ?? null,
     })
     .select("id")
     .single();
