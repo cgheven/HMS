@@ -73,7 +73,16 @@ export function getCountryConfig(code: string | null | undefined): CountryConfig
   return COUNTRY_CONFIG[key] ?? COUNTRY_CONFIG[DEFAULT_COUNTRY];
 }
 
-/** True when `code` is a country the app is configured to fully serve. */
+/**
+ * True when `code` is a country the app is configured to fully serve.
+ *
+ * SECURITY: gate features/entitlements on THIS (or an explicit `code === 'PK'`),
+ * never on `getCountryConfig(code).code === 'PK'`. getCountryConfig fails OPEN to
+ * Pakistan (the most-privileged country: Hotel Eye on, PKR pricing) for any
+ * unknown/garbage input, so using it for a gate would grant PK features to a bad
+ * code. getCountryConfig is for FORMATTING (never crash); isSupportedCountry is
+ * for GATING (fail closed).
+ */
 export function isSupportedCountry(code: string | null | undefined): boolean {
   return !!code && Object.prototype.hasOwnProperty.call(COUNTRY_CONFIG, code.trim().toUpperCase());
 }
