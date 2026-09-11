@@ -26,7 +26,8 @@ import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistr
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
 import { pktYearMonth } from "@/lib/pkt-time"
-import { isValidCnic, normalizeCnic } from "@/lib/cnic"
+import { isValidNationalId, normalizeNationalId } from "@/lib/national-id"
+import { getCountryConfig, DEFAULT_COUNTRY } from "@/lib/country-config"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
 import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission, CheckoutInput, CheckoutSettlement } from "@/types"
 import { linkReferralForNewTenant } from "@/lib/referral-attribution"
@@ -921,13 +922,14 @@ export async function saveACJoinReadingAsManager(
 // addTenantAsPartner rather than carrying a reduced subset of its own.
 export type ManagerTenantPayload = PartnerTenantPayload
 
-function validateManagerTenantPayload(payload: ManagerTenantPayload): string | null {
+function validateManagerTenantPayload(payload: ManagerTenantPayload, country: string): string | null {
   if (!payload.full_name?.trim() || payload.full_name.trim().length < 2) {
     return "Full name must be at least 2 characters."
   }
   if (!payload.is_waiting && !payload.check_in) return "Check-in date is required."
-  if (payload.cnic && !isValidCnic(normalizeCnic(payload.cnic))) {
-    return "Invalid CNIC format. Must be XXXXX-XXXXXXX-X."
+  if (payload.cnic && !isValidNationalId(country, payload.cnic)) {
+    const rule = getCountryConfig(country).nationalId
+    return `Enter a valid ${rule.label}${rule.example ? `, e.g. ${rule.example}` : ""}.`
   }
   const discountError = validateDiscountPercent(payload.discount_percent)
   if (discountError) return discountError
@@ -955,13 +957,14 @@ function validateManagerTenantPayload(payload: ManagerTenantPayload): string | n
 // an already-existing tenant, since almost every real tenant's check_in date
 // is already in a previous month — this is edit validation only, no back-dated
 // restriction.
-function validateManagerTenantEditPayload(payload: ManagerTenantPayload): string | null {
+function validateManagerTenantEditPayload(payload: ManagerTenantPayload, country: string): string | null {
   if (!payload.full_name?.trim() || payload.full_name.trim().length < 2) {
     return "Full name must be at least 2 characters."
   }
   if (!payload.is_waiting && !payload.check_in) return "Check-in date is required."
-  if (payload.cnic && !isValidCnic(normalizeCnic(payload.cnic))) {
-    return "Invalid CNIC format. Must be XXXXX-XXXXXXX-X."
+  if (payload.cnic && !isValidNationalId(country, payload.cnic)) {
+    const rule = getCountryConfig(country).nationalId
+    return `Enter a valid ${rule.label}${rule.example ? `, e.g. ${rule.example}` : ""}.`
   }
   const discountError = validateDiscountPercent(payload.discount_percent)
   if (discountError) return discountError
@@ -976,7 +979,9 @@ export async function addTenantAsManager(
     const hostelId = ctx.activeHostel.id
     const admin = createAdminClient()
 
-    const validationError = validateManagerTenantPayload(payload)
+    const { data: mHostel } = await admin.from("hms_hostels").select("country").eq("id", hostelId).maybeSingle()
+    const country = (mHostel as { country?: string } | null)?.country ?? DEFAULT_COUNTRY
+    const validationError = validateManagerTenantPayload(payload, country)
     if (validationError) return { error: validationError }
 
     const roomId = payload.is_waiting ? null : payload.room_id
@@ -1000,7 +1005,7 @@ export async function addTenantAsManager(
       full_name: payload.full_name.trim(),
       phone: payload.phone?.trim() || null,
       email: payload.email?.trim() || null,
-      cnic: normalizeCnic(payload.cnic),
+      cnic: normalizeNationalId(country, payload.cnic),
       type: payload.type,
       package_tier: payload.package_tier,
       custom_package_id: payload.custom_package_id || null,
@@ -1158,7 +1163,9 @@ export async function editTenantAsManager(
       return { error: "Tenant not found in your active branch." }
     }
 
-    const validationError = validateManagerTenantEditPayload(payload)
+    const { data: mHostel } = await admin.from("hms_hostels").select("country").eq("id", hostelId).maybeSingle()
+    const country = (mHostel as { country?: string } | null)?.country ?? DEFAULT_COUNTRY
+    const validationError = validateManagerTenantEditPayload(payload, country)
     if (validationError) return { error: validationError }
 
     const prevRoomId = existing.room_id as string | null
@@ -1182,7 +1189,7 @@ export async function editTenantAsManager(
       full_name: payload.full_name.trim(),
       phone: payload.phone?.trim() || null,
       email: payload.email?.trim() || null,
-      cnic: normalizeCnic(payload.cnic),
+      cnic: normalizeNationalId(country, payload.cnic),
       type: payload.type,
       package_tier: payload.package_tier,
       custom_package_id: payload.custom_package_id || null,

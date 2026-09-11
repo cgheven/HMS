@@ -16,7 +16,8 @@ import { sendTenantWelcomeMessageAction } from "@/lib/whatsapp-welcome-action";
 import { sendAdmissionConfirmationToEmergencyContact } from "@/lib/whatsapp-admission-confirmation";
 import { sendWelcomeEmailToTenant } from "@/lib/welcome-email";
 import { pktYearMonth } from "@/lib/pkt-time"
-import { isValidCnic, normalizeCnic } from "@/lib/cnic";
+import { isValidNationalId, normalizeNationalId } from "@/lib/national-id";
+import { getCountryConfig, DEFAULT_COUNTRY } from "@/lib/country-config";
 import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 import { validateDiscountPercent } from "@/lib/tenant-discount";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
@@ -91,13 +92,14 @@ export interface PartnerTenantPayload {
   department: string | null;
 }
 
-function validateTenantPayload(payload: PartnerTenantPayload): string | null {
+function validateTenantPayload(payload: PartnerTenantPayload, country: string): string | null {
   if (!payload.full_name?.trim() || payload.full_name.trim().length < 2) {
     return "Full name must be at least 2 characters.";
   }
   if (!payload.is_waiting && !payload.check_in) return "Check-in date is required.";
-  if (payload.cnic && !isValidCnic(normalizeCnic(payload.cnic))) {
-    return "Invalid CNIC format. Must be XXXXX-XXXXXXX-X.";
+  if (payload.cnic && !isValidNationalId(country, payload.cnic)) {
+    const rule = getCountryConfig(country).nationalId;
+    return `Enter a valid ${rule.label}${rule.example ? `, e.g. ${rule.example}` : ""}.`;
   }
   const discountError = validateDiscountPercent(payload.discount_percent);
   if (discountError) return discountError;
@@ -111,7 +113,11 @@ export async function addTenantAsPartner(
     const hostelId = await requirePartnerHostelId("standard");
     const admin = createAdminClient();
 
-    const validationError = validateTenantPayload(payload);
+    // National-ID format is driven by the hostel's country (CNIC in PK, NID etc.).
+    const { data: hostelRow } = await admin.from("hms_hostels").select("country").eq("id", hostelId).maybeSingle();
+    const country = (hostelRow as { country?: string } | null)?.country ?? DEFAULT_COUNTRY;
+
+    const validationError = validateTenantPayload(payload, country);
     if (validationError) return { error: validationError };
 
     const roomId = payload.is_waiting ? null : payload.room_id;
@@ -135,7 +141,7 @@ export async function addTenantAsPartner(
       full_name: payload.full_name.trim(),
       phone: payload.phone?.trim() || null,
       email: payload.email?.trim() || null,
-      cnic: normalizeCnic(payload.cnic),
+      cnic: normalizeNationalId(country, payload.cnic),
       type: payload.type,
       package_tier: payload.package_tier,
       custom_package_id: payload.custom_package_id || null,
@@ -565,7 +571,9 @@ export async function editTenantAsPartner(
       return { error: "Tenant not found in your active branch." };
     }
 
-    const validationError = validateTenantPayload(payload);
+    const { data: hostelRow } = await admin.from("hms_hostels").select("country").eq("id", hostelId).maybeSingle();
+    const country = (hostelRow as { country?: string } | null)?.country ?? DEFAULT_COUNTRY;
+    const validationError = validateTenantPayload(payload, country);
     if (validationError) return { error: validationError };
 
     const prevRoomId = existing.room_id as string | null;
@@ -589,7 +597,7 @@ export async function editTenantAsPartner(
       full_name: payload.full_name.trim(),
       phone: payload.phone?.trim() || null,
       email: payload.email?.trim() || null,
-      cnic: normalizeCnic(payload.cnic),
+      cnic: normalizeNationalId(country, payload.cnic),
       type: payload.type,
       package_tier: payload.package_tier,
       custom_package_id: payload.custom_package_id || null,
