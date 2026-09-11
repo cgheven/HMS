@@ -209,6 +209,9 @@ export interface Hostel {
   id: string;
   owner_id: string;
   name: string;
+  /** ISO 3166-1 alpha-2 (migration 236). Drives currency/timezone/ID + PK-only
+   *  feature gating (RedFlag, guest registration). Defaults to 'PK'. */
+  country: string;
   address: string | null;
   phone: string | null;
   whatsapp: string | null;

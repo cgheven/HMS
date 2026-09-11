@@ -54,6 +54,10 @@ export interface CountryConfig {
    *  is optional and the integration is hidden. GATE on this / isSupportedCountry,
    *  never on getCountryConfig().code (which fails open to PK). */
   guestRegistration: boolean;
+  /** Whether the cross-hostel RedFlag defaulter registry applies. Pakistan-only:
+   *  it is CNIC-keyed and specific to the PK market. Gates the RedFlag nav, page,
+   *  actions, and the admission-time screening check. */
+  redflag: boolean;
 }
 
 export const DEFAULT_COUNTRY: CountryCode = "PK";
@@ -69,6 +73,7 @@ export const COUNTRY_CONFIG: Record<CountryCode, CountryConfig> = {
     dialCode: "92",
     nationalId: { label: "CNIC", example: "42101-1234567-1", digitLengths: [13], groups: [5, 7, 1] },
     guestRegistration: true,
+    redflag: true,
   },
   // Future countries plug in here — e.g. BD (Bangladesh, BDT, ৳, Asia/Dhaka, 880,
   // NID). Left out until the primitives that consume this registry are wired up,

@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { REDFLAG_ENABLED } from "@/lib/redflag-flag";
+import { getCountryConfig } from "@/lib/country-config";
 import {
   LayoutDashboard, BedDouble, Users, CreditCard, Receipt,
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
@@ -31,7 +32,7 @@ import { smartEyeName } from "@/lib/smart-eye-name";
 // (hms_hostels.referral_enabled, Super Admin only): /marketing renders its own
 // explanatory empty state and every action re-checks the flag server-side, so
 // hiding the item is about not advertising a feature the branch hasn't bought.
-interface NavItem { href: string; label: string; icon: typeof LayoutDashboard; ownerOnly?: boolean; multiBranchOnly?: boolean; referralOnly?: boolean; newTab?: boolean }
+interface NavItem { href: string; label: string; icon: typeof LayoutDashboard; ownerOnly?: boolean; multiBranchOnly?: boolean; referralOnly?: boolean; newTab?: boolean; redflagOnly?: boolean; guestRegistrationOnly?: boolean }
 
 
 
@@ -42,7 +43,7 @@ interface NavItem { href: string; label: string; icon: typeof LayoutDashboard; o
 const REDFLAG_GROUP: { label: string; items: NavItem[] } = {
     label: "RedFlag",
     items: [
-      { href: "/redflag", label: "RedFlag", icon: Flag },
+      { href: "/redflag", label: "RedFlag", icon: Flag, redflagOnly: true },
     ],
   }
 
@@ -59,7 +60,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       // residents it files, not in Operations — it is a legal must-do for every
       // guest, so it belongs where owners look daily. Label is province-aware,
       // relabelled at render below.
-      { href: "/police-verification", label: "Police Verification", icon: FileCheck2, ownerOnly: true },
+      { href: "/police-verification", label: "Police Verification", icon: FileCheck2, ownerOnly: true, guestRegistrationOnly: true },
       // Sits with the residents it is about, not down in Operations. Referrals
       // are how the next tenant arrives, and buried under Kitchen and Bills the
       // owner never opened the page at all.
@@ -162,6 +163,10 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const isPartner = profile?.role === "partner";
   const singleBranch = (hostels?.length ?? 0) < 2;
   const referralEnabled = hostel?.referral_enabled === true;
+  // Pakistan-only features (RedFlag registry, government guest registration) are
+  // hidden where the branch's country doesn't enable them. Fails open to PK when
+  // country is absent, so existing (all-PK) branches are unaffected.
+  const countryCfg = getCountryConfig(hostel?.country);
 
   const visibleGroups = navGroups
     .map((group) => ({
@@ -170,7 +175,9 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         (item) =>
           !(isPartner && item.ownerOnly) &&
           !(singleBranch && item.multiBranchOnly) &&
-          !(item.referralOnly && !referralEnabled)
+          !(item.referralOnly && !referralEnabled) &&
+          !(item.redflagOnly && !countryCfg.redflag) &&
+          !(item.guestRegistrationOnly && !countryCfg.guestRegistration)
       ).map((item) =>
         item.href === "/find" ? { ...item, href: publicPageHref }
         // The guest-registration system is branded per province — "Smart Eye"
