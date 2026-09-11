@@ -17,20 +17,34 @@ export function calculateMonthlyPrice(branchCount: number): number {
 // Custom-priced per client (some are legacy/discounted), on either cycle —
 // see hms_client_billing. This is separate from the public onboarding quote above.
 
-// STANDARD_CLIENT_MONTHLY_RATE is our fixed "full price" reference — every
-// client's actual hms_client_billing.monthly_rate is compared against it to
-// auto-derive their discount %, for both monthly and annual clients alike.
-// There's no separate manually-set discount lever; the rate itself is the only
-// lever, same as ONBOARDING_FEE (a fixed amount — only charged-or-waived varies).
+// Package list ("full") prices. Basic and Standard are SEPARATE products, so a
+// client's discount % is auto-derived by comparing their actual
+// hms_client_billing.monthly_rate against the list price of THEIR package (plan)
+// — a Basic client at 6K is at full price (0% off), NOT 25% off Standard. There's
+// no separate manual discount lever; the rate is the only lever (like ONBOARDING_FEE).
+export const BASIC_CLIENT_MONTHLY_RATE = 6000;
 export const STANDARD_CLIENT_MONTHLY_RATE = 8000;
 export const ONBOARDING_FEE = 10000;
 
+export type ClientPlan = "basic" | "standard" | null | undefined;
+
+/** The package's list/full per-branch rate, or null when the client has no
+ *  explicit plan — then no discount is shown (we can't know the reference). */
+export function packageListRate(plan: ClientPlan): number | null {
+  if (plan === "standard") return STANDARD_CLIENT_MONTHLY_RATE;
+  if (plan === "basic") return BASIC_CLIENT_MONTHLY_RATE;
+  return null;
+}
+
 export type BillingCycle = "monthly" | "annual";
 
-/** Auto-derived discount %, clamped to 0 so a rate at/above standard never shows a negative discount. */
-export function clientDiscountPct(monthlyRate: number): number {
-  if (STANDARD_CLIENT_MONTHLY_RATE <= 0) return 0;
-  return Math.max(0, ((STANDARD_CLIENT_MONTHLY_RATE - monthlyRate) / STANDARD_CLIENT_MONTHLY_RATE) * 100);
+/** Auto-derived discount %, measured against the client's PACKAGE list price.
+ *  Clamped to 0 so a rate at/above the package list never shows a negative
+ *  discount; returns 0 for an unknown plan (no reference to compare against). */
+export function clientDiscountPct(monthlyRate: number, plan: ClientPlan): number {
+  const list = packageListRate(plan);
+  if (!list || list <= 0) return 0;
+  return Math.max(0, ((list - monthlyRate) / list) * 100);
 }
 
 /** Inverts a snapshotted (actualSubtotal, discountPct) pair back to the list-price

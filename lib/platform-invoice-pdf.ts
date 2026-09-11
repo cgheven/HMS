@@ -8,7 +8,7 @@
 import { jsPDF } from "jspdf";
 import fs from "fs";
 import path from "path";
-import { ONBOARDING_FEE, listSubtotalFromDiscount } from "@/lib/pricing";
+import { ONBOARDING_FEE, listSubtotalFromDiscount, packageListRate } from "@/lib/pricing";
 
 interface InvoiceData {
   id: string;
@@ -26,6 +26,9 @@ interface InvoiceData {
   discount_pct: number;
   onboarding_fee_charged: number;
   is_first_invoice: boolean;
+  /** The package this invoice is for (snapshot). null when the owner had no
+   *  explicit plan — the "Package" line is then omitted. */
+  plan?: "basic" | "standard" | null;
 }
 
 interface InvoiceClient {
@@ -251,7 +254,13 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
   // recomputed live. Onboarding stays flat account-level, not per branch.
   const months = invoice.billing_cycle === "monthly" ? 1 : 12;
   const actualSubtotal = invoice.monthly_rate * months * invoice.branch_count;
-  const listSubtotal = listSubtotalFromDiscount(actualSubtotal, invoice.discount_pct);
+  // The list is the client's PACKAGE list price (exact) — Basic 6K / Standard 8K.
+  // Fall back to back-deriving from the snapshotted discount for a pre-snapshot
+  // invoice with no plan, so old invoices still render.
+  const pkgList = packageListRate(invoice.plan);
+  const listSubtotal = pkgList != null
+    ? pkgList * months * invoice.branch_count
+    : listSubtotalFromDiscount(actualSubtotal, invoice.discount_pct);
   const discount = listSubtotal - actualSubtotal;
   // The onboarding fee is fixed platform-wide — if it was waived, onboarding_fee_charged
   // is 0, but the "everything included" reference still needs to show what it would've been.
@@ -266,6 +275,10 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
   const perBranchStandard = listSubtotal / invoice.branch_count;
   const perBranchActual = invoice.monthly_rate * months;
   const cycleWord = invoice.billing_cycle === "monthly" ? "month" : "year";
+  // The client's package — names the list-price rows (the list rate above is the
+  // list price of THIS package). Defaults to "Standard" for a pre-snapshot invoice
+  // with no plan (harmless: those only reach these rows when a discount exists).
+  const packageName = invoice.plan === "basic" ? "Basic" : "Standard";
 
   const statusInfo =
     invoice.status === "paid"
@@ -403,23 +416,21 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
       );
     }
 
-    if (doc) {
-      drawIcon(doc, "pin", COL_FROM, leftY - iconSize * 0.68, iconSize, GRAY);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(8);
-      doc.setTextColor(...GRAY);
-      doc.text("Karachi, Pakistan", COL_FROM + textX, leftY);
-    }
-    leftY += 15;
+    // No location line on the FROM block — Pulse is marketed internationally, so
+    // the invoice deliberately omits a country.
 
     const colContentH = Math.max(leftY, rightY) - sectionTop;
 
     // Dark billing-details box — sits alongside FROM/BILLED TO as the third column
+    // The package (Basic/Standard). The billing CYCLE already shows in "Billing
+    // Period" above, so this row names the plan tier, not the cycle.
+    const packageLabel =
+      invoice.plan === "standard" ? "Standard Package" : invoice.plan === "basic" ? "Basic Package" : null;
     const boxRows: [IconName, string, string][] = [
       ["calendar", "Billing Period", `${invoice.period_label} (${invoice.billing_cycle === "monthly" ? "Monthly" : "Annual"})`],
       ["calendar", "Issue Date", fmtDate(invoice.created_at)],
       ["calendar", "Due Date", fmtDate(invoice.due_date)],
-      ["package", "Plan", invoice.billing_cycle === "monthly" ? "Monthly" : "Annual"],
+      ...(packageLabel ? ([["package", "Package", packageLabel]] as [IconName, string, string][]) : []),
     ];
     const boxPad = 10;
     const boxRowH = 18;
@@ -498,7 +509,7 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
       if (discount > 0) {
         doc.setFont("helvetica", "normal");
         doc.setTextColor(...GRAY);
-        doc.text(`Standard ${pk(perBranchStandard)}/branch/${cycleWord}`, ML + rowBadgeR * 2 + 8, y + 14);
+        doc.text(`${packageName} ${pk(perBranchStandard)}/branch/${cycleWord}`, ML + rowBadgeR * 2 + 8, y + 14);
         doc.text(`Charging ${pk(perBranchActual)}/branch/${cycleWord}`, ML + rowBadgeR * 2 + 8, y + 14 + subLineH);
       }
       doc.setTextColor(20, 20, 22);
@@ -533,7 +544,7 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
       if (onboardingWaived > 0) {
         doc.setFont("helvetica", "normal");
         doc.setTextColor(...GRAY);
-        doc.text(`Standard ${pk(ONBOARDING_FEE)} - waived for this client`, ML + rowBadgeR * 2 + 8, y + 14);
+        doc.text(`${pk(ONBOARDING_FEE)} standard onboarding - waived for this client`, ML + rowBadgeR * 2 + 8, y + 14);
       }
     }
     if (invoice.is_first_invoice) y += 30;
@@ -553,7 +564,7 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
     const boxX = MR - boxW;
     const lines: [string, string][] = [];
     if (totalSavings > 0) {
-      lines.push(["Standard Price", pk(listTotal)]);
+      lines.push([`${packageName} Price`, pk(listTotal)]);
       if (discount > 0) lines.push([`Subscription Discount (${invoice.discount_pct.toFixed(0)}%)`, `- ${pk(discount)}`]);
       if (onboardingWaived > 0) lines.push(["Onboarding Fee Waived", `- ${pk(onboardingWaived)}`]);
     }

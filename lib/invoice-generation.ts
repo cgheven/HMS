@@ -117,8 +117,16 @@ export async function generateInvoiceForOwner(
     return { generated: false, reason: "All of this client's branches are paused from billing" };
   }
 
+  // Snapshot the owner's package (plan): it drives the invoice PDF's Basic/Standard
+  // label AND the discount reference — the discount is measured against THIS
+  // package's list price (Basic 6K / Standard 8K), not a fixed 8K. A historical
+  // record, like the rate snapshot below.
+  const { data: ownerProfile } = await admin
+    .from("hms_profiles").select("plan").eq("id", ownerId).maybeSingle();
+  const ownerPlan = (ownerProfile?.plan as "basic" | "standard" | null) ?? null;
+
   const actualSubtotal = Number(billing.monthly_rate) * months * billableBranches;
-  const discountPct = clientDiscountPct(Number(billing.monthly_rate));
+  const discountPct = clientDiscountPct(Number(billing.monthly_rate), ownerPlan);
   const onboardingFeeCharged = isFirstInvoice && !billing.waive_onboarding ? ONBOARDING_FEE : 0;
   const amount = Math.round((actualSubtotal + onboardingFeeCharged) * 100) / 100;
 
@@ -138,6 +146,7 @@ export async function generateInvoiceForOwner(
       discount_pct: discountPct,
       onboarding_fee_charged: onboardingFeeCharged,
       is_first_invoice: isFirstInvoice,
+      plan: ownerPlan,
     })
     .select("id")
     .single();

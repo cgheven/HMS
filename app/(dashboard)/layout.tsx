@@ -91,11 +91,17 @@ export default async function DashboardLayout({ children }: { children: React.Re
     <HostelProvider profile={ctx.profile} hostel={ctx.hostel} hostels={ctx.hostels ?? []} partnerTier={ctx.partnerTier}>
       <DashboardShell>
         {accountFrozen ? (
-          <div className="mb-4 rounded-xl border border-amber/30 bg-amber/10 px-4 py-3 text-sm">
-            <span className="font-semibold text-amber">Account suspended.</span>{" "}
-            Your account has unpaid dues, so changes are disabled — you can still view everything.
-            Clear your balance to restore full access.
-          </div>
+          <Link
+            href="/billing"
+            className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-amber/30 bg-amber/10 px-4 py-3 text-sm transition-colors hover:bg-amber/15"
+          >
+            <span>
+              <span className="font-semibold text-amber">Account suspended.</span>{" "}
+              Your account has unpaid dues, so changes are disabled — you can still view everything.
+              Pay online to clear your balance and restore full access.
+            </span>
+            <span className="whitespace-nowrap font-semibold text-amber">Pay now →</span>
+          </Link>
         ) : dueSoon ? (
           <Link
             href="/billing"

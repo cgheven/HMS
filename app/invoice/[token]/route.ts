@@ -28,7 +28,7 @@ export async function GET(
   // — not recomputed live, so an old invoice stays an accurate historical record
   // even if branches or billing config change later.
   const [{ data: profile }, { data: authUser }] = await Promise.all([
-    admin.from("hms_profiles").select("full_name, phone").eq("id", invoice.owner_id).maybeSingle(),
+    admin.from("hms_profiles").select("full_name, phone, plan").eq("id", invoice.owner_id).maybeSingle(),
     admin.auth.admin.getUserById(invoice.owner_id),
   ]);
 
@@ -47,6 +47,9 @@ export async function GET(
       discount_pct: Number(invoice.discount_pct),
       onboarding_fee_charged: Number(invoice.onboarding_fee_charged),
       is_first_invoice: invoice.is_first_invoice,
+      // Snapshot on the invoice; fall back to the owner's current plan for
+      // pre-snapshot invoices (best available).
+      plan: (invoice.plan as "basic" | "standard" | null) ?? (profile?.plan as "basic" | "standard" | null) ?? null,
     },
     {
       owner_name: profile?.full_name ?? "Client",
