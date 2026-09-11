@@ -14,7 +14,9 @@ import { getCountryConfig } from "./country-config";
  *  caps at the country's longest valid length, and applies its dash grouping. */
 export function formatNationalId(country: string | null | undefined, input: string): string {
   const rule = getCountryConfig(country).nationalId;
-  const max = Math.max(...rule.digitLengths);
+  // Guard a mis-configured empty digitLengths (Math.max(...[]) === -Infinity):
+  // fall back to the raw digits rather than silently producing "".
+  const max = rule.digitLengths.length ? Math.max(...rule.digitLengths) : Number.MAX_SAFE_INTEGER;
   const d = (input ?? "").replace(/\D/g, "").slice(0, max);
   if (!rule.groups || rule.groups.length === 0) return d;
   const parts: string[] = [];
