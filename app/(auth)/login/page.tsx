@@ -196,12 +196,15 @@ export default function LoginPage() {
             <form onSubmit={handleManagerLogin} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="manager-phone" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Email or Mobile Number
+                  Email
                 </Label>
+                {/* Labelled Email (the current standard), but the handler still
+                    accepts a phone number for legacy phone-only managers so they
+                    are not locked out — see handleManagerLogin. */}
                 <Input
                   id="manager-phone"
                   type="text"
-                  placeholder="you@email.com or 03XXXXXXXXX"
+                  placeholder="you@email.com"
                   value={managerPhone}
                   onChange={(e) => setManagerPhone(e.target.value)}
                   required
