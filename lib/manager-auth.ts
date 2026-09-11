@@ -25,7 +25,7 @@ export const getManagerContext = cache(async (): Promise<ManagerContext | null> 
     admin.from("hms_manager_permissions").select("permission").eq("manager_id", mgr.id),
     admin
       .from("hms_manager_hostels")
-      .select("hostel_id, hms_hostels(id, name)")
+      .select("hostel_id, hms_hostels(id, name, country)")
       .eq("manager_id", mgr.id),
   ])
 
@@ -33,15 +33,15 @@ export const getManagerContext = cache(async (): Promise<ManagerContext | null> 
     (permRows ?? []).map((r: { permission: string }) => r.permission as StaffPermission)
   )
 
-  type HostelJoinRow = { hostel_id: string; hms_hostels: { id: string; name: string } | null }
+  type HostelJoinRow = { hostel_id: string; hms_hostels: { id: string; name: string; country: string } | null }
   const hostels = ((hostelRows ?? []) as unknown as HostelJoinRow[])
     .map((r) => r.hms_hostels)
-    .filter((h): h is { id: string; name: string } => h !== null)
+    .filter((h): h is { id: string; name: string; country: string } => h !== null)
 
   const cookieStore = await cookies()
   const activeCookieVal = cookieStore.get("hms_active_hostel")?.value ?? null
 
-  let activeHostel: { id: string; name: string } | null = null
+  let activeHostel: { id: string; name: string; country: string } | null = null
   if (activeCookieVal) {
     activeHostel = hostels.find((h) => h.id === activeCookieVal) ?? null
   }
@@ -58,7 +58,7 @@ export const getManagerContext = cache(async (): Promise<ManagerContext | null> 
   return { manager, permissions, hostels, activeHostel }
 })
 
-type BoundContext = ManagerContext & { activeHostel: { id: string; name: string } }
+type BoundContext = ManagerContext & { activeHostel: { id: string; name: string; country: string } }
 
 export async function requireManagerPermission(
   permission: StaffPermission,

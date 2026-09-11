@@ -13,6 +13,8 @@ import {
 } from "@/lib/hotel-eye-client";
 import { HOTEL_EYE_PROVINCES, HOTEL_EYE_DISTRICTS } from "@/lib/hotel-eye-vocabulary";
 import { visitPurposeLabel } from "@/lib/visit-purpose";
+import { isSupportedCountry } from "@/lib/country-config";
+import { requiresGuestRegistration } from "@/lib/national-id";
 
 // Every action here is owner-only and resolves the hostel server-side from the
 // session — a hostel_id is never trusted from the client. The credentials table
@@ -22,6 +24,15 @@ async function resolveHostel(): Promise<{ id: string; type: string | null }> {
   await requireOwnerOrAbove();
   const ctx = await getAuthContext();
   if (!ctx?.hostelId) throw new Error("Unauthorized: no active hostel");
+  // Guest registration (Hotel Eye / Smart Eye) is a per-country entitlement:
+  // Pakistan only today. Gate FAIL-CLOSED — an unsupported/unknown country must
+  // never reach the portal integration even though every action is owner-scoped.
+  // These actions are directly reachable, so the gate lives here, not just in the
+  // page/nav. Every current hostel is PK, so this is a verified no-op.
+  const country = ctx.hostel?.country;
+  if (!(isSupportedCountry(country) && requiresGuestRegistration(country))) {
+    throw new Error("Guest registration is not available for this country");
+  }
   return { id: ctx.hostelId, type: (ctx.hostel?.hostel_type ?? null) as string | null };
 }
 

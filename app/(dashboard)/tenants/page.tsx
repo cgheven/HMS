@@ -75,6 +75,7 @@ export default async function TenantsPage() {
       applications={applications}
       hostelSlug={hostelSlug}
       hostelName={ctx?.hostel?.name}
+      country={ctx?.hostel?.country}
       mealTimes={ctx?.hostel?.meal_times}
       acMaintenanceRate={acMaintenanceRate}
       meterAllRooms={meterAllRooms}

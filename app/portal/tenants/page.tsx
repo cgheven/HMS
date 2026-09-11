@@ -28,6 +28,7 @@ export default async function PortalTenantsPage() {
       {...data}
       hostelSlug={null}
       hostelName={ctx.activeHostel.name}
+      country={ctx.activeHostel.country}
       managerPermissions={Array.from(ctx.permissions)}
       initialPackageConfig={data.packageConfig}
       branchTargets={branchTargets}

@@ -320,7 +320,7 @@ export const getPublicHostel = cache(async function getPublicHostel(slug: string
 
     const { data: hostelData, error: hostelErr } = await admin
       .from("hms_hostels")
-      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays,food_menu_type,cover_image_url,form_config")
+      .select("id,owner_id,name,address,phone,whatsapp,email,total_capacity,city,area,maps_url,description,hostel_type,amenities,slug,food_closed_on_sundays,food_menu_type,cover_image_url,form_config,country")
       .eq("slug", slug)
       .eq("listing_enabled", true)
       .single();

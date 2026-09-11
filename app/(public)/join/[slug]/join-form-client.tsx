@@ -3,7 +3,8 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Home, CheckCircle2, Loader2, Phone, Mail, User, CreditCard, Calendar, MessageSquare, Camera, Upload, X, RefreshCw, BedDouble, Check, ShieldAlert } from "lucide-react";
 import { submitApplication } from "@/app/actions/applications";
 import { uploadApplicationCnic } from "@/app/actions/public";
-import { formatCnic, isValidCnic } from "@/lib/cnic";
+import { formatNationalId, isValidNationalId, nationalIdLabel, requiresGuestRegistration } from "@/lib/national-id";
+import { getCountryConfig } from "@/lib/country-config";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -33,6 +34,14 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
   const cfg = { ...DEFAULT_FORM_CONFIG, ...(hostel.form_config as FormConfig | null ?? {}) };
   const show = (key: keyof typeof cfg) => cfg[key]?.enabled !== false;
   const req  = (key: keyof typeof cfg) => cfg[key]?.required === true;
+
+  // National ID + guest-registration geography are country-driven. PK resolves
+  // to CNIC / 13-digit / province+district-required — a verified no-op for every
+  // existing (PK) hostel; a non-guest-registration country hides province/district.
+  const country = hostel.country;
+  const idLabel = nationalIdLabel(country);
+  const idExample = getCountryConfig(country).nationalId.example;
+  const needsGuestRegistration = requiresGuestRegistration(country);
 
   const availableRooms = hostel.rooms.filter((r) => r.status !== "maintenance" && r.capacity - r.occupied > 0);
   const preselectedRoom = preselectedRoomNumber
@@ -271,9 +280,9 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
     if (!form.full_name.trim()) { setError("Full name is required."); return; }
     if (!form.phone.trim()) { setError("WhatsApp number is required."); return; }
     if (show("email") && !form.email.trim()) { setError("Email is required."); return; }
-    if (show("cnic") && !form.cnic.trim()) { setError("CNIC is required."); return; }
-    if (show("cnic") && form.cnic.trim() && !isValidCnic(form.cnic)) {
-      setError("Enter a valid 13-digit CNIC, e.g. 42101-1234567-1.");
+    if (show("cnic") && !form.cnic.trim()) { setError(`${idLabel} is required.`); return; }
+    if (show("cnic") && form.cnic.trim() && !isValidNationalId(country, form.cnic)) {
+      setError(`Enter a valid ${idLabel}${idExample ? `, e.g. ${idExample}` : ""}.`);
       return;
     }
     if (show("type") && !form.type) { setError("Please select a type."); return; }
@@ -286,9 +295,10 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       setError("Permanent address is required.");
       return;
     }
-    // Province + district are always required — the Smart Eye / Hotel Eye portal
-    // cannot file a guest without them.
-    if (!form.permanent_province || !form.permanent_district) {
+    // Province + district are required only where a government guest-registration
+    // portal (e.g. Pakistan's Smart Eye / Hotel Eye) needs them; other countries
+    // don't collect this geography, so the fields are hidden and not validated.
+    if (needsGuestRegistration && (!form.permanent_province || !form.permanent_district)) {
       setError("Please select your province and district.");
       return;
     }
@@ -509,22 +519,22 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
               )}
             </div>
 
-            {/* CNIC — always required whenever shown, same as Type */}
+            {/* National ID (CNIC in PK, country-driven elsewhere) — always
+                required whenever shown, same as Type */}
             {show("cnic") && (
               <div className="space-y-1.5">
                 <Label className="flex items-center gap-1.5">
                   <CreditCard className="w-3.5 h-3.5 text-muted-foreground" />
-                  CNIC <span className="text-destructive">*</span>
+                  {idLabel} <span className="text-destructive">*</span>
                 </Label>
                 <Input
-                  placeholder="XXXXX-XXXXXXX-X"
+                  placeholder={idExample ?? idLabel}
                   value={form.cnic}
-                  onChange={(e) => setForm({ ...form, cnic: formatCnic(e.target.value) })}
+                  onChange={(e) => setForm({ ...form, cnic: formatNationalId(country, e.target.value) })}
                   inputMode="numeric"
-                  maxLength={15}
                   required
                 />
-                <p className="text-xs text-muted-foreground">Format: 42101-1234567-1</p>
+                {idExample && <p className="text-xs text-muted-foreground">Format: {idExample}</p>}
               </div>
             )}
 
@@ -806,14 +816,14 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
               </div>
             )}
 
-            {/* CNIC Document Upload */}
+            {/* National-ID Document Upload (CNIC in PK, country-driven label) */}
             <div className="space-y-2">
               <Label className="flex items-center gap-1.5">
                 <CreditCard className="w-3.5 h-3.5 text-muted-foreground" />
-                CNIC Document <span className="text-muted-foreground text-xs font-normal">(optional)</span>
+                {idLabel} Document <span className="text-muted-foreground text-xs font-normal">(optional)</span>
               </Label>
               <p className="text-xs text-muted-foreground">
-                Upload a photo or scan of your CNIC for identity verification.{" "}
+                Upload a photo or scan of your {idLabel} for identity verification.{" "}
                 <span className="text-muted-foreground">(optional)</span>
               </p>
               <input
@@ -833,7 +843,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={cnicDoc.previewUrl}
-                    alt="CNIC preview"
+                    alt={`${idLabel} preview`}
                     className="w-24 h-16 object-cover rounded border border-border"
                   />
                   <Button
@@ -861,7 +871,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                     disabled={cnicUploading}
                   >
                     <Upload className="w-3.5 h-3.5" />
-                    Upload CNIC
+                    Upload {idLabel}
                   </Button>
                   <Button
                     type="button"
@@ -978,13 +988,16 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
             </div>
           )}
 
-          {/* Permanent Address — province + district are always required (the
-              Smart Eye / Hotel Eye portal needs them); the free-text address
-              below stays configurable. */}
+          {/* Permanent Address — province + district are required only where a
+              government guest-registration portal (PK Smart Eye / Hotel Eye)
+              needs them; the free-text address below stays configurable. The
+              whole card only renders if one of those two applies. */}
+          {(needsGuestRegistration || show("permanent_address")) && (
           <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
             <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <Home className="w-4 h-4 text-muted-foreground" /> Permanent Address
             </h2>
+            {needsGuestRegistration && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label>Province <span className="text-destructive">*</span></Label>
@@ -1007,6 +1020,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                 />
               </div>
             </div>
+            )}
             {show("permanent_address") && (
               <div className="space-y-1.5">
                 <Label>Home Address {req("permanent_address") && <span className="text-destructive">*</span>}</Label>
@@ -1021,6 +1035,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
               </div>
             )}
           </div>
+          )}
 
           {show("emergency_contact") && (
             <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
@@ -1141,11 +1156,11 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
         </form>
       </div>
 
-      {/* CNIC Camera Dialog */}
+      {/* National-ID Camera Dialog (CNIC in PK, country-driven label) */}
       <Dialog open={cameraOpen} onOpenChange={(o) => { if (!o) closeCamera(); }}>
         <DialogContent className="sm:max-w-md p-0 overflow-hidden">
           <DialogHeader className="px-4 pt-4 pb-2">
-            <DialogTitle className="text-sm">Take CNIC Photo</DialogTitle>
+            <DialogTitle className="text-sm">Take {idLabel} Photo</DialogTitle>
           </DialogHeader>
 
           <div className="relative bg-black aspect-video w-full overflow-hidden">

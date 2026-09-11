@@ -272,6 +272,9 @@ export interface PublicHostel {
   food_closed_on_sundays: boolean;
   food_menu_type: FoodMenuType;
   cover_image_url: string | null;
+  /** ISO 3166-1 alpha-2 of the hostel — drives national-ID label/validation and
+   *  whether guest-registration geography (province/district) is required. */
+  country: string;
 }
 
 export interface PublicRoom {
@@ -1264,7 +1267,7 @@ export interface ManagerContext {
   manager: Manager
   permissions: Set<StaffPermission>
   hostels: { id: string; name: string }[]
-  activeHostel: { id: string; name: string } | null
+  activeHostel: { id: string; name: string; country: string } | null
 }
 
 export type PartnerTier = "read_only" | "standard" | "full"

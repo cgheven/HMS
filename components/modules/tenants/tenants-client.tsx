@@ -27,7 +27,8 @@ import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seate
 import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets , departmentPresetsFor } from "@/lib/student-category-labels";
 import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling } from "@/lib/ac-billing";
-import { formatCnic, isValidCnic, normalizeCnic } from "@/lib/cnic";
+import { formatNationalId, isValidNationalId, normalizeNationalId, nationalIdLabel, requiresGuestRegistration } from "@/lib/national-id";
+import { getCountryConfig, DEFAULT_COUNTRY } from "@/lib/country-config";
 import { discountedRent } from "@/lib/tenant-discount";
 import { VISIT_PURPOSE_OPTIONS, VISIT_PURPOSE_LABELS, visitPurposeLabel } from "@/lib/visit-purpose";
 import { RELATIONSHIP_OPTIONS } from "@/types";
@@ -102,6 +103,10 @@ interface Props {
    *  for managers/partners) — its presence is what surfaces the "Move to another
    *  branch" control on each active member. */
   branchTargets?: BranchTransferTarget[];
+  /** ISO country of the active hostel. Drives the national-ID label/validation
+   *  and whether province/district (guest registration) are collected. Omitted →
+   *  Pakistan, a verified no-op for every existing client. */
+  country?: string;
 }
 
 // A typed meter reading → number, or null for blank/garbage. Shared by the
@@ -706,7 +711,13 @@ function RedflagWarningDialog({
   );
 }
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, mealTimes = null, acMaintenanceRate = 0, meterAllRooms = false, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null, branchTargets = [] }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, mealTimes = null, acMaintenanceRate = 0, meterAllRooms = false, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null, branchTargets = [], country = DEFAULT_COUNTRY }: Props) {
+  // National ID + guest-registration geography are country-driven. PK resolves to
+  // CNIC / 13-digit / province+district-required — a verified no-op for existing
+  // clients; a non-guest-registration country hides province/district.
+  const idLabel = nationalIdLabel(country);
+  const idExample = getCountryConfig(country).nationalId.example;
+  const needsGuestRegistration = requiresGuestRegistration(country);
   const isPartner = !!partnerTier;
   const canFullTier = !partnerTier || partnerTier === "full";
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
@@ -1562,14 +1573,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   async function handleSave() {
     if ((!hostelId && !isManager) || !form.full_name) return;
     if (!form.is_waiting && !form.check_in) return;
-    if (form.cnic && !isValidCnic(form.cnic)) {
-      toast({ title: "Invalid CNIC", description: "Format must be XXXXX-XXXXXXX-X (13 digits)", variant: "destructive" });
+    if (form.cnic && !isValidNationalId(country, form.cnic)) {
+      toast({ title: `Invalid ${idLabel}`, description: idExample ? `Format must match ${idExample}.` : `Enter a valid ${idLabel}.`, variant: "destructive" });
       return;
     }
-    // Province and district are mandatory — the HotelEye/Smart Eye portal cannot
-    // file a guest without them, so we require them at admission rather than
-    // discovering the gap at sync time.
-    if (!form.permanent_province || !form.permanent_district) {
+    // Province and district are mandatory only where a government guest-registration
+    // portal (PK Smart Eye / Hotel Eye) needs them — required at admission so the
+    // gap isn't discovered at sync time. Other countries don't collect this.
+    if (needsGuestRegistration && (!form.permanent_province || !form.permanent_district)) {
       toast({ title: "Province and district required", description: "Both are needed to file the guest with Smart Eye / Hotel Eye.", variant: "destructive" });
       return;
     }
@@ -1606,7 +1617,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       full_name: form.full_name,
       phone: form.phone || null,
       email: form.email || null,
-      cnic: normalizeCnic(form.cnic),
+      cnic: normalizeNationalId(country, form.cnic),
       type: form.type,
       package_tier: form.package_tier,
       custom_package_id: form.custom_package_id || null,
@@ -2741,7 +2752,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const stats = {
     active: active.length,
     waiting: waiting.length + waitlistEntries.length,
-    vacantRooms: rooms.filter((r) => r.status === "available").length,
+    // Available BEDS, not rooms: a half-full 4-bed room still has beds to sell.
+    // Derive filled from tenants (hms_rooms.occupied has drifted in prod) and
+    // exclude maintenance rooms whose beds can't be placed. Clamp at 0.
+    availableBeds: (() => {
+      const serviceable = rooms.filter((r) => r.status !== "maintenance");
+      const totalBeds = serviceable.reduce((sum, r) => sum + (r.capacity || 0), 0);
+      const serviceableIds = new Set(serviceable.map((r) => r.id));
+      const filled = active.filter((t) => t.room_id && serviceableIds.has(t.room_id)).length;
+      return Math.max(0, totalBeds - filled);
+    })(),
   };
 
   return (
@@ -2778,7 +2798,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         {[
           { label: "Active Tenants", value: stats.active, icon: UserCheck, color: "text-emerald-400", iconBg: "bg-emerald-500/10 border-emerald-500/20" },
           { label: "Waiting List", value: stats.waiting, icon: Clock, color: "text-amber", iconBg: "bg-amber/10 border-amber/20" },
-          { label: "Vacant Rooms", value: stats.vacantRooms, icon: BedDouble, color: "text-blue-400", iconBg: "bg-blue-500/10 border-blue-500/20" },
+          { label: "Available Beds", value: stats.availableBeds, icon: BedDouble, color: "text-blue-400", iconBg: "bg-blue-500/10 border-blue-500/20" },
         ].map(({ label, value, icon: Icon, color, iconBg }) => (
           <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-3 sm:p-5">
             <div className="flex items-start justify-between gap-1 mb-2">
@@ -4130,15 +4150,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               <div className="space-y-1.5 sm:col-span-2"><Label>Full Name *</Label><Input placeholder="Ahmed Khan" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Phone *</Label><Input placeholder="+92 300 0000000" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
               <div className="space-y-1.5">
-                <Label>CNIC</Label>
+                <Label>{idLabel}</Label>
                 <Input
-                  placeholder="44102-7891219-1"
+                  placeholder={idExample ?? idLabel}
                   value={form.cnic}
-                  onChange={(e) => setForm({ ...form, cnic: formatCnic(e.target.value) })}
-                  maxLength={15}
+                  onChange={(e) => setForm({ ...form, cnic: formatNationalId(country, e.target.value) })}
                 />
-                {form.cnic && !isValidCnic(form.cnic) && (
-                  <p className="text-xs text-rose-400">Format: XXXXX-XXXXXXX-X</p>
+                {form.cnic && !isValidNationalId(country, form.cnic) && (
+                  <p className="text-xs text-rose-400">{idExample ? `Format: ${idExample}` : `Enter a valid ${idLabel}`}</p>
                 )}
               </div>
               {/* Spans both columns, so it must sit between two COMPLETE rows or
@@ -5056,7 +5075,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {/* Province + district for the HotelEye police-verification sync.
                 Fixed portal vocabulary, not free text — picking a province
                 narrows the district list to that province's valid values, so a
-                sync is never rejected for an unknown place. */}
+                sync is never rejected for an unknown place. Only rendered where a
+                government guest-registration portal applies (Pakistan today). */}
+            {needsGuestRegistration && (
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label>Province *</Label>
@@ -5079,6 +5100,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 />
               </div>
             </div>
+            )}
             <div className="space-y-1.5">
               <Label>Permanent Address</Label>
               <textarea
