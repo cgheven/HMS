@@ -185,7 +185,7 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
   const cycleTotal = billing?.monthly_rate != null
     ? billing.monthly_rate * (billing.billing_cycle === "annual" ? 12 : 1) * branchCount
     : null;
-  const currentDiscountPct = billing?.monthly_rate != null ? clientDiscountPct(billing.monthly_rate) : 0;
+  const currentDiscountPct = billing?.monthly_rate != null ? clientDiscountPct(billing.monthly_rate, plan) : 0;
 
   // Grandfathered client: a fixed negotiated USD rate on their existing plan —
   // no plan choice, just their rate. Annual mirrors the pay-10-get-12 (× 10).

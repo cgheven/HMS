@@ -37,6 +37,7 @@ export async function getClientBilling(ownerId: string): Promise<{
   billing?: ClientBilling | null;
   invoices?: PlatformInvoice[];
   ownerPhone?: string | null;
+  ownerPlan?: "basic" | "standard" | null;
   error?: string;
 }> {
   try {
@@ -50,7 +51,7 @@ export async function getClientBilling(ownerId: string): Promise<{
         .select("*")
         .eq("owner_id", ownerId)
         .order("period_start", { ascending: false }),
-      admin.from("hms_profiles").select("phone").eq("id", ownerId).maybeSingle(),
+      admin.from("hms_profiles").select("phone, plan").eq("id", ownerId).maybeSingle(),
       admin
         .from("hms_hostels")
         .select("phone, whatsapp")
@@ -71,6 +72,7 @@ export async function getClientBilling(ownerId: string): Promise<{
       billing: (billingRes.data as ClientBilling | null) ?? null,
       invoices: (invoicesRes.data ?? []) as PlatformInvoice[],
       ownerPhone: profileRes.data?.phone || fallbackPhone,
+      ownerPlan: (profileRes.data?.plan as "basic" | "standard" | null) ?? null,
     };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to load billing" };

@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
-import { STANDARD_CLIENT_MONTHLY_RATE, ONBOARDING_FEE, clientDiscountPct, listSubtotalFromDiscount } from "@/lib/pricing";
+import { STANDARD_CLIENT_MONTHLY_RATE, ONBOARDING_FEE, clientDiscountPct, listSubtotalFromDiscount, packageListRate } from "@/lib/pricing";
 import { SUBDOMAIN_ROOT, normalizeSubdomain, subdomainError, suggestSubdomain, subdomainUrl } from "@/lib/subdomain";
 import type { ClientBilling, PlatformInvoice } from "@/types";
 
@@ -258,6 +258,9 @@ export function SuperAdminHostelsClient({ initialHostels, initialPlatformCommiss
     notes: "",
     startDate: new Date().toISOString().slice(0, 10),
   });
+  // The client's package — the rate/discount preview measures against ITS list
+  // price (Basic 6K / Standard 8K), same as the generated invoice.
+  const [billingPlan, setBillingPlan] = useState<"basic" | "standard" | null>(null);
 
   async function openBilling(ownerId: string, ownerName: string, branches: number) {
     setBillingTarget({ ownerId, ownerName });
@@ -269,6 +272,7 @@ export function SuperAdminHostelsClient({ initialHostels, initialPlatformCommiss
     } else {
       setBilling(res.billing ?? null);
       setInvoices(res.invoices ?? []);
+      setBillingPlan(res.ownerPlan ?? null);
       setOwnerPhone(res.ownerPhone ?? null);
       setPhoneInput(res.ownerPhone ?? "");
       const cycle = res.billing?.billing_cycle ?? "annual";
@@ -629,9 +633,9 @@ export function SuperAdminHostelsClient({ initialHostels, initialPlatformCommiss
     // rather than producing a Rs 0 invoice. Forcing 1 here would preview a
     // charge that will never be raised.
     const branches = billingBranchCount;
-    const discountPct = clientDiscountPct(rate);
+    const discountPct = clientDiscountPct(rate, billingPlan);
     const perBranchActual = rate * months;
-    const perBranchList = STANDARD_CLIENT_MONTHLY_RATE * months;
+    const perBranchList = (packageListRate(billingPlan) ?? rate) * months;
     const actualSubtotal = perBranchActual * branches;
     const listSubtotal = perBranchList * branches;
     const discountAmount = listSubtotal - actualSubtotal;
@@ -645,7 +649,7 @@ export function SuperAdminHostelsClient({ initialHostels, initialPlatformCommiss
       listSubtotal, actualSubtotal, discountPct, discountAmount,
       standardOnboarding, onboardingCharged, listTotal, actualTotal, totalSavings,
     };
-  }, [billingForm.monthlyRate, billingForm.cycle, billingForm.waiveOnboarding, invoices.length, billingBranchCount]);
+  }, [billingForm.monthlyRate, billingForm.cycle, billingForm.waiveOnboarding, invoices.length, billingBranchCount, billingPlan]);
 
   // Onboarding only ever applies to a client's literal first invoice ever generated —
   // once they have any invoice history, the waive checkbox has no effect at all, which
@@ -1418,12 +1422,12 @@ export function SuperAdminHostelsClient({ initialHostels, initialPlatformCommiss
                     <Input
                       type="number"
                       min={0}
-                      placeholder={String(STANDARD_CLIENT_MONTHLY_RATE)}
+                      placeholder={String(packageListRate(billingPlan) ?? STANDARD_CLIENT_MONTHLY_RATE)}
                       value={billingForm.monthlyRate}
                       onChange={e => setBillingForm(f => ({ ...f, monthlyRate: e.target.value }))}
                     />
                     <p className="text-[11px] text-muted-foreground">
-                      Per branch, per month. Our standard rate is {formatCurrency(STANDARD_CLIENT_MONTHLY_RATE)}/mo — charge less and the discount % is worked out for you below.
+                      Per branch, per month. This client's {billingPlan === "basic" ? "Basic" : billingPlan === "standard" ? "Standard" : "package"} rate is {formatCurrency(packageListRate(billingPlan) ?? STANDARD_CLIENT_MONTHLY_RATE)}/mo — charge less and the discount % is worked out for you below.
                       This client has {billingBranchCount} branch{billingBranchCount !== 1 ? "es" : ""}, so the total is this rate × {billingBranchCount}.
                     </p>
                   </div>

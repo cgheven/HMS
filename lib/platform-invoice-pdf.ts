@@ -269,6 +269,10 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
   const perBranchStandard = listSubtotal / invoice.branch_count;
   const perBranchActual = invoice.monthly_rate * months;
   const cycleWord = invoice.billing_cycle === "monthly" ? "month" : "year";
+  // The client's package — names the list-price rows (the list rate above is the
+  // list price of THIS package). Defaults to "Standard" for a pre-snapshot invoice
+  // with no plan (harmless: those only reach these rows when a discount exists).
+  const packageName = invoice.plan === "basic" ? "Basic" : "Standard";
 
   const statusInfo =
     invoice.status === "paid"
@@ -505,7 +509,7 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
       if (discount > 0) {
         doc.setFont("helvetica", "normal");
         doc.setTextColor(...GRAY);
-        doc.text(`Standard ${pk(perBranchStandard)}/branch/${cycleWord}`, ML + rowBadgeR * 2 + 8, y + 14);
+        doc.text(`${packageName} ${pk(perBranchStandard)}/branch/${cycleWord}`, ML + rowBadgeR * 2 + 8, y + 14);
         doc.text(`Charging ${pk(perBranchActual)}/branch/${cycleWord}`, ML + rowBadgeR * 2 + 8, y + 14 + subLineH);
       }
       doc.setTextColor(20, 20, 22);
@@ -540,7 +544,7 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
       if (onboardingWaived > 0) {
         doc.setFont("helvetica", "normal");
         doc.setTextColor(...GRAY);
-        doc.text(`Standard ${pk(ONBOARDING_FEE)} - waived for this client`, ML + rowBadgeR * 2 + 8, y + 14);
+        doc.text(`${pk(ONBOARDING_FEE)} standard onboarding - waived for this client`, ML + rowBadgeR * 2 + 8, y + 14);
       }
     }
     if (invoice.is_first_invoice) y += 30;
@@ -560,7 +564,7 @@ export function generatePlatformInvoicePDF(invoiceIn: InvoiceData, clientIn: Inv
     const boxX = MR - boxW;
     const lines: [string, string][] = [];
     if (totalSavings > 0) {
-      lines.push(["Standard Price", pk(listTotal)]);
+      lines.push([`${packageName} Price`, pk(listTotal)]);
       if (discount > 0) lines.push([`Subscription Discount (${invoice.discount_pct.toFixed(0)}%)`, `- ${pk(discount)}`]);
       if (onboardingWaived > 0) lines.push(["Onboarding Fee Waived", `- ${pk(onboardingWaived)}`]);
     }
