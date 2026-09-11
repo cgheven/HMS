@@ -1249,6 +1249,7 @@ export interface Manager {
   supabase_user_id: string | null
   name: string
   phone: string
+  email: string | null
   has_login: boolean
   created_at: string
   updated_at?: string

@@ -3,7 +3,7 @@
 import { useState } from "react"
 import {
   Plus, Edit2, Trash2, Building2, ShieldCheck,
-  Eye, EyeOff, Copy, Check, Loader2, KeyRound,
+  Eye, EyeOff, Copy, Check, Loader2, KeyRound, Phone, Mail,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -644,9 +644,9 @@ export function ManagersClient({ managers: initial, availableHostels, hostelId: 
               className="rounded-xl border border-white/10 bg-white/[0.02] p-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
             >
               <div className="space-y-2 min-w-0">
+                {/* Identity: name + status on one line; contact on its own line */}
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-semibold text-sm">{manager.name}</span>
-                  <span className="text-xs text-muted-foreground font-mono">{manager.phone}</span>
                   {manager.has_login ? (
                     <Badge className="gap-1 text-[10px] bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/10">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
@@ -659,24 +659,42 @@ export function ManagersClient({ managers: initial, availableHostels, hostelId: 
                     </Badge>
                   )}
                 </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1.5 font-mono">
+                    <Phone className="w-3 h-3 opacity-50 shrink-0" />
+                    {manager.phone}
+                  </span>
+                  {manager.email && (
+                    <span className="inline-flex items-center gap-1.5 font-mono min-w-0">
+                      <Mail className="w-3 h-3 opacity-50 shrink-0" />
+                      <span className="truncate">{manager.email}</span>
+                    </span>
+                  )}
+                </div>
 
-                {/* Permissions */}
+                {/* Permissions — compact: collapse to a single chip when all or
+                    none are granted, otherwise list only the granted ones (the
+                    dimmed unassigned chips just bloated the card). Full editable
+                    checklist lives in the Permissions modal. */}
                 <div className="flex flex-wrap gap-1.5">
-                  {ALL_PERMISSIONS.map((p) => {
-                    const active = (manager.permissions ?? []).includes(p)
-                    return (
+                  {(manager.permissions ?? []).length === 0 ? (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full border font-medium bg-white/5 text-muted-foreground/50 border-white/5">
+                      No permissions
+                    </span>
+                  ) : ALL_PERMISSIONS.every((p) => (manager.permissions ?? []).includes(p)) ? (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full border font-medium bg-amber/10 text-amber border-amber/20">
+                      All permissions
+                    </span>
+                  ) : (
+                    ALL_PERMISSIONS.filter((p) => (manager.permissions ?? []).includes(p)).map((p) => (
                       <span
                         key={p}
-                        className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${
-                          active
-                            ? "bg-amber/10 text-amber border-amber/20"
-                            : "bg-white/5 text-muted-foreground/40 border-white/5"
-                        }`}
+                        className="text-[10px] px-2 py-0.5 rounded-full border font-medium bg-amber/10 text-amber border-amber/20"
                       >
                         {PERMISSION_LABELS[p]}
                       </span>
-                    )
-                  })}
+                    ))
+                  )}
                 </div>
 
                 {/* Branches */}

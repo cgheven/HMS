@@ -2,9 +2,10 @@
 
 import { useState } from "react"
 import Link from "next/link"
+import Image from "next/image"
 import { usePathname } from "next/navigation"
 import {
-  UserPlus, CreditCard, Receipt, Menu, X, LogOut, Home, ShieldCheck, ChefHat, BedDouble,
+  UserPlus, CreditCard, Receipt, Menu, X, LogOut, ChefHat, BedDouble,
 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { cn } from "@/lib/utils"
@@ -68,19 +69,12 @@ function PortalSidebar({
         {/* Brand */}
         <div className="flex items-center justify-between px-4 h-14 border-b border-sidebar-border">
           <Link href="/portal" className="flex items-center gap-2.5 group" onClick={onClose}>
-            <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-amber/10 border border-amber/20 transition-all group-hover:bg-amber/15">
-              <Home className="w-4 h-4 text-amber" />
+            <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-amber/10 border border-amber/20 transition-all group-hover:bg-amber/15 overflow-hidden">
+              <Image src="/logo-mark.jpg" alt="Pulse" width={32} height={32} className="w-full h-full object-cover" />
             </div>
-            <div className="min-w-0">
-              <p className="text-foreground font-bold text-sm tracking-tight leading-none truncate">
-                Pulse
-              </p>
-              <div className="flex items-center gap-1 mt-0.5">
-                <ShieldCheck className="w-2.5 h-2.5 text-amber/70 shrink-0" />
-                <p className="text-amber/70 text-[10px] font-semibold tracking-[0.1em] uppercase">
-                  Manager Portal
-                </p>
-              </div>
+            <div>
+              <p className="text-foreground font-bold text-sm tracking-tight leading-none">Pulse</p>
+              <p className="text-amber/70 text-[10px] mt-0.5 font-semibold tracking-[0.15em] uppercase">Pulse of Your Business</p>
             </div>
           </Link>
           <button
