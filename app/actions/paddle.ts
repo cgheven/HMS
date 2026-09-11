@@ -85,7 +85,7 @@ export async function createPlanCheckoutAction(input: {
     // is pinned (min === max === branch count) so the checkout stepper is hidden
     // and the amount is fixed. Copying the catalog price keeps the localized
     // per-country pricing identical to what the plan card shows.
-    const catalog = await paddle.prices.get(priceId);
+    const catalog = await paddle.prices.get(priceId, { include: ["product"] });
     const customAmount = useCustom
       ? String(Math.round(Number(customMonthly) * (cycle === "annual" ? 10 : 1) * 100))
       : null;
@@ -113,14 +113,21 @@ export async function createPlanCheckoutAction(input: {
     // on THIS transaction only, never part of the subscription). Same inline-price
     // shape as the plan item so it renders next to it in the checkout. Flat fee,
     // quantity 1 (not per-branch), no per-country overrides.
+    // Inline PRODUCT (not the plan's productId) so the checkout line reads
+    // "One-time onboarding fee" instead of repeating the plan's product name
+    // ("Pulse HMS") — otherwise the customer sees two identical lines. Same tax
+    // category as the plan so it's treated identically for tax.
     const onboardingPrice = owesOnboarding
       ? {
-          productId: catalog.productId,
+          product: {
+            name: "One-time onboarding fee",
+            taxCategory: catalog.product?.taxCategory ?? "standard",
+          },
           description: "One-time onboarding fee",
           taxMode: catalog.taxMode,
           billingCycle: null,
           unitPrice: { amount: String(ONBOARDING_FEE_USD * 100), currencyCode: "USD" as const },
-          unitPriceOverrides: [] as { countryCodes: string[]; unitPrice: { amount: string; currencyCode: string } }[],
+          unitPriceOverrides: [],
           quantity: { minimum: 1, maximum: 1 },
         }
       : null;
@@ -133,8 +140,12 @@ export async function createPlanCheckoutAction(input: {
     // it collected — charged exactly once across both rails.
     if (owesOnboarding) customData.onboarding = true;
 
-    const items = [{ price: inlinePrice, quantity }];
-    if (onboardingPrice) items.push({ price: onboardingPrice as typeof inlinePrice, quantity: 1 });
+    // The plan line carries a productId; the onboarding line an inline product.
+    // Both are valid non-catalog price items, so type the array to the SDK's item
+    // union rather than casting one shape onto the other.
+    type TxnItem = Parameters<typeof paddle.transactions.create>[0]["items"][number];
+    const items: TxnItem[] = [{ price: inlinePrice, quantity }];
+    if (onboardingPrice) items.push({ price: onboardingPrice, quantity: 1 });
 
     const txn = await paddle.transactions.create({ items, customData });
 
