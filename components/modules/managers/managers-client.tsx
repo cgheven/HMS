@@ -367,7 +367,7 @@ function LoginModal({
   // to show); a legacy phone-only manager gets a generated password to relay.
   type IssuedCredentials =
     | { kind: "password"; phone: string; password: string }
-    | { kind: "invite"; email: string }
+    | { kind: "invite"; email: string; emailed: boolean }
   const [credentials, setCredentials] = useState<IssuedCredentials | null>(null)
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
@@ -387,8 +387,10 @@ function LoginModal({
       return
     }
     if ("email" in result) {
-      setCredentials({ kind: "invite", email: result.email })
-      toast({ title: "Invite sent", description: `Set-password link emailed to ${result.email}` })
+      setCredentials({ kind: "invite", email: result.email, emailed: result.emailed })
+      toast(result.emailed
+        ? { title: "Invite sent", description: `Set-password link emailed to ${result.email}` }
+        : { title: "Login created", description: "Couldn't send the email — use Reset Password to re-send.", variant: "destructive" })
     } else {
       setCredentials({ kind: "password", phone: result.phone, password: result.password })
     }
@@ -404,8 +406,10 @@ function LoginModal({
       return
     }
     if ("email" in result) {
-      setCredentials({ kind: "invite", email: result.email })
-      toast({ title: "Reset link sent", description: `Emailed to ${result.email}` })
+      setCredentials({ kind: "invite", email: result.email, emailed: result.emailed })
+      toast(result.emailed
+        ? { title: "Reset link sent", description: `Emailed to ${result.email}` }
+        : { title: "Couldn't send the email", description: "Please try again in a moment.", variant: "destructive" })
     } else {
       setCredentials({ kind: "password", phone: manager.phone, password: result.password })
       toast({ title: "Password reset" })
@@ -485,12 +489,22 @@ function LoginModal({
           </div>
         ) : credentials.kind === "invite" ? (
           <div className="py-4 space-y-3">
-            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm text-muted-foreground">
-              A set-password link was emailed to{" "}
-              <span className="font-mono text-foreground break-all">{credentials.email}</span>.
-              The manager clicks it, chooses a password, and signs in with this email.
-            </div>
-            <p className="text-xs text-muted-foreground">Didn&apos;t arrive? Use Reset Password to re-send it.</p>
+            {credentials.emailed ? (
+              <>
+                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm text-muted-foreground">
+                  A set-password link was emailed to{" "}
+                  <span className="font-mono text-foreground break-all">{credentials.email}</span>.
+                  The manager clicks it, chooses a password, and signs in with this email.
+                </div>
+                <p className="text-xs text-muted-foreground">Didn&apos;t arrive? Use Reset Password to re-send it.</p>
+              </>
+            ) : (
+              <div className="rounded-xl border border-rose-500/20 bg-rose-500/5 p-4 text-sm text-muted-foreground">
+                The login for <span className="font-mono text-foreground break-all">{credentials.email}</span> was created,
+                but the set-password email couldn&apos;t be sent right now. Use{" "}
+                <span className="font-medium text-foreground">Reset Password</span> to re-send it.
+              </div>
+            )}
             <Button variant="outline" className="w-full" onClick={handleClose}>Done</Button>
           </div>
         ) : (

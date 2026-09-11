@@ -103,7 +103,14 @@ export async function createManager(
   // Email is the manager's auth login identity, so validate it up front. Stored
   // lowercased to match the case-insensitive unique index and the auth email.
   const normalizedEmail = email.trim().toLowerCase()
-  if (!normalizedEmail || normalizedEmail.length > 254 || !EMAIL_RE.test(normalizedEmail)) {
+  if (
+    !normalizedEmail ||
+    normalizedEmail.length > 254 ||
+    !EMAIL_RE.test(normalizedEmail) ||
+    // Reject the reserved synthetic namespace: it would let an owner squat another
+    // account's legacy phone-manager identity (<phone>@hms-portal.internal).
+    normalizedEmail.endsWith("@hms-portal.internal")
+  ) {
     return { manager: null, error: "Please enter a valid email address for the manager." }
   }
 
@@ -237,7 +244,7 @@ export async function updateManagerHostels(
 async function emailManagerRecoveryLink(
   admin: ReturnType<typeof createAdminClient>,
   args: { email: string; name: string },
-): Promise<{ ok: true } | { error: string }> {
+): Promise<{ emailed: boolean }> {
   const origin = siteUrl()
   const { data: link, error: linkErr } = await admin.auth.admin.generateLink({
     type: "recovery",
@@ -245,21 +252,27 @@ async function emailManagerRecoveryLink(
     options: { redirectTo: `${origin}/reset-password` },
   })
   if (linkErr || !link?.properties?.hashed_token) {
-    return { error: "Could not generate the set-password link. Please try again." }
+    // The login still exists; the owner can retry via Reset Password. Report the
+    // failure honestly rather than claiming an email went out.
+    console.warn("[manager-invite] link generation failed:", linkErr?.message ?? "no token")
+    return { emailed: false }
   }
   const actionLink =
     `${origin}/auth/confirm?token_hash=${encodeURIComponent(link.properties.hashed_token)}&type=recovery`
   try {
     await sendManagerInviteEmail({ to: args.email, name: args.name, actionLink, expiresInMinutes: 60 })
+    return { emailed: true }
   } catch (mailErr) {
+    // Best-effort: on stage outbound email is disabled by design, and a prod
+    // Resend outage lands here too. Never claim success we can't confirm.
     console.warn("[manager-invite] email send failed:", mailErr instanceof Error ? mailErr.message : "unknown")
+    return { emailed: false }
   }
-  return { ok: true }
 }
 
 export async function createManagerLogin(
   managerId: string,
-): Promise<{ phone: string; password: string } | { email: string } | { error: string }> {
+): Promise<{ phone: string; password: string } | { email: string; emailed: boolean } | { error: string }> {
   await requireOwnerWrite()
   const ownerId = await resolveOwnerId()
 
@@ -291,7 +304,11 @@ export async function createManagerLogin(
       user_metadata: { role: "manager", manager_id: managerId },
     })
     if (createError || !authData?.user) {
-      return { error: createError?.message ?? "Failed to create the manager's login." }
+      // Generic on purpose: the raw GoTrue message ("email already registered")
+      // would let an owner probe whether an arbitrary address is a registered
+      // platform user. Log the real cause server-side only.
+      if (createError) console.warn("[manager-login] createUser failed:", createError.message)
+      return { error: "Could not create a login for this email address. Please check it and try again." }
     }
     const { error: updateError } = await admin
       .from("hms_managers")
@@ -301,10 +318,9 @@ export async function createManagerLogin(
       await admin.auth.admin.deleteUser(authData.user.id)
       return { error: updateError.message }
     }
-    const sent = await emailManagerRecoveryLink(admin, { email: mgr.email, name: mgr.name })
-    if ("error" in sent) return { error: sent.error }
+    const { emailed } = await emailManagerRecoveryLink(admin, { email: mgr.email, name: mgr.name })
     revalidatePath("/managers")
-    return { email: mgr.email }
+    return { email: mgr.email, emailed }
   }
 
   // Legacy synthetic-phone path: managers created before email was captured have
@@ -339,7 +355,7 @@ export async function createManagerLogin(
 
 export async function resetManagerPassword(
   managerId: string,
-): Promise<{ password: string } | { email: string } | { error: string }> {
+): Promise<{ password: string } | { email: string; emailed: boolean } | { error: string }> {
   await requireOwnerWrite()
   const ownerId = await resolveOwnerId()
 
@@ -359,10 +375,9 @@ export async function resetManagerPassword(
   // plaintext password the owner would have to relay. GoTrue invalidates the old
   // sessions once the manager completes the reset.
   if (mgr.email) {
-    const sent = await emailManagerRecoveryLink(admin, { email: mgr.email, name: mgr.name })
-    if ("error" in sent) return { error: sent.error }
+    const { emailed } = await emailManagerRecoveryLink(admin, { email: mgr.email, name: mgr.name })
     revalidatePath("/managers")
-    return { email: mgr.email }
+    return { email: mgr.email, emailed }
   }
 
   // Legacy synthetic-phone manager: no inbox, so the owner still gets a password.
