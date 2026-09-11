@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { formatDate } from "@/lib/utils";
 import { HostelProvider } from "@/contexts/hostel-context";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
+import { AccountSuspendedNotice } from "@/components/layout/account-suspended-notice";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const ctx = await getAuthContext();
@@ -34,19 +35,28 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   // Account suspension (unpaid dues): reads still work; the banner explains why
   // writes are blocked.
+  const isOwner = ctx.profile?.role === "owner";
   let accountFrozen = false;
-  if (ctx.profile?.role === "owner") {
-    accountFrozen = !!ctx.profile.frozen;
+  // For a partner: name the owner in the suspended notice (they can't pay — only
+  // the owner can — so we ask them to, rather than offer a billing link).
+  let ownerName: string | null = null;
+  if (isOwner) {
+    accountFrozen = !!ctx.profile?.frozen;
   } else if (accountOwnerId) {
-    const { data } = await admin.from("hms_profiles").select("frozen").eq("id", accountOwnerId).maybeSingle();
-    accountFrozen = !!(data as { frozen?: boolean } | null)?.frozen;
+    const { data } = await admin
+      .from("hms_profiles").select("frozen, full_name").eq("id", accountOwnerId).maybeSingle();
+    const row = data as { frozen?: boolean; full_name?: string | null } | null;
+    accountFrozen = !!row?.frozen;
+    ownerName = row?.full_name ?? null;
   }
 
   // Advance warning: an unpaid invoice due within the next 7 days (or already
   // overdue) — shown as a "please pay" strip so a freeze is never a surprise.
   // Suppressed once frozen (the suspension banner takes over).
+  // Owner-only: the pre-freeze nudge is rendered only for owners (a partner can't
+  // pay), so don't spend the two billing round-trips computing it for a partner.
   let dueSoon: { due_date: string; freeze_date: string | null; overdue: boolean } | null = null;
-  if (!accountFrozen && accountOwnerId) {
+  if (isOwner && !accountFrozen && accountOwnerId) {
     // Don't nudge owners on Paddle card billing — Paddle charges them and handles
     // its own card dunning; the manual "please pay" strip is for bank clients.
     const { data: subRow } = await admin
@@ -91,18 +101,22 @@ export default async function DashboardLayout({ children }: { children: React.Re
     <HostelProvider profile={ctx.profile} hostel={ctx.hostel} hostels={ctx.hostels ?? []} partnerTier={ctx.partnerTier}>
       <DashboardShell>
         {accountFrozen ? (
-          <Link
-            href="/billing"
-            className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-amber/30 bg-amber/10 px-4 py-3 text-sm transition-colors hover:bg-amber/15"
-          >
-            <span>
-              <span className="font-semibold text-amber">Account suspended.</span>{" "}
-              Your account has unpaid dues, so changes are disabled — you can still view everything.
-              Pay online to clear your balance and restore full access.
-            </span>
-            <span className="whitespace-nowrap font-semibold text-amber">Pay now →</span>
-          </Link>
-        ) : dueSoon ? (
+          isOwner ? (
+            <Link
+              href="/billing"
+              className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-amber/30 bg-amber/10 px-4 py-3 text-sm transition-colors hover:bg-amber/15"
+            >
+              <span>
+                <span className="font-semibold text-amber">Account suspended.</span>{" "}
+                Your account has unpaid dues, so changes are disabled — you can still view everything.
+                Pay online to clear your balance and restore full access.
+              </span>
+              <span className="whitespace-nowrap font-semibold text-amber">Pay now →</span>
+            </Link>
+          ) : (
+            <AccountSuspendedNotice ownerName={ownerName} />
+          )
+        ) : dueSoon && isOwner ? (
           <Link
             href="/billing"
             className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-amber/30 bg-amber/10 px-4 py-2.5 text-sm transition-colors hover:bg-amber/15"
