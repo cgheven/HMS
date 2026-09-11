@@ -5,6 +5,9 @@ import { revalidatePath } from "next/cache"
 import { after } from "next/server"
 import { unstable_rethrow } from "next/navigation"
 import { requireOwnerWrite } from "@/lib/auth"
+import { EMAIL_RE } from "@/lib/validation"
+import { siteUrl } from "@/lib/site-url"
+import { sendManagerInviteEmail } from "@/lib/email"
 import { getAuthContext } from "@/lib/data"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { requireManagerWrite } from "@/lib/manager-auth"
@@ -91,21 +94,33 @@ function generateManagerPassword(): string {
 export async function createManager(
   name: string,
   phone: string,
+  email: string,
 ): Promise<{ manager: Manager | null; error: string | null }> {
   await requireOwnerWrite()
   const ownerId = await resolveOwnerId()
 
   const normalizedPhone = phone.replace(/\D/g, "")
+  // Email is the manager's auth login identity, so validate it up front. Stored
+  // lowercased to match the case-insensitive unique index and the auth email.
+  const normalizedEmail = email.trim().toLowerCase()
+  if (!normalizedEmail || normalizedEmail.length > 254 || !EMAIL_RE.test(normalizedEmail)) {
+    return { manager: null, error: "Please enter a valid email address for the manager." }
+  }
 
   const admin = createAdminClient()
   const { data, error } = await admin
     .from("hms_managers")
-    .insert({ owner_id: ownerId, name: name.trim(), phone: normalizedPhone })
+    .insert({ owner_id: ownerId, name: name.trim(), phone: normalizedPhone, email: normalizedEmail })
     .select("*, permissions:hms_manager_permissions(permission), hostels:hms_manager_hostels(hostel_id, hostel:hms_hostels(id, name))")
     .single()
 
   if (error) {
     if (error.code === "23505") {
+      // Two unique constraints now: phone and email. Name the one that clashed.
+      const clash = `${error.message} ${error.details ?? ""}`.toLowerCase()
+      if (clash.includes("email")) {
+        return { manager: null, error: "A manager with this email already exists." }
+      }
       return { manager: null, error: "A manager with this phone number already exists." }
     }
     return { manager: null, error: error.message }
@@ -211,9 +226,40 @@ export async function updateManagerHostels(
   return { error: null }
 }
 
+/**
+ * Generate a Supabase recovery link for a real-email manager and email it via
+ * our own mailer (same token_hash + /auth/confirm path the owner reset uses, so
+ * the raw token is consumed server-side, never in a browser). Best-effort send:
+ * the auth user already exists, so a send failure (including stage, where
+ * outbound email is deliberately disabled) leaves the owner able to re-send via
+ * Reset Password. Never logs or returns the token.
+ */
+async function emailManagerRecoveryLink(
+  admin: ReturnType<typeof createAdminClient>,
+  args: { email: string; name: string },
+): Promise<{ ok: true } | { error: string }> {
+  const origin = siteUrl()
+  const { data: link, error: linkErr } = await admin.auth.admin.generateLink({
+    type: "recovery",
+    email: args.email,
+    options: { redirectTo: `${origin}/reset-password` },
+  })
+  if (linkErr || !link?.properties?.hashed_token) {
+    return { error: "Could not generate the set-password link. Please try again." }
+  }
+  const actionLink =
+    `${origin}/auth/confirm?token_hash=${encodeURIComponent(link.properties.hashed_token)}&type=recovery`
+  try {
+    await sendManagerInviteEmail({ to: args.email, name: args.name, actionLink, expiresInMinutes: 60 })
+  } catch (mailErr) {
+    console.warn("[manager-invite] email send failed:", mailErr instanceof Error ? mailErr.message : "unknown")
+  }
+  return { ok: true }
+}
+
 export async function createManagerLogin(
   managerId: string,
-): Promise<{ phone: string; password: string } | { error: string }> {
+): Promise<{ phone: string; password: string } | { email: string } | { error: string }> {
   await requireOwnerWrite()
   const ownerId = await resolveOwnerId()
 
@@ -221,7 +267,7 @@ export async function createManagerLogin(
 
   const { data: mgr } = await admin
     .from("hms_managers")
-    .select("id, phone, has_login, supabase_user_id")
+    .select("id, name, phone, email, has_login, supabase_user_id")
     .eq("id", managerId)
     .eq("owner_id", ownerId)
     .single()
@@ -233,6 +279,36 @@ export async function createManagerLogin(
     return { error: "This manager already has a login. Use Reset Password instead." }
   }
 
+  // Email path: the real email is the auth identity and the manager sets their
+  // OWN password via an emailed link — no plaintext credential handled by anyone.
+  if (mgr.email) {
+    const { data: authData, error: createError } = await admin.auth.admin.createUser({
+      email: mgr.email,
+      // Placeholder only — immediately superseded when the manager follows the
+      // emailed recovery link to set their own; never surfaced to anyone.
+      password: generateManagerPassword(),
+      email_confirm: true,
+      user_metadata: { role: "manager", manager_id: managerId },
+    })
+    if (createError || !authData?.user) {
+      return { error: createError?.message ?? "Failed to create the manager's login." }
+    }
+    const { error: updateError } = await admin
+      .from("hms_managers")
+      .update({ supabase_user_id: authData.user.id, has_login: true })
+      .eq("id", managerId)
+    if (updateError) {
+      await admin.auth.admin.deleteUser(authData.user.id)
+      return { error: updateError.message }
+    }
+    const sent = await emailManagerRecoveryLink(admin, { email: mgr.email, name: mgr.name })
+    if ("error" in sent) return { error: sent.error }
+    revalidatePath("/managers")
+    return { email: mgr.email }
+  }
+
+  // Legacy synthetic-phone path: managers created before email was captured have
+  // no real inbox, so the owner still hands them a generated password.
   const password = generateManagerPassword()
   const email = buildSyntheticEmail(mgr.phone)
 
@@ -263,7 +339,7 @@ export async function createManagerLogin(
 
 export async function resetManagerPassword(
   managerId: string,
-): Promise<{ password: string } | { error: string }> {
+): Promise<{ password: string } | { email: string } | { error: string }> {
   await requireOwnerWrite()
   const ownerId = await resolveOwnerId()
 
@@ -271,7 +347,7 @@ export async function resetManagerPassword(
 
   const { data: mgr } = await admin
     .from("hms_managers")
-    .select("id, supabase_user_id")
+    .select("id, name, email, supabase_user_id")
     .eq("id", managerId)
     .eq("owner_id", ownerId)
     .single()
@@ -279,6 +355,17 @@ export async function resetManagerPassword(
   if (!mgr) return { error: "Manager not found or access denied." }
   if (!mgr.supabase_user_id) return { error: "This manager does not have an active login." }
 
+  // Email manager: re-send the self-service set-password link rather than mint a
+  // plaintext password the owner would have to relay. GoTrue invalidates the old
+  // sessions once the manager completes the reset.
+  if (mgr.email) {
+    const sent = await emailManagerRecoveryLink(admin, { email: mgr.email, name: mgr.name })
+    if ("error" in sent) return { error: sent.error }
+    revalidatePath("/managers")
+    return { email: mgr.email }
+  }
+
+  // Legacy synthetic-phone manager: no inbox, so the owner still gets a password.
   const password = generateManagerPassword()
 
   const { error } = await admin.auth.admin.updateUserById(mgr.supabase_user_id, { password })

@@ -142,6 +142,7 @@ export async function requestPasswordReset(
       console.error("[requestPasswordReset] DUPLICATE PROFILE for this address — investigate");
     }
     const profile = profiles?.[0] ?? null;
+    let recipientName: string | null = profile?.full_name ?? null;
 
     // NOTE: there is deliberately no is_active check here.
     //
@@ -158,9 +159,31 @@ export async function requestPasswordReset(
     // because the next reader believes the protection exists. If account
     // suspension is wanted, it belongs at LOGIN first, on a column the user
     // cannot write.
+    // A manager created with a real email is an auth user too and can self-reset.
+    // Same non-enumeration discipline as the profile lookup above: .limit(2), a
+    // loud log on duplicates, and the identical UNIFORM_RESPONSE on no-match. A
+    // manager with no login yet (supabase_user_id null) has no auth user to reset,
+    // so it is treated as no-account. Synthetic phone addresses are already
+    // excluded above, so only genuine inboxes reach this branch.
     if (!profile) {
-      console.info("[requestPasswordReset] skipped: no account");
-      return { message: UNIFORM_RESPONSE };
+      const { data: mgrs, error: mgrErr } = await admin
+        .from("hms_managers")
+        .select("id, name, supabase_user_id")
+        .eq("email", address)
+        .limit(2);
+      if (mgrErr) {
+        console.error("[requestPasswordReset] manager lookup failed:", mgrErr.code ?? "unknown");
+        return { message: UNIFORM_RESPONSE };
+      }
+      if (mgrs && mgrs.length > 1) {
+        console.error("[requestPasswordReset] DUPLICATE MANAGER for this address — investigate");
+      }
+      const mgr = mgrs?.[0] ?? null;
+      if (!mgr || !mgr.supabase_user_id) {
+        console.info("[requestPasswordReset] skipped: no account");
+        return { message: UNIFORM_RESPONSE };
+      }
+      recipientName = mgr.name;
     }
 
     // Charged only now, immediately before a mail actually goes out. Charging it
@@ -212,7 +235,7 @@ export async function requestPasswordReset(
       await sendPasswordResetEmail({
         to: address,
         actionLink,
-        name: profile.full_name,
+        name: recipientName,
         expiresInMinutes: RECOVERY_LINK_MINUTES,
       });
     } catch (mailErr) {

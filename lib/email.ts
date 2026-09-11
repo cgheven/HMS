@@ -1324,3 +1324,44 @@ export async function sendPasswordResetEmail(data: PasswordResetEmailData): Prom
     html: baseHtml("Reset your password", body),
   });
 }
+
+interface ManagerInviteEmailData {
+  to: string;
+  name: string;
+  actionLink: string;
+  expiresInMinutes: number;
+}
+
+export async function sendManagerInviteEmail(data: ManagerInviteEmailData): Promise<void> {
+  const greeting = data.name?.trim() ? `Hi ${esc(data.name.trim().split(/\s+/)[0])},` : "Hi,";
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Set up your manager login</h2>
+    <p style="margin:0 0 8px;font-size:14px;color:#a1a1aa;">${greeting}</p>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
+      You've been added as a manager on Pulse HMS. Click the button below to choose your password —
+      then sign in with this email address.
+    </p>
+    <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
+      <tr><td style="border-radius:8px;background:#f59e0b;">
+        <a href="${data.actionLink}" style="display:inline-block;padding:12px 24px;font-size:14px;font-weight:600;color:#0d1117;text-decoration:none;">Set your password</a>
+      </td></tr>
+    </table>
+    <p style="margin:0 0 24px;font-size:13px;color:#71717a;">
+      This link works once and expires in ${data.expiresInMinutes} minutes. If it expires, ask the account owner to re-send it.
+    </p>
+    <p style="margin:0 0 8px;font-size:13px;color:#71717a;">If the button does not work, paste this into your browser:</p>
+    <p style="margin:0 0 24px;font-size:12px;color:#52525b;word-break:break-all;">${data.actionLink}</p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      <tr><td style="padding-top:16px;font-size:13px;color:#71717a;">
+        <strong style="color:#a1a1aa;">Not expecting this?</strong> You can ignore this email — nothing changes unless you set a password with the link above.
+      </td></tr>
+    </table>
+  `;
+
+  await resend.emails.send({
+    from: FROM,
+    to: data.to,
+    subject: "Set up your Pulse HMS manager login",
+    html: baseHtml("Set up your manager login", body),
+  });
+}

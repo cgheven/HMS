@@ -84,11 +84,13 @@ function CreateManagerModal({
 }) {
   const [name, setName]     = useState("")
   const [phone, setPhone]   = useState("")
+  const [email, setEmail]   = useState("")
   const [loading, setLoading] = useState(false)
   const [phoneError, setPhoneError] = useState("")
+  const [emailError, setEmailError] = useState("")
 
   const handleClose = () => {
-    setName(""); setPhone(""); setPhoneError(""); setLoading(false)
+    setName(""); setPhone(""); setEmail(""); setPhoneError(""); setEmailError(""); setLoading(false)
     onOpenChange(false)
   }
 
@@ -98,9 +100,15 @@ function CreateManagerModal({
       setPhoneError("Enter a valid mobile number (digits only, 7–15 digits).")
       return
     }
-    setPhoneError("")
+    // The manager will use this email to log in and set their password, so a
+    // valid address is required. Server validates again authoritatively.
+    if (!/^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$/.test(email.trim())) {
+      setEmailError("Enter a valid email address — the manager logs in with it.")
+      return
+    }
+    setPhoneError(""); setEmailError("")
     setLoading(true)
-    const result = await createManager(name.trim(), phone)
+    const result = await createManager(name.trim(), phone, email.trim())
     setLoading(false)
     if (result.error) {
       toast({ title: "Error", description: result.error, variant: "destructive" })
@@ -142,12 +150,25 @@ function CreateManagerModal({
             />
             {phoneError && <p className="text-xs text-rose-400">{phoneError}</p>}
           </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="mgr-email">Email</Label>
+            <Input
+              id="mgr-email"
+              type="email"
+              value={email}
+              onChange={(e) => { setEmail(e.target.value); setEmailError("") }}
+              placeholder="manager@email.com"
+              disabled={loading}
+            />
+            <p className="text-xs text-muted-foreground">The manager signs in with this email and gets a link to set their password.</p>
+            {emailError && <p className="text-xs text-rose-400">{emailError}</p>}
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={handleClose} disabled={loading}>Cancel</Button>
           <Button
             onClick={handleSubmit}
-            disabled={loading || !name.trim() || !phone.trim()}
+            disabled={loading || !name.trim() || !phone.trim() || !email.trim()}
             className="bg-amber text-black hover:bg-amber/90"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
@@ -342,7 +363,12 @@ function LoginModal({
   onOpenChange: (o: boolean) => void
   onLoginCreated: (updated: Manager) => void
 }) {
-  const [credentials, setCredentials] = useState<{ phone: string; password: string } | null>(null)
+  // A manager created WITH an email self-serves via an emailed link (no password
+  // to show); a legacy phone-only manager gets a generated password to relay.
+  type IssuedCredentials =
+    | { kind: "password"; phone: string; password: string }
+    | { kind: "invite"; email: string }
+  const [credentials, setCredentials] = useState<IssuedCredentials | null>(null)
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
 
@@ -360,7 +386,12 @@ function LoginModal({
       toast({ title: "Error", description: result.error, variant: "destructive" })
       return
     }
-    setCredentials(result)
+    if ("email" in result) {
+      setCredentials({ kind: "invite", email: result.email })
+      toast({ title: "Invite sent", description: `Set-password link emailed to ${result.email}` })
+    } else {
+      setCredentials({ kind: "password", phone: result.phone, password: result.password })
+    }
     onLoginCreated({ ...manager, has_login: true })
   }
 
@@ -372,12 +403,17 @@ function LoginModal({
       toast({ title: "Error", description: result.error, variant: "destructive" })
       return
     }
-    setCredentials({ phone: manager.phone, password: result.password })
-    toast({ title: "Password reset" })
+    if ("email" in result) {
+      setCredentials({ kind: "invite", email: result.email })
+      toast({ title: "Reset link sent", description: `Emailed to ${result.email}` })
+    } else {
+      setCredentials({ kind: "password", phone: manager.phone, password: result.password })
+      toast({ title: "Password reset" })
+    }
   }
 
   const getWhatsAppMessage = () => {
-    if (!credentials) return ""
+    if (!credentials || credentials.kind !== "password") return ""
     const origin = typeof window !== "undefined" ? window.location.origin : ""
     return (
       `Assalam o Alaikum ${manager.name},\n\n` +
@@ -396,7 +432,8 @@ function LoginModal({
   // api.whatsapp.com/send is the documented phone-less fallback.
   const getWhatsAppUrl = () => {
     const text = encodeURIComponent(getWhatsAppMessage())
-    const digits = (credentials?.phone ?? manager.phone ?? "").replace(/\D/g, "").replace(/^0/, "92")
+    const phoneForWa = credentials?.kind === "password" ? credentials.phone : manager.phone
+    const digits = (phoneForWa ?? "").replace(/\D/g, "").replace(/^0/, "92")
     return digits ? `https://wa.me/${digits}?text=${text}` : `https://api.whatsapp.com/send?text=${text}`
   }
 
@@ -445,6 +482,16 @@ function LoginModal({
                 </Button>
               </>
             )}
+          </div>
+        ) : credentials.kind === "invite" ? (
+          <div className="py-4 space-y-3">
+            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm text-muted-foreground">
+              A set-password link was emailed to{" "}
+              <span className="font-mono text-foreground break-all">{credentials.email}</span>.
+              The manager clicks it, chooses a password, and signs in with this email.
+            </div>
+            <p className="text-xs text-muted-foreground">Didn&apos;t arrive? Use Reset Password to re-send it.</p>
+            <Button variant="outline" className="w-full" onClick={handleClose}>Done</Button>
           </div>
         ) : (
           <div className="py-2 space-y-4">

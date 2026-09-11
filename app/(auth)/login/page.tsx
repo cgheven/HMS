@@ -48,16 +48,20 @@ export default function LoginPage() {
     e.preventDefault();
     setManagerLoading(true);
     const supabase = createClient();
-    const normalizedPhone = managerPhone.replace(/\D/g, "");
-    const syntheticEmail = `${normalizedPhone}@hms-portal.internal`;
+    // Managers created with a real email sign in with it; legacy phone-only
+    // managers sign in with their number, mapped to the synthetic identity.
+    const raw = managerPhone.trim();
+    const email = raw.includes("@")
+      ? raw.toLowerCase()
+      : `${raw.replace(/\D/g, "")}@hms-portal.internal`;
 
     const { error: signInError } = await supabase.auth.signInWithPassword({
-      email: syntheticEmail,
+      email,
       password: managerPassword,
     });
 
     if (signInError) {
-      toast({ title: "Login failed", description: "Invalid mobile number or password.", variant: "destructive" });
+      toast({ title: "Login failed", description: "Invalid email / mobile number or password.", variant: "destructive" });
       setManagerLoading(false);
       return;
     }
@@ -192,25 +196,32 @@ export default function LoginPage() {
             <form onSubmit={handleManagerLogin} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="manager-phone" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Mobile Number
+                  Email or Mobile Number
                 </Label>
                 <Input
                   id="manager-phone"
-                  type="tel"
-                  placeholder="03XXXXXXXXX"
+                  type="text"
+                  placeholder="you@email.com or 03XXXXXXXXX"
                   value={managerPhone}
                   onChange={(e) => setManagerPhone(e.target.value)}
                   required
-                  autoComplete="tel"
+                  autoComplete="username"
                   disabled={managerLoading}
                   className="h-10 bg-background/50 border-sidebar-border focus-visible:ring-amber/40 focus-visible:border-amber/50"
                 />
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="manager-password" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Password
-                </Label>
+                <div className="flex items-baseline justify-between gap-2">
+                  <Label htmlFor="manager-password" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Password
+                  </Label>
+                  {/* Works for managers who log in with a real email; phone-only
+                      managers have no inbox, so the owner resets for them. */}
+                  <Link href="/forgot-password" className="text-xs text-amber hover:underline">
+                    Forgot password?
+                  </Link>
+                </div>
                 <div className="relative">
                   <Input
                     id="manager-password"
