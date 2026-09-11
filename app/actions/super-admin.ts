@@ -1,6 +1,7 @@
 "use server";
 import { getProfile } from "@/lib/auth";
 import { normalizeEmail, isDisposableEmailDomain } from "@/lib/email-normalize";
+import { EMAIL_RE } from "@/lib/validation";
 
 import { randomBytes } from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -606,6 +607,7 @@ export async function createHostelForClient(data: {
 
     const ownerEmail = data.ownerEmail.trim().toLowerCase();
     const ownerNormalizedEmail = normalizeEmail(ownerEmail);
+    if (!EMAIL_RE.test(ownerEmail)) throw new Error("Enter a valid owner email");
     if (isDisposableEmailDomain(ownerEmail)) throw new Error("Disposable email addresses are not allowed");
 
     const branches: BranchInput[] =
@@ -619,16 +621,17 @@ export async function createHostelForClient(data: {
 
     const admin = createAdminClient();
 
-    // Reject a duplicate on the CANONICAL email so +tag / Gmail-dot aliases can't
-    // create a second account for the same person (the DB unique index on
-    // normalized_email is the race-safe backstop).
+    // Reject a duplicate OWNER on the CANONICAL email so +tag / Gmail-dot aliases
+    // can't create a second account for the same person. Generic message (no
+    // enumeration oracle); the trigger + owner-scoped unique index is the backstop.
     const { data: existingProfile } = await admin
-      .from("hms_profiles").select("id, email").eq("normalized_email", ownerNormalizedEmail).maybeSingle();
+      .from("hms_profiles").select("id").eq("normalized_email", ownerNormalizedEmail).eq("role", "owner").maybeSingle();
     if (existingProfile) {
-      throw new Error(`An account already exists for ${existingProfile.email ?? ownerEmail}`);
+      throw new Error("An account already exists for this email");
     }
 
-    // 1. Create auth user
+    // 1. Create auth user (normalized_email is set by the auth trigger; a canonical
+    //    duplicate fails here atomically via the owner-scoped unique index).
     const tempPassword = `Pulse${randomBytes(12).toString("base64url")}!`;
     const { data: created, error: authErr } = await admin.auth.admin.createUser({
       email: ownerEmail,
@@ -636,14 +639,21 @@ export async function createHostelForClient(data: {
       email_confirm: true,
       user_metadata: { full_name: data.ownerName },
     });
-    if (authErr) throw authErr;
+    if (authErr || !created?.user) {
+      console.warn("[createHostelForClient] createUser failed:", authErr?.message ?? "no user");
+      throw new Error("Could not create the account for this email. Please check it and try again.");
+    }
     const userId = created.user.id;
 
-    // 2. Upsert profile
-    await admin.from("hms_profiles").upsert(
-      { id: userId, email: ownerEmail, normalized_email: ownerNormalizedEmail, full_name: data.ownerName || null, phone: data.ownerPhone || null, role: "owner", is_active: true },
+    // 2. Upsert profile (normalized_email owned by the trigger — not dual-written).
+    const { error: profileErr } = await admin.from("hms_profiles").upsert(
+      { id: userId, email: ownerEmail, full_name: data.ownerName || null, phone: data.ownerPhone || null, role: "owner", is_active: true },
       { onConflict: "id" }
     );
+    if (profileErr) {
+      await admin.auth.admin.deleteUser(userId);
+      throw new Error("Could not create the account. Please try again.");
+    }
 
     // The hms_handle_new_profile trigger auto-creates a "My Hostel" entry when
     // the profile is first inserted. Delete it before we create the real branches.

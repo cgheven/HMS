@@ -82,14 +82,15 @@ export async function provisionOnboarding(submissionId: string): Promise<Provisi
     if (!data.branches?.length) throw new Error("Submission has no branches.");
     if (data.branches.some((b) => !b.name?.trim())) throw new Error("Every branch must have a name.");
 
-    // 1. Owner auth user. An existing account is a hard stop rather than a silent
-    //    reuse — provisioning twice onto a real account would be destructive. Match
-    //    on the CANONICAL email so +tag / Gmail-dot aliases can't slip a duplicate
-    //    past this; the DB unique index on normalized_email is the race-safe backstop.
+    // 1. Owner auth user. An existing OWNER on the CANONICAL email is a hard stop
+    //    (provisioning twice onto a real account is destructive); +tag / Gmail-dot
+    //    aliases can't slip past. The trigger + owner-scoped unique index is the
+    //    race-safe backstop; this is just the friendly early check. Generic message
+    //    on purpose — never echo another account's stored address (enumeration).
     const { data: existingProfile } = await admin
-      .from("hms_profiles").select("id, email").eq("normalized_email", ownerNormalizedEmail).maybeSingle();
+      .from("hms_profiles").select("id").eq("normalized_email", ownerNormalizedEmail).eq("role", "owner").maybeSingle();
     if (existingProfile) {
-      throw new Error(`An account already exists for ${existingProfile.email ?? ownerEmail}. Resolve the duplicate before provisioning.`);
+      throw new Error("An account already exists for this email. Resolve the duplicate before provisioning.");
     }
 
     const ownerPassword = genPassword();
@@ -99,14 +100,21 @@ export async function provisionOnboarding(submissionId: string): Promise<Provisi
       email_confirm: true,
       user_metadata: { full_name: ownerName, phone: data.owner?.phone?.trim() || null },
     });
-    if (authErr) throw authErr;
+    if (authErr || !created?.user) {
+      // Includes the race case: the trigger's owner-scoped unique index rejected a
+      // canonical duplicate during creation. Keep the message generic (no oracle);
+      // log the real cause server-side.
+      console.warn("[provision] createUser failed:", authErr?.message ?? "no user");
+      throw new Error("Could not create the account for this email. Please check it and try again.");
+    }
     const ownerId = created.user.id;
 
-    await admin.from("hms_profiles").upsert(
+    // normalized_email is set by the auth trigger (hms_handle_new_user); don't
+    // dual-write it here. This upsert only fills the profile's other fields.
+    const { error: profileErr } = await admin.from("hms_profiles").upsert(
       {
         id: ownerId,
         email: ownerEmail,
-        normalized_email: ownerNormalizedEmail,
         full_name: ownerName || null,
         phone: data.owner?.phone?.trim() || null,
         role: "owner",
@@ -114,6 +122,11 @@ export async function provisionOnboarding(submissionId: string): Promise<Provisi
       },
       { onConflict: "id" }
     );
+    if (profileErr) {
+      // Don't leave an orphaned, loginable auth user behind (mirrors the manager path).
+      await admin.auth.admin.deleteUser(ownerId);
+      throw new Error("Could not create the account. Please try again.");
+    }
 
     // hms_handle_new_profile still auto-creates a starter "My Hostel" for
     // role='owner' (migration 095 narrowed it to owners only). Clear it before
