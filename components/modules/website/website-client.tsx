@@ -15,6 +15,7 @@ import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { HostelType } from "@/types";
+import { requiresGuestRegistration } from "@/lib/national-id";
 import {
   claimMySubdomain, saveWebsiteBranding, saveWebsitePublicTheme, saveWebsiteSocials,
 } from "@/app/actions/website";
@@ -905,7 +906,10 @@ export function WebsiteClient({
                 <div className="space-y-2">
                   <Label>Hostel Type</Label>
                   <div className="flex flex-wrap gap-2">
-                    {HOSTEL_TYPES.map((t) => (
+                    {/* Mixed is offered only where guest registration doesn't apply
+                        (non-PK). A guest-registration country files each resident
+                        under one gender (Hotel Eye), which a mixed hostel can't. */}
+                    {HOSTEL_TYPES.filter((t) => t.value !== "mixed" || !requiresGuestRegistration(hostel?.country)).map((t) => (
                       <button
                         key={t.value}
                         type="button"

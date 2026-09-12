@@ -11,8 +11,9 @@ import type { SuperAdminStats, ClientSummaryRow } from "@/app/actions/super-admi
 import { cn } from "@/lib/utils";
 
 const HOSTEL_TYPE_LABEL: Record<string, { label: string; cls: string }> = {
-  boys:  { label: "Boys",  cls: "bg-blue-500/10 text-blue-400 border-blue-500/20" },
-  girls: { label: "Girls", cls: "bg-pink-500/10 text-pink-400 border-pink-500/20" },
+  boys:  { label: "Male",  cls: "bg-blue-500/10 text-blue-400 border-blue-500/20" },
+  girls: { label: "Female", cls: "bg-pink-500/10 text-pink-400 border-pink-500/20" },
+  mixed: { label: "Mixed", cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" },
 };
 
 // Fixed width and centred so Boys and Girls occupy the same footprint — the

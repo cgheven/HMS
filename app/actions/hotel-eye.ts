@@ -37,9 +37,15 @@ async function resolveHostel(): Promise<{ id: string; type: string | null }> {
 }
 
 // Boys hostel → every guest Male, girls → Female. Gender is a property of the
-// hostel, so it is never asked per tenant — see the integration plan.
-function genderForHostel(type: string | null): "Male" | "Female" {
-  return (type ?? "").toLowerCase().startsWith("girl") ? "Female" : "Male";
+// hostel, so it is never asked per tenant — see the integration plan. A MIXED
+// hostel has no single gender to file, so it returns null and the sync refuses to
+// file rather than guess (filing a female resident as "Male" to a government
+// police portal is a compliance failure). Mixed is a non-PK concept and Hotel-Eye
+// is Pakistan-only, so this is a belt-and-suspenders guard.
+function genderForHostel(type: string | null): "Male" | "Female" | null {
+  const t = (type ?? "").toLowerCase();
+  if (t === "mixed") return null;
+  return t.startsWith("girl") ? "Female" : "Male";
 }
 
 // ── Settings (never returns the password) ─────────────────────────────────
@@ -448,6 +454,14 @@ async function drainHotelEyeQueue(hostelId: string, hostelType: string | null, i
   catch { await clearSession(hostelId); await resetQueued(ids); await noteAbort("The portal session expired — please sync again."); return; }
 
   const gender = genderForHostel(hostelType);
+  // A mixed-gender hostel can't be filed under one gender — refuse rather than
+  // mis-report residents to the police portal. (A mixed hostel shouldn't have
+  // Hotel-Eye at all; this is the last-line guard.)
+  if (gender === null) {
+    await resetQueued(ids);
+    await noteAbort("Hotel Eye can't file a mixed-gender hostel — set the hostel to Male or Female to use police verification.");
+    return;
+  }
   let nFiled = 0, nMatched = 0, nFailed = 0;
 
   const { data: tenants } = await admin
