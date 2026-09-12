@@ -11,12 +11,12 @@ import { LegalFooter } from "@/components/legal/legal-footer";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export function SignupForm({ detectedCountryName }: { detectedCountryName: string }) {
+export function SignupForm({ detectedCountryName, dialCode }: { detectedCountryName: string; dialCode: string }) {
   const [businessName, setBusinessName] = useState("");
   const [ownerName, setOwnerName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [website, setWebsite] = useState(""); // honeypot — real users never see/fill this
+  const [contactRef2, setContactRef2] = useState(""); // honeypot — real users never see/fill this
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
@@ -30,18 +30,23 @@ export function SignupForm({ detectedCountryName }: { detectedCountryName: strin
     }
     setLoading(true);
     // The server re-derives country from IP and re-validates everything; this is
-    // just the friendly client gate. Response is intentionally uniform.
-    const res = await requestSignup({
-      businessName: businessName.trim() || undefined,
-      ownerName: ownerName.trim() || undefined,
-      email: email.trim(),
-      phone: phone.trim() || undefined,
-      website,
-    });
-    setLoading(false);
-    setSent(true);
-    // res.message is the uniform "check your inbox" line.
-    void res;
+    // just the friendly client gate. Response is intentionally uniform (anti-
+    // enumeration) — we show the same "check your inbox" screen regardless. Only a
+    // transport failure (never a "this email exists" signal) surfaces an error.
+    try {
+      await requestSignup({
+        businessName: businessName.trim() || undefined,
+        ownerName: ownerName.trim() || undefined,
+        email: email.trim(),
+        phone: phone.trim() || undefined,
+        contactRef2,
+      });
+      setSent(true);
+    } catch {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -99,14 +104,15 @@ export function SignupForm({ detectedCountryName }: { detectedCountryName: strin
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="phone" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Mobile number</Label>
-                  <Input id="phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="03XXXXXXXXX" autoComplete="tel" disabled={loading}
+                  <Input id="phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder={`+${dialCode} …`} autoComplete="tel" disabled={loading}
                     className="h-10 bg-background/50 border-sidebar-border focus-visible:ring-amber/40 focus-visible:border-amber/50" />
                 </div>
 
-                {/* Honeypot: off-screen, not tab-reachable, ignored by humans. */}
+                {/* Honeypot: off-screen, not tab-reachable, ignored by humans.
+                    Non-standard name so password managers don't autofill it. */}
                 <div aria-hidden className="absolute -left-[9999px] top-0 h-0 w-0 overflow-hidden">
-                  <label htmlFor="website">Website</label>
-                  <input id="website" name="website" tabIndex={-1} autoComplete="off" value={website} onChange={(e) => setWebsite(e.target.value)} />
+                  <label htmlFor="contactRef2">Leave this field empty</label>
+                  <input id="contactRef2" name="contactRef2" tabIndex={-1} autoComplete="off" value={contactRef2} onChange={(e) => setContactRef2(e.target.value)} />
                 </div>
 
                 <p className="text-xs text-muted-foreground">Detected location: <span className="text-foreground">{detectedCountryName}</span> — you can change this during setup.</p>

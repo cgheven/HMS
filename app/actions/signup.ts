@@ -57,11 +57,13 @@ export async function requestSignup(input: {
   // Optional client hint; the server re-derives from IP and only trusts a
   // supported code, so a spoofed value can't unlock an unsupported country.
   country?: string;
-  // Honeypot — real users leave it empty; bots fill it.
-  website?: string;
+  // Honeypot — real users leave it empty; bots fill it. Deliberately NOT named
+  // "website"/"url" etc. so aggressive password-manager autofill can't populate
+  // it and silently drop a legitimate signup (uniform response hides the loss).
+  contactRef2?: string;
 }): Promise<{ message: string }> {
   if (typeof input?.email !== "string") return { message: UNIFORM_RESPONSE };
-  if (input.website) return { message: UNIFORM_RESPONSE }; // honeypot tripped
+  if (input.contactRef2) return { message: UNIFORM_RESPONSE }; // honeypot tripped
 
   const email = input.email.trim().toLowerCase();
   if (!email || email.length > 254 || !EMAIL_RE.test(email)) return { message: UNIFORM_RESPONSE };
