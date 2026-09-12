@@ -349,6 +349,12 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
           </div>
           {checkoutError && <p className="text-xs text-rose-400">{checkoutError}</p>}
         </div>
+      ) : !manualBankBilling ? (
+        // Paddle-only (non-PK) owner but card billing isn't configured yet — never
+        // leave them at a dead end with no manual rail to fall back to.
+        <div className="rounded-2xl border border-sidebar-border bg-card p-6 text-sm text-muted-foreground">
+          Card billing for your region is being set up. Please contact support to activate your subscription.
+        </div>
       ) : null}
 
       <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
