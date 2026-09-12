@@ -21,8 +21,9 @@ const MARQUEE_CITIES = PK_CITIES;
 // ── Type config ───────────────────────────────────────────────────────────────
 
 const TYPE_CONFIG: Record<HostelType, { label: string; badgeCls: string; gradientFrom: string; gradientTo: string }> = {
-  boys:   { label: "Boys Only",  badgeCls: "bg-blue-500/20 text-blue-300 border-blue-400/20",    gradientFrom: "#0a1628", gradientTo: "#0f2347" },
-  girls:  { label: "Girls Only", badgeCls: "bg-pink-500/20 text-pink-300 border-pink-400/20",    gradientFrom: "#1a0d18", gradientTo: "#2d1529" },
+  boys:   { label: "Male",  badgeCls: "bg-blue-500/20 text-blue-300 border-blue-400/20",    gradientFrom: "#0a1628", gradientTo: "#0f2347" },
+  girls:  { label: "Female", badgeCls: "bg-pink-500/20 text-pink-300 border-pink-400/20",    gradientFrom: "#1a0d18", gradientTo: "#2d1529" },
+  mixed:  { label: "Mixed", badgeCls: "bg-emerald-500/20 text-emerald-300 border-emerald-400/20", gradientFrom: "#0a1f18", gradientTo: "#0f2f24" },
 };
 
 const DEFAULT_GRADIENT = { gradientFrom: "#1a1208", gradientTo: "#2a1e05" };
@@ -349,8 +350,9 @@ function HostelGrid({ hostels }: { hostels: PublicHostel[] }) {
 
 const ALL_TYPES: { value: HostelType | "all"; label: string }[] = [
   { value: "all",    label: "All" },
-  { value: "boys",   label: "Boys" },
-  { value: "girls",  label: "Girls" },
+  { value: "boys",   label: "Male" },
+  { value: "girls",  label: "Female" },
+  { value: "mixed",  label: "Mixed" },
 ];
 
 export function FindClient({ hostels }: { hostels: PublicHostel[] }) {

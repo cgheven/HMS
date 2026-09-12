@@ -19,8 +19,9 @@ import { joinWaitlist } from "@/app/actions/public";
 import type { PublicHostel, HostelType } from "@/types";
 
 const TYPE_CONFIG: Record<HostelType, { label: string; badgeCls: string; gradientFrom: string; gradientTo: string }> = {
-  boys:   { label: "Boys Only",  badgeCls: "bg-[#0b57d0]/10 text-[#0b57d0] border-[#0b57d0]/30", gradientFrom: "#eef1f6", gradientTo: "#dde3ee" },
-  girls:  { label: "Girls Only", badgeCls: "bg-[#6b3fa0]/10 text-[#6b3fa0] border-[#6b3fa0]/30", gradientFrom: "#f7eef4", gradientTo: "#efdfe9" },
+  boys:   { label: "Male",  badgeCls: "bg-[#0b57d0]/10 text-[#0b57d0] border-[#0b57d0]/30", gradientFrom: "#eef1f6", gradientTo: "#dde3ee" },
+  girls:  { label: "Female", badgeCls: "bg-[#6b3fa0]/10 text-[#6b3fa0] border-[#6b3fa0]/30", gradientFrom: "#f7eef4", gradientTo: "#efdfe9" },
+  mixed:  { label: "Mixed", badgeCls: "bg-[#0a7d55]/10 text-[#0a7d55] border-[#0a7d55]/30", gradientFrom: "#eef6f2", gradientTo: "#dfeee7" },
 };
 
 const DEFAULT_GRADIENT = { gradientFrom: "#f1f2f4", gradientTo: "#e4e6ea" };

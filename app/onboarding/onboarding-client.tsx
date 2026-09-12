@@ -17,8 +17,9 @@ import { formatCurrency } from "@/lib/utils";
 import { LEAD_SOURCES, LEAD_SOURCE_OTHER } from "@/lib/lead-sources";
 
 const HOSTEL_TYPES = [
-  { value: "boys",   label: "Boys Only" },
-  { value: "girls",  label: "Girls Only" },
+  { value: "boys",   label: "Male" },
+  { value: "girls",  label: "Female" },
+  { value: "mixed",  label: "Mixed" },
 ];
 
 const FEATURES = [

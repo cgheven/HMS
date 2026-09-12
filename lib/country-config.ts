@@ -88,9 +88,27 @@ export const COUNTRY_CONFIG: Record<CountryCode, CountryConfig> = {
     whatsapp: true,
     manualBankBilling: true,
   },
-  // Future countries plug in here — e.g. BD (Bangladesh, BDT, ৳, Asia/Dhaka, 880,
-  // NID). Left out until the primitives that consume this registry are wired up,
-  // so we never advertise a country the app can't yet fully serve.
+  GB: {
+    code: "GB",
+    name: "United Kingdom",
+    currency: "GBP",
+    currencySymbol: "£",
+    locale: "en-GB",
+    timezone: "Europe/London",
+    dialCode: "44",
+    // The UK has no CNIC-equivalent mandatory ID number, so the international
+    // form captures identity flexibly (Identification Type + free-text number).
+    // guestRegistration:false routes to that flexible ID, so this rule is a
+    // benign placeholder — it is not shown or validated.
+    nationalId: { label: "ID", digitLengths: [] },
+    // No government guest-registration portal (no Smart Eye/Hotel Eye), no
+    // CNIC-keyed RedFlag registry, no WhatsApp Business integration — UK uses
+    // email channels. Billing is card-only via Paddle (no PK bank rail).
+    guestRegistration: false,
+    redflag: false,
+    whatsapp: false,
+    manualBankBilling: false,
+  },
 };
 
 /**
