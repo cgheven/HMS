@@ -153,7 +153,7 @@ export async function GET(
       .from("hms_payments")
       .select(
         // F-008: cnic excluded — sensitive PII must not appear in public receipts
-        "id, tenant_id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, referral_percent, discount_amount, discount_percent, payment_method, payment_date, receipt_number, payment_package_tier, status, is_reservation, billed_days, daily_rate_billed, updated_at, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, is_active, billing_type, daily_rate, joining_meter_reading, food_breakfast, food_lunch, food_dinner)"
+        "id, tenant_id, for_month, amount, amount_paid, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, referral_percent, discount_amount, discount_percent, payment_method, payment_date, receipt_number, payment_package_tier, status, is_reservation, billed_days, daily_rate_billed, updated_at, tenant:hms_tenants(full_name, phone, security_deposit, check_in, check_out, is_active, billing_type, daily_rate, joining_meter_reading, food_breakfast, food_lunch, food_dinner, room:hms_rooms(room_number))"
       )
       .eq("id", paymentId)
       .single(),
@@ -226,7 +226,10 @@ export async function GET(
   }
 
   const tenant = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
-  const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null; check_out?: string | null; is_active?: boolean; billing_type?: string | null; daily_rate?: number | null; joining_meter_reading?: number | null; food_breakfast?: boolean; food_lunch?: boolean; food_dinner?: boolean } | null;
+  const tenantTyped = tenant as { full_name?: string; phone?: string | null; security_deposit?: number | null; check_in?: string | null; check_out?: string | null; is_active?: boolean; billing_type?: string | null; daily_rate?: number | null; joining_meter_reading?: number | null; food_breakfast?: boolean; food_lunch?: boolean; food_dinner?: boolean; room?: { room_number?: string | null } | { room_number?: string | null }[] | null } | null;
+  // PostgREST embeds a to-one relation as an object, but can surface it as a
+  // single-element array — normalise both.
+  const tenantRoom = Array.isArray(tenantTyped?.room) ? tenantTyped?.room[0] : tenantTyped?.room;
 
   const checkOutMonth = tenantTyped?.check_out?.slice(0, 7);
   // "Has actually left", not "their planned departure falls in this month".
@@ -331,6 +334,7 @@ export async function GET(
       full_name: tenantTyped?.full_name ?? "Tenant",
       phone: tenantTyped?.phone,
       // F-008: cnic intentionally omitted from public receipt
+      room_number: tenantRoom?.room_number ?? null,
       joining_meter_reading: tenantTyped?.joining_meter_reading ?? null,
       food_breakfast: tenantTyped?.food_breakfast ?? false,
       food_lunch: tenantTyped?.food_lunch ?? false,

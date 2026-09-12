@@ -61,6 +61,9 @@ interface ReceiptTenant {
   phone?: string | null;
   // F-008: CNIC is sensitive PII; must NOT appear in public-facing receipts.
   room_id?: string | null;
+  /** Human room number (hms_rooms.room_number), printed in the tenant block.
+   *  room_id is a UUID and useless on a slip; this is the label a tenant reads. */
+  room_number?: string | null;
   joining_meter_reading?: number | null;
   food_breakfast?: boolean;
   food_lunch?: boolean;
@@ -276,6 +279,9 @@ export function generateReceiptPDF(
   add(ML, "Tenant:", 8, true); nl(12);
   add(ML, tenant.full_name, 8, false); nl(12);
   if (tenant.phone) { add(ML, `Phone: ${tenant.phone}`, 8, false); nl(12); }
+  // Room the tenant occupies — a reservation has no assigned room yet, so it's
+  // only printed when present.
+  if (tenant.room_number) { add(ML, `Room: ${tenant.room_number}`, 8, false); nl(12); }
   // Printed on every receipt (not just the first month) — it's a permanent
   // reference the tenant can always point back to if AC billing is disputed.
   if (tenant.joining_meter_reading != null) {
