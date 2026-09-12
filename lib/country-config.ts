@@ -58,6 +58,11 @@ export interface CountryConfig {
    *  it is CNIC-keyed and specific to the PK market. Gates the RedFlag nav, page,
    *  actions, and the admission-time screening check. */
   redflag: boolean;
+  /** Whether WhatsApp messaging (tenant welcome/payment/checkout/notice/reminders)
+   *  is offered. Pakistan-only today — the WhatsApp Business integration is set up
+   *  for the PK market. Non-PK hostels use email channels instead. Gates the
+   *  automated send path (never reaches a non-PK recipient) and the WhatsApp UI. */
+  whatsapp: boolean;
 }
 
 export const DEFAULT_COUNTRY: CountryCode = "PK";
@@ -74,6 +79,7 @@ export const COUNTRY_CONFIG: Record<CountryCode, CountryConfig> = {
     nationalId: { label: "CNIC", example: "42101-1234567-1", digitLengths: [13], groups: [5, 7, 1] },
     guestRegistration: true,
     redflag: true,
+    whatsapp: true,
   },
   // Future countries plug in here — e.g. BD (Bangladesh, BDT, ৳, Asia/Dhaka, 880,
   // NID). Left out until the primitives that consume this registry are wired up,

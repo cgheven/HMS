@@ -1,5 +1,7 @@
 import "server-only";
+import { cache } from "react";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getCountryConfig, isSupportedCountry } from "@/lib/country-config";
 
 // Meta WhatsApp Business Cloud API — replaces the WasenderAPI relay
 // (formerly lib/wasender.ts). All 4 real callers already compute phone
@@ -87,6 +89,35 @@ async function logFailure(phone: string, error: string, context: WhatsAppSendCon
   }
 }
 
+// WhatsApp is a per-country feature (Pakistan only today — the Business
+// integration is set up for the PK market; non-PK hostels use email). This is the
+// single choke point every automated send passes through, so gating here means a
+// non-PK hostel's tenant can never be reached by WhatsApp regardless of the caller.
+//
+// Resolve the hostel's country and skip when it doesn't offer WhatsApp. A send
+// with no hostelId is a platform message (Pulse -> its own client/lead, PK-based)
+// and is allowed. On a missing row or a transient lookup error we PROCEED rather
+// than drop the send: every real hostel is PK, so the cost of dropping a legit PK
+// message on a DB blip outweighs a wrong-country send (which just fails at Meta),
+// and this is a delivery policy, not a security boundary.
+// cache() dedupes the lookup within a single request: a broadcast (announcement /
+// reminder cron looping N tenants of one hostel) resolves the country once, not
+// once per recipient (CLAUDE.md #5/#7).
+const whatsappAllowedForHostel = cache(async function whatsappAllowedForHostel(
+  hostelId: string | null | undefined
+): Promise<boolean> {
+  if (!hostelId) return true;
+  try {
+    const { data, error } = await createAdminClient()
+      .from("hms_hostels").select("country").eq("id", hostelId).maybeSingle();
+    if (error || !data) return true;
+    const country = (data as { country?: string | null }).country;
+    return isSupportedCountry(country) && getCountryConfig(country).whatsapp;
+  } catch {
+    return true;
+  }
+});
+
 // Shared by both send functions below — one place that talks to Meta, parses
 // its response, and logs failures, so sendWhatsAppMessage and
 // sendWhatsAppTemplateMessage can never drift on error-handling behavior.
@@ -95,6 +126,12 @@ async function postToMeta(
   phoneDigits: string,
   context: WhatsAppSendContext
 ): Promise<SendWhatsAppResult> {
+  // Per-country gate: never reach a non-PK hostel's recipient. Silent skip (not a
+  // failure) — no failure-log noise, callers treat it as "not sent".
+  if (!(await whatsappAllowedForHostel(context.hostelId))) {
+    return { ok: false, error: "WhatsApp is not available for this hostel's country" };
+  }
+
   const token = process.env.WHATSAPP_TOKEN;
   const phoneNumberId = process.env.PHONE_NUMBER_ID;
   // WABA_ID intentionally unused here — it scopes template/business-profile
