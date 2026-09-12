@@ -149,6 +149,18 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     return { success: false, error: `Enter a valid ${rule.label}${rule.example ? `, e.g. ${rule.example}` : ""}` };
   }
 
+  // The public form is directly callable, so validate DoB server-side rather than
+  // trusting the browser's `max` guard — a garbage/future date would otherwise
+  // reach the `date` column and return a raw Postgres error to the client.
+  if (data.date_of_birth) {
+    const dob = new Date(data.date_of_birth);
+    const wellFormed = /^\d{4}-\d{2}-\d{2}$/.test(data.date_of_birth) && !Number.isNaN(dob.getTime());
+    const ageYears = wellFormed ? (Date.now() - dob.getTime()) / (365.25 * 24 * 60 * 60 * 1000) : -1;
+    if (!wellFormed || dob.getTime() > Date.now() || ageYears > 120) {
+      return { success: false, error: "Please enter a valid date of birth." };
+    }
+  }
+
   // F-005: Phone-based rate limit — max 3 applications per phone in 24 hours.
   // Mirrors the DB-level trigger in migration 024 as a friendly early-exit.
 
