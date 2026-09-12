@@ -4,6 +4,53 @@ function pk(amount: number): string {
   return `Rs. ${amount.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 }
 
+const PULSE_AMBER: [number, number, number] = [245, 166, 35];
+// A4 width (210mm) minus the 14mm side margin — the right edge every report's
+// content + header rule aligns to.
+const REPORT_RIGHT_X = 210 - 14;
+
+/**
+ * Pulse-branded report header (product identity, not the hostel's). The document
+ * leads with the Pulse wordmark; the hostel name moves to a context line beneath
+ * it so the report is branded as Pulse while still naming which hostel the data
+ * is for. These exports run client-side (dynamic jsPDF import), where the logo
+ * PNG can't be read off disk, so the wordmark is drawn as text. Returns the y to
+ * continue drawing from.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function drawPulseReportHeader(doc: any, margin: number, rightX: number, hostelName: string, subtitle: string): number {
+  let y = 16;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.setTextColor(PULSE_AMBER[0], PULSE_AMBER[1], PULSE_AMBER[2]);
+  doc.text("Pulse", margin, y);
+  const wordW = doc.getTextWidth("Pulse");
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(8);
+  doc.setTextColor(150, 150, 150);
+  doc.text("Hostel Management System", margin + wordW + 3, y);
+  y += 7;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.setTextColor(30, 30, 30);
+  doc.text(hostelName, margin, y);
+  y += 5;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.setTextColor(120, 120, 120);
+  doc.text(`${subtitle}   Generated: ${new Date().toLocaleDateString()}`, margin, y);
+  y += 5;
+
+  doc.setDrawColor(PULSE_AMBER[0], PULSE_AMBER[1], PULSE_AMBER[2]);
+  doc.setLineWidth(0.5);
+  doc.line(margin, y, rightX, y);
+  y += 6;
+  doc.setTextColor(0, 0, 0);
+  return y;
+}
+
 // ---------------------------------------------------------------------------
 // PDF Export (jsPDF + jspdf-autotable)
 // ---------------------------------------------------------------------------
@@ -15,24 +62,10 @@ export async function exportReportPDF(data: ReportData, label: string): Promise<
 
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
 
-  const PAGE_W = 210;
   const MARGIN = 14;
-  let y = 16;
 
-  // ---------- Header ----------
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(18);
-  doc.text(data.hostelName, MARGIN, y);
-  y += 7;
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(10);
-  doc.setTextColor(120, 120, 120);
-  doc.text(`Report Period: ${label}   |   Generated: ${new Date().toLocaleDateString()}`, MARGIN, y);
-  y += 8;
-
-  doc.setDrawColor(200, 200, 200);
-  doc.line(MARGIN, y, PAGE_W - MARGIN, y);
-  y += 6;
+  // ---------- Pulse-branded header ----------
+  let y = drawPulseReportHeader(doc, MARGIN, REPORT_RIGHT_X, data.hostelName, `Report Period: ${label}`);
 
   // ---------- Overview KPIs ----------
   doc.setFont("helvetica", "bold");
@@ -411,21 +444,8 @@ export async function exportReconciliationPDF(
 
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const MARGIN = 14;
-  let y = 16;
 
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(16);
-  doc.text(hostelName, MARGIN, y); y += 7;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-  doc.setTextColor(120, 120, 120);
-  doc.text(`Reconciliation Report · ${period}${methodLabel !== "All Methods" ? ` · ${methodLabel}` : ""}   Generated: ${new Date().toLocaleDateString()}`, MARGIN, y); y += 5;
-
-  doc.setDrawColor(200, 200, 200);
-  doc.line(MARGIN, y, 196, y); y += 5;
-
-  doc.setTextColor(0, 0, 0);
+  let y = drawPulseReportHeader(doc, MARGIN, REPORT_RIGHT_X, hostelName, `Reconciliation Report · ${period}${methodLabel !== "All Methods" ? ` · ${methodLabel}` : ""}`);
 
   const total = rows.reduce((s, r) => s + r.amount, 0);
 
@@ -526,20 +546,8 @@ export async function exportExpenseReportPDF(
 
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const MARGIN = 14;
-  let y = 16;
 
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(16);
-  doc.text(hostelName, MARGIN, y); y += 7;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-  doc.setTextColor(120, 120, 120);
-  doc.text(`Expense Report · ${period}${sourceLabel !== "All Sources" ? ` · ${sourceLabel}` : ""}   Generated: ${new Date().toLocaleDateString()}`, MARGIN, y); y += 5;
-
-  doc.setDrawColor(200, 200, 200);
-  doc.line(MARGIN, y, 196, y); y += 5;
-  doc.setTextColor(0, 0, 0);
+  let y = drawPulseReportHeader(doc, MARGIN, REPORT_RIGHT_X, hostelName, `Expense Report · ${period}${sourceLabel !== "All Sources" ? ` · ${sourceLabel}` : ""}`);
 
   const total = rows.reduce((s, r) => s + r.amount, 0);
 
@@ -637,21 +645,8 @@ export async function exportLedgerPDF(
 
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const MARGIN = 14;
-  let y = 16;
 
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(16);
-  doc.text(hostelName, MARGIN, y); y += 7;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-  doc.setTextColor(120, 120, 120);
-  doc.text(`Member Ledger · ${period} · ${filterLabel}   Generated: ${new Date().toLocaleDateString()}`, MARGIN, y); y += 5;
-
-  doc.setDrawColor(200, 200, 200);
-  doc.line(MARGIN, y, 196, y); y += 5;
-
-  doc.setTextColor(0, 0, 0);
+  let y = drawPulseReportHeader(doc, MARGIN, REPORT_RIGHT_X, hostelName, `Member Ledger · ${period} · ${filterLabel}`);
 
   const totalCharged = rows.reduce((s, r) => s + r.totalCharged, 0);
   const totalPaid = rows.reduce((s, r) => s + r.totalPaid, 0);
