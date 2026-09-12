@@ -17,6 +17,8 @@
  * browser, printed in their office, and handed to the person whose CNIC it is.
  */
 
+import { nationalIdLabel, requiresGuestRegistration } from "@/lib/national-id";
+
 /** A4 in millimetres, which is also jsPDF's unit here. */
 const PAGE_W = 210;
 const MARGIN = 16;
@@ -29,6 +31,14 @@ export interface TenantFormTenant {
   email?: string | null;
   cnic?: string | null;
   permanent_address?: string | null;
+  /** International admission fields (non-guest-registration countries). */
+  date_of_birth?: string | null;
+  address_line1?: string | null;
+  address_line2?: string | null;
+  city?: string | null;
+  county_state?: string | null;
+  postcode?: string | null;
+  address_country?: string | null;
   emergency_contact?: string | null;
   emergency_phone?: string | null;
   emergency_relationship?: string | null;
@@ -61,6 +71,9 @@ export interface FormMealTimes {
 
 export interface TenantFormHostel {
   name: string;
+  /** ISO country — drives the national-ID label (CNIC/…) and whether the address
+   *  block prints the structured international fields or the PK free-text line. */
+  country?: string | null;
   /** Printed under the title so a signed page names the branch it binds to. */
   address?: string | null;
   phone?: string | null;
@@ -243,6 +256,19 @@ export async function buildTenantFormPdf(
   row([{ label: "Room#:", value: tenant.bed_number ?? "", width: 38 }]);
 
   // ── Personal ───────────────────────────────────────────────────────────────
+  // Country-aware: the ID label follows the country (CNIC in PK), and for a
+  // non-guest-registration country (international) the structured address is
+  // composed into one line and the date of birth is pre-filled.
+  const idLabel = nationalIdLabel(hostel.country);
+  const isIntl = !requiresGuestRegistration(hostel.country);
+  const dobValue = tenant.date_of_birth
+    ? new Date(tenant.date_of_birth).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+    : "";
+  const addressValue = isIntl
+    ? [tenant.address_line1, tenant.address_line2, tenant.city, tenant.county_state, tenant.postcode, tenant.address_country]
+        .map((v) => v?.trim()).filter(Boolean).join(", ")
+    : (tenant.permanent_address ?? "");
+
   section("PERSONAL INFORMATION");
 
   // Block letters, as the form asks. Only the name — forcing an address or a
@@ -252,15 +278,15 @@ export async function buildTenantFormPdf(
     { label: "Father Name:", value: tenant.father_name ?? "", width: 72 },
     { label: "Enrolled in Course:", value: courseLine(tenant), width: 99 },
   ]);
-  row([{ label: "Permanent Address:", value: tenant.permanent_address ?? "", width: CONTENT_W }]);
+  row([{ label: "Permanent Address:", value: addressValue, width: CONTENT_W }]);
   row([
     { label: "Gender:", value: "", width: 52 },
     { label: "Marital Status:", value: "", width: 60 },
     { label: "Religion:", value: "", width: 59 },
   ]);
   row([
-    { label: "Date of Birth:", value: "", width: 62 },
-    { label: "CNIC #:", value: tenant.cnic ?? "", width: 109 },
+    { label: "Date of Birth:", value: dobValue, width: 62 },
+    { label: `${idLabel} #:`, value: tenant.cnic ?? "", width: 109 },
   ]);
   // Blood Group joins the contact line now that Land Line # and Any Medical
   // History / Disease are gone — neither was ever filled in, and a blank rule

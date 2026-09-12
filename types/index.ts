@@ -448,6 +448,15 @@ export interface Tenant {
   /** Structured origin for the Smart Eye / Hotel Eye portal (migration 216). */
   permanent_province?: string | null;
   permanent_district?: string | null;
+  /** International admission fields (migration 244; non-guest-registration
+   *  countries). PK uses permanent_province/district + permanent_address instead. */
+  date_of_birth?: string | null;
+  address_line1?: string | null;
+  address_line2?: string | null;
+  city?: string | null;
+  county_state?: string | null;
+  postcode?: string | null;
+  address_country?: string | null;
   /** Smart Eye / Hotel Eye filing state: not_synced | queued | synced | failed.
    *  Present on any `select *`; drives the per-tenant "Synced" badge. */
   hotel_eye_status?: string | null;

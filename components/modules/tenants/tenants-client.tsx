@@ -292,6 +292,8 @@ const emptyForm = {
   joining_meter_reading: "",
   emergency_contact: "", emergency_relationship: "", emergency_phone: "", permanent_address: "", permanent_province: "", permanent_district: "", notes: "",
   father_name: "", purpose_of_visit: "" as "" | VisitPurpose, purpose_of_visit_detail: "",
+  // International admission fields (non-guest-registration countries).
+  date_of_birth: "", address_line1: "", address_line2: "", city: "", county_state: "", postcode: "", address_country: "",
   is_waiting: false,
   photo_url: "" as string,
   food_breakfast: false, food_lunch: false, food_dinner: false,
@@ -1027,6 +1029,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         },
         {
           name: hostelName || "Hostel",
+          country,
           noticePeriodDays,
           mealTimes,
         }
@@ -1458,6 +1461,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       permanent_address: t.permanent_address ?? "",
       permanent_province: (t as { permanent_province?: string | null }).permanent_province ?? "",
       permanent_district: (t as { permanent_district?: string | null }).permanent_district ?? "",
+      date_of_birth: (t as { date_of_birth?: string | null }).date_of_birth ?? "",
+      address_line1: (t as { address_line1?: string | null }).address_line1 ?? "",
+      address_line2: (t as { address_line2?: string | null }).address_line2 ?? "",
+      city: (t as { city?: string | null }).city ?? "",
+      county_state: (t as { county_state?: string | null }).county_state ?? "",
+      postcode: (t as { postcode?: string | null }).postcode ?? "",
+      address_country: (t as { address_country?: string | null }).address_country ?? "",
       father_name: t.father_name ?? "",
       purpose_of_visit: t.purpose_of_visit ?? "",
       purpose_of_visit_detail: t.purpose_of_visit_detail ?? "",
@@ -1584,6 +1594,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       toast({ title: "Province and district required", description: "Both are needed to file the guest with Smart Eye / Hotel Eye.", variant: "destructive" });
       return;
     }
+    // International admission (non-guest-registration countries): structured address.
+    if (!needsGuestRegistration && !form.is_waiting) {
+      if (!form.address_line1.trim() || !form.city.trim() || !form.postcode.trim()) {
+        toast({ title: "Address incomplete", description: "Address Line 1, City and Postcode are required.", variant: "destructive" });
+        return;
+      }
+    }
     if (form.billing_type === "monthly" && form.discount_percent.trim()) {
       const pct = parseFloat(form.discount_percent);
       // The owner path writes straight to Postgres from here, so without this the
@@ -1653,6 +1670,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       // the free-text address above cannot supply.
       permanent_province: form.permanent_province || null,
       permanent_district: form.permanent_district || null,
+      // International structured address + DoB (non-guest-registration countries).
+      date_of_birth: !needsGuestRegistration ? (form.date_of_birth || null) : null,
+      address_line1: !needsGuestRegistration ? (form.address_line1.trim() || null) : null,
+      address_line2: !needsGuestRegistration ? (form.address_line2.trim() || null) : null,
+      city: !needsGuestRegistration ? (form.city.trim() || null) : null,
+      county_state: !needsGuestRegistration ? (form.county_state.trim() || null) : null,
+      postcode: !needsGuestRegistration ? (form.postcode.trim() || null) : null,
+      address_country: !needsGuestRegistration ? (form.address_country.trim() || getCountryConfig(country).name) : null,
       father_name: form.father_name.trim() || null,
       purpose_of_visit: form.purpose_of_visit || null,
       // Cleared unless "Other" is selected, so a preset never carries a stale
@@ -4171,6 +4196,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 onReferralFound={prefillReferredName}
               />
               <div className="space-y-1.5"><Label>Email</Label><Input type="email" placeholder="tenant@email.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
+              {!needsGuestRegistration && (
+                <div className="space-y-1.5"><Label>Date of Birth</Label><Input type="date" max={new Date().toISOString().slice(0, 10)} value={form.date_of_birth} onChange={(e) => setForm({ ...form, date_of_birth: e.target.value })} /></div>
+              )}
               <div className="space-y-1.5"><Label>Type</Label>
                 <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v as SpaceType })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -5101,16 +5129,30 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             </div>
             )}
-            <div className="space-y-1.5">
-              <Label>Permanent Address</Label>
-              <textarea
-                rows={2}
-                placeholder="House / street, area, city — the tenant's home address"
-                value={form.permanent_address}
-                onChange={(e) => setForm({ ...form, permanent_address: e.target.value })}
-                className="w-full rounded-lg border border-sidebar-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50 resize-y"
-              />
-            </div>
+            {needsGuestRegistration ? (
+              <div className="space-y-1.5">
+                <Label>Permanent Address</Label>
+                <textarea
+                  rows={2}
+                  placeholder="House / street, area, city — the tenant's home address"
+                  value={form.permanent_address}
+                  onChange={(e) => setForm({ ...form, permanent_address: e.target.value })}
+                  className="w-full rounded-lg border border-sidebar-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50 resize-y"
+                />
+              </div>
+            ) : (
+              // International structured address (non-guest-registration countries).
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5"><Label>Address Line 1</Label><Input value={form.address_line1} onChange={(e) => setForm({ ...form, address_line1: e.target.value })} placeholder="House number and street" /></div>
+                  <div className="space-y-1.5"><Label>Address Line 2</Label><Input value={form.address_line2} onChange={(e) => setForm({ ...form, address_line2: e.target.value })} placeholder="Apartment, suite, etc." /></div>
+                  <div className="space-y-1.5"><Label>City / Town</Label><Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></div>
+                  <div className="space-y-1.5"><Label>County / State / Province</Label><Input value={form.county_state} onChange={(e) => setForm({ ...form, county_state: e.target.value })} /></div>
+                  <div className="space-y-1.5"><Label>Postcode / ZIP</Label><Input value={form.postcode} onChange={(e) => setForm({ ...form, postcode: e.target.value })} /></div>
+                  <div className="space-y-1.5"><Label>Country</Label><Input value={form.address_country || getCountryConfig(country).name} onChange={(e) => setForm({ ...form, address_country: e.target.value })} /></div>
+                </div>
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <Label>Purpose of Visit</Label>
