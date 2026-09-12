@@ -8,6 +8,7 @@ import { effectivePaymentStatus } from "@/lib/payment-calc";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { feedbackBucket, VERDICT_LABEL } from "@/lib/feedback-options";
 import { asPlan, type Plan } from "@/lib/entitlements";
+import { getCountryConfig, isSupportedCountry } from "@/lib/country-config";
 import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
@@ -395,8 +396,12 @@ export async function getDashboardData() {
 // so this deliberately does NOT depend on ctx.hostelId / the branch switcher.
 export async function getOwnerBilling() {
   const ctx = await getAuthContext();
-  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1, subscription: null as OwnerPaddleSubscription | null, paddlePayments: [] as OwnerPaddlePayment[], plan: null as Plan | null, customUnitAmountUsd: null as number | null };
+  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1, subscription: null as OwnerPaddleSubscription | null, paddlePayments: [] as OwnerPaddlePayment[], plan: null as Plan | null, customUnitAmountUsd: null as number | null, manualBankBilling: true };
   const { supabase, user } = ctx;
+  // Billing rail resolves via the OWNER's PROFILE country (billing/legal contract).
+  // PK keeps the manual/bank rail; every other country is Paddle-only (card).
+  const ownerCountry = ctx.profile?.country;
+  const manualBankBilling = isSupportedCountry(ownerCountry) && getCountryConfig(ownerCountry).manualBankBilling;
 
   const [{ data: billing }, { data: invoices }, { count: branchCount }, { data: subscription }, { data: paddlePayments }] = await Promise.all([
     supabase.from("hms_client_billing").select("*").eq("owner_id", user.id).maybeSingle(),
@@ -433,6 +438,7 @@ export async function getOwnerBilling() {
     paddlePayments: (paddlePayments ?? []) as OwnerPaddlePayment[],
     plan: asPlan(ctx.profile?.plan),
     customUnitAmountUsd: ctx.profile?.custom_unit_amount_usd != null ? Number(ctx.profile.custom_unit_amount_usd) : null,
+    manualBankBilling,
   };
 }
 

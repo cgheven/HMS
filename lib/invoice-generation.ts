@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { computeInvoicePeriod, clientDiscountPct, ONBOARDING_FEE, type BillingCycle } from "@/lib/pricing";
 import { pktTodayDateString } from "@/lib/pkt-time";
+import { getCountryConfig, isSupportedCountry } from "@/lib/country-config";
 
 // Shared by the super-admin "Generate Invoice Now" action and the daily cron
 // (app/api/cron/generate-invoices) so both paths generate identical invoices.
@@ -122,8 +123,18 @@ export async function generateInvoiceForOwner(
   // package's list price (Basic 6K / Standard 8K), not a fixed 8K. A historical
   // record, like the rate snapshot below.
   const { data: ownerProfile } = await admin
-    .from("hms_profiles").select("plan").eq("id", ownerId).maybeSingle();
+    .from("hms_profiles").select("plan, country").eq("id", ownerId).maybeSingle();
   const ownerPlan = (ownerProfile?.plan as "basic" | "standard" | null) ?? null;
+
+  // Manual/bank platform invoices are the PK rail only — every other country is
+  // Paddle-only (card). A non-PK owner should never receive a hand-generated bank
+  // invoice even if a client_billing rate was set for them by mistake. (Belt-and-
+  // suspenders: a self-serve non-PK owner has no client_billing rate and is already
+  // stopped by the rate check above.)
+  const ownerCountry = (ownerProfile as { country?: string } | null)?.country;
+  if (!(isSupportedCountry(ownerCountry) && getCountryConfig(ownerCountry).manualBankBilling)) {
+    return { generated: false, reason: "Client is Paddle-only (non-PK) — no manual invoice" };
+  }
 
   const actualSubtotal = Number(billing.monthly_rate) * months * billableBranches;
   const discountPct = clientDiscountPct(Number(billing.monthly_rate), ownerPlan);

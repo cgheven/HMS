@@ -54,6 +54,10 @@ export interface Profile {
   /** Appearance of the owner's PUBLIC page only — the dashboard is always dark.
    *  NULL means light, which is what every client is served today. */
   public_theme?: "light" | "dark" | null;
+  /** ISO 3166-1 alpha-2 (migration 236). Owner's billing/legal country. Drives
+   *  the billing rail (PK = manual/bank; others Paddle-only) and other
+   *  profile-scoped country decisions. NOT NULL, defaults 'PK'. */
+  country?: string;
   /** Account-level Pulse plan (migration 227). NULL = no explicit plan → legacy
    *  per-capability flags govern. Set by the Paddle webhook / Super Admin only. */
   plan?: "basic" | "standard" | null;

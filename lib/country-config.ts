@@ -63,6 +63,12 @@ export interface CountryConfig {
    *  for the PK market. Non-PK hostels use email channels instead. Gates the
    *  automated send path (never reaches a non-PK recipient) and the WhatsApp UI. */
   whatsapp: boolean;
+  /** Whether Pulse SaaS billing offers the manual/bank-transfer rail (a PK bank
+   *  account + hand-generated platform invoices). Pakistan-only; every other
+   *  country is Paddle-only (card). Gates the billing UI's manual plan card + bank
+   *  invoice framing and the platform-invoice generation. Resolve via the OWNER's
+   *  PROFILE country (billing/legal), not the hostel. */
+  manualBankBilling: boolean;
 }
 
 export const DEFAULT_COUNTRY: CountryCode = "PK";
@@ -80,6 +86,7 @@ export const COUNTRY_CONFIG: Record<CountryCode, CountryConfig> = {
     guestRegistration: true,
     redflag: true,
     whatsapp: true,
+    manualBankBilling: true,
   },
   // Future countries plug in here — e.g. BD (Bangladesh, BDT, ৳, Asia/Dhaka, 880,
   // NID). Left out until the primitives that consume this registry are wired up,

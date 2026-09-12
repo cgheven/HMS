@@ -59,6 +59,9 @@ interface Props {
   customUnitAmountUsd: number | null;
   /** True when the owner just came back from a completed Paddle checkout. */
   checkoutSuccess: boolean;
+  /** Whether the manual/bank billing rail applies (PK). When false the owner is
+   *  Paddle-only (card): the manual plan card + bank invoice framing are hidden. */
+  manualBankBilling: boolean;
 }
 
 type PlanKey = "basic" | "standard";
@@ -75,7 +78,7 @@ function statusBadge(status: PlatformInvoice["status"]) {
   return { label: "Unpaid", cls: "text-amber bg-amber/10 border-amber/20", icon: Clock };
 }
 
-export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEmail, paddle, subscription, paddlePayments, plan, customUnitAmountUsd, checkoutSuccess }: Props) {
+export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEmail, paddle, subscription, paddlePayments, plan, customUnitAmountUsd, checkoutSuccess, manualBankBilling }: Props) {
   const outstanding = invoices.filter((i) => i.status === "unpaid").reduce((s, i) => s + Number(i.amount), 0);
   const qty = Math.max(1, branchCount);
 
@@ -211,10 +214,11 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
         </div>
       )}
 
-      {/* Legacy manual plan card — shown only when there is no active Paddle
-          subscription, so nothing about the existing manual-billing view changes
-          for clients who aren't on card payment yet. */}
-      {!subActive && (
+      {/* Legacy manual plan card — the manual/bank rail (PK only). Hidden for
+          Paddle-only (non-PK) owners, who never have a manual plan or bank dues.
+          Shown only when there is no active Paddle subscription, so nothing about
+          the existing manual-billing view changes for PK clients. */}
+      {manualBankBilling && !subActive && (
         !billing || billing.monthly_rate == null || cycleTotal == null ? null : (
           <div className="rounded-2xl border border-sidebar-border bg-card p-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-3">
