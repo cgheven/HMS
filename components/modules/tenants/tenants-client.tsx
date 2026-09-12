@@ -279,6 +279,7 @@ function getCustomPackageDeposit(customPackages: CustomPackage[], id: string | n
 
 const emptyForm = {
   full_name: "", phone: "", email: "", cnic: "",
+  id_type: "" as "" | "passport" | "driving_licence" | "national_id" | "other",
   type: "student" as SpaceType,
   package_tier: "space_only" as PackageTier,
   custom_package_id: null as string | null,
@@ -1438,6 +1439,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       phone: t.phone ?? "",
       email: t.email ?? "",
       cnic: t.cnic ?? "",
+      id_type: ((t as { id_type?: string | null }).id_type ?? "") as typeof emptyForm.id_type,
       type: t.type,
       package_tier: t.package_tier ?? "space_only",
       custom_package_id: t.custom_package_id ?? null,
@@ -1583,8 +1585,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   async function handleSave() {
     if ((!hostelId && !isManager) || !form.full_name) return;
     if (!form.is_waiting && !form.check_in) return;
-    if (form.cnic && !isValidNationalId(country, form.cnic)) {
+    // Only the fixed-format ID (PK/CNIC) is validated; an international free-text
+    // document number has no fixed format.
+    if (needsGuestRegistration && form.cnic && !isValidNationalId(country, form.cnic)) {
       toast({ title: `Invalid ${idLabel}`, description: idExample ? `Format must match ${idExample}.` : `Enter a valid ${idLabel}.`, variant: "destructive" });
+      return;
+    }
+    if (!needsGuestRegistration && form.cnic.trim() && !form.id_type) {
+      toast({ title: "Select ID type", description: "Choose the identification document type.", variant: "destructive" });
       return;
     }
     // Province and district are mandatory only where a government guest-registration
@@ -1634,7 +1642,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       full_name: form.full_name,
       phone: form.phone || null,
       email: form.email || null,
-      cnic: normalizeNationalId(country, form.cnic),
+      // Fixed ID (PK) normalised to canonical form; international free-text
+      // document number stored as typed (normalising would strip letters).
+      cnic: needsGuestRegistration ? normalizeNationalId(country, form.cnic) : (form.cnic.trim() || null),
+      id_type: !needsGuestRegistration ? (form.id_type || null) : null,
       type: form.type,
       package_tier: form.package_tier,
       custom_package_id: form.custom_package_id || null,
@@ -4174,17 +4185,38 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5 sm:col-span-2"><Label>Full Name *</Label><Input placeholder="Ahmed Khan" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Phone *</Label><Input placeholder="+92 300 0000000" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
-              <div className="space-y-1.5">
-                <Label>{idLabel}</Label>
-                <Input
-                  placeholder={idExample ?? idLabel}
-                  value={form.cnic}
-                  onChange={(e) => setForm({ ...form, cnic: formatNationalId(country, e.target.value) })}
-                />
-                {form.cnic && !isValidNationalId(country, form.cnic) && (
-                  <p className="text-xs text-rose-400">{idExample ? `Format: ${idExample}` : `Enter a valid ${idLabel}`}</p>
-                )}
-              </div>
+              {needsGuestRegistration ? (
+                <div className="space-y-1.5">
+                  <Label>{idLabel}</Label>
+                  <Input
+                    placeholder={idExample ?? idLabel}
+                    value={form.cnic}
+                    onChange={(e) => setForm({ ...form, cnic: formatNationalId(country, e.target.value) })}
+                  />
+                  {form.cnic && !isValidNationalId(country, form.cnic) && (
+                    <p className="text-xs text-rose-400">{idExample ? `Format: ${idExample}` : `Enter a valid ${idLabel}`}</p>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-1.5">
+                    <Label>Identification Type</Label>
+                    <Select value={form.id_type} onValueChange={(v) => setForm({ ...form, id_type: v as typeof form.id_type })}>
+                      <SelectTrigger><SelectValue placeholder="Select document" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="passport">Passport</SelectItem>
+                        <SelectItem value="driving_licence">Driving Licence</SelectItem>
+                        <SelectItem value="national_id">National Identity Card</SelectItem>
+                        <SelectItem value="other">Other</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>ID / Document Number</Label>
+                    <Input placeholder="Document number" value={form.cnic} onChange={(e) => setForm({ ...form, cnic: e.target.value })} />
+                  </div>
+                </>
+              )}
               {/* Spans both columns, so it must sit between two COMPLETE rows or
                   it splits a pair. The grid runs Phone|CNIC then Email|Type —
                   this is the boundary between them, directly under the phone

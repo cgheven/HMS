@@ -451,6 +451,9 @@ export interface Tenant {
   /** International admission fields (migration 244; non-guest-registration
    *  countries). PK uses permanent_province/district + permanent_address instead. */
   date_of_birth?: string | null;
+  /** International document type (migration 245): passport | driving_licence |
+   *  national_id | other. NULL for PK (fixed CNIC). The number lives in `cnic`. */
+  id_type?: string | null;
   address_line1?: string | null;
   address_line2?: string | null;
   city?: string | null;

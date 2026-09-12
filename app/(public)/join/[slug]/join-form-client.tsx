@@ -42,6 +42,9 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
   const idLabel = nationalIdLabel(country);
   const idExample = getCountryConfig(country).nationalId.example;
   const needsGuestRegistration = requiresGuestRegistration(country);
+  // The document-upload noun: the fixed ID name for PK ("CNIC"), a generic "ID"
+  // for the international flexible-document form.
+  const docLabel = needsGuestRegistration ? idLabel : "ID";
 
   const availableRooms = hostel.rooms.filter((r) => r.status !== "maintenance" && r.capacity - r.occupied > 0);
   const preselectedRoom = preselectedRoomNumber
@@ -62,6 +65,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
     phone: "",
     email: "",
     cnic: "",
+    id_type: "" as "" | "passport" | "driving_licence" | "national_id" | "other",
     date_of_birth: "",
     type: "student" as "student" | "professional" | "general",
     room_id: preselectedRoom?.id ?? "",
@@ -288,9 +292,16 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
     if (!form.full_name.trim()) { setError("Full name is required."); return; }
     if (!form.phone.trim()) { setError("WhatsApp number is required."); return; }
     if (show("email") && !form.email.trim()) { setError("Email is required."); return; }
-    if (show("cnic") && !form.cnic.trim()) { setError(`${idLabel} is required.`); return; }
-    if (show("cnic") && form.cnic.trim() && !isValidNationalId(country, form.cnic)) {
-      setError(`Enter a valid ${idLabel}${idExample ? `, e.g. ${idExample}` : ""}.`);
+    if (show("cnic") && needsGuestRegistration) {
+      // Pakistan: fixed national ID, required + format-checked.
+      if (!form.cnic.trim()) { setError(`${idLabel} is required.`); return; }
+      if (form.cnic.trim() && !isValidNationalId(country, form.cnic)) {
+        setError(`Enter a valid ${idLabel}${idExample ? `, e.g. ${idExample}` : ""}.`);
+        return;
+      }
+    } else if (show("cnic") && form.cnic.trim() && !form.id_type) {
+      // International: optional/flexible, but a number needs a document type.
+      setError("Please select the identification document type.");
       return;
     }
     if (show("type") && !form.type) { setError("Please select a type."); return; }
@@ -360,6 +371,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       phone: form.phone,
       email: show("email") ? form.email || undefined : undefined,
       cnic: show("cnic") ? form.cnic || undefined : undefined,
+      id_type: !needsGuestRegistration ? form.id_type || undefined : undefined,
       type: show("type") ? form.type : undefined,
       package_tier: showRoomPicker && selectedRoom ? form.package_tier : "space_only",
       room_id: showRoomPicker && selectedRoom ? selectedRoom.id : undefined,
@@ -561,9 +573,10 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
               )}
             </div>
 
-            {/* National ID (CNIC in PK, country-driven elsewhere) — always
-                required whenever shown, same as Type */}
-            {show("cnic") && (
+            {/* Identification. Pakistan: the fixed CNIC field (required). Other
+                countries: a flexible document — pick the type, enter its number —
+                which suits UK residents and international students. */}
+            {show("cnic") && needsGuestRegistration && (
               <div className="space-y-1.5">
                 <Label className="flex items-center gap-1.5">
                   <CreditCard className="w-3.5 h-3.5 text-muted-foreground" />
@@ -577,6 +590,26 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                   required
                 />
                 {idExample && <p className="text-xs text-muted-foreground">Format: {idExample}</p>}
+              </div>
+            )}
+            {show("cnic") && !needsGuestRegistration && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label className="flex items-center gap-1.5"><CreditCard className="w-3.5 h-3.5 text-muted-foreground" /> Identification Type</Label>
+                  <Select value={form.id_type} onValueChange={(v) => setForm({ ...form, id_type: v as typeof form.id_type })}>
+                    <SelectTrigger><SelectValue placeholder="Select document" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="passport">Passport</SelectItem>
+                      <SelectItem value="driving_licence">Driving Licence</SelectItem>
+                      <SelectItem value="national_id">National Identity Card</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>ID / Document Number</Label>
+                  <Input placeholder="Document number" value={form.cnic} onChange={(e) => setForm({ ...form, cnic: e.target.value })} />
+                </div>
               </div>
             )}
 
@@ -865,10 +898,10 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
             <div className="space-y-2">
               <Label className="flex items-center gap-1.5">
                 <CreditCard className="w-3.5 h-3.5 text-muted-foreground" />
-                {idLabel} Document <span className="text-muted-foreground text-xs font-normal">(optional)</span>
+                {docLabel} Document <span className="text-muted-foreground text-xs font-normal">(optional)</span>
               </Label>
               <p className="text-xs text-muted-foreground">
-                Upload a photo or scan of your {idLabel} for identity verification.{" "}
+                Upload a photo or scan of your {docLabel} for identity verification.{" "}
                 <span className="text-muted-foreground">(optional)</span>
               </p>
               <input
@@ -888,7 +921,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={cnicDoc.previewUrl}
-                    alt={`${idLabel} preview`}
+                    alt={`${docLabel} preview`}
                     className="w-24 h-16 object-cover rounded border border-border"
                   />
                   <Button
@@ -916,7 +949,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                     disabled={cnicUploading}
                   >
                     <Upload className="w-3.5 h-3.5" />
-                    Upload {idLabel}
+                    Upload {docLabel}
                   </Button>
                   <Button
                     type="button"
@@ -1233,7 +1266,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       <Dialog open={cameraOpen} onOpenChange={(o) => { if (!o) closeCamera(); }}>
         <DialogContent className="sm:max-w-md p-0 overflow-hidden">
           <DialogHeader className="px-4 pt-4 pb-2">
-            <DialogTitle className="text-sm">Take {idLabel} Photo</DialogTitle>
+            <DialogTitle className="text-sm">Take {docLabel} Photo</DialogTitle>
           </DialogHeader>
 
           <div className="relative bg-black aspect-video w-full overflow-hidden">

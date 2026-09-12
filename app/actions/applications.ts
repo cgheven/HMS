@@ -2,7 +2,7 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { isValidNationalId, normalizeNationalId } from "@/lib/national-id";
+import { isValidNationalId, normalizeNationalId, requiresGuestRegistration } from "@/lib/national-id";
 import { getCountryConfig, DEFAULT_COUNTRY } from "@/lib/country-config";
 import { requireOwnerOrPartnerTier, requireNotFrozenByHostel } from "@/lib/auth";
 import { getManagerContext } from "@/lib/manager-auth";
@@ -89,6 +89,7 @@ interface ApplicationInput {
   phone: string;
   email?: string;
   cnic?: string;
+  id_type?: string;
   type?: string;
   package_tier: PackageTier;
   room_preference?: string;
@@ -141,10 +142,11 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
   if (!targetHostel) return { success: false, error: "Hostel not found" };
   const country = (targetHostel as { country?: string }).country ?? DEFAULT_COUNTRY;
 
-  // The public form is unauthenticated and directly callable, so the format is
-  // enforced here too. ID format is COUNTRY-DRIVEN (CNIC in PK, NID elsewhere);
-  // digits-only input is accepted and normalised rather than rejected.
-  if (data.cnic?.trim() && !isValidNationalId(country, data.cnic)) {
+  // Fixed-national-ID countries (PK/CNIC) enforce the format server-side too.
+  // International countries capture a free-text document number of a chosen type
+  // (passport/licence/…), so there's no fixed format to validate or normalise.
+  const idIsFixed = requiresGuestRegistration(country);
+  if (idIsFixed && data.cnic?.trim() && !isValidNationalId(country, data.cnic)) {
     const rule = getCountryConfig(country).nationalId;
     return { success: false, error: `Enter a valid ${rule.label}${rule.example ? `, e.g. ${rule.example}` : ""}` };
   }
@@ -192,7 +194,10 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     full_name: data.full_name.trim(),
     phone: data.phone.trim(),
     email: data.email?.trim() || null,
-    cnic: normalizeNationalId(country, data.cnic),
+    // Fixed ID (PK) is normalised to its canonical format; a free-text
+    // international document number is stored as typed (trimmed).
+    cnic: idIsFixed ? normalizeNationalId(country, data.cnic) : (data.cnic?.trim() || null),
+    id_type: !idIsFixed ? (data.id_type || null) : null,
     type: data.type || "general",
     package_tier: data.package_tier,
     room_preference: data.room_preference || null,
@@ -440,9 +445,11 @@ export async function convertToTenant(
     full_name: app.full_name,
     phone: app.phone,
     email: app.email,
-    // Normalised on the way through: 38 legacy applications hold digits-only
-    // national IDs, and approving one must not carry that malformed value onto the tenant.
-    cnic: normalizeNationalId(appCountry, app.cnic),
+    // Fixed ID (PK) is normalised to canonical form (38 legacy apps hold
+    // digits-only CNICs); an international free-text document number is carried
+    // as-is (normalising would strip letters from a passport/licence number).
+    cnic: requiresGuestRegistration(appCountry) ? normalizeNationalId(appCountry, app.cnic) : (app.cnic ?? null),
+    id_type: app.id_type ?? null,
     type: extra.type,
     package_tier: extra.package_tier,
     check_in: extra.check_in,

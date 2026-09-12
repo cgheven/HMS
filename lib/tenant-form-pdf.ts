@@ -30,6 +30,8 @@ export interface TenantFormTenant {
   phone?: string | null;
   email?: string | null;
   cnic?: string | null;
+  /** International document type (passport | driving_licence | national_id | other). */
+  id_type?: string | null;
   permanent_address?: string | null;
   /** International admission fields (non-guest-registration countries). */
   date_of_birth?: string | null;
@@ -259,8 +261,13 @@ export async function buildTenantFormPdf(
   // Country-aware: the ID label follows the country (CNIC in PK), and for a
   // non-guest-registration country (international) the structured address is
   // composed into one line and the date of birth is pre-filled.
-  const idLabel = nationalIdLabel(hostel.country);
   const isIntl = !requiresGuestRegistration(hostel.country);
+  // ID row label: the country's fixed name for PK (CNIC), or the chosen document
+  // type for the international flexible ID.
+  const ID_TYPE_LABELS: Record<string, string> = { passport: "Passport", driving_licence: "Driving Licence", national_id: "National ID", other: "ID" };
+  const idLabel = isIntl
+    ? (ID_TYPE_LABELS[tenant.id_type ?? ""] ?? "ID")
+    : nationalIdLabel(hostel.country);
   // Parse the YYYY-MM-DD from its parts as a LOCAL date, not `new Date(str)`
   // (which is UTC midnight and prints one day early in a negative-offset zone —
   // exactly the international audience this serves).
