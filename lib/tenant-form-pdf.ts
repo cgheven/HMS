@@ -261,9 +261,15 @@ export async function buildTenantFormPdf(
   // composed into one line and the date of birth is pre-filled.
   const idLabel = nationalIdLabel(hostel.country);
   const isIntl = !requiresGuestRegistration(hostel.country);
-  const dobValue = tenant.date_of_birth
-    ? new Date(tenant.date_of_birth).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
-    : "";
+  // Parse the YYYY-MM-DD from its parts as a LOCAL date, not `new Date(str)`
+  // (which is UTC midnight and prints one day early in a negative-offset zone —
+  // exactly the international audience this serves).
+  const dobValue = (() => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(tenant.date_of_birth ?? "");
+    if (!m) return "";
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+      .toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  })();
   const addressValue = isIntl
     ? [tenant.address_line1, tenant.address_line2, tenant.city, tenant.county_state, tenant.postcode, tenant.address_country]
         .map((v) => v?.trim()).filter(Boolean).join(", ")
