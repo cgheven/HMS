@@ -1,8 +1,10 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
+import { sendCheckoutEmail } from "@/lib/email";
 import { TEMPLATES, tenantCheckoutParams } from "@/lib/whatsapp-templates";
 import { billLinkForPayment } from "@/lib/bill-link";
+import { getCountryConfig, isSupportedCountry } from "@/lib/country-config";
 
 /**
  * Sends hms_tenant_checkout once, as the tenant leaves: thank-you, receipt link
@@ -31,42 +33,63 @@ export async function sendCheckoutMessage(
 
     const { data: tenant } = await admin
       .from("hms_tenants")
-      .select("id, full_name, phone, check_out, hostel_id, hostel:hms_hostels(name, whatsapp_enabled)")
+      .select("id, full_name, phone, email, check_out, hostel_id, hostel:hms_hostels(name, whatsapp_enabled, country)")
       .eq("id", tenantId)
       .maybeSingle();
     if (!tenant) return;
 
     const hostel = Array.isArray(tenant.hostel) ? tenant.hostel[0] : tenant.hostel;
-    if (!hostel?.whatsapp_enabled) return;
-
-    const digits = (tenant.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
-    if (digits.length < 11) return;
+    // Channel per country: WhatsApp where the country has it AND it's granted
+    // (Pakistan today — unchanged); email everywhere else (non-PK).
+    const whatsappCountry = isSupportedCountry(hostel?.country) && getCountryConfig(hostel?.country).whatsapp;
 
     const receiptUrl = await resolveReceiptUrl(admin, tenantId, tenant.hostel_id as string);
-    // Meta rejects an empty parameter outright, so a missing receipt would fail
-    // the whole send — taking the feedback link down with it. Better to skip the
-    // message than to deliver one whose receipt line points nowhere.
-    if (!receiptUrl) {
-      console.error(`[checkout-whatsapp] no receipt link for tenant ${tenantId}; message not sent`);
-      return;
-    }
 
-    const result = await sendWhatsAppTemplateMessage(
-      digits,
-      TEMPLATES.tenantCheckout.name,
-      TEMPLATES.tenantCheckout.language,
-      tenantCheckoutParams({
-        tenantName: tenant.full_name,
-        hostelName: hostel?.name,
+    if (whatsappCountry) {
+      if (!hostel?.whatsapp_enabled) return;
+
+      const digits = (tenant.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
+      if (digits.length < 11) return;
+
+      // Meta rejects an empty parameter outright, so a missing receipt would fail
+      // the whole send — taking the feedback link down with it. Better to skip the
+      // message than to deliver one whose receipt line points nowhere.
+      if (!receiptUrl) {
+        console.error(`[checkout-whatsapp] no receipt link for tenant ${tenantId}; message not sent`);
+        return;
+      }
+
+      const result = await sendWhatsAppTemplateMessage(
+        digits,
+        TEMPLATES.tenantCheckout.name,
+        TEMPLATES.tenantCheckout.language,
+        tenantCheckoutParams({
+          tenantName: tenant.full_name,
+          hostelName: hostel?.name,
+          checkoutDate: tenant.check_out,
+          receiptUrl,
+          feedbackUrl,
+        }),
+        { hostelId: tenant.hostel_id as string, tenantId, messageType: "receipt" }
+      );
+
+      if (!result.ok) {
+        console.error(`[checkout-whatsapp] Meta rejected checkout message for tenant ${tenantId}:`, result.error);
+      }
+    } else {
+      // Non-PK path — email. The receipt line is optional here (unlike the WA
+      // template, an email renders fine without it); the feedback token stays
+      // server-side, delivered only to the departing tenant's inbox.
+      const email = tenant.email?.trim();
+      if (!email) return;
+      await sendCheckoutEmail({
+        to: email,
+        name: tenant.full_name,
+        hostelName: hostel?.name ?? null,
         checkoutDate: tenant.check_out,
         receiptUrl,
         feedbackUrl,
-      }),
-      { hostelId: tenant.hostel_id as string, tenantId, messageType: "receipt" }
-    );
-
-    if (!result.ok) {
-      console.error(`[checkout-whatsapp] Meta rejected checkout message for tenant ${tenantId}:`, result.error);
+      });
     }
   } catch (err) {
     console.error("[checkout-whatsapp] unexpected failure:", err);

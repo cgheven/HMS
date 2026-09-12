@@ -1445,3 +1445,93 @@ export async function sendEmailChangeVerificationEmail(data: EmailChangeVerifica
     html: baseHtml("Confirm your new email", body),
   });
 }
+
+interface PaymentReminderEmailData {
+  to: string;
+  name: string | null;
+  hostelName: string | null;
+  /** Pre-formatted amount in the hostel country's currency (e.g. "£420" / "Rs. 13,000").
+   *  Formatted by the caller so this module stays currency-agnostic. */
+  amountLabel: string;
+  /** Human month label, e.g. "September 2026". */
+  periodLabel: string;
+  /** Public itemised-bill link, when one could be minted. */
+  billUrl?: string | null;
+  /** Where to pay — the hostel's configured payment accounts. */
+  accounts?: { label: string; account_number?: string | null }[];
+}
+
+// Email counterpart of the WhatsApp rent reminder — used for hostels whose
+// country doesn't have WhatsApp (non-PK). Content mirrors the approved WA
+// reminder: who, how much, for which month, a bill link, and where to pay.
+export async function sendPaymentReminderEmail(data: PaymentReminderEmailData): Promise<void> {
+  const greeting = data.name?.trim() ? `Hi ${esc(data.name.trim().split(/\s+/)[0])},` : "Hi,";
+  const accountRows = (data.accounts ?? [])
+    .filter((a) => a.label?.trim())
+    .map(
+      (a) =>
+        `<tr><td style="padding:2px 0;font-size:13px;color:#a1a1aa;">${esc(a.label)}${a.account_number ? ` — <span style="color:#e4e4e7;">${esc(a.account_number)}</span>` : ""}</td></tr>`
+    )
+    .join("");
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Rent payment reminder</h2>
+    <p style="margin:0 0 8px;font-size:14px;color:#a1a1aa;">${greeting}</p>
+    <p style="margin:0 0 20px;font-size:14px;color:#a1a1aa;">
+      This is a friendly reminder that your rent for <strong style="color:#e4e4e7;">${esc(data.periodLabel)}</strong>${data.hostelName ? ` at <strong style="color:#e4e4e7;">${esc(data.hostelName)}</strong>` : ""} is due.
+    </p>
+    <table cellpadding="0" cellspacing="0" style="margin:0 0 20px;border:1px solid #27272a;border-radius:8px;">
+      <tr><td style="padding:14px 20px;">
+        <p style="margin:0;font-size:12px;color:#71717a;text-transform:uppercase;letter-spacing:0.08em;">Amount due</p>
+        <p style="margin:4px 0 0;font-size:24px;font-weight:700;color:#f59e0b;">${esc(data.amountLabel)}</p>
+      </td></tr>
+    </table>
+    ${data.billUrl ? `<table cellpadding="0" cellspacing="0" style="margin:0 0 20px;"><tr><td style="border-radius:8px;background:#f59e0b;"><a href="${data.billUrl}" style="display:inline-block;padding:12px 24px;font-size:14px;font-weight:600;color:#0d1117;text-decoration:none;">View your bill</a></td></tr></table>` : ""}
+    ${accountRows ? `<p style="margin:0 0 6px;font-size:13px;color:#71717a;">Where to pay:</p><table cellpadding="0" cellspacing="0" style="margin:0 0 20px;">${accountRows}</table>` : ""}
+    <p style="margin:0;font-size:13px;color:#71717a;">If you have already paid, please ignore this reminder.</p>
+  `;
+
+  await resend.emails.send({
+    from: FROM,
+    to: data.to,
+    subject: `Rent reminder — ${data.periodLabel}${data.hostelName ? ` · ${data.hostelName}` : ""}`,
+    html: baseHtml("Rent payment reminder", body),
+  });
+}
+
+interface CheckoutEmailData {
+  to: string;
+  name: string | null;
+  hostelName: string | null;
+  checkoutDate: string | null;
+  receiptUrl?: string | null;
+  /** Single-use feedback link — a write credential; only ever delivered to the
+   *  departing tenant (never handed to the operator). */
+  feedbackUrl: string;
+}
+
+// Email counterpart of the WhatsApp checkout message — for hostels whose country
+// doesn't have WhatsApp (non-PK). Thank-you + receipt + the feedback link.
+export async function sendCheckoutEmail(data: CheckoutEmailData): Promise<void> {
+  const greeting = data.name?.trim() ? `Hi ${esc(data.name.trim().split(/\s+/)[0])},` : "Hi,";
+  const dateLabel = data.checkoutDate
+    ? new Date(data.checkoutDate).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })
+    : null;
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Thank you for staying with us</h2>
+    <p style="margin:0 0 8px;font-size:14px;color:#a1a1aa;">${greeting}</p>
+    <p style="margin:0 0 20px;font-size:14px;color:#a1a1aa;">
+      Your stay${data.hostelName ? ` at <strong style="color:#e4e4e7;">${esc(data.hostelName)}</strong>` : ""} has been checked out${dateLabel ? ` on <strong style="color:#e4e4e7;">${esc(dateLabel)}</strong>` : ""}. We wish you all the best.
+    </p>
+    ${data.receiptUrl ? `<table cellpadding="0" cellspacing="0" style="margin:0 0 16px;"><tr><td style="border-radius:8px;border:1px solid #3f3f46;"><a href="${data.receiptUrl}" style="display:inline-block;padding:11px 22px;font-size:14px;font-weight:600;color:#e4e4e7;text-decoration:none;">View your receipt</a></td></tr></table>` : ""}
+    <p style="margin:0 0 8px;font-size:14px;color:#a1a1aa;">We'd love your feedback on your stay — it takes a minute:</p>
+    <table cellpadding="0" cellspacing="0" style="margin:0 0 20px;"><tr><td style="border-radius:8px;background:#f59e0b;"><a href="${data.feedbackUrl}" style="display:inline-block;padding:12px 24px;font-size:14px;font-weight:600;color:#0d1117;text-decoration:none;">Share your feedback</a></td></tr></table>
+    <p style="margin:0;font-size:12px;color:#71717a;">This feedback link is personal to you and can be used once.</p>
+  `;
+
+  await resend.emails.send({
+    from: FROM,
+    to: data.to,
+    subject: `Checkout confirmation${data.hostelName ? ` — ${data.hostelName}` : ""}`,
+    html: baseHtml("Checkout confirmation", body),
+  });
+}

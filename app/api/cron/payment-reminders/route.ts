@@ -4,6 +4,7 @@ import { pktTodayDateString } from "@/lib/pkt-time";
 import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
 import { settleReferralRewards } from "@/lib/referral-rewards";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
+import { getCountryConfig, isSupportedCountry } from "@/lib/country-config";
 
 // Vercel default (10s Hobby / 60s Pro) isn't enough once more branches are
 // granted and a day's due-tenant count grows — request the platform's max;
@@ -39,10 +40,21 @@ export async function GET(request: NextRequest) {
 
   const { data: grantedHostels } = await admin
     .from("hms_hostels")
-    .select("id, whatsapp_enabled, referral_enabled")
-    .or("whatsapp_enabled.eq.true,referral_enabled.eq.true");
+    .select("id, whatsapp_enabled, referral_enabled, country")
+    // Candidates: WhatsApp-granted (PK), referral-enabled, or any non-PK hostel
+    // (whose reminder channel is email — PK is the only WhatsApp country today).
+    .or("whatsapp_enabled.eq.true,referral_enabled.eq.true,country.neq.PK");
 
-  const hostelIds = (grantedHostels ?? []).filter((h) => h.whatsapp_enabled).map((h) => h.id);
+  // Which hostels actually get a reminder pass this run: a WhatsApp-country hostel
+  // needs the Super-Admin grant (unchanged); a non-WhatsApp country (non-PK) is
+  // reminded by email, no grant concept. The pass itself picks the per-tenant
+  // channel; this only decides which hostels to scan.
+  const hostelIds = (grantedHostels ?? [])
+    .filter((h) => {
+      const whatsappCountry = isSupportedCountry(h.country) && getCountryConfig(h.country).whatsapp;
+      return whatsappCountry ? h.whatsapp_enabled : true;
+    })
+    .map((h) => h.id);
 
   // Reward reconciliation runs over the REFERRAL-enabled set, which is not the
   // WhatsApp-enabled set. Hanging it off hostelIds would strand rewards on any

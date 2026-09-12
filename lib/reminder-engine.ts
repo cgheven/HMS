@@ -4,9 +4,28 @@ import { pktTodayDateString } from "@/lib/pkt-time";
 import { TEMPLATES, reminderFullParams, reminderFullV2Params, reminderPartialParams } from "@/lib/whatsapp-templates";
 import { billLinkForPayment } from "@/lib/bill-link";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
+import { sendPaymentReminderEmail } from "@/lib/email";
 import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
 import { processInBatches } from "@/lib/batch";
+import { getCountryConfig, isSupportedCountry } from "@/lib/country-config";
 import type { PaymentMethodAccount } from "@/types";
+
+// Format an amount in the hostel country's currency (£ for GB, Rs. for PK, …) and
+// a "YYYY-MM" as a human month — for the email reminder, whose recipient is a
+// non-PK tenant. WhatsApp reminders keep their own approved-template formatting.
+function formatMoneyFor(country: string | null | undefined, amount: number): string {
+  const cfg = getCountryConfig(country);
+  try {
+    return new Intl.NumberFormat(cfg.locale, { style: "currency", currency: cfg.currency, maximumFractionDigits: 0 }).format(amount);
+  } catch {
+    return `${cfg.currencySymbol} ${Math.round(amount).toLocaleString()}`;
+  }
+}
+function monthLabel(yyyyMM: string): string {
+  const [y, m] = yyyyMM.split("-").map(Number);
+  if (!y || !m) return yyyyMM;
+  return new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+}
 
 /**
  * hms_payment_reminder_full_v2 was approved by Meta on 2026-08-08 (verified
@@ -34,8 +53,8 @@ export interface ReminderPaymentRow {
   ac_maintenance_charge: number | null;
   registration_fee_charge: number | null;
   last_reminder_sent_at: string | null;
-  tenant: { full_name: string; phone: string | null; security_deposit: number | null; check_in: string; is_active: boolean; is_waiting: boolean } | null;
-  hostel: { name: string; payment_methods: PaymentMethodAccount[]; reminder_template: string | null; whatsapp_enabled: boolean } | null;
+  tenant: { full_name: string; phone: string | null; email: string | null; security_deposit: number | null; check_in: string; is_active: boolean; is_waiting: boolean } | null;
+  hostel: { name: string; payment_methods: PaymentMethodAccount[]; reminder_template: string | null; whatsapp_enabled: boolean; country: string } | null;
 }
 
 export interface ReminderSummary {
@@ -79,8 +98,8 @@ export async function runReminderPass(
     .from("hms_payments")
     .select(
       "id, tenant_id, amount, amount_paid, status, late_fee, for_month, ac_charge, ac_units_consumed, ac_maintenance_charge, registration_fee_charge, last_reminder_sent_at, " +
-      "tenant:hms_tenants(full_name, phone, security_deposit, check_in, is_active, is_waiting), " +
-      "hostel:hms_hostels(name, payment_methods, reminder_template, whatsapp_enabled)"
+      "tenant:hms_tenants(full_name, phone, email, security_deposit, check_in, is_active, is_waiting), " +
+      "hostel:hms_hostels(name, payment_methods, reminder_template, whatsapp_enabled, country)"
     )
     .eq("hostel_id", hostelId)
     .eq("for_month", forMonth)
@@ -93,10 +112,13 @@ export async function runReminderPass(
   let skipped = 0;
 
   for (const p of payments ?? []) {
-    // Not granted by Super Admin.
-    if (!p.hostel?.whatsapp_enabled) {
-      skipped++;
-      continue;
+    // Channel per country: WhatsApp where the country has it AND Super Admin
+    // granted it (Pakistan today — unchanged); email everywhere else (non-PK,
+    // whose only channel is email). A WhatsApp-country hostel without the grant
+    // is skipped exactly as before — email is NOT a backfill for ungranted PK.
+    const whatsappCountry = isSupportedCountry(p.hostel?.country) && getCountryConfig(p.hostel?.country).whatsapp;
+    if (whatsappCountry) {
+      if (!p.hostel?.whatsapp_enabled) { skipped++; continue; }
     }
 
     // Checked out — never remind, even if a balance is still outstanding.
@@ -128,11 +150,13 @@ export async function runReminderPass(
       continue;
     }
 
-    const rawPhone = p.tenant?.phone ?? "";
-    const digits = rawPhone.replace(/\D/g, "").replace(/^0/, "92");
-    if (!digits) {
-      skipped++;
-      continue;
+    // Recipient must exist on the channel this hostel uses: a phone for the
+    // WhatsApp path, an email for the non-PK email path.
+    if (whatsappCountry) {
+      const digits = (p.tenant?.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
+      if (!digits) { skipped++; continue; }
+    } else {
+      if (!p.tenant?.email?.trim()) { skipped++; continue; }
     }
 
     due.push(p);
@@ -143,78 +167,92 @@ export async function runReminderPass(
   let markFailed = 0;
 
   await processInBatches(due, SEND_CONCURRENCY, async (p) => {
-    const digits = (p.tenant?.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
+    const whatsappCountry = isSupportedCountry(p.hostel?.country) && getCountryConfig(p.hostel?.country).whatsapp;
     // Remaining balance, not the full bill — a partially_paid row already has
     // real money against it, and reminding for the original total would ask
     // the tenant to pay something they've already handed over.
     const total = Math.max(0, Number(p.amount) + Number(p.late_fee ?? 0) - Number(p.amount_paid ?? 0));
-    // Which template depends on what the tenant has actually done. A partial
-    // payer who is told "your rent of Rs 13,000 is still pending", with no
-    // mention of the Rs 20,000 they already sent, replies "I already paid" —
-    // exactly the exchange automating this was meant to remove. Their status
-    // is already recorded, so there is nothing to infer.
-    //
-    // Both are approved Meta templates rather than free-form text: a tenant
-    // being chased for rent has almost never messaged the business in the last
-    // 24 hours, and free-form outside that window is rejected with 131047. The
-    // hostel's own reminder_template wording cannot apply — Meta approves one
-    // fixed body and only the parameters vary. It still drives the manual
-    // wa.me button.
     const alreadyPaid = Number(p.amount_paid ?? 0);
     const isPartial = p.status === "partially_paid" && alreadyPaid > 0;
 
-    // v2 carries a link to the itemised bill. Flipped on only once Meta has
-    // APPROVED hms_payment_reminder_full_v2 — sending against a template still
-    // in review fails every reminder for every hostel with error 132001, so the
-    // switch stays off until the approval lands.
-    //
-    // Only the FULL reminder has a v2. A partially-paid tenant keeps the v1
-    // wording and gets no bill link until a partial v2 is approved too.
+    // v2 carries a link to the itemised bill. The bill link is channel-agnostic —
+    // the same public token URL rides the WhatsApp template or the email.
+    // Only the FULL reminder has a v2; a partially-paid tenant keeps v1 (no link).
     const billUrl = BILL_LINK_ENABLED && !isPartial
       ? await billLinkForPayment(p.id, hostelId)
       : null;
 
-    const useV2 = !!billUrl;
-    const tpl = isPartial
-      ? TEMPLATES.reminderPartial
-      : useV2 ? TEMPLATES.reminderFullV2 : TEMPLATES.reminderFull;
+    let ok = false;
+    let errMsg = "";
 
-    const params = isPartial
-      ? reminderPartialParams({
-          tenantName: p.tenant?.full_name,
-          amountDue: total,
-          amountPaid: alreadyPaid,
-          forMonth: p.for_month,
-          hostelName: p.hostel?.name,
-          accounts: p.hostel?.payment_methods,
-        })
-      : useV2
-      ? reminderFullV2Params({
-          tenantName: p.tenant?.full_name,
-          amountDue: total,
-          forMonth: p.for_month,
-          hostelName: p.hostel?.name,
-          accounts: p.hostel?.payment_methods,
-          billUrl: billUrl!,
-        })
-      : reminderFullParams({
-          tenantName: p.tenant?.full_name,
-          amountDue: total,
-          forMonth: p.for_month,
-          hostelName: p.hostel?.name,
+    if (whatsappCountry) {
+      // Pakistan path — unchanged. Which template depends on what the tenant has
+      // actually done: a partial payer told "Rs 13,000 still pending" with no
+      // mention of what they already sent replies "I already paid". Both are
+      // approved Meta templates (free-form outside the 24h window is rejected 131047).
+      const digits = (p.tenant?.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
+      const useV2 = !!billUrl;
+      const tpl = isPartial
+        ? TEMPLATES.reminderPartial
+        : useV2 ? TEMPLATES.reminderFullV2 : TEMPLATES.reminderFull;
+
+      const params = isPartial
+        ? reminderPartialParams({
+            tenantName: p.tenant?.full_name,
+            amountDue: total,
+            amountPaid: alreadyPaid,
+            forMonth: p.for_month,
+            hostelName: p.hostel?.name,
+            accounts: p.hostel?.payment_methods,
+          })
+        : useV2
+        ? reminderFullV2Params({
+            tenantName: p.tenant?.full_name,
+            amountDue: total,
+            forMonth: p.for_month,
+            hostelName: p.hostel?.name,
+            accounts: p.hostel?.payment_methods,
+            billUrl: billUrl!,
+          })
+        : reminderFullParams({
+            tenantName: p.tenant?.full_name,
+            amountDue: total,
+            forMonth: p.for_month,
+            hostelName: p.hostel?.name,
+            accounts: p.hostel?.payment_methods,
+          });
+
+      const result = await sendWhatsAppTemplateMessage(
+        digits,
+        tpl.name,
+        tpl.language,
+        params,
+        { hostelId, tenantId: p.tenant_id, messageType: "reminder" }
+      );
+      ok = result.ok;
+      errMsg = result.error ?? "";
+    } else {
+      // Non-PK path — email (the tenant's only channel). Amount in the hostel
+      // country's currency; the bill link and pay-to accounts carry over.
+      try {
+        await sendPaymentReminderEmail({
+          to: p.tenant!.email!.trim(),
+          name: p.tenant?.full_name ?? null,
+          hostelName: p.hostel?.name ?? null,
+          amountLabel: formatMoneyFor(p.hostel?.country, total),
+          periodLabel: monthLabel(p.for_month),
+          billUrl,
           accounts: p.hostel?.payment_methods,
         });
+        ok = true;
+      } catch (e) {
+        errMsg = e instanceof Error ? e.message : "email send failed";
+      }
+    }
 
-    const result = await sendWhatsAppTemplateMessage(
-      digits,
-      tpl.name,
-      tpl.language,
-      params,
-      { hostelId, tenantId: p.tenant_id, messageType: "reminder" }
-    );
-    if (!result.ok) {
+    if (!ok) {
       failed++;
-      console.error(`[reminder-engine] Meta WhatsApp API rejected reminder for "${p.tenant?.full_name ?? "unknown"}" (payment ${p.id}, phone ${digits}):`, result.error);
+      console.error(`[reminder-engine] reminder send failed for "${p.tenant?.full_name ?? "unknown"}" (payment ${p.id}):`, errMsg);
       return;
     }
 
