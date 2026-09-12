@@ -96,6 +96,16 @@ export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuTy
   const [addingText, setAddingText] = useState("");
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+
+  // Suggestions for the dish inputs — distinct dish names already in this menu, so
+  // recurring dishes are one keystroke and spelling stays consistent (fewer dupes
+  // like "Chicken Karahi" vs "chicken karahi"). Derived from loaded items (no
+  // extra fetch — respects the no-sync-on-mount rule); a native <datalist> keeps
+  // it a plain text input that still accepts brand-new dishes.
+  const dishSuggestions = useMemo(
+    () => Array.from(new Set(items.map((i) => i.item_name?.trim()).filter(Boolean) as string[])).sort((a, b) => a.localeCompare(b)),
+    [items]
+  );
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<FoodItem | null>(null);
   const [form, setForm] = useState(emptyForm());
@@ -429,6 +439,7 @@ export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuTy
                                       if (e.key === "Enter") saveInlineEdit(item);
                                       if (e.key === "Escape") setEditingItemId(null);
                                     }}
+                                    list="dish-suggestions"
                                     className="flex-1 text-xs bg-white/5 border border-amber/40 rounded px-1.5 py-0.5 outline-none text-foreground w-full"
                                   />
                                 ) : (
@@ -463,6 +474,7 @@ export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuTy
                                   }}
                                   onBlur={() => { if (!addingText.trim()) setAddingMeal(null); }}
                                   placeholder="Type & press Enter…"
+                                  list="dish-suggestions"
                                   className={`w-full text-xs bg-white/5 border border-sidebar-border rounded px-2 py-1 outline-none text-foreground placeholder:text-muted-foreground/25 transition-colors ${mealInputFocus[meal]}`}
                                 />
                               </div>
@@ -484,6 +496,12 @@ export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuTy
           </table>
         </div>
       )}
+
+      {/* Shared dish suggestions for every dish input (add dialog, quick-add,
+          inline edit). Native datalist: suggests past dishes but still accepts new. */}
+      <datalist id="dish-suggestions">
+        {dishSuggestions.map((d) => <option key={d} value={d} />)}
+      </datalist>
 
       {/* Add / Edit dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -529,6 +547,7 @@ export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuTy
                 value={form.item_name}
                 onChange={(e) => setForm({ ...form, item_name: e.target.value })}
                 onKeyDown={(e) => { if (e.key === "Enter" && form.item_name.trim()) handleSave(); }}
+                list="dish-suggestions"
               />
             </div>
             <div className="grid grid-cols-2 gap-4">
