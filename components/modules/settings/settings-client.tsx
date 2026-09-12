@@ -19,6 +19,7 @@ import { PARTNER_TIER_LABELS } from "@/lib/partner-tier-labels";
 import type { Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier, PartnerTier, WifiNetwork, MealTimes } from "@/types";
 import { DEFAULT_FORM_CONFIG } from "@/types";
 import { savePaymentRecoverySettings, saveWelcomeSettings } from "@/app/actions/settings";
+import { requestEmailChange } from "@/app/actions/account";
 import { DEFAULT_REMINDER_TEMPLATE, formatAccounts, buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { DEFAULT_WELCOME_TEMPLATE, buildWelcomeMessage } from "@/lib/whatsapp-welcome";
 import { floorToken, roomToken } from "@/lib/wifi-coverage";
@@ -104,6 +105,9 @@ export function SettingsClient() {
   const [profileForm, setProfileForm] = useState({ full_name: "" });
   const [savingHostel, setSavingHostel] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [editingEmail, setEditingEmail] = useState(false);
+  const [newEmail, setNewEmail] = useState("");
+  const [sendingEmailChange, setSendingEmailChange] = useState(false);
 
   /** Lives on hms_hostels, not hms_package_configs, but belongs beside the
    *  receipt label in the UI — both answer "how does this branch bill
@@ -547,6 +551,21 @@ export function SettingsClient() {
       return;
     }
     toast({ title: "Hostel settings saved" });
+  }
+
+  async function submitEmailChange() {
+    const target = newEmail.trim();
+    if (!target) return;
+    setSendingEmailChange(true);
+    const res = await requestEmailChange(target);
+    setSendingEmailChange(false);
+    if ("error" in res) {
+      toast({ title: "Couldn't change email", description: res.error, variant: "destructive" });
+      return;
+    }
+    toast({ title: "Confirmation sent", description: res.message });
+    setEditingEmail(false);
+    setNewEmail("");
   }
 
   async function saveProfile(e: React.FormEvent) {
@@ -2250,8 +2269,33 @@ export function SettingsClient() {
           <form onSubmit={saveProfile} className="space-y-4">
             <div className="space-y-1.5">
               <Label>Email</Label>
-              <Input value={(profile as unknown as { email?: string })?.email ?? ""} disabled className="bg-muted" />
-              <p className="text-xs text-muted-foreground">Email cannot be changed here</p>
+              {!editingEmail ? (
+                <div className="flex items-center gap-2">
+                  <Input value={(profile as unknown as { email?: string })?.email ?? ""} disabled className="bg-muted flex-1" />
+                  <Button type="button" variant="outline" onClick={() => { setEditingEmail(true); setNewEmail(""); }}>Change</Button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <Input
+                    type="email"
+                    placeholder="new@email.com"
+                    value={newEmail}
+                    onChange={(e) => setNewEmail(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (newEmail.trim() && !sendingEmailChange) void submitEmailChange(); } }}
+                    disabled={sendingEmailChange}
+                    autoComplete="email"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    We&apos;ll send a confirmation link to the new address. Your sign-in email changes only after you click it.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button type="button" onClick={submitEmailChange} disabled={sendingEmailChange || !newEmail.trim()} className="gap-2">
+                      {sendingEmailChange ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Send confirmation
+                    </Button>
+                    <Button type="button" variant="ghost" onClick={() => { setEditingEmail(false); setNewEmail(""); }} disabled={sendingEmailChange}>Cancel</Button>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label>Full Name</Label>

@@ -1405,3 +1405,43 @@ export async function sendSignupVerificationEmail(data: SignupVerificationEmailD
     html: baseHtml("Confirm your email", body),
   });
 }
+
+interface EmailChangeVerificationEmailData {
+  to: string;
+  name: string | null;
+  actionLink: string;
+  expiresInMinutes: number;
+}
+
+export async function sendEmailChangeVerificationEmail(data: EmailChangeVerificationEmailData): Promise<void> {
+  const greeting = data.name?.trim() ? `Hi ${esc(data.name.trim().split(/\s+/)[0])},` : "Hi,";
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Confirm your new email</h2>
+    <p style="margin:0 0 8px;font-size:14px;color:#a1a1aa;">${greeting}</p>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
+      A request was made to change your Pulse sign-in email to this address. Confirm it to make the switch — until you do, your current email stays unchanged.
+    </p>
+    <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
+      <tr><td style="border-radius:8px;background:#f59e0b;">
+        <a href="${data.actionLink}" style="display:inline-block;padding:12px 24px;font-size:14px;font-weight:600;color:#0d1117;text-decoration:none;">Confirm new email</a>
+      </td></tr>
+    </table>
+    <p style="margin:0 0 24px;font-size:13px;color:#71717a;">
+      This link works once and expires in ${data.expiresInMinutes} minutes.
+    </p>
+    <p style="margin:0 0 8px;font-size:13px;color:#71717a;">If the button does not work, paste this into your browser:</p>
+    <p style="margin:0 0 24px;font-size:12px;color:#52525b;word-break:break-all;">${data.actionLink}</p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      <tr><td style="padding-top:16px;font-size:13px;color:#71717a;">
+        <strong style="color:#a1a1aa;">Didn't request this?</strong> You can ignore this email — nothing changes unless you confirm with the link above.
+      </td></tr>
+    </table>
+  `;
+
+  await resend.emails.send({
+    from: FROM,
+    to: data.to,
+    subject: "Confirm your new email — Pulse HMS",
+    html: baseHtml("Confirm your new email", body),
+  });
+}
