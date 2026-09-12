@@ -40,8 +40,11 @@ export async function sendCheckoutMessage(
 
     const hostel = Array.isArray(tenant.hostel) ? tenant.hostel[0] : tenant.hostel;
     // Channel per country: WhatsApp where the country has it AND it's granted
-    // (Pakistan today — unchanged); email everywhere else (non-PK).
-    const whatsappCountry = isSupportedCountry(hostel?.country) && getCountryConfig(hostel?.country).whatsapp;
+    // (Pakistan today — unchanged); email for a REGISTERED non-WhatsApp country.
+    // A hostel on an unregistered country isn't served — skip (no message).
+    const supported = isSupportedCountry(hostel?.country);
+    const whatsappCountry = supported && getCountryConfig(hostel?.country).whatsapp;
+    if (!supported) return;
 
     const receiptUrl = await resolveReceiptUrl(admin, tenantId, tenant.hostel_id as string);
 

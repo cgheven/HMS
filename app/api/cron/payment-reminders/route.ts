@@ -51,8 +51,11 @@ export async function GET(request: NextRequest) {
   // channel; this only decides which hostels to scan.
   const hostelIds = (grantedHostels ?? [])
     .filter((h) => {
-      const whatsappCountry = isSupportedCountry(h.country) && getCountryConfig(h.country).whatsapp;
-      return whatsappCountry ? h.whatsapp_enabled : true;
+      const supported = isSupportedCountry(h.country);
+      const whatsappCountry = supported && getCountryConfig(h.country).whatsapp;
+      // WhatsApp country → needs the grant; registered non-WhatsApp country →
+      // email (no grant); unregistered country → not served, skip.
+      return whatsappCountry ? h.whatsapp_enabled : supported;
     })
     .map((h) => h.id);
 

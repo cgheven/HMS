@@ -113,12 +113,19 @@ export async function runReminderPass(
 
   for (const p of payments ?? []) {
     // Channel per country: WhatsApp where the country has it AND Super Admin
-    // granted it (Pakistan today — unchanged); email everywhere else (non-PK,
-    // whose only channel is email). A WhatsApp-country hostel without the grant
-    // is skipped exactly as before — email is NOT a backfill for ungranted PK.
-    const whatsappCountry = isSupportedCountry(p.hostel?.country) && getCountryConfig(p.hostel?.country).whatsapp;
+    // granted it (Pakistan today — unchanged); email for a REGISTERED non-WhatsApp
+    // country (its only channel). A hostel whose country isn't in the registry yet
+    // is skipped entirely — we can't format its currency and don't fully serve it.
+    // A WhatsApp-country hostel without the grant is skipped exactly as before —
+    // email is NOT a backfill for ungranted PK.
+    const supported = isSupportedCountry(p.hostel?.country);
+    const whatsappCountry = supported && getCountryConfig(p.hostel?.country).whatsapp;
+    const emailCountry = supported && !whatsappCountry;
     if (whatsappCountry) {
       if (!p.hostel?.whatsapp_enabled) { skipped++; continue; }
+    } else if (!emailCountry) {
+      skipped++;
+      continue;
     }
 
     // Checked out — never remind, even if a balance is still outstanding.
