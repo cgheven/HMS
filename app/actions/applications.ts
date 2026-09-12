@@ -84,6 +84,9 @@ async function hasHostelAccess(profile: Profile, hostelId: string): Promise<bool
   return !!junction;
 }
 
+// Accepted international identification document types (the public form's dropdown).
+const ID_TYPES = new Set(["passport", "driving_licence", "national_id", "other"]);
+
 interface ApplicationInput {
   full_name: string;
   phone: string;
@@ -195,9 +198,12 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     phone: data.phone.trim(),
     email: data.email?.trim() || null,
     // Fixed ID (PK) is normalised to its canonical format; a free-text
-    // international document number is stored as typed (trimmed).
-    cnic: idIsFixed ? normalizeNationalId(country, data.cnic) : (data.cnic?.trim() || null),
-    id_type: !idIsFixed ? (data.id_type || null) : null,
+    // international document number is stored as typed (trimmed, length-capped —
+    // this is a directly-callable public action).
+    cnic: idIsFixed ? normalizeNationalId(country, data.cnic) : (data.cnic?.trim().slice(0, 64) || null),
+    // Whitelisted — the action is public and directly callable; an unknown value
+    // would only ever fall back to a generic "ID" label, but keep the column clean.
+    id_type: !idIsFixed && ID_TYPES.has(data.id_type ?? "") ? data.id_type : null,
     type: data.type || "general",
     package_tier: data.package_tier,
     room_preference: data.room_preference || null,
