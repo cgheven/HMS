@@ -111,6 +111,14 @@ interface ApplicationInput {
   organization?: string;
   organization_type?: string;
   department?: string;
+  // International admission form (non-guest-registration countries).
+  date_of_birth?: string;
+  address_line1?: string;
+  address_line2?: string;
+  city?: string;
+  county_state?: string;
+  postcode?: string;
+  address_country?: string;
 }
 
 export async function submitApplication(hostelId: string, data: ApplicationInput) {
@@ -194,6 +202,14 @@ export async function submitApplication(hostelId: string, data: ApplicationInput
     organization: data.organization?.trim() || null,
     organization_type: data.organization_type || null,
     department: data.department?.trim() || null,
+    // International admission form fields (non-guest-registration countries).
+    date_of_birth: data.date_of_birth || null,
+    address_line1: data.address_line1?.trim() || null,
+    address_line2: data.address_line2?.trim() || null,
+    city: data.city?.trim() || null,
+    county_state: data.county_state?.trim() || null,
+    postcode: data.postcode?.trim() || null,
+    address_country: data.address_country?.trim() || null,
     status: "pending",
   });
 
@@ -460,6 +476,14 @@ export async function convertToTenant(
     organization: extra.organization ?? app.organization ?? null,
     organization_type: extra.organization_type ?? app.organization_type ?? null,
     department: extra.department ?? app.department ?? null,
+    // International admission fields carried from the application to the tenant.
+    date_of_birth: app.date_of_birth ?? null,
+    address_line1: app.address_line1 ?? null,
+    address_line2: app.address_line2 ?? null,
+    city: app.city ?? null,
+    county_state: app.county_state ?? null,
+    postcode: app.postcode ?? null,
+    address_country: app.address_country ?? null,
   }).select("id").single();
 
   if (tenantError) return { success: false, error: tenantError.message };

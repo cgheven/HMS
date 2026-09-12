@@ -62,6 +62,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
     phone: "",
     email: "",
     cnic: "",
+    date_of_birth: "",
     type: "student" as "student" | "professional" | "general",
     room_id: preselectedRoom?.id ?? "",
     package_tier: "space_only" as PackageTier,
@@ -69,6 +70,13 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
     permanent_address: "",
     permanent_province: "",
     permanent_district: "",
+    // Structured international address (non-guest-registration countries).
+    address_line1: "",
+    address_line2: "",
+    city: "",
+    county_state: "",
+    postcode: "",
+    address_country: "",
     emergency_contact: "",
     emergency_phone: "",
     emergency_relationship: "",
@@ -302,6 +310,14 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       setError("Please select your province and district.");
       return;
     }
+    // International admission form (non-guest-registration countries): date of
+    // birth + a structured postal address.
+    if (!needsGuestRegistration) {
+      if (!form.date_of_birth) { setError("Date of birth is required."); return; }
+      if (!form.address_line1.trim()) { setError("Address Line 1 is required."); return; }
+      if (!form.city.trim()) { setError("City / town is required."); return; }
+      if (!form.postcode.trim()) { setError("Postcode / ZIP is required."); return; }
+    }
     if (show("father_name") && req("father_name") && !form.father_name.trim()) {
       setError("Father name is required.");
       return;
@@ -369,6 +385,14 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       organization: showOrganization ? form.organization || undefined : undefined,
       organization_type: showOrganization ? form.organization_type || undefined : undefined,
       department: showDepartment ? form.department || undefined : undefined,
+      // International admission form fields (non-guest-registration countries).
+      date_of_birth: !needsGuestRegistration ? form.date_of_birth || undefined : undefined,
+      address_line1: !needsGuestRegistration ? form.address_line1 || undefined : undefined,
+      address_line2: !needsGuestRegistration ? form.address_line2 || undefined : undefined,
+      city: !needsGuestRegistration ? form.city || undefined : undefined,
+      county_state: !needsGuestRegistration ? form.county_state || undefined : undefined,
+      postcode: !needsGuestRegistration ? form.postcode || undefined : undefined,
+      address_country: !needsGuestRegistration ? (form.address_country.trim() || getCountryConfig(country).name) : undefined,
     });
     setLoading(false);
 
@@ -517,6 +541,24 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                   />
                 </div>
               )}
+
+              {/* Date of Birth — international admission form (non-guest-registration
+                  countries). Pakistan's form is unchanged. */}
+              {!needsGuestRegistration && (
+                <div className="space-y-1.5">
+                  <Label className="flex items-center gap-1.5">
+                    <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
+                    Date of Birth <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    type="date"
+                    value={form.date_of_birth}
+                    max={new Date().toISOString().slice(0, 10)}
+                    onChange={(e) => setForm({ ...form, date_of_birth: e.target.value })}
+                    required
+                  />
+                </div>
+              )}
             </div>
 
             {/* National ID (CNIC in PK, country-driven elsewhere) — always
@@ -555,7 +597,10 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="student">Student</SelectItem>
-                    <SelectItem value="professional">Professional</SelectItem>
+                    {/* PK keeps "Professional"; the international form uses
+                        "Employee" and adds an explicit "Other". */}
+                    <SelectItem value="professional">{needsGuestRegistration ? "Professional" : "Employee"}</SelectItem>
+                    {!needsGuestRegistration && <SelectItem value="general">Other</SelectItem>}
                   </SelectContent>
                 </Select>
               </div>
@@ -988,54 +1033,82 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
             </div>
           )}
 
-          {/* Permanent Address — province + district are required only where a
-              government guest-registration portal (PK Smart Eye / Hotel Eye)
-              needs them; the free-text address below stays configurable. The
-              whole card only renders if one of those two applies. */}
-          {(needsGuestRegistration || show("permanent_address")) && (
+          {/* Permanent Address. Pakistan (guest registration): Smart Eye
+              province/district + optional free-text home address — UNCHANGED.
+              International (non-PK): a structured postal address. */}
           <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
             <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
               <Home className="w-4 h-4 text-muted-foreground" /> Permanent Address
             </h2>
-            {needsGuestRegistration && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label>Province <span className="text-destructive">*</span></Label>
-                <SearchableSelect
-                  value={form.permanent_province}
-                  onValueChange={(v) => setForm({ ...form, permanent_province: v, permanent_district: "" })}
-                  options={[...HOTEL_EYE_PROVINCES]}
-                  placeholder="Select province"
-                  searchPlaceholder="Search province…"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>District <span className="text-destructive">*</span></Label>
-                <SearchableSelect
-                  value={form.permanent_district}
-                  onValueChange={(v) => setForm({ ...form, permanent_district: v })}
-                  options={[...(HOTEL_EYE_DISTRICTS[form.permanent_province] ?? [])]}
-                  placeholder={form.permanent_province ? "Select district" : "Pick a province first"}
-                  searchPlaceholder="Search district…"
-                />
-              </div>
-            </div>
-            )}
-            {show("permanent_address") && (
-              <div className="space-y-1.5">
-                <Label>Home Address {req("permanent_address") && <span className="text-destructive">*</span>}</Label>
-                <textarea
-                  rows={3}
-                  placeholder="House / street, area, city"
-                  value={form.permanent_address}
-                  onChange={(e) => setForm({ ...form, permanent_address: e.target.value })}
-                  required={req("permanent_address")}
-                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-y"
-                />
-              </div>
+            {needsGuestRegistration ? (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label>Province <span className="text-destructive">*</span></Label>
+                    <SearchableSelect
+                      value={form.permanent_province}
+                      onValueChange={(v) => setForm({ ...form, permanent_province: v, permanent_district: "" })}
+                      options={[...HOTEL_EYE_PROVINCES]}
+                      placeholder="Select province"
+                      searchPlaceholder="Search province…"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>District <span className="text-destructive">*</span></Label>
+                    <SearchableSelect
+                      value={form.permanent_district}
+                      onValueChange={(v) => setForm({ ...form, permanent_district: v })}
+                      options={[...(HOTEL_EYE_DISTRICTS[form.permanent_province] ?? [])]}
+                      placeholder={form.permanent_province ? "Select district" : "Pick a province first"}
+                      searchPlaceholder="Search district…"
+                    />
+                  </div>
+                </div>
+                {show("permanent_address") && (
+                  <div className="space-y-1.5">
+                    <Label>Home Address {req("permanent_address") && <span className="text-destructive">*</span>}</Label>
+                    <textarea
+                      rows={3}
+                      placeholder="House / street, area, city"
+                      value={form.permanent_address}
+                      onChange={(e) => setForm({ ...form, permanent_address: e.target.value })}
+                      required={req("permanent_address")}
+                      className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-y"
+                    />
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="space-y-1.5">
+                  <Label>Address Line 1 <span className="text-destructive">*</span></Label>
+                  <Input value={form.address_line1} onChange={(e) => setForm({ ...form, address_line1: e.target.value })} placeholder="House number and street" required />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Address Line 2 <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                  <Input value={form.address_line2} onChange={(e) => setForm({ ...form, address_line2: e.target.value })} placeholder="Apartment, suite, etc." />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label>City / Town <span className="text-destructive">*</span></Label>
+                    <Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} required />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>County / State / Province <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                    <Input value={form.county_state} onChange={(e) => setForm({ ...form, county_state: e.target.value })} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Postcode / ZIP <span className="text-destructive">*</span></Label>
+                    <Input value={form.postcode} onChange={(e) => setForm({ ...form, postcode: e.target.value })} required />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Country <span className="text-destructive">*</span></Label>
+                    <Input value={form.address_country || getCountryConfig(country).name} onChange={(e) => setForm({ ...form, address_country: e.target.value })} required />
+                  </div>
+                </div>
+              </>
             )}
           </div>
-          )}
 
           {show("emergency_contact") && (
             <div className="rounded-2xl border border-border bg-card p-6 space-y-4 shadow-sm">
