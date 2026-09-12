@@ -42,47 +42,67 @@ export default async function DashboardLayout({ children }: { children: React.Re
     accountFrozen = !!(data as { frozen?: boolean } | null)?.frozen;
   }
 
+  // Paddle card-billing owners are handled by Paddle (its own dunning); once
+  // subscribed they are effectively off the trial even if a fallback payment path
+  // left trial_ends_at set. Resolve it once and use it to suppress BOTH the trial
+  // banner and the bank "please pay" strip. (The freeze cron independently excludes
+  // active-sub owners, so this is display-only.)
+  let onPaddle = false;
+  if (!accountFrozen && accountOwnerId) {
+    const { data: subRow } = await admin
+      .from("hms_paddle_subscriptions").select("status").eq("owner_id", accountOwnerId).maybeSingle();
+    onPaddle = ["active", "trialing", "past_due", "paused"].includes(
+      (subRow as { status?: string } | null)?.status ?? ""
+    );
+  }
+
+  // Free-trial state (self-serve signups only). Owner-account concept, shown to
+  // the owner: days left while active, an "ended" nudge in the up-to-24h window
+  // before the cron freezes them. Suppressed once frozen or already on Paddle. A
+  // trial owner has no platform invoice, so the dueSoon strip never competes.
+  let trial: { daysLeft: number; ended: boolean } | null = null;
+  if (!accountFrozen && !onPaddle && ctx.profile?.role === "owner" && ctx.profile.trial_ends_at) {
+    const endMs = new Date(ctx.profile.trial_ends_at).getTime();
+    if (!Number.isNaN(endMs)) {
+      const msLeft = endMs - Date.now();
+      trial = { daysLeft: Math.max(0, Math.ceil(msLeft / (24 * 60 * 60 * 1000))), ended: msLeft <= 0 };
+    }
+  }
+
   // Advance warning: an unpaid invoice due within the next 7 days (or already
   // overdue) — shown as a "please pay" strip so a freeze is never a surprise.
   // Suppressed once frozen (the suspension banner takes over).
   let dueSoon: { due_date: string; freeze_date: string | null; overdue: boolean } | null = null;
-  if (!accountFrozen && accountOwnerId) {
-    // Don't nudge owners on Paddle card billing — Paddle charges them and handles
-    // its own card dunning; the manual "please pay" strip is for bank clients.
-    const { data: subRow } = await admin
-      .from("hms_paddle_subscriptions").select("status").eq("owner_id", accountOwnerId).maybeSingle();
-    const onPaddle = ["active", "trialing", "past_due", "paused"].includes(
-      (subRow as { status?: string } | null)?.status ?? ""
-    );
-    if (!onPaddle) {
-      // Any unpaid invoice due soon (or overdue) gets the "please pay" strip — it
-      // is a payment reminder, shown whether or not the invoice was emailed.
-      const { data } = await admin
-        .from("hms_platform_invoices")
-        .select("due_date, first_sent_at")
-        .eq("owner_id", accountOwnerId)
-        .eq("status", "unpaid")
-        .order("due_date", { ascending: true })
-        .limit(1);
-      if (data && data.length > 0) {
-        const inv = data[0] as { due_date: string; first_sent_at: string | null };
-        const dueMs = new Date(`${inv.due_date}T00:00:00Z`).getTime();
-        // A freeze is only SCHEDULED for a sent invoice (the cron needs
-        // first_sent_at + 7 days). Mirror hms_freeze_overdue_accounts(): the freeze
-        // date is the LATER of the due date and sent+7. For an unsent invoice there
-        // is no scheduled freeze yet — still nudge to pay, but name no date.
-        const freezeMs = inv.first_sent_at
-          ? Math.max(dueMs, new Date(inv.first_sent_at).getTime() + 7 * 24 * 60 * 60 * 1000)
-          : null;
-        // Surface within a week of the due date (or once overdue) — a timely
-        // reminder, not a month-out nag.
-        if (dueMs <= Date.now() + 7 * 24 * 60 * 60 * 1000) {
-          dueSoon = {
-            due_date: inv.due_date,
-            freeze_date: freezeMs ? new Date(freezeMs).toISOString().slice(0, 10) : null,
-            overdue: (freezeMs ?? dueMs) < Date.now(),
-          };
-        }
+  // Don't nudge owners on Paddle card billing — Paddle charges them and handles
+  // its own card dunning; the manual "please pay" strip is for bank clients.
+  if (!accountFrozen && !onPaddle && accountOwnerId) {
+    // Any unpaid invoice due soon (or overdue) gets the "please pay" strip — it
+    // is a payment reminder, shown whether or not the invoice was emailed.
+    const { data } = await admin
+      .from("hms_platform_invoices")
+      .select("due_date, first_sent_at")
+      .eq("owner_id", accountOwnerId)
+      .eq("status", "unpaid")
+      .order("due_date", { ascending: true })
+      .limit(1);
+    if (data && data.length > 0) {
+      const inv = data[0] as { due_date: string; first_sent_at: string | null };
+      const dueMs = new Date(`${inv.due_date}T00:00:00Z`).getTime();
+      // A freeze is only SCHEDULED for a sent invoice (the cron needs
+      // first_sent_at + 7 days). Mirror hms_freeze_overdue_accounts(): the freeze
+      // date is the LATER of the due date and sent+7. For an unsent invoice there
+      // is no scheduled freeze yet — still nudge to pay, but name no date.
+      const freezeMs = inv.first_sent_at
+        ? Math.max(dueMs, new Date(inv.first_sent_at).getTime() + 7 * 24 * 60 * 60 * 1000)
+        : null;
+      // Surface within a week of the due date (or once overdue) — a timely
+      // reminder, not a month-out nag.
+      if (dueMs <= Date.now() + 7 * 24 * 60 * 60 * 1000) {
+        dueSoon = {
+          due_date: inv.due_date,
+          freeze_date: freezeMs ? new Date(freezeMs).toISOString().slice(0, 10) : null,
+          overdue: (freezeMs ?? dueMs) < Date.now(),
+        };
       }
     }
   }
@@ -101,6 +121,28 @@ export default async function DashboardLayout({ children }: { children: React.Re
               Pay online to clear your balance and restore full access.
             </span>
             <span className="whitespace-nowrap font-semibold text-amber">Pay now →</span>
+          </Link>
+        ) : trial ? (
+          <Link
+            href="/billing"
+            className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-amber/30 bg-amber/10 px-4 py-2.5 text-sm transition-colors hover:bg-amber/15"
+          >
+            <span>
+              {trial.ended ? (
+                <>
+                  <span className="font-semibold text-amber">Your free trial has ended.</span>{" "}
+                  Subscribe now to keep full access — your account will switch to read-only shortly if you don&apos;t.
+                </>
+              ) : (
+                <>
+                  <span className="font-semibold text-amber">
+                    {trial.daysLeft} {trial.daysLeft === 1 ? "day" : "days"} left in your free trial.
+                  </span>{" "}
+                  Subscribe any time to keep full access when it ends.
+                </>
+              )}
+            </span>
+            <span className="whitespace-nowrap font-semibold text-amber">{trial.ended ? "Subscribe →" : "View plans →"}</span>
           </Link>
         ) : dueSoon ? (
           <Link

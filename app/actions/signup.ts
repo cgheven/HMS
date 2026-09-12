@@ -212,9 +212,13 @@ export async function verifySignupAndProvision(
     // Set the account's country + details via the service role (the country guard
     // blocks user sessions, not the admin client). Unpublish the starter hostel the
     // profile trigger auto-created so an empty listing never leaks; stamp its country.
+    // 14-day free trial, no card. NULL for every non-self-serve owner, so only
+    // these accounts are trial-gated; the daily cron freezes them (read-only) at
+    // expiry unless they subscribe, which clears this (Paddle webhook).
+    const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
     const [{ error: profErr }, { error: hostErr }] = await Promise.all([
       admin.from("hms_profiles")
-        .update({ country: pending.country, full_name: pending.owner_name || null, phone: pending.phone || null })
+        .update({ country: pending.country, full_name: pending.owner_name || null, phone: pending.phone || null, trial_ends_at: trialEndsAt })
         .eq("id", ownerId),
       admin.from("hms_hostels")
         .update({ country: pending.country, listing_enabled: false })

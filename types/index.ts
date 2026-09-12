@@ -63,6 +63,10 @@ export interface Profile {
   /** Account suspended for unpaid dues (migration 229). true = read-only: the
    *  owner can log in and view but every write is blocked until dues clear. */
   frozen?: boolean | null;
+  /** Self-serve 14-day free-trial expiry (migration 241). NULL = not a trial
+   *  account. On expiry the daily cron freezes the account unless subscribed;
+   *  paying (Paddle webhook) clears it. Super-admin-guarded. */
+  trial_ends_at?: string | null;
   primary_hostel_id: string | null;
   is_active: boolean;
   created_at: string;

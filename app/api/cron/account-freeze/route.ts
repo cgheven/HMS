@@ -19,11 +19,27 @@ export async function GET(request: NextRequest) {
   }
 
   const admin = createAdminClient();
-  const { data, error } = await admin.rpc("hms_freeze_overdue_accounts");
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  // Two independent freeze reasons, both service-role-only atomic statements:
+  // unpaid bank/manual platform invoices (migration 232), and lapsed self-serve
+  // free trials (migration 241). A trial owner has no platform invoice, so the
+  // two never overlap. Run both; report each set.
+  const [overdue, trials] = await Promise.all([
+    admin.rpc("hms_freeze_overdue_accounts"),
+    admin.rpc("hms_freeze_expired_trials"),
+  ]);
+  if (overdue.error) {
+    return NextResponse.json({ error: overdue.error.message }, { status: 500 });
+  }
+  if (trials.error) {
+    return NextResponse.json({ error: trials.error.message }, { status: 500 });
   }
 
-  const frozen = (data ?? []) as string[];
-  return NextResponse.json({ frozen: frozen.length, owners: frozen });
+  const frozen = (overdue.data ?? []) as string[];
+  const trialsFrozen = (trials.data ?? []) as string[];
+  return NextResponse.json({
+    frozen: frozen.length,
+    owners: frozen,
+    trialsFrozen: trialsFrozen.length,
+    trialOwners: trialsFrozen,
+  });
 }
