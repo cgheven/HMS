@@ -54,6 +54,9 @@ interface ReceiptPayment {
   payment_method?: string | null;
   payment_date?: string | null;
   payment_package_tier?: string | null;
+  /** Which configured account the money was received into — printed under Method
+   *  when present (owner reconciliation / tenant confirmation). */
+  received_account?: string | null;
 }
 
 interface ReceiptTenant {
@@ -273,6 +276,7 @@ export function generateReceiptPDF(
       addKv("Period", fmtMonth(payment.for_month)); nl(12);
     }
     addKv("Method", (payment.payment_method ?? "-").toUpperCase()); nl(12);
+    if (payment.received_account?.trim()) { addKv("Received In", payment.received_account.trim()); nl(12); }
   }
   addDash(); nl(10);
 

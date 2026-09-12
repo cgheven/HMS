@@ -464,6 +464,9 @@ export interface Payment {
   status: PaymentStatus;
   receipt_number: string | null;
   notes: string | null;
+  /** Optional label of the configured account the payment was received into
+   *  (owner reconciliation; migration 243). NULL = not specified. */
+  received_account?: string | null;
   food_charge?: number;
   ac_units_consumed?: number;
   ac_charge?: number;

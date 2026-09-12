@@ -310,6 +310,10 @@ export interface MarkPaidInput {
       input). Omit/blank for none. It STACKS on the tenant's standing discount —
       the trigger adds the two and clamps the sum to 100. */
   discountPercent?: string;
+  /** Optional label of the configured account the money was received into
+      (owner reconciliation). Free label from the accounts dropdown; stored as-is.
+      Omit/blank = not specified. */
+  receivedAccount?: string;
 }
 
 export async function markPaymentPaidAction(
@@ -562,6 +566,9 @@ export async function markPaymentPaidAction(
       recorded_by: ctx?.user?.id ?? null,
       late_fee: lateFee,
       notes: input.notes || null,
+      // Reconciliation label only (which configured account received the money).
+      // Capped defensively; a directly-called RPC can't stash unbounded text here.
+      received_account: input.receivedAccount?.trim() ? input.receivedAccount.trim().slice(0, 120) : null,
       receipt_number: input.receiptNumber,
       // Always write the recalculated total (trigger will re-verify).
       // newTotalAmount is GROSS, and referral_discount: 0 is what declares that —

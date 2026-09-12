@@ -371,6 +371,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     ac_units_consumed: "0",
     amount_received: "",
     discount_percent: "",
+    received_account: "",
   });
   const [saving, setSaving] = useState(false);
   const [sendingWa, setSendingWa] = useState<string | null>(null); // paymentId
@@ -557,6 +558,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       ac_units_consumed: p.ac_units_consumed ? String(p.ac_units_consumed) : "0",
       amount_received: String(remaining),
       discount_percent: "",
+      // Prefill from the bill so reopening a partially-paid payment to record the
+      // next installment doesn't blank the field and overwrite the account chosen
+      // on the first installment with null (received_account is bill-level).
+      received_account: p.received_account ?? "",
     });
     // Reset the input mode with the dialog — a rupee figure typed for the last
     // member means nothing for this one.
@@ -783,6 +788,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       acUnitsConsumed: markForm.ac_units_consumed,
       amountReceived: markForm.amount_received,
       discountPercent: discountPercent === undefined ? undefined : String(discountPercent),
+      receivedAccount: markForm.received_account || undefined,
     });
 
     if (result.error) {
@@ -3043,6 +3049,26 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 </SelectContent>
               </Select>
             </div>
+            {/* Which configured account received the money — owner reconciliation.
+                Only shown to owners with accounts set up (managers/partners don't
+                get the accounts list). Optional; "__none__" maps to blank. */}
+            {!isManager && !isPartner && paymentMethods.length > 0 && (
+              <div className="space-y-1.5"><Label>Received in account <span className="text-muted-foreground/60 font-normal text-xs">optional</span></Label>
+                <Select
+                  value={markForm.received_account || "__none__"}
+                  onValueChange={(v) => setMarkForm({ ...markForm, received_account: v === "__none__" ? "" : v })}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Not specified</SelectItem>
+                    {paymentMethods.map((m) => {
+                      const label = `${m.label}${m.account_number ? ` (${m.account_number})` : ""}`;
+                      return <SelectItem key={m.id} value={label}>{label}</SelectItem>;
+                    })}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             {hideOverrides ? (
               <p className="text-xs text-muted-foreground/70">
                 Recorded with today&apos;s date. Late fee and receipt number overrides aren&apos;t available here — ask the owner if either is needed.
