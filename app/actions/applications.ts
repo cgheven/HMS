@@ -536,25 +536,7 @@ export async function convertToTenant(
     void sendAdmissionConfirmationToEmergencyContact(newTenant.id);
   }
 
-  // Occupancy must move with the tenant insert on the server: partners cannot
-  // write hms_rooms from the browser (RLS), and a blocked update there affects
-  // 0 rows silently, leaving the room advertising a bed that is already taken.
-  const assignedRoomId = extra.is_waiting ? null : extra.room_id;
-  if (assignedRoomId) {
-    const { data: room } = await admin
-      .from("hms_rooms")
-      .select("capacity, occupied")
-      .eq("id", assignedRoomId)
-      .eq("hostel_id", app.hostel_id)
-      .maybeSingle();
-    if (room) {
-      const newOcc = room.occupied + 1;
-      await admin
-        .from("hms_rooms")
-        .update({ occupied: newOcc, status: newOcc >= room.capacity ? "occupied" : "available" })
-        .eq("id", assignedRoomId);
-    }
-  }
+  // Room occupancy is now maintained by the DB trigger hms_sync_room_occupancy (migration 254).
 
   // Log deposit collection to the Member Ledger — best-effort, never blocks approval.
   if (newTenant?.id && extra.security_deposit > 0) {

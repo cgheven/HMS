@@ -1065,14 +1065,7 @@ export async function addTenantAsManager(
       void sendAdmissionConfirmationToEmergencyContact(tenantId)
     }
 
-    if (room && roomId) {
-      const newOccupied = room.occupied + 1
-      await admin
-        .from("hms_rooms")
-        .update({ occupied: newOccupied, status: newOccupied >= room.capacity ? "occupied" : "available" })
-        .eq("id", roomId)
-        .eq("hostel_id", hostelId)
-    }
+    // Room occupancy is now maintained by the DB trigger hms_sync_room_occupancy (migration 254).
 
     // Ledger entry — best-effort, mirrors the owner/partner flow exactly.
     const depositAmount = insertData.security_deposit as number
@@ -1327,26 +1320,7 @@ export async function editTenantAsManager(
       })
     }
 
-    // Room occupancy adjustments — old room decrements, new room increments.
-    if (prevRoomId !== roomId) {
-      if (prevRoomId) {
-        const { data: oldRoom } = await admin.from("hms_rooms").select("occupied, capacity").eq("id", prevRoomId).single()
-        if (oldRoom) {
-          const newOcc = Math.max(0, oldRoom.occupied - 1)
-          await admin
-            .from("hms_rooms")
-            .update({ occupied: newOcc, status: newOcc < oldRoom.capacity ? "available" : "occupied" })
-            .eq("id", prevRoomId)
-        }
-      }
-      if (roomId && newRoom) {
-        const newOcc = newRoom.occupied + 1
-        await admin
-          .from("hms_rooms")
-          .update({ occupied: newOcc, status: newOcc >= newRoom.capacity ? "occupied" : "available" })
-          .eq("id", roomId)
-      }
-    }
+    // Room occupancy is now maintained by the DB trigger hms_sync_room_occupancy (migration 254).
 
     revalidatePath("/portal/tenants")
     revalidatePath("/portal/payments")

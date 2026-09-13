@@ -904,25 +904,7 @@ export async function performTenantCheckout(
       }
     }
 
-    // Step 5: Atomically decrement room occupancy — non-fatal, best-effort
-    // UX-F2 + SEC-F3: replaced read-compute-write with a single atomic RPC to eliminate
-    // the race window for concurrent checkouts and carry the full ownership chain.
-    // Requires DB function:
-    //   CREATE OR REPLACE FUNCTION decrement_room_occupancy(p_room_id uuid, p_hostel_id uuid)
-    //   RETURNS void LANGUAGE sql SECURITY DEFINER AS $$
-    //     UPDATE hms_rooms
-    //     SET occupied = GREATEST(occupied - 1, 0),
-    //         status = CASE WHEN GREATEST(occupied - 1, 0) < capacity THEN 'available' ELSE 'occupied' END
-    //     WHERE id = p_room_id AND hostel_id = p_hostel_id;
-    //   $$;
-    if (tenant.room_id) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (adminDb as any).rpc("decrement_room_occupancy", {
-        p_room_id: tenant.room_id,
-        p_hostel_id: hostelId,
-      });
-      // Non-fatal — Supabase returns error in result object, not thrown; ignored intentionally
-    }
+    // Room occupancy is now maintained by the DB trigger hms_sync_room_occupancy (migration 254).
 
     // Step 6: Mint the single-use checkout feedback link — best-effort, and
     // deliberately the LAST thing that happens. mintFeedbackToken never throws

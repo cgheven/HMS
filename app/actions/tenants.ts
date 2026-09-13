@@ -2202,20 +2202,7 @@ export async function deleteTenantAction(
       .eq("hostel_id", hostelId);
     if (deleteErr) throw new Error(deleteErr.message);
 
-    if (tenant.room_id && tenant.is_active) {
-      const { data: room } = await adminDb
-        .from("hms_rooms")
-        .select("capacity, occupied")
-        .eq("id", tenant.room_id)
-        .single();
-      if (room) {
-        const newOcc = Math.max(0, room.occupied - 1);
-        await adminDb
-          .from("hms_rooms")
-          .update({ occupied: newOcc, status: newOcc < room.capacity ? "available" : "occupied" })
-          .eq("id", tenant.room_id);
-      }
-    }
+    // Room occupancy is now maintained by the DB trigger hms_sync_room_occupancy (migration 254).
 
     revalidatePath("/tenants");
     return { success: true };
@@ -2584,20 +2571,7 @@ export async function hardDeleteTenantResidentAction(
       .eq("hostel_id", hostelId);
     if (deleteErr) throw new Error(deleteErr.message);
 
-    if (tenant.room_id && tenant.is_active) {
-      const { data: room } = await adminDb
-        .from("hms_rooms")
-        .select("capacity, occupied")
-        .eq("id", tenant.room_id)
-        .single();
-      if (room) {
-        const newOcc = Math.max(0, room.occupied - 1);
-        await adminDb
-          .from("hms_rooms")
-          .update({ occupied: newOcc, status: newOcc < room.capacity ? "available" : "occupied" })
-          .eq("id", tenant.room_id);
-      }
-    }
+    // Room occupancy is now maintained by the DB trigger hms_sync_room_occupancy (migration 254).
 
     revalidatePath("/tenants");
     return { success: true };
@@ -2694,25 +2668,9 @@ export async function getRoomTransferPreviewAction(
     // takes the newest reading from any month, so it is happily non-null for a
     // room whose meter was last read in June. Asked here so the panel can say so
     // BEFORE the operator fills the form, instead of after they press Save.
-    const forMonth = todayInZone(getCountryConfig((hostel as { country?: string | null } | null)?.country).timezone).slice(0, 7);
-    const [y, mo] = forMonth.split("-").map(Number);
-    const pd = new Date(y, mo - 2, 1);
-    const prevMonth = `${pd.getFullYear()}-${String(pd.getMonth() + 1).padStart(2, "0")}`;
-
-    const openingFor = async (roomId: string): Promise<number | null> => {
-      const [{ data: prevRow }, { data: prevCheckouts }, { data: roommates }] = await Promise.all([
-        adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonth).maybeSingle(),
-        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonth),
-        adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", roomId).eq("is_active", true),
-      ]);
-      const storedPrev = effectivePrevReading(prevRow, prevCheckouts);
-      return storedPrev != null ? storedPrev : deriveOpeningReading(roommates ?? [], forMonth);
-    };
-
-    const [fromLastReading, toLastReading, toOpening] = await Promise.all([
+    const [fromLastReading, toLastReading] = await Promise.all([
       fromMetered ? lastReadingFor(fromRoom?.id) : Promise.resolve(null),
       toMetered ? lastReadingFor(toRoom.id) : Promise.resolve(null),
-      toMetered ? openingFor(toRoom.id) : Promise.resolve(null),
     ]);
 
     return {
@@ -2722,9 +2680,11 @@ export async function getRoomTransferPreviewAction(
       toMetered,
       fromLastReading,
       toLastReading,
-      toBlocked: toMetered && toOpening == null
-        ? `Room ${toRoom.room_number} has no opening meter reading for this month yet. Record it on the Payments page under AC Billing first — otherwise this member would be billed there for units used before they arrived.`
-        : null,
+      // A metered destination with no derivable opening no longer blocks the move:
+      // the reading the operator enters at move-in becomes the room's opening, so
+      // the member is billed only from arrival (see performRoomTransfer). There is
+      // nothing to pre-warn, so this is never set from a missing opening now.
+      toBlocked: null,
     };
   } catch (err: unknown) {
     unstable_rethrow(err);
@@ -3121,25 +3081,9 @@ export async function getBranchTransferPreviewAction(
       return Math.max(a, b);
     };
 
-    const forMonth = todayInZone(getCountryConfig((srcHostel as { country?: string | null } | null)?.country).timezone).slice(0, 7);
-    const [y, mo] = forMonth.split("-").map(Number);
-    const pd = new Date(y, mo - 2, 1);
-    const prevMonth = `${pd.getFullYear()}-${String(pd.getMonth() + 1).padStart(2, "0")}`;
-
-    const openingFor = async (roomId: string, hostelId: string): Promise<number | null> => {
-      const [{ data: prevRow }, { data: prevCheckouts }, { data: roommates }] = await Promise.all([
-        adminDb.from("hms_room_ac_readings").select("meter_reading, recorded_while_vacant").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonth).maybeSingle(),
-        adminDb.from("hms_room_ac_checkout_readings").select("meter_reading").eq("room_id", roomId).eq("hostel_id", hostelId).eq("for_month", prevMonth),
-        adminDb.from("hms_tenants").select("id, check_in, joining_meter_reading").eq("hostel_id", hostelId).eq("room_id", roomId).eq("is_active", true),
-      ]);
-      const storedPrev = effectivePrevReading(prevRow, prevCheckouts);
-      return storedPrev != null ? storedPrev : deriveOpeningReading(roommates ?? [], forMonth);
-    };
-
-    const [fromLastReading, toLastReading, toOpening] = await Promise.all([
+    const [fromLastReading, toLastReading] = await Promise.all([
       fromMetered ? lastReadingFor(fromRoom?.id, srcHostelId) : Promise.resolve(null),
       toMetered ? lastReadingFor(toRoom.id, toHostelId) : Promise.resolve(null),
-      toMetered ? openingFor(toRoom.id, toHostelId) : Promise.resolve(null),
     ]);
 
     return {
@@ -3149,9 +3093,10 @@ export async function getBranchTransferPreviewAction(
       toMetered,
       fromLastReading,
       toLastReading,
-      toBlocked: toMetered && toOpening == null
-        ? `That room has no opening meter reading for this month yet. Record it in the destination branch under Payments → AC Billing first — otherwise the member would be billed there for units used before they arrived.`
-        : null,
+      // See the same-branch move context: a metered destination with no derivable
+      // opening no longer blocks — the entered move-in reading becomes the opening
+      // (billed from arrival). Never set from a missing opening now.
+      toBlocked: null,
     };
   } catch (err: unknown) {
     unstable_rethrow(err);

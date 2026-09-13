@@ -250,14 +250,16 @@ export async function performRoomTransfer(
       thisMonthRow?.meter_reading != null && thisMonthRow?.total_units != null
         ? Math.round(Number(thisMonthRow.meter_reading)) - Math.round(Number(thisMonthRow.total_units))
         : null;
-    const prevReading = storedPrev ?? impliedFromThisMonth ?? deriveOpeningReading(roommates ?? [], forMonth);
-
-    if (prevReading == null) {
-      throw new Error(
-        `Room ${fromRoom.room_number} has no opening meter reading for this month, so there is nothing to ` +
-        `measure the member's usage against. Record the room's reading on the AC Billing tab first, then move them.`
-      );
-    }
+    // When no opening is derivable — a fresh never-read room (the same
+    // meter-all-rooms case the move-IN side hit) — the operator's entered closing
+    // reading IS the baseline, so `units` below is 0: the leaver is billed nothing
+    // for this room this month (there is no earlier point to measure against, and
+    // billing 0 is the safe, symmetric outcome). This deliberately falls back to the
+    // entered reading, NEVER to 0 — a 0 baseline turns the meter's absolute reading
+    // into a month's consumption (the six-figure bug described above). Refusing here
+    // was the reported "no opening meter reading … record it on the AC Billing tab"
+    // dead-end (that tab stores under the current month; this check reads the previous).
+    const prevReading = storedPrev ?? impliedFromThisMonth ?? deriveOpeningReading(roommates ?? [], forMonth) ?? reading;
 
     if (reading < prevReading) {
       throw new Error(
@@ -352,55 +354,49 @@ export async function performRoomTransfer(
       ]);
 
       const storedPrev = effectivePrevReading(prevRow, prevCheckouts);
-      const opening = storedPrev != null
+      const derivedOpening = storedPrev != null
         ? storedPrev
         : deriveOpeningReading(roommates ?? [], forMonth);
 
-      if (opening == null) {
-        // Refused, not warned. The old warning told the operator to finish the
-        // job under "Mid-Month Joiners" — a box built from tenants whose
-        // CHECK-IN month is the month on screen. A transfer never touches
-        // check_in, so a member who joined in March and moves rooms in October
-        // is never in that list and the instruction could not be followed. Left
-        // unrecorded, the destination's Apply treats them as present from unit
-        // zero and bills them for what was burned before they arrived — the
-        // exact bug this feature exists to remove.
-        //
-        // Reachable on the simplest move of all: into an empty room, where there
-        // are no roommates to derive an opening from and often no reading on
-        // file. The operator is standing at that meter, so recording the room
-        // first is a real one-time action, and the AC Billing tab has an Opening
-        // box for precisely this.
-        throw new Error(
-          `Room ${toRoom.room_number} has no opening meter reading for this month, so the member's starting point ` +
-          `there cannot be recorded. Record that room's reading on the AC Billing tab first, then move them — ` +
-          `otherwise they would be billed for units used before they arrived.`
-        );
-      } else if (reading < opening) {
+      // When the room has no DERIVABLE opening for this month — the common case of
+      // an empty room with no prior-month reading and no roommate joining readings —
+      // the operator's entered reading (required above) IS the opening: the member
+      // starts billing from their arrival point (units_at_join = 0). Refusing here
+      // was the reported bug: it told the operator to "record the opening on the AC
+      // Billing tab", but that tab stores the reading under the CURRENT month while
+      // this check only ever reads the PREVIOUS month, so the error never cleared.
+      // Recording from the entered reading is the safe outcome — it is exactly the
+      // "billed only from arrival" guarantee — and the mover's joining_meter_reading
+      // is set to this reading below, seeding the room's opening for the month-end
+      // Apply and any later move-in.
+      const opening = derivedOpening ?? reading;
+
+      if (reading < opening) {
         throw new Error(
           `Meter reading ${reading} for room ${toRoom.room_number} is below where the month opened (${opening}). ` +
           `Check the number — a meter cannot run backwards.`
         );
-      } else {
-        // units_at_join is an OFFSET from the month's opening, the same shape the
-        // Mid-Month Joiners box stores, so the engine needs no new concept.
-        const { error: jErr } = await adminDb.from("hms_room_ac_join_readings").upsert(
-          {
-            hostel_id: destHostelId,
-            room_id: toRoom.id,
-            tenant_id: input.tenantId,
-            for_month: forMonth,
-            units_at_join: Math.max(0, reading - opening),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "room_id,for_month,tenant_id" }
-        );
-        if (jErr) {
-          await undoPartialWrites();
-          throw new Error(`Could not record the opening meter reading: ${jErr.message}`);
-        }
-        writtenJoin.push(toRoom.id);
       }
+
+      // units_at_join is an OFFSET from the month's opening, the same shape the
+      // Mid-Month Joiners box stores, so the engine needs no new concept. It is 0
+      // when the entered reading is itself the opening (a fresh room).
+      const { error: jErr } = await adminDb.from("hms_room_ac_join_readings").upsert(
+        {
+          hostel_id: destHostelId,
+          room_id: toRoom.id,
+          tenant_id: input.tenantId,
+          for_month: forMonth,
+          units_at_join: Math.max(0, reading - opening),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "room_id,for_month,tenant_id" }
+      );
+      if (jErr) {
+        await undoPartialWrites();
+        throw new Error(`Could not record the opening meter reading: ${jErr.message}`);
+      }
+      writtenJoin.push(toRoom.id);
     }
 
     // ── Charge the room they left, on this month's bill ──────────────────

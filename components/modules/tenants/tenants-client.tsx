@@ -2032,37 +2032,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       }
     }
 
-    // Update room occupancy counts
-    if (!editing && newRoomId) {
-      // New active tenant — increment room occupied
-      const room = rooms.find((r) => r.id === newRoomId);
-      if (room) {
-        const newOccupied = room.occupied + 1;
-        await supabase.from("hms_rooms").update({
-          occupied: newOccupied,
-          status: newOccupied >= room.capacity ? "occupied" : "available",
-        }).eq("id", newRoomId);
-      }
-    } else if (editing && prevRoomId !== newRoomId && !isMeteredTransfer) {
-      // Room changed — update both old and new.
-      // Skipped for a metered transfer: the server action already recounted both
-      // rooms from the tenant table, which is truth. Letting this run too would
-      // apply a second -1/+1 on top of a count that is already correct.
-      if (prevRoomId) {
-        const oldRoom = rooms.find((r) => r.id === prevRoomId);
-        if (oldRoom) {
-          const newOcc = Math.max(0, oldRoom.occupied - 1);
-          await supabase.from("hms_rooms").update({ occupied: newOcc, status: newOcc < oldRoom.capacity ? "available" : "occupied" }).eq("id", prevRoomId);
-        }
-      }
-      if (newRoomId) {
-        const newRoom = rooms.find((r) => r.id === newRoomId);
-        if (newRoom) {
-          const newOcc = newRoom.occupied + 1;
-          await supabase.from("hms_rooms").update({ occupied: newOcc, status: newOcc >= newRoom.capacity ? "occupied" : "available" }).eq("id", newRoomId);
-        }
-      }
-    }
+    // Room occupancy (occupied + status) is maintained authoritatively by the DB
+    // trigger hms_sync_room_occupancy (migration 254) on every tenant insert /
+    // room-change / is_active change. The old client-side ± 1 here raced with
+    // stale React props and drifted the counter, so it is removed — the tenant
+    // write above already recomputed both rooms from the live count.
 
     // Backfill past months as Paid (Cash) for historical tenants
     if (newTenantId && !form.is_waiting && form.check_in) {
