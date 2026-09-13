@@ -7,19 +7,33 @@ import { requestSignup } from "@/app/actions/signup";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SUPPORTED_COUNTRIES } from "@/lib/country-config";
+import { PROPERTY_TYPES } from "@/lib/validation";
 import { LegalFooter } from "@/components/legal/legal-footer";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export function SignupForm({ detectedCountryName, dialCode }: { detectedCountryName: string; dialCode: string }) {
+export function SignupForm({ detectedCountryCode }: { detectedCountryCode: string }) {
   const [businessName, setBusinessName] = useState("");
   const [ownerName, setOwnerName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  // Defaults to the IP-detected country; the owner can override it (IP geo is
+  // unreliable — VPNs, travel — so the picker, not the IP, is authoritative).
+  const [country, setCountry] = useState(detectedCountryCode);
+  // Property type — an optional business attribute. Presets plus a free-text
+  // "Other". The server re-whitelists the presets and length-caps custom text.
+  const [propertyType, setPropertyType] = useState("");
+  const [propertyTypeOther, setPropertyTypeOther] = useState("");
   const [contactRef2, setContactRef2] = useState(""); // honeypot — real users never see/fill this
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
+
+  const dialCode = SUPPORTED_COUNTRIES.find((c) => c.code === country)?.dialCode ?? "";
+  const resolvedPropertyType =
+    propertyType === "Other" ? propertyTypeOther.trim() : propertyType;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -29,16 +43,19 @@ export function SignupForm({ detectedCountryName, dialCode }: { detectedCountryN
       return;
     }
     setLoading(true);
-    // The server re-derives country from IP and re-validates everything; this is
-    // just the friendly client gate. Response is intentionally uniform (anti-
-    // enumeration) — we show the same "check your inbox" screen regardless. Only a
-    // transport failure (never a "this email exists" signal) surfaces an error.
+    // The server re-validates the chosen country (isSupportedCountry, else IP,
+    // else PK) so a spoofed value can't unlock an unsupported market. Response is
+    // intentionally uniform (anti-enumeration) — we show the same "check your
+    // inbox" screen regardless. Only a transport failure (never a "this email
+    // exists" signal) surfaces an error.
     try {
       await requestSignup({
         businessName: businessName.trim() || undefined,
         ownerName: ownerName.trim() || undefined,
         email: email.trim(),
         phone: phone.trim() || undefined,
+        country,
+        propertyType: resolvedPropertyType || undefined,
         contactRef2,
       });
       setSent(true);
@@ -115,7 +132,44 @@ export function SignupForm({ detectedCountryName, dialCode }: { detectedCountryN
                   <input id="contactRef2" name="contactRef2" tabIndex={-1} autoComplete="off" value={contactRef2} onChange={(e) => setContactRef2(e.target.value)} />
                 </div>
 
-                <p className="text-xs text-muted-foreground">Detected location: <span className="text-foreground">{detectedCountryName}</span> — you can change this during setup.</p>
+                <div className="space-y-1.5">
+                  <Label htmlFor="country" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Country</Label>
+                  <Select value={country} onValueChange={setCountry} disabled={loading}>
+                    <SelectTrigger id="country" className="h-10 bg-background/50 border-sidebar-border focus:ring-amber/40 focus:border-amber/50">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SUPPORTED_COUNTRIES.map((c) => (
+                        <SelectItem key={c.code} value={c.code}>{c.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-muted-foreground">Sets your currency, timezone and billing region.</p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="propertyType" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Property type <span className="normal-case font-normal">(optional)</span></Label>
+                  <Select value={propertyType} onValueChange={setPropertyType} disabled={loading}>
+                    <SelectTrigger id="propertyType" className="h-10 bg-background/50 border-sidebar-border focus:ring-amber/40 focus:border-amber/50">
+                      <SelectValue placeholder="Select property type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PROPERTY_TYPES.map((p) => (
+                        <SelectItem key={p} value={p}>{p}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {propertyType === "Other" && (
+                    <Input
+                      value={propertyTypeOther}
+                      onChange={(e) => setPropertyTypeOther(e.target.value)}
+                      placeholder="Describe your property type"
+                      maxLength={60}
+                      disabled={loading}
+                      className="h-10 bg-background/50 border-sidebar-border focus-visible:ring-amber/40 focus-visible:border-amber/50"
+                    />
+                  )}
+                </div>
                 {error && <p className="text-xs text-rose-400">{error}</p>}
 
                 <Button type="submit" disabled={loading || !email.trim()}

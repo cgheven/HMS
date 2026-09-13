@@ -13,7 +13,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
-import { formatCurrency, capitalize, sortRooms } from "@/lib/utils";
+import { capitalize, sortRooms } from "@/lib/utils";
+import { useMoney, useHostelContext } from "@/contexts/hostel-context";
+import { getCountryConfig } from "@/lib/country-config";
 import type { PartnerTier, Room, RoomStatus, SpaceType, StaffPermission } from "@/types";
 
 const statusColors: Record<RoomStatus, "success" | "info" | "warning"> = { available: "success", occupied: "info", maintenance: "warning" };
@@ -39,6 +41,10 @@ function roomToSlots(room: Room): PhotoSlot[] {
 interface Props { hostelId: string | null; initialRooms: Room[]; partnerTier?: PartnerTier | null; hostelName?: string | null; managerPermissions?: StaffPermission[] | null; }
 
 export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hostelName = null, managerPermissions = null }: Props) {
+  const money = useMoney();
+  const activeCountryCfg = getCountryConfig(useHostelContext().hostel?.country);
+  const curSym = activeCountryCfg.currencySymbol; // inline amounts: "Rs 5,000" / "£5,000"
+  const curCode = activeCountryCfg.currency; // ISO code for the export column header (PK stays "PKR")
   const router = useRouter();
   const canFullTier = !partnerTier || partnerTier === "full";
   const isManager = !!managerPermissions;
@@ -274,19 +280,22 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
   // Exports follow whatever is on screen, so a filtered view (one floor, or
   // just the vacant rooms) exports exactly what the operator is looking at.
   function exportRows() {
-    return filtered.map((r) => ({
-      Room: r.room_number,
-      Floor: r.floor ?? "",
-      Type: capitalize(r.type),
-      Capacity: r.capacity,
-      Occupied: r.occupied,
-      Vacant: Math.max(0, r.capacity - r.occupied),
-      Status: capitalize(r.status),
-      AC: r.has_ac ? "Yes" : "No",
-      Cooler: r.has_cooler ? "Yes" : "No",
-      "Attached Washroom": r.has_attached_washroom ? "Yes" : "No",
-      "Monthly Rent (PKR)": r.monthly_rent,
-    }));
+    return filtered.map((r) => {
+      const row: Record<string, string | number> = {
+        Room: r.room_number,
+        Floor: r.floor ?? "",
+        Type: capitalize(r.type),
+        Capacity: r.capacity,
+        Occupied: r.occupied,
+        Vacant: Math.max(0, r.capacity - r.occupied),
+        Status: capitalize(r.status),
+        AC: r.has_ac ? "Yes" : "No",
+        Cooler: r.has_cooler ? "Yes" : "No",
+        "Attached Washroom": r.has_attached_washroom ? "Yes" : "No",
+      };
+      row[`Monthly Rent (${curCode})`] = r.monthly_rent;
+      return row;
+    });
   }
 
   function exportFileLabel() {
@@ -336,10 +345,10 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
       autoTable(doc, {
         startY: 28,
         head: [["Room", "Floor", "Type", "Capacity", "Occupied", "Vacant", "Status", "AC", "Cooler", "Rent"]],
-        body: exportRows().map((r) => [
-          r.Room, String(r.Floor || "—"), r.Type, String(r.Capacity), String(r.Occupied),
-          String(r.Vacant), r.Status, r.AC, r.Cooler,
-          r["Monthly Rent (PKR)"] ? `Rs ${r["Monthly Rent (PKR)"].toLocaleString()}` : "—",
+        body: filtered.map((r) => [
+          r.room_number, String(r.floor || "—"), capitalize(r.type), String(r.capacity), String(r.occupied),
+          String(Math.max(0, r.capacity - r.occupied)), capitalize(r.status), r.has_ac ? "Yes" : "No", r.has_cooler ? "Yes" : "No",
+          r.monthly_rent ? `${curSym} ${Number(r.monthly_rent).toLocaleString()}` : "—",
         ]),
         theme: "striped",
         headStyles: { fillColor: [245, 158, 11], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 9 },
@@ -493,7 +502,7 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
                   <Badge variant={statusColors[room.status]}>{capitalize(room.status)}</Badge>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2 flex-1">
-                  {[["Type", capitalize(room.type)], ["Capacity", `${room.occupied}/${room.capacity}`], ["Rent/mo", formatCurrency(room.monthly_rent)]].map(([k, v]) => (
+                  {[["Type", capitalize(room.type)], ["Capacity", `${room.occupied}/${room.capacity}`], ["Rent/mo", money(room.monthly_rent)]].map(([k, v]) => (
                     <div key={k} className="flex items-center justify-between text-sm"><span className="text-muted-foreground">{k}</span><span className="font-medium">{v}</span></div>
                   ))}
                   {(room.has_ac || room.has_cooler || room.has_attached_washroom) && (

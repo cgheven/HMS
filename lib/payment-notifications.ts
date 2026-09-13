@@ -63,7 +63,7 @@ export async function notifyOwnerPaymentRecorded(args: {
     }
 
     const [{ data: hostel }, { data: tenant }] = await Promise.all([
-      admin.from("hms_hostels").select("name, owner_id").eq("id", payment.hostel_id).maybeSingle(),
+      admin.from("hms_hostels").select("name, owner_id, country").eq("id", payment.hostel_id).maybeSingle(),
       admin
         .from("hms_tenants")
         // Explicit column list, never select("*") — CNIC must never travel into
@@ -114,6 +114,7 @@ export async function notifyOwnerPaymentRecorded(args: {
     await sendOwnerPaymentAlertEmail({
       ownerEmail,
       hostelName: hostel.name as string,
+      country: (hostel as { country?: string | null }).country ?? null,
       tenantName: (tenant?.full_name as string) ?? "A member",
       roomNumber: (room as { room_number?: string } | null)?.room_number ?? null,
       amountReceived: args.amountReceived,
@@ -160,7 +161,7 @@ export async function notifyOwnerPaymentUndone(args: {
     if (!payment) return;
 
     const [{ data: hostel }, { data: tenant }] = await Promise.all([
-      admin.from("hms_hostels").select("name, owner_id").eq("id", payment.hostel_id).maybeSingle(),
+      admin.from("hms_hostels").select("name, owner_id, country").eq("id", payment.hostel_id).maybeSingle(),
       admin
         .from("hms_tenants")
         .select("full_name, room:hms_rooms(room_number)")
@@ -194,6 +195,7 @@ export async function notifyOwnerPaymentUndone(args: {
     await sendOwnerPaymentUndoneEmail({
       ownerEmail,
       hostelName: hostel.name as string,
+      country: (hostel as { country?: string | null }).country ?? null,
       tenantName: (tenant?.full_name as string) ?? "A member",
       roomNumber: (room as { room_number?: string } | null)?.room_number ?? null,
       amountReversed: args.amountReversed,

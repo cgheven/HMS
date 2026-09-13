@@ -17,7 +17,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { QuickAddTray } from "@/components/ui/quick-add-tray";
 import { toast } from "@/hooks/use-toast";
-import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
+import { cn, formatDate, formatDateInput } from "@/lib/utils";
+import { useMoney, useHostelContext } from "@/contexts/hostel-context";
+import { getCountryConfig } from "@/lib/country-config";
 import type { KitchenExpense, PartnerTier, StaffPermission } from "@/types";
 
 // ── Quick-add chips (page-level) ─────────────────────────
@@ -100,6 +102,26 @@ const GROCERY_PRESETS = [
   "Plastic Bags", "Aluminium Foil",
 ];
 
+// The presets above are bilingual "English (Urdu)" for the Pakistan market.
+// Non-PK hostels see English only. Most labels just drop the "(…)" transliteration
+// ("Eggs (Anda)" → "Eggs"); the few where the Urdu is the primary word (or a
+// "/" pairs the two) get an explicit English name here.
+const PRESET_EN_OVERRIDE: Record<string, string> = {
+  "Dal (Lentils)": "Lentils",
+  "Masoor Dal": "Red Lentils",
+  "Dal Masoor": "Red Lentils",
+  "Dal Chana": "Split Chickpeas",
+  "Chana Dal": "Split Chickpeas",
+  "Dal Mash": "Black Lentils",
+  "Mash Dal": "Black Lentils",
+  "Bread / Naan": "Bread",
+  "Spices / Masala": "Spices",
+  "Ghee / Butter": "Butter",
+};
+function toEnglishLabel(label: string): string {
+  return PRESET_EN_OVERRIDE[label] ?? (label.replace(/\s*\([^)]*\)\s*$/, "").trim() || label);
+}
+
 // ── Breakfast bundle ──────────────────────────────────────
 const BREAKFAST_STORAGE_KEY = "hms_breakfast_defaults";
 const BREAKFAST_FALLBACK = ["Anda Paratha", "Chai"];
@@ -127,6 +149,16 @@ interface Props {
 const kitchenCache = new Map<string, KitchenExpense[]>();
 
 export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTier = null, managerPermissions = null }: Props) {
+  const money = useMoney();
+  const activeCountry = useHostelContext().hostel?.country;
+  const curCode = getCountryConfig(activeCountry).currency; // ISO code for "(PKR)"-style captions
+  // Pakistan keeps the bilingual food presets ("Eggs (Anda)"); every other
+  // country sees English-only labels ("Eggs").
+  const isPk = (activeCountry ?? "PK").toUpperCase() === "PK";
+  const quickDaily = isPk ? QUICK_DAILY : QUICK_DAILY.map((i) => ({ ...i, label: toEnglishLabel(i.label) }));
+  const quickGrocery = isPk ? QUICK_GROCERY : QUICK_GROCERY.map((i) => ({ ...i, label: toEnglishLabel(i.label) }));
+  const dailyPresets = isPk ? DAILY_PRESETS : DAILY_PRESETS.map(toEnglishLabel);
+  const groceryPresets = isPk ? GROCERY_PRESETS : GROCERY_PRESETS.map(toEnglishLabel);
   const router = useRouter();
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const isManager = !!managerPermissions;
@@ -444,12 +476,12 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
 
   const filteredPresets = useMemo(() => {
     const q = itemSearch.toLowerCase();
-    return q ? DAILY_PRESETS.filter((p) => p.toLowerCase().includes(q)) : DAILY_PRESETS;
+    return q ? dailyPresets.filter((p) => p.toLowerCase().includes(q)) : dailyPresets;
   }, [itemSearch]);
 
   const filteredGroceryPresets = useMemo(() => {
     const q = grocerySearch.toLowerCase();
-    return q ? GROCERY_PRESETS.filter((p) => p.toLowerCase().includes(q)) : GROCERY_PRESETS;
+    return q ? groceryPresets.filter((p) => p.toLowerCase().includes(q)) : groceryPresets;
   }, [grocerySearch]);
 
   const selectedTitles  = new Set(selectedItems.map((i) => i.title));
@@ -486,13 +518,13 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
           below the fold. */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
         {[
-          { label: "Total This Month",    value: formatCurrency(grandTotal),   icon: TrendingDown,  color: "text-amber",        bg: "bg-amber/10 border border-amber/20", wide: true },
-          { label: "Daily Kitchen",       value: formatCurrency(dailyTotal),   icon: ChefHat,       color: "text-emerald-400",  bg: "bg-emerald-500/10 border border-emerald-500/20", wide: false },
+          { label: "Total This Month",    value: money(grandTotal),   icon: TrendingDown,  color: "text-amber",        bg: "bg-amber/10 border border-amber/20", wide: true },
+          { label: "Daily Kitchen",       value: money(dailyTotal),   icon: ChefHat,       color: "text-emerald-400",  bg: "bg-emerald-500/10 border border-emerald-500/20", wide: false },
           // "Monthly Grocery" needs ~95px and a half-width card leaves ~89px once
           // the icon and gap are paid for, so it truncated to "Monthly Groc…".
           // Shortened on a phone rather than shrunk: the cart icon and the tab
           // directly below both already say "monthly".
-          { label: "Monthly Grocery", short: "Grocery", value: formatCurrency(groceryTotal), icon: ShoppingCart,  color: "text-blue-400",     bg: "bg-blue-500/10 border border-blue-500/20", wide: false },
+          { label: "Monthly Grocery", short: "Grocery", value: money(groceryTotal), icon: ShoppingCart,  color: "text-blue-400",     bg: "bg-blue-500/10 border border-blue-500/20", wide: false },
         ].map(({ label, short, value, icon: Icon, color, bg, wide }) => (
           <Card key={label} className={wide ? "col-span-2 sm:col-span-1" : ""}>
             <CardContent className="p-4 flex items-center gap-3">
@@ -534,8 +566,8 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
         <TabsContent value="daily" className="space-y-4">
           {/* Quick Add */}
           {canAdd && (
-            <QuickAddTray count={QUICK_DAILY.length} hint="— tap to open form pre-filled">
-              {QUICK_DAILY.map((item) => (
+            <QuickAddTray count={quickDaily.length} hint="— tap to open form pre-filled">
+              {quickDaily.map((item) => (
                 <button
                   key={item.label}
                   onClick={() => quickDailyItem(item.label)}
@@ -563,7 +595,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
                   <CardContent className="p-0">
                     <div className="flex items-center justify-between px-4 py-3 border-b border-sidebar-border bg-white/[0.02]">
                       <span className="text-sm font-semibold">{formatDate(date)}</span>
-                      <span className="text-sm font-bold text-amber">{formatCurrency(dayItems.reduce((s, i) => s + Number(i.amount), 0))}</span>
+                      <span className="text-sm font-bold text-amber">{money(dayItems.reduce((s, i) => s + Number(i.amount), 0))}</span>
                     </div>
                     <div className="divide-y divide-sidebar-border">
                       {dayItems.map((item) => (
@@ -572,7 +604,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
                             <p className="text-sm font-medium">{item.title}</p>
                             {item.quantity && <p className="text-xs text-muted-foreground">{item.quantity}</p>}
                           </div>
-                          <span className="font-semibold text-sm shrink-0">{formatCurrency(item.amount)}</span>
+                          <span className="font-semibold text-sm shrink-0">{money(item.amount)}</span>
                           {(canEdit || canDelete) && (
                             <div className="flex gap-1 shrink-0">
                               {canEdit && <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(item)}><Edit2 className="w-3 h-3" /></Button>}
@@ -593,8 +625,8 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
         <TabsContent value="grocery" className="space-y-4">
           {/* Quick Add */}
           {canAdd && (
-            <QuickAddTray count={QUICK_GROCERY.length} hint="— tap to open form pre-filled">
-              {QUICK_GROCERY.map((item) => (
+            <QuickAddTray count={quickGrocery.length} hint="— tap to open form pre-filled">
+              {quickGrocery.map((item) => (
                 <button
                   key={item.label}
                   onClick={() => quickGroceryItem(item.label)}
@@ -621,7 +653,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
               <CardContent className="p-0">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-sidebar-border bg-white/[0.02]">
                   <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wider text-xs">Monthly Grocery List</span>
-                  <span className="text-sm font-bold text-blue-400">{formatCurrency(groceryTotal)}</span>
+                  <span className="text-sm font-bold text-blue-400">{money(groceryTotal)}</span>
                 </div>
                 <div className="divide-y divide-sidebar-border">
                   {filteredGrocery.map((item) => (
@@ -634,7 +666,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
                         {item.quantity && <p className="text-xs text-muted-foreground">{item.quantity}</p>}
                         {item.notes && <p className="text-xs text-muted-foreground italic">{item.notes}</p>}
                       </div>
-                      <span className="font-bold text-sm text-blue-400 shrink-0">{formatCurrency(item.amount)}</span>
+                      <span className="font-bold text-sm text-blue-400 shrink-0">{money(item.amount)}</span>
                       {(canEdit || canDelete) && (
                         <div className="flex gap-1 shrink-0">
                           {canEdit && <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openGroceryEdit(item)}><Edit2 className="w-3 h-3" /></Button>}
@@ -683,7 +715,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
                   <div className="grid grid-cols-[1fr_88px_100px_20px] gap-2 px-1">
                     <span className="text-xs text-muted-foreground">Item</span>
                     <span className="text-xs text-muted-foreground">Qty</span>
-                    <span className="text-xs text-muted-foreground">Amount (PKR) *</span>
+                    <span className="text-xs text-muted-foreground">Amount ({curCode}) *</span>
                     <span />
                   </div>
                   {selectedItems.map((item, idx) => (
@@ -821,7 +853,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
                 <Input placeholder="e.g. 50kg, 10L" value={groceryForm.quantity} onChange={(e) => setGroceryForm({ ...groceryForm, quantity: e.target.value })} />
               </div>
               <div className="space-y-1.5">
-                <Label>Amount (PKR) *</Label>
+                <Label>Amount ({curCode}) *</Label>
                 <Input type="number" placeholder="0" value={groceryForm.amount} onChange={(e) => setGroceryForm({ ...groceryForm, amount: e.target.value })} />
               </div>
             </div>
@@ -848,7 +880,7 @@ export function KitchenClient({ hostelId, initialItems, defaultMonth, partnerTie
             <div className="space-y-1.5"><Label>Item Name *</Label><Input value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} /></div>
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-1.5"><Label>Quantity</Label><Input placeholder="e.g. 2 kg" value={editForm.quantity} onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })} /></div>
-              <div className="space-y-1.5"><Label>Amount (PKR) *</Label><Input type="number" placeholder="0" value={editForm.amount} onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Amount ({curCode}) *</Label><Input type="number" placeholder="0" value={editForm.amount} onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Date</Label><Input type="date" value={editForm.date} onChange={(e) => setEditForm({ ...editForm, date: e.target.value })} /></div>
             </div>
             <div className="space-y-1.5"><Label>Notes</Label><Textarea placeholder="Optional…" value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} rows={2} /></div>

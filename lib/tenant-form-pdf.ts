@@ -18,6 +18,7 @@
  */
 
 import { nationalIdLabel, requiresGuestRegistration } from "@/lib/national-id";
+import { getCountryConfig } from "@/lib/country-config";
 
 /** A4 in millimetres, which is also jsPDF's unit here. */
 const PAGE_W = 210;
@@ -287,10 +288,15 @@ export async function buildTenantFormPdf(
   // Block letters, as the form asks. Only the name — forcing an address or a
   // course to uppercase makes them harder to read, not easier.
   row([{ label: "Name of the Applicant (in Block letters):", value: tenant.full_name.toUpperCase(), width: CONTENT_W }]);
-  row([
-    { label: "Father Name:", value: tenant.father_name ?? "", width: 72 },
-    { label: "Enrolled in Course:", value: courseLine(tenant), width: 99 },
-  ]);
+  // Father Name is a PK-registration field — dropped on the international form.
+  row(
+    isIntl
+      ? [{ label: "Enrolled in Course:", value: courseLine(tenant), width: CONTENT_W }]
+      : [
+          { label: "Father Name:", value: tenant.father_name ?? "", width: 72 },
+          { label: "Enrolled in Course:", value: courseLine(tenant), width: 99 },
+        ]
+  );
   row([{ label: "Permanent Address:", value: addressValue, width: CONTENT_W }]);
   row([
     { label: "Gender:", value: "", width: 52 },
@@ -400,17 +406,19 @@ export async function buildTenantFormPdf(
   y += 9;
   doc.setFont("times", "normal");
 
+  // Inline money follows the hostel's country symbol (PK "Rs" — byte-identical).
+  const sym = getCountryConfig(hostel.country).currencySymbol;
   const dues =
     tenant.billing_type === "daily"
       ? tenant.daily_rate
-        ? `Rs ${Number(tenant.daily_rate).toLocaleString()} / day`
+        ? `${sym} ${Number(tenant.daily_rate).toLocaleString()} / day`
         : ""
       : tenant.monthly_rent
-        ? `Rs ${Number(tenant.monthly_rent).toLocaleString()} / month`
+        ? `${sym} ${Number(tenant.monthly_rent).toLocaleString()} / month`
         : "";
 
   const deposit = tenant.security_deposit
-    ? `Rs ${Number(tenant.security_deposit).toLocaleString()}`
+    ? `${sym} ${Number(tenant.security_deposit).toLocaleString()}`
     : "";
 
   // Three across, then two. The deposit belongs here beside the dues — it is
@@ -418,7 +426,7 @@ export async function buildTenantFormPdf(
   // recorded a signature against the rent but said nothing about the money the
   // hostel is holding.
   const rupees = (v: number | null | undefined) =>
-    v && Number(v) > 0 ? `Rs ${Number(v).toLocaleString()}` : "";
+    v && Number(v) > 0 ? `${sym} ${Number(v).toLocaleString()}` : "";
   const regFee = rupees(tenant.registration_fee);
   const acMaint = rupees(tenant.ac_maintenance);
 

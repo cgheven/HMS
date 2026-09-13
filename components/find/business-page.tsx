@@ -13,6 +13,7 @@ import { socialUrl } from "@/lib/social";
 import { formatPhoneDisplay } from "@/lib/phone";
 import { PULSE_SITE_URL, PULSE_SOCIALS, PULSE_TAGLINE } from "@/lib/pulse-brand";
 import { sharedAmenities, type Faq } from "@/lib/business-content";
+import { getCountryConfig } from "@/lib/country-config";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -67,11 +68,21 @@ function LinkedInIcon({ className }: { className?: string }) {
   );
 }
 
-const pkr = (n: number) => `Rs ${n.toLocaleString("en-PK", { maximumFractionDigits: 0 })}`;
+// Public brand page — money follows the branch's country. PK is byte-identical
+// ("Rs 5,000" on en-PK grouping); a UK branch reads "£5,000".
+const pkr = (n: number, country?: string | null) => {
+  const cfg = getCountryConfig(country);
+  return cfg.currency === "PKR"
+    ? `Rs ${n.toLocaleString("en-PK", { maximumFractionDigits: 0 })}`
+    : new Intl.NumberFormat(cfg.locale, { style: "currency", currency: cfg.currency, maximumFractionDigits: 0 }).format(n);
+};
 
-/** Digits only, PK country code — wa.me rejects spaces, dashes and leading zeros. */
-function waLink(phone: string, text: string): string {
-  const digits = phone.replace(/\D/g, "").replace(/^0/, "92");
+/** Digits only, branch country dial code — wa.me rejects spaces, dashes and leading zeros. */
+function waLink(phone: string, text: string, country?: string | null): string {
+  // A local number's leading 0 becomes the branch's country dial code
+  // (Pakistan 92, UK 44, …). The greeting copy is still PK-specific — deferred
+  // to the message-localization pass — but the number must be dialable.
+  const digits = phone.replace(/\D/g, "").replace(/^0/, getCountryConfig(country).dialCode);
   return `https://wa.me/${digits}?text=${encodeURIComponent(text)}`;
 }
 
@@ -170,7 +181,7 @@ function BranchCard({
             <div>
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground">From</p>
               <p className="text-lg font-bold text-foreground leading-tight">
-                {pkr(info.from_price)}
+                {pkr(info.from_price, branch.country)}
                 <span className="text-xs font-normal text-muted-foreground">/month</span>
               </p>
             </div>
@@ -318,7 +329,7 @@ export function BusinessPage({
                   {fromPrice && (
                     <>
                       {" · from "}
-                      <span className="font-semibold text-foreground">{pkr(fromPrice)}</span>
+                      <span className="font-semibold text-foreground">{pkr(fromPrice, branches[0]?.country)}</span>
                       <span className="text-muted-foreground">/month</span>
                     </>
                   )}
@@ -330,7 +341,7 @@ export function BusinessPage({
                 WhatsApp on file, so the slot is never empty and never dead. */}
             {waBranch?.whatsapp ? (
               <a
-                href={waLink(waBranch.whatsapp, "Assalam o Alaikum, I saw your hostel page and had a question about rooms.")}
+                href={waLink(waBranch.whatsapp, "Assalam o Alaikum, I saw your hostel page and had a question about rooms.", waBranch.country)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex w-full sm:w-auto items-center justify-center gap-2 h-11 px-4 sm:px-5 rounded-xl bg-[#006c49] border border-[#006c49] text-white text-sm font-semibold hover:bg-[#005238] transition-colors shrink-0"
@@ -433,7 +444,7 @@ export function BusinessPage({
                       <div className="sm:text-right">
                         <span className="sm:hidden text-[11px] text-muted-foreground">From </span>
                         {i?.from_price ? (
-                          <span className="text-sm font-semibold text-foreground">{pkr(i.from_price)}</span>
+                          <span className="text-sm font-semibold text-foreground">{pkr(i.from_price, b.country)}</span>
                         ) : (
                           <span className="text-xs text-muted-foreground">Contact</span>
                         )}
@@ -476,7 +487,7 @@ export function BusinessPage({
                   <div className="flex flex-col sm:flex-row gap-2 shrink-0">
                     {waBranch?.whatsapp && (
                       <a
-                        href={waLink(waBranch.whatsapp, `Assalam o Alaikum, I saw your hostel page and had a question about rooms.`)}
+                        href={waLink(waBranch.whatsapp, `Assalam o Alaikum, I saw your hostel page and had a question about rooms.`, waBranch.country)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center justify-center gap-2 h-11 px-5 rounded-xl bg-[#006c49] border border-[#006c49] text-white text-sm font-semibold hover:bg-[#005238] transition-colors"

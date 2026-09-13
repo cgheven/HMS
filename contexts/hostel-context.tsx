@@ -1,6 +1,8 @@
 "use client";
 import React, { createContext, useContext, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { formatCurrency } from "@/lib/utils";
+import { terms } from "@/lib/country-config";
 import type { Profile, Hostel, PartnerTier } from "@/types";
 
 interface HostelContextValue {
@@ -55,4 +57,23 @@ export function HostelProvider({
 
 export function useHostelContext() {
   return useContext(HostelContext);
+}
+
+// Currency bound to the ACTIVE hostel's country — the single way client
+// components format a hostel's money so £ / Rs follow the branch automatically.
+// Falls open to Pakistan when there's no active hostel. Do NOT use for Pulse's
+// own SaaS billing to the owner (that is USD/PKR — use billing-client's formatter).
+export function useMoney() {
+  const { hostel } = useHostelContext();
+  const country = hostel?.country;
+  return useCallback((amount: number) => formatCurrency(amount, country), [country]);
+}
+
+// User-facing terminology bound to the ACTIVE hostel's country — mirrors
+// useMoney(). Client components call const t = useTerms() and render {t.tenants}
+// etc. Falls open to Pakistan (the legacy words) when there's no active hostel,
+// so every existing all-PK render is byte-identical.
+export function useTerms() {
+  const { hostel } = useHostelContext();
+  return terms(hostel?.country);
 }

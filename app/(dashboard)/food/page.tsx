@@ -1,13 +1,15 @@
 import { getFoodItems, getAuthContext } from "@/lib/data";
 import { FoodClient } from "@/components/modules/food/food-client";
-import { pktYearMonth } from "@/lib/pkt-time";
+import { yearMonthInZone } from "@/lib/pkt-time";
+import { getCountryConfig } from "@/lib/country-config";
 
 export default async function FoodPage() {
-  // Pakistan-anchored, not the server process's own OS timezone — see
-  // app/(dashboard)/payments/page.tsx for why.
-  const { year, month: pktMonth } = pktYearMonth();
+  // Active hostel's own calendar month (its timezone) — see
+  // app/(dashboard)/payments/page.tsx. getAuthContext is cache()'d (a hit here).
+  const ctx = await getAuthContext();
+  const { year, month: pktMonth } = yearMonthInZone(getCountryConfig(ctx?.hostel?.country).timezone);
   const month = `${year}-${String(pktMonth).padStart(2, "0")}`;
-  const [{ hostelId, items }, ctx] = await Promise.all([getFoodItems(month), getAuthContext()]);
+  const { hostelId, items } = await getFoodItems(month);
   return (
     <FoodClient
       key={hostelId ?? ''}

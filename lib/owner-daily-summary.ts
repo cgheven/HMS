@@ -8,6 +8,7 @@ import { sendOwnerDailySummaryEmail } from "@/lib/email";
 export interface BranchDayFigures {
   hostelId: string;
   hostelName: string;
+  country: string | null;
   ownerId: string;
   ownerName: string | null;
   ownerPhone: string | null;
@@ -53,7 +54,7 @@ export async function computeDailyFigures(
 ): Promise<BranchDayFigures[]> {
   const { data: hostels, error } = await admin
     .from("hms_hostels")
-    .select("id, name, owner_id, whatsapp_enabled, phone, whatsapp");
+    .select("id, name, owner_id, whatsapp_enabled, phone, whatsapp, country");
   if (error) throw error;
 
   const all = hostels ?? [];
@@ -124,6 +125,7 @@ export async function computeDailyFigures(
     return {
       hostelId: h.id as string,
       hostelName: h.name as string,
+      country: (h.country as string | null) ?? null,
       ownerId: h.owner_id as string,
       ownerName: (owner?.full_name as string | null) ?? null,
       ownerPhone: (owner?.phone as string | null) ?? null,
@@ -291,6 +293,7 @@ export async function sendOwnerDailySummaryEmails(
         ownerEmail: to,
         ownerName: b.ownerName,
         branchName: b.hostelName,
+        country: b.country,
         date,
         collection: b.collection,
         kitchen: b.kitchen,

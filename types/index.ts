@@ -343,7 +343,7 @@ export interface Room {
   updated_at: string;
 }
 
-export type DocumentType = "cnic" | "police_verification" | "lease_agreement" | "passport" | "other";
+export type DocumentType = "cnic" | "police_verification" | "lease_agreement" | "passport" | "right_to_rent" | "other";
 
 export interface TenantDocument {
   id: string;
@@ -353,13 +353,32 @@ export interface TenantDocument {
   uploaded_at: string;
 }
 
+// PK labels (unchanged, byte-identical for the incumbent market). Non-PK uses
+// DOCUMENT_TYPE_LABELS_INTL below. Document types are stored as these keys; only
+// the display label + the offered list differ by country.
 export const DOCUMENT_TYPE_LABELS: Record<DocumentType, string> = {
   cnic:                "CNIC Copy",
   police_verification: "Police Verification",
   lease_agreement:     "Lease Agreement",
   passport:            "Passport Copy",
+  right_to_rent:       "Right to Rent",
   other:               "Other",
 };
+
+// Gender/market-neutral document labels for international markets.
+export const DOCUMENT_TYPE_LABELS_INTL: Record<DocumentType, string> = {
+  cnic:                "Identification Document",
+  passport:            "Passport",
+  right_to_rent:       "Right to Rent (where applicable)",
+  lease_agreement:     "Tenancy / Lease Agreement",
+  police_verification: "Police / Background Verification (optional)",
+  other:               "Other",
+};
+
+// The document types offered (in order) per market. PK keeps its exact list;
+// international offers the identity/passport/right-to-rent/tenancy set.
+export const PK_DOCUMENT_TYPES: DocumentType[] = ["cnic", "police_verification", "lease_agreement", "passport", "other"];
+export const INTL_DOCUMENT_TYPES: DocumentType[] = ["cnic", "passport", "right_to_rent", "lease_agreement", "police_verification", "other"];
 
 export interface Tenant {
   id: string;
@@ -464,6 +483,9 @@ export interface Tenant {
    *  Present on any `select *`; drives the per-tenant "Synced" badge. */
   hotel_eye_status?: string | null;
   hotel_eye_synced_at?: string | null;
+  /** GDPR: set when the resident's PII was pseudonymised in place (migration
+   *  249). NULL = a normal record; non-null = anonymised, financial rows kept. */
+  anonymised_at?: string | null;
   created_at: string;
 }
 
@@ -882,6 +904,7 @@ export interface AuditLog {
   action: string;
   entity: string;
   entity_id: string | null;
+  hostel_id: string | null;
   meta: Record<string, unknown> | null;
   created_at: string;
 }
@@ -1239,6 +1262,15 @@ export interface TenantApplication {
   emergency_relationship: string | null;
   /** Applicant's home/permanent address — copied to the tenant on approval. */
   permanent_address: string | null;
+  /** International admission (non-guest-registration countries): structured
+   *  address + DoB. PK uses permanent_address instead. */
+  date_of_birth?: string | null;
+  address_line1?: string | null;
+  address_line2?: string | null;
+  city?: string | null;
+  county_state?: string | null;
+  postcode?: string | null;
+  address_country?: string | null;
   father_name: string | null;
   purpose_of_visit: VisitPurpose | null;
   purpose_of_visit_detail: string | null;

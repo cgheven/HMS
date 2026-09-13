@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { CalendarDays, ArrowDownCircle, ArrowUpCircle, UserPlus, UserMinus, Receipt, ChefHat, TrendingUp, TrendingDown, AlertTriangle } from "lucide-react";
-import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
+import { formatDate, formatDateInput } from "@/lib/utils";
+import { useMoney } from "@/contexts/hostel-context";
 import { Input } from "@/components/ui/input";
 import type { ReportData } from "@/app/actions/reports";
 
@@ -29,6 +30,7 @@ const EMPTY_DETAIL = {
 };
 
 export function DailyExpensesSection({ dailyDetails }: Props) {
+  const money = useMoney();
   const now = new Date();
   const todayStr = formatDateInput(now);
   // A single date filter drives the whole tab — every number and list below
@@ -128,23 +130,23 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4 mb-6">
         {[
           {
-            key: "income", label: "Income", value: formatCurrency(d.income), sub: null,
+            key: "income", label: "Income", value: money(d.income), sub: null,
             icon: ArrowDownCircle, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20",
           },
           {
-            key: "expense", label: "Expense", value: formatCurrency(d.total),
+            key: "expense", label: "Expense", value: money(d.total),
             // Salaries only earn a slot on days one was actually paid — most days
             // have none, and a permanent "Salary Rs 0" is noise.
             sub: [
-              `Kitchen ${formatCurrency(d.kitchenTotal)}`,
-              `Other ${formatCurrency(d.otherTotal)}`,
-              ...(d.salaryTotal > 0 ? [`Salary ${formatCurrency(d.salaryTotal)}`] : []),
-              ...(d.billTotal > 0 ? [`Bills ${formatCurrency(d.billTotal)}`] : []),
+              `Kitchen ${money(d.kitchenTotal)}`,
+              `Other ${money(d.otherTotal)}`,
+              ...(d.salaryTotal > 0 ? [`Salary ${money(d.salaryTotal)}`] : []),
+              ...(d.billTotal > 0 ? [`Bills ${money(d.billTotal)}`] : []),
             ].join(" · "),
             icon: ArrowUpCircle, color: "text-rose-400", bg: "bg-rose-500/10 border-rose-500/20",
           },
           {
-            key: "profit", label: "Profit", value: formatCurrency(profit), sub: null,
+            key: "profit", label: "Profit", value: money(profit), sub: null,
             icon: profit >= 0 ? TrendingUp : TrendingDown,
             color: profit >= 0 ? "text-violet-400" : "text-rose-400",
             bg: profit >= 0 ? "bg-violet-500/10 border-violet-500/20" : "bg-rose-500/10 border-rose-500/20",
@@ -204,7 +206,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
                         <span className="font-medium">{p.tenantName}</span>
                         {p.roomNumber && <span className="text-muted-foreground"> · Rm {p.roomNumber}</span>}
                       </td>
-                      <td className="px-2.5 py-2 text-right text-emerald-400 tabular-nums whitespace-nowrap">{formatCurrency(p.amount)}</td>
+                      <td className="px-2.5 py-2 text-right text-emerald-400 tabular-nums whitespace-nowrap">{money(p.amount)}</td>
                       <td className="px-2.5 py-2 text-muted-foreground whitespace-nowrap">{METHOD_LABELS[p.method] ?? p.method}</td>
                     </tr>
                   ))}
@@ -238,7 +240,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
                         {e.category}
                         <span className="text-muted-foreground/60"> · {e.source === "kitchen" ? "Kitchen" : e.source === "salary" ? "Salary" : e.source === "bill" ? "Bill" : "Other"}</span>
                       </td>
-                      <td className="px-2.5 py-2 text-right text-rose-400 tabular-nums whitespace-nowrap">{formatCurrency(e.amount)}</td>
+                      <td className="px-2.5 py-2 text-right text-rose-400 tabular-nums whitespace-nowrap">{money(e.amount)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -319,7 +321,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
             {isSameDay ? "Due Today" : isRange ? `Due between ${periodLabel}` : `Due on ${periodLabel}`}
           </h3>
           {d.dueList.length > 0 && (
-            <span className="ml-auto text-sm font-semibold text-amber">{formatCurrency(dueTotal)} total</span>
+            <span className="ml-auto text-sm font-semibold text-amber">{money(dueTotal)} total</span>
           )}
         </div>
 
@@ -349,7 +351,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
                         {t.phone && <span>{t.phone}</span>}
                       </div>
                     </div>
-                    <p className="text-base font-bold text-amber shrink-0 tabular-nums">{formatCurrency(t.amount)}</p>
+                    <p className="text-base font-bold text-amber shrink-0 tabular-nums">{money(t.amount)}</p>
                   </div>
 
                   {/* Desktop row (≥ md) */}
@@ -357,7 +359,7 @@ export function DailyExpensesSection({ dailyDetails }: Props) {
                     <span className="text-sm font-medium text-foreground truncate">{t.name}</span>
                     <span className="text-sm text-muted-foreground">{t.roomNumber ? `Room ${t.roomNumber}` : "—"}</span>
                     <span className="text-sm text-muted-foreground">{t.phone ?? "—"}</span>
-                    <span className="text-sm font-semibold text-amber text-right w-32 tabular-nums">{formatCurrency(t.amount)}</span>
+                    <span className="text-sm font-semibold text-amber text-right w-32 tabular-nums">{money(t.amount)}</span>
                   </div>
                 </div>
               ))}

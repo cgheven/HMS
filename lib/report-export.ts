@@ -1,7 +1,35 @@
 import type { ReportData, LedgerTenantRow } from "@/app/actions/reports";
+import { getCountryConfig } from "@/lib/country-config";
 
-function pk(amount: number): string {
-  return `Rs. ${amount.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+// Currency formatter bound to the hostel's country. PKR stays byte-identical
+// ("Rs. 1,234" on en-PK grouping); every other country uses the registry's
+// symbol + locale. Built once per export so the ~40 call sites stay `pk(x)`.
+function makePk(country?: string | null): (amount: number) => string {
+  const cfg = getCountryConfig(country);
+  if (cfg.currency === "PKR") {
+    return (amount: number) => `Rs. ${amount.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  }
+  const fmt = new Intl.NumberFormat(cfg.locale, {
+    style: "currency",
+    currency: cfg.currency,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+  return (amount: number) => fmt.format(amount);
+}
+
+// Bare grouped number for cells whose column header already names the unit.
+// PK keeps en-PK grouping (byte-identical); others group in their own locale.
+function makeNum(country?: string | null): (amount: number) => string {
+  const loc = getCountryConfig(country).locale;
+  return (amount: number) => amount.toLocaleString(loc);
+}
+
+// Parenthetical column-unit shown in a header, e.g. "Amount (Rs.)" / "Amount (£)".
+// PKR keeps the literal "Rs." (byte-identical); others use the symbol.
+function unitLabel(country?: string | null): string {
+  const cfg = getCountryConfig(country);
+  return cfg.currency === "PKR" ? "Rs." : cfg.currencySymbol;
 }
 
 const PULSE_AMBER: [number, number, number] = [245, 166, 35];
@@ -19,18 +47,9 @@ const REPORT_RIGHT_X = 210 - 14;
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function drawPulseReportHeader(doc: any, margin: number, rightX: number, hostelName: string, subtitle: string): number {
+  // No header branding text — the Pulse logo image is a later report-design task.
+  // The header leads with the hostel name; the amber rule keeps the brand accent.
   let y = 16;
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(18);
-  doc.setTextColor(PULSE_AMBER[0], PULSE_AMBER[1], PULSE_AMBER[2]);
-  doc.text("Pulse", margin, y);
-  const wordW = doc.getTextWidth("Pulse");
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
-  doc.setTextColor(150, 150, 150);
-  doc.text("Hostel Management System", margin + wordW + 3, y);
-  y += 7;
-
   doc.setFont("helvetica", "bold");
   doc.setFontSize(11);
   doc.setTextColor(30, 30, 30);
@@ -60,6 +79,7 @@ export async function exportReportPDF(data: ReportData, label: string): Promise<
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { default: autoTable } = await import("jspdf-autotable") as any;
 
+  const pk = makePk(data.country);
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
 
   const MARGIN = 14;
@@ -276,6 +296,7 @@ export async function exportReportPDF(data: ReportData, label: string): Promise<
 export async function exportReportExcel(data: ReportData, label: string): Promise<void> {
   const XLSX = await import("xlsx");
 
+  const unit = unitLabel(data.country);
   const wb = XLSX.utils.book_new();
 
   // Sheet 1 — Overview
@@ -290,7 +311,7 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
     ["Total Capacity", data.totalCapacity],
     ["Total Occupied", data.totalOccupied],
     [],
-    ["Top Tenants", "Total Paid (Rs.)"],
+    ["Top Tenants", `Total Paid (${unit})`],
     ...data.topTenants.map((t) => [t.name, t.totalPaid]),
   ];
   const wsOverview = XLSX.utils.aoa_to_sheet(overviewRows);
@@ -348,9 +369,9 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
     ["AC Analytics Summary"],
     ["Total AC Tenants", data.acStats.totalAcTenants],
     ["AC Bills Paid", data.acStats.paidAcTenants],
-    ["Total AC Revenue (Rs.)", data.acStats.totalAcRevenue],
+    [`Total AC Revenue (${unit})`, data.acStats.totalAcRevenue],
     [],
-    ["Room", "Tenant", "Units Consumed (kWh)", "AC Charge (Rs.)", "Month", "Status"],
+    ["Room", "Tenant", "Units Consumed (kWh)", `AC Charge (${unit})`, "Month", "Status"],
     ...data.acByRoom.map((r) => [r.roomNumber, r.tenantName, r.unitsConsumed, r.acCharge, r.forMonth, r.status]),
   ];
   const wsAC = XLSX.utils.aoa_to_sheet(acRows);
@@ -362,14 +383,14 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
   const discountRows = [
     ["Rent Discounts Summary"],
     ["Members on a Standing Discount", data.discountReport.standingCount],
-    ["Standing Cost per Month (Rs.)", data.discountReport.standingMonthlyTotal],
+    [`Standing Cost per Month (${unit})`, data.discountReport.standingMonthlyTotal],
     ["One-off Discounts Given", data.discountReport.oneOffCount],
-    ["One-off Total (Rs.)", data.discountReport.oneOffTotal],
-    ["Total Discounted in Period (Rs.)", data.discountReport.totalGivenInPeriod],
+    [`One-off Total (${unit})`, data.discountReport.oneOffTotal],
+    [`Total Discounted in Period (${unit})`, data.discountReport.totalGivenInPeriod],
     ["Bills Carrying a Discount", data.discountReport.discountedBillCount],
     [],
     ["Standing Discounts"],
-    ["Member", "Room", "Full Rent (Rs.)", "Discount (%)", "Off per Month (Rs.)", "Billed (Rs.)"],
+    ["Member", "Room", `Full Rent (${unit})`, "Discount (%)", `Off per Month (${unit})`, `Billed (${unit})`],
     ...data.discountReport.standing.map((r) => [
       r.tenantName,
       r.roomNumber ?? "",
@@ -380,7 +401,7 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
     ]),
     [],
     ["One-off Discounts"],
-    ["Member", "Room", "Month", "Discount (%)", "Amount (Rs.)"],
+    ["Member", "Room", "Month", "Discount (%)", `Amount (${unit})`],
     ...data.discountReport.oneOff.map((r) => [
       r.tenantName,
       r.roomNumber ?? "",
@@ -436,12 +457,15 @@ export async function exportReconciliationPDF(
   rows: ReconciliationRow[],
   hostelName: string,
   period: string,
-  methodLabel: string
+  methodLabel: string,
+  country?: string | null
 ): Promise<void> {
   const { default: jsPDF } = await import("jspdf");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { default: autoTable } = await import("jspdf-autotable") as any;
 
+  const num = makeNum(country);
+  const unit = unitLabel(country);
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const MARGIN = 14;
 
@@ -451,7 +475,7 @@ export async function exportReconciliationPDF(
 
   autoTable(doc, {
     startY: y,
-    head: [["Tenant", "Mobile", "Room", "Period", "Receipt #", "Method", "Date", "Amount (Rs.)"]],
+    head: [["Tenant", "Mobile", "Room", "Period", "Receipt #", "Method", "Date", `Amount (${unit})`]],
     body: rows.map((r) => [
       r.tenantName,
       r.phone ?? "—",
@@ -460,9 +484,9 @@ export async function exportReconciliationPDF(
       r.receiptNumber ?? "—",
       METHOD_LABELS[r.method] ?? r.method,
       fmtDate(r.paymentDate),
-      r.amount.toLocaleString("en-PK"),
+      num(r.amount),
     ]),
-    foot: [["", "", "", "", "", "", "Total", total.toLocaleString("en-PK")]],
+    foot: [["", "", "", "", "", "", "Total", num(total)]],
     headStyles: { fillColor: [30, 30, 30], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
     footStyles: { fillColor: [245, 166, 35], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 8 },
     bodyStyles: { fontSize: 8 },
@@ -479,17 +503,19 @@ export async function exportReconciliationExcel(
   rows: ReconciliationRow[],
   hostelName: string,
   period: string,
-  methodLabel: string
+  methodLabel: string,
+  country?: string | null
 ): Promise<void> {
   const XLSX = await import("xlsx");
 
+  const unit = unitLabel(country);
   const total = rows.reduce((s, r) => s + r.amount, 0);
 
   const sheetRows = [
     [`Reconciliation Report — ${hostelName}`],
     [`Period: ${period}${methodLabel !== "All Methods" ? ` | Method: ${methodLabel}` : ""}`],
     [],
-    ["Tenant", "Mobile", "Room", "Period", "Receipt #", "Method", "Payment Date", "Amount (Rs.)"],
+    ["Tenant", "Mobile", "Room", "Period", "Receipt #", "Method", "Payment Date", `Amount (${unit})`],
     ...rows.map((r) => [
       r.tenantName,
       r.phone ?? "",
@@ -538,12 +564,15 @@ export async function exportExpenseReportPDF(
   rows: ExpenseReportRow[],
   hostelName: string,
   period: string,
-  sourceLabel: string
+  sourceLabel: string,
+  country?: string | null
 ): Promise<void> {
   const { default: jsPDF } = await import("jspdf");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { default: autoTable } = await import("jspdf-autotable") as any;
 
+  const num = makeNum(country);
+  const unit = unitLabel(country);
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const MARGIN = 14;
 
@@ -553,16 +582,16 @@ export async function exportExpenseReportPDF(
 
   autoTable(doc, {
     startY: y,
-    head: [["Date", "Source", "Title", "Category", "Status", "Amount (Rs.)"]],
+    head: [["Date", "Source", "Title", "Category", "Status", `Amount (${unit})`]],
     body: rows.map((r) => [
       fmtDate(r.date),
       r.sourceLabel,
       r.title,
       r.category,
       r.status ? capitalizeWord(r.status) : "—",
-      r.amount.toLocaleString("en-PK"),
+      num(r.amount),
     ]),
-    foot: [["", "", "", "", "Total", total.toLocaleString("en-PK")]],
+    foot: [["", "", "", "", "Total", num(total)]],
     headStyles: { fillColor: [30, 30, 30], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
     footStyles: { fillColor: [245, 166, 35], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 8 },
     bodyStyles: { fontSize: 8 },
@@ -579,17 +608,19 @@ export async function exportExpenseReportExcel(
   rows: ExpenseReportRow[],
   hostelName: string,
   period: string,
-  sourceLabel: string
+  sourceLabel: string,
+  country?: string | null
 ): Promise<void> {
   const XLSX = await import("xlsx");
 
+  const unit = unitLabel(country);
   const total = rows.reduce((s, r) => s + r.amount, 0);
 
   const sheetRows = [
     [`Expense Report — ${hostelName}`],
     [`Period: ${period}${sourceLabel !== "All Sources" ? ` | Source: ${sourceLabel}` : ""}`],
     [],
-    ["Date", "Source", "Title", "Category", "Status", "Amount (Rs.)"],
+    ["Date", "Source", "Title", "Category", "Status", `Amount (${unit})`],
     ...rows.map((r) => [
       fmtDate(r.date),
       r.sourceLabel,
@@ -637,12 +668,15 @@ export async function exportLedgerPDF(
   rows: LedgerTenantRow[],
   hostelName: string,
   period: string,
-  filterLabel: string
+  filterLabel: string,
+  country?: string | null
 ): Promise<void> {
   const { default: jsPDF } = await import("jspdf");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { default: autoTable } = await import("jspdf-autotable") as any;
 
+  const num = makeNum(country);
+  const unit = unitLabel(country);
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
   const MARGIN = 14;
 
@@ -655,21 +689,21 @@ export async function exportLedgerPDF(
 
   autoTable(doc, {
     startY: y,
-    head: [["Tenant", "Phone", "Room", "Plan", "Price", "Status", "Charged (Rs.)", "Paid (Rs.)", "Due (Rs.)", "Deposit (Rs.)", "Last Payment"]],
+    head: [["Tenant", "Phone", "Room", "Plan", "Price", "Status", `Charged (${unit})`, `Paid (${unit})`, `Due (${unit})`, `Deposit (${unit})`, "Last Payment"]],
     body: rows.map((r) => [
       r.fullName,
       r.phone ?? "—",
       r.roomNumber ? `Rm ${r.roomNumber}` : "—",
       r.packageLabel,
-      r.packagePrice > 0 ? `${r.packagePrice.toLocaleString("en-PK")}/${r.billingType === "daily" ? "day" : "mo"}` : "—",
+      r.packagePrice > 0 ? `${num(r.packagePrice)}/${r.billingType === "daily" ? "day" : "mo"}` : "—",
       LEDGER_STATUS_LABELS[r.status] ?? r.status,
-      r.totalFoodCharge > 0 ? `${r.totalCharged.toLocaleString("en-PK")} (incl. ${r.totalFoodCharge.toLocaleString("en-PK")} food)` : r.totalCharged.toLocaleString("en-PK"),
-      r.totalPaid.toLocaleString("en-PK"),
-      r.totalOwed.toLocaleString("en-PK"),
-      r.securityDeposit > 0 ? r.securityDeposit.toLocaleString("en-PK") : "—",
+      r.totalFoodCharge > 0 ? `${num(r.totalCharged)} (incl. ${num(r.totalFoodCharge)} food)` : num(r.totalCharged),
+      num(r.totalPaid),
+      num(r.totalOwed),
+      r.securityDeposit > 0 ? num(r.securityDeposit) : "—",
       fmtDate(r.lastPaymentDate),
     ]),
-    foot: [["", "", "", "", "", "Total", totalCharged.toLocaleString("en-PK"), totalPaid.toLocaleString("en-PK"), totalOwed.toLocaleString("en-PK"), totalDeposit.toLocaleString("en-PK"), ""]],
+    foot: [["", "", "", "", "", "Total", num(totalCharged), num(totalPaid), num(totalOwed), num(totalDeposit), ""]],
     headStyles: { fillColor: [30, 30, 30], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
     footStyles: { fillColor: [245, 166, 35], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 8 },
     bodyStyles: { fontSize: 7 },
@@ -685,10 +719,12 @@ export async function exportLedgerExcel(
   rows: LedgerTenantRow[],
   hostelName: string,
   period: string,
-  filterLabel: string
+  filterLabel: string,
+  country?: string | null
 ): Promise<void> {
   const XLSX = await import("xlsx");
 
+  const unit = unitLabel(country);
   const totalCharged = rows.reduce((s, r) => s + r.totalCharged, 0);
   const totalPaid = rows.reduce((s, r) => s + r.totalPaid, 0);
   const totalOwed = rows.reduce((s, r) => s + r.totalOwed, 0);
@@ -698,7 +734,7 @@ export async function exportLedgerExcel(
     [`Member Ledger — ${hostelName}`],
     [`Period: ${period} | ${filterLabel}`],
     [],
-    ["Tenant", "Phone", "Room", "Plan", "Package Price", "Status", "Charged (Rs.)", "incl. Food (Rs.)", "Paid (Rs.)", "Due (Rs.)", "Deposit (Rs.)", "Last Payment"],
+    ["Tenant", "Phone", "Room", "Plan", "Package Price", "Status", `Charged (${unit})`, `incl. Food (${unit})`, `Paid (${unit})`, `Due (${unit})`, `Deposit (${unit})`, "Last Payment"],
     ...rows.map((r) => [
       r.fullName,
       r.phone ?? "",

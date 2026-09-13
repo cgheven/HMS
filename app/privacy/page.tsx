@@ -11,7 +11,7 @@ export default function PrivacyPage() {
   return (
     <LegalShell title="Privacy Notice" updated="September 2026">
       <p>
-        This notice explains how <strong>PulseHub Private Limited</strong> (&ldquo;PulseHub&rdquo;,
+        This notice explains how <strong>PULSEHUB (SMC-PRIVATE) LIMITED</strong> (&ldquo;PulseHub&rdquo;,
         &ldquo;we&rdquo;) handles personal data in connection with Pulse, our hostel-management software.
       </p>
 
@@ -89,7 +89,11 @@ export default function PrivacyPage() {
 
       <H>11. Contact</H>
       <p>
-        Privacy questions or requests: <a href="mailto:hello@yourpulse.io" className="underline">hello@yourpulse.io</a>.
+        Privacy questions or requests: <a href="mailto:musab.khan@yourpulse.io" className="underline">musab.khan@yourpulse.io</a>.
+      </p>
+      <p>
+        PULSEHUB (SMC-PRIVATE) LIMITED, Flat #104, Block-B, Bait-ul-Hina Apartment, Gulistan-e-Johar,
+        Gulshan Town, Karachi East, Sindh, Pakistan.
       </p>
     </LegalShell>
   );

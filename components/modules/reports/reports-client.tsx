@@ -10,7 +10,8 @@ import {
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { formatDate, cn } from "@/lib/utils";
+import { useMoney } from "@/contexts/hostel-context";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -81,13 +82,13 @@ function isNewProps(p: Props): p is NewProps {
 }
 
 // ── Tooltip formatter ────────────────────────────────────────────────────────
-const currencyTooltip = ({ active, payload, label }: { active?: boolean; payload?: { name: string; value: number }[]; label?: string }) => {
+const makeCurrencyTooltip = (money: (n: number) => string) => ({ active, payload, label }: { active?: boolean; payload?: { name: string; value: number }[]; label?: string }) => {
   if (!active || !payload?.length) return null;
   return (
     <div className="rounded-xl border border-sidebar-border bg-card px-3 py-2 shadow-lg text-xs">
       <p className="font-semibold text-foreground mb-1">{label}</p>
       {payload.map((p) => (
-        <p key={p.name} className="text-muted-foreground">{p.name}: <span className="text-foreground font-medium">{formatCurrency(p.value)}</span></p>
+        <p key={p.name} className="text-muted-foreground">{p.name}: <span className="text-foreground font-medium">{money(p.value)}</span></p>
       ))}
     </div>
   );
@@ -95,6 +96,7 @@ const currencyTooltip = ({ active, payload, label }: { active?: boolean; payload
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function ReportsClient(props: Props) {
+  const money = useMoney();
   const [tab, setTab] = useState("today");
   const [preset, setPreset] = useState("this_month");
   const [customFrom, setCustomFrom] = useState("");
@@ -317,9 +319,9 @@ export function ReportsClient(props: Props) {
             {/* 4 KPI cards */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               {[
-                { label: "Collected", value: formatCurrency(d.totalRevenue), icon: TrendingUp, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
-                { label: "Net Profit", value: formatCurrency(totalNetProfit), icon: Banknote, color: totalNetProfit >= 0 ? "text-emerald-400" : "text-rose-400", bg: totalNetProfit >= 0 ? "bg-emerald-500/10 border-emerald-500/20" : "bg-rose-500/10 border-rose-500/20" },
-                { label: "Pending (this period)", value: formatCurrency(d.pendingCollections), icon: AlertTriangle, color: "text-amber", bg: "bg-amber/10 border-amber/20" },
+                { label: "Collected", value: money(d.totalRevenue), icon: TrendingUp, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
+                { label: "Net Profit", value: money(totalNetProfit), icon: Banknote, color: totalNetProfit >= 0 ? "text-emerald-400" : "text-rose-400", bg: totalNetProfit >= 0 ? "bg-emerald-500/10 border-emerald-500/20" : "bg-rose-500/10 border-rose-500/20" },
+                { label: "Pending (this period)", value: money(d.pendingCollections), icon: AlertTriangle, color: "text-amber", bg: "bg-amber/10 border-amber/20" },
                 { label: "New Tenants", value: String(d.newTenants), icon: Users, color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/20" },
               ].map(({ label, value, icon: Icon, color, bg }) => (
                 <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5">
@@ -396,9 +398,9 @@ export function ReportsClient(props: Props) {
                       </p>
                     </div>
                     <div className="text-right">
-                      <p className="text-xl font-bold leading-tight">{formatCurrency(a.totalOwed)}</p>
+                      <p className="text-xl font-bold leading-tight">{money(a.totalOwed)}</p>
                       {a.totalLate > 0 && (
-                        <p className="text-xs text-rose-400 mt-0.5">{formatCurrency(a.totalLate)} is late</p>
+                        <p className="text-xs text-rose-400 mt-0.5">{money(a.totalLate)} is late</p>
                       )}
                     </div>
                   </div>
@@ -413,7 +415,7 @@ export function ReportsClient(props: Props) {
                               {b.sub && <span className="ml-1.5 opacity-60">{b.sub}</span>}
                             </span>
                             <span className={cn("text-sm font-semibold tabular-nums", b.tone)}>
-                              {formatCurrency(b.amount)}
+                              {money(b.amount)}
                             </span>
                           </div>
                           <div className="h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
@@ -427,7 +429,7 @@ export function ReportsClient(props: Props) {
                       {a.formerDebtors > 0 && (
                         <p className="text-xs text-rose-400">
                           {a.formerDebtors} former {a.formerDebtors === 1 ? "tenant has" : "tenants have"} checked out still owing{" "}
-                          <span className="font-semibold">{formatCurrency(a.formerDebtorsOwed)}</span>
+                          <span className="font-semibold">{money(a.formerDebtorsOwed)}</span>
                         </p>
                       )}
                     </div>
@@ -452,7 +454,7 @@ export function ReportsClient(props: Props) {
                                 </p>
                               </div>
                               <span className="text-sm font-semibold text-rose-400 tabular-nums shrink-0">
-                                {formatCurrency(t.owed)}
+                                {money(t.owed)}
                               </span>
                             </div>
                           ))}
@@ -489,15 +491,15 @@ export function ReportsClient(props: Props) {
                     {d.revenueByMonth.map((m) => (
                       <tr key={m.monthKey} className="hover:bg-white/[0.02]">
                         <td className="py-2.5 pr-3 text-muted-foreground">{m.month}</td>
-                        <td className="py-2.5 pr-3 text-right">{formatCurrency(m.rentRevenue)}</td>
-                        <td className="py-2.5 pr-3 text-right text-amber">{m.foodRevenue > 0 ? formatCurrency(m.foodRevenue) : "—"}</td>
-                        <td className="py-2.5 pr-3 text-right text-blue-400">{m.acRevenue > 0 ? formatCurrency(m.acRevenue) : "—"}</td>
-                        <td className="py-2.5 pr-3 text-right text-violet-400">{m.registrationFeeRevenue > 0 ? formatCurrency(m.registrationFeeRevenue) : "—"}</td>
-                        <td className="py-2.5 pr-3 text-right text-cyan-400">{m.acMaintenanceRevenue > 0 ? formatCurrency(m.acMaintenanceRevenue) : "—"}</td>
-                        <td className="py-2.5 pr-3 text-right font-semibold">{formatCurrency(m.total)}</td>
-                        <td className="py-2.5 pr-3 text-right text-emerald-400">{formatCurrency(m.collected)}</td>
+                        <td className="py-2.5 pr-3 text-right">{money(m.rentRevenue)}</td>
+                        <td className="py-2.5 pr-3 text-right text-amber">{m.foodRevenue > 0 ? money(m.foodRevenue) : "—"}</td>
+                        <td className="py-2.5 pr-3 text-right text-blue-400">{m.acRevenue > 0 ? money(m.acRevenue) : "—"}</td>
+                        <td className="py-2.5 pr-3 text-right text-violet-400">{m.registrationFeeRevenue > 0 ? money(m.registrationFeeRevenue) : "—"}</td>
+                        <td className="py-2.5 pr-3 text-right text-cyan-400">{m.acMaintenanceRevenue > 0 ? money(m.acMaintenanceRevenue) : "—"}</td>
+                        <td className="py-2.5 pr-3 text-right font-semibold">{money(m.total)}</td>
+                        <td className="py-2.5 pr-3 text-right text-emerald-400">{money(m.collected)}</td>
                         <td className={`py-2.5 text-right ${m.pending > 0 ? "text-rose-400" : "text-muted-foreground"}`}>
-                          {m.pending > 0 ? formatCurrency(m.pending) : "—"}
+                          {m.pending > 0 ? money(m.pending) : "—"}
                         </td>
                       </tr>
                     ))}
@@ -505,14 +507,14 @@ export function ReportsClient(props: Props) {
                   <tfoot>
                     <tr className="border-t-2 border-sidebar-border font-semibold">
                       <td className="pt-2.5 text-muted-foreground">Total</td>
-                      <td className="pt-2.5 pr-3 text-right">{formatCurrency(d.revenueByMonth.reduce((s, m) => s + m.rentRevenue, 0))}</td>
-                      <td className="pt-2.5 pr-3 text-right text-amber">{formatCurrency(d.revenueByMonth.reduce((s, m) => s + m.foodRevenue, 0))}</td>
-                      <td className="pt-2.5 pr-3 text-right text-blue-400">{formatCurrency(d.revenueByMonth.reduce((s, m) => s + m.acRevenue, 0))}</td>
-                      <td className="pt-2.5 pr-3 text-right text-violet-400">{formatCurrency(d.revenueByMonth.reduce((s, m) => s + m.registrationFeeRevenue, 0))}</td>
-                      <td className="pt-2.5 pr-3 text-right text-cyan-400">{formatCurrency(d.revenueByMonth.reduce((s, m) => s + m.acMaintenanceRevenue, 0))}</td>
-                      <td className="pt-2.5 pr-3 text-right">{formatCurrency(d.totalRevenue)}</td>
-                      <td className="pt-2.5 pr-3 text-right text-emerald-400">{formatCurrency(d.totalRevenue)}</td>
-                      <td className="pt-2.5 text-right text-rose-400">{formatCurrency(d.pendingCollections)}</td>
+                      <td className="pt-2.5 pr-3 text-right">{money(d.revenueByMonth.reduce((s, m) => s + m.rentRevenue, 0))}</td>
+                      <td className="pt-2.5 pr-3 text-right text-amber">{money(d.revenueByMonth.reduce((s, m) => s + m.foodRevenue, 0))}</td>
+                      <td className="pt-2.5 pr-3 text-right text-blue-400">{money(d.revenueByMonth.reduce((s, m) => s + m.acRevenue, 0))}</td>
+                      <td className="pt-2.5 pr-3 text-right text-violet-400">{money(d.revenueByMonth.reduce((s, m) => s + m.registrationFeeRevenue, 0))}</td>
+                      <td className="pt-2.5 pr-3 text-right text-cyan-400">{money(d.revenueByMonth.reduce((s, m) => s + m.acMaintenanceRevenue, 0))}</td>
+                      <td className="pt-2.5 pr-3 text-right">{money(d.totalRevenue)}</td>
+                      <td className="pt-2.5 pr-3 text-right text-emerald-400">{money(d.totalRevenue)}</td>
+                      <td className="pt-2.5 text-right text-rose-400">{money(d.pendingCollections)}</td>
                     </tr>
                   </tfoot>
                 </table>
@@ -537,7 +539,7 @@ export function ReportsClient(props: Props) {
                         <tr key={t.id} className="hover:bg-white/[0.02]">
                           <td className="py-2.5 pr-3 text-muted-foreground font-medium">{i + 1}</td>
                           <td className="py-2.5 pr-3 font-medium">{t.name}</td>
-                          <td className="py-2.5 text-right text-emerald-400 font-semibold">{formatCurrency(t.totalPaid)}</td>
+                          <td className="py-2.5 text-right text-emerald-400 font-semibold">{money(t.totalPaid)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -569,7 +571,7 @@ export function ReportsClient(props: Props) {
                         <tr key={p.id} className="hover:bg-white/[0.02]">
                           <td className="py-2.5 pr-3 font-medium">{p.tenantName}</td>
                           <td className="py-2.5 pr-3 text-muted-foreground">{p.forMonth}</td>
-                          <td className="py-2.5 pr-3 text-right font-semibold">{formatCurrency(p.amount)}</td>
+                          <td className="py-2.5 pr-3 text-right font-semibold">{money(p.amount)}</td>
                           <td className="py-2.5 text-right">
                             <span className={`text-xs font-medium capitalize ${p.status === "overdue" ? "text-rose-400" : "text-amber"}`}>
                               {p.status}
@@ -635,7 +637,7 @@ export function ReportsClient(props: Props) {
                     <BarChart data={d.monthlyExpenses}>
                       <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#888" }} axisLine={false} tickLine={false} />
                       <YAxis tick={{ fontSize: 10, fill: "#888" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-                      <Tooltip content={currencyTooltip as never} />
+                      <Tooltip content={makeCurrencyTooltip(money) as never} />
                       <Bar dataKey="collected" name="Revenue" fill="#10b981" radius={[4, 4, 0, 0]} />
                       <Bar dataKey="expenses" name="Expenses" fill="#ef4444" radius={[4, 4, 0, 0]} />
                     </BarChart>
@@ -667,7 +669,7 @@ export function ReportsClient(props: Props) {
 
           {/* ── MEMBER LEDGER TAB ────────────────────────────────────────── */}
           <TabsContent value="ledger" className="space-y-6 mt-4">
-            <MemberLedgerTab hostelId={hostelId} hostelName={d.hostelName} roomOptions={d.roomOptions} from={currentRange.from} to={currentRange.to} period={currentRange.label} />
+            <MemberLedgerTab hostelId={hostelId} hostelName={d.hostelName} country={d.country} roomOptions={d.roomOptions} from={currentRange.from} to={currentRange.to} period={currentRange.label} />
           </TabsContent>
         </Tabs>
       )}
@@ -682,6 +684,7 @@ export function ReportsClient(props: Props) {
 // selected period. Summing them together would be meaningless, so they are
 // never added up into a single headline.
 function DiscountsTab({ data: d }: { data: ReportData }) {
+  const money = useMoney();
   const dr = d.discountReport;
 
   return (
@@ -689,9 +692,9 @@ function DiscountsTab({ data: d }: { data: ReportData }) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: "On a Standing Discount", value: String(dr.standingCount), hint: "Active members", color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/20" },
-          { label: "Standing Cost / Month", value: formatCurrency(dr.standingMonthlyTotal), hint: "At current rents", color: "text-amber", bg: "bg-amber/10 border-amber/20" },
-          { label: "One-off Discounts", value: String(dr.oneOffCount), hint: `${formatCurrency(dr.oneOffTotal)} in ${d.label}`, color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
-          { label: "Given in Period", value: formatCurrency(dr.totalGivenInPeriod), hint: `Across ${dr.discountedBillCount} bill${dr.discountedBillCount !== 1 ? "s" : ""}`, color: "text-rose-400", bg: "bg-rose-500/10 border-rose-500/20" },
+          { label: "Standing Cost / Month", value: money(dr.standingMonthlyTotal), hint: "At current rents", color: "text-amber", bg: "bg-amber/10 border-amber/20" },
+          { label: "One-off Discounts", value: String(dr.oneOffCount), hint: `${money(dr.oneOffTotal)} in ${d.label}`, color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
+          { label: "Given in Period", value: money(dr.totalGivenInPeriod), hint: `Across ${dr.discountedBillCount} bill${dr.discountedBillCount !== 1 ? "s" : ""}`, color: "text-rose-400", bg: "bg-rose-500/10 border-rose-500/20" },
         ].map(({ label, value, hint, color, bg }) => (
           <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-5">
             <div className={`flex items-center justify-center w-9 h-9 rounded-xl border ${bg} mb-3`}>
@@ -714,7 +717,7 @@ function DiscountsTab({ data: d }: { data: ReportData }) {
           </div>
           {dr.standingCount > 0 && (
             <span className="text-sm font-semibold text-amber">
-              {formatCurrency(dr.standingMonthlyTotal)} / month
+              {money(dr.standingMonthlyTotal)} / month
             </span>
           )}
         </div>
@@ -736,10 +739,10 @@ function DiscountsTab({ data: d }: { data: ReportData }) {
                   <tr key={r.tenantId} className="hover:bg-white/[0.02]">
                     <td className="py-2.5 pr-3 font-medium">{r.tenantName}</td>
                     <td className="py-2.5 pr-3 text-muted-foreground">{r.roomNumber ? `Rm ${r.roomNumber}` : "—"}</td>
-                    <td className="py-2.5 pr-3 text-right text-muted-foreground tabular-nums">{formatCurrency(r.monthlyRent)}</td>
+                    <td className="py-2.5 pr-3 text-right text-muted-foreground tabular-nums">{money(r.monthlyRent)}</td>
                     <td className="py-2.5 pr-3 text-right text-purple-400 font-medium tabular-nums">{r.percent}%</td>
-                    <td className="py-2.5 pr-3 text-right text-rose-400 font-semibold tabular-nums">−{formatCurrency(r.monthlyDiscount)}</td>
-                    <td className="py-2.5 text-right font-semibold tabular-nums">{formatCurrency(Math.max(0, r.monthlyRent - r.monthlyDiscount))}</td>
+                    <td className="py-2.5 pr-3 text-right text-rose-400 font-semibold tabular-nums">−{money(r.monthlyDiscount)}</td>
+                    <td className="py-2.5 text-right font-semibold tabular-nums">{money(Math.max(0, r.monthlyRent - r.monthlyDiscount))}</td>
                   </tr>
                 ))}
               </tbody>
@@ -759,7 +762,7 @@ function DiscountsTab({ data: d }: { data: ReportData }) {
             </p>
           </div>
           {dr.oneOffCount > 0 && (
-            <span className="text-sm font-semibold text-rose-400">{formatCurrency(dr.oneOffTotal)}</span>
+            <span className="text-sm font-semibold text-rose-400">{money(dr.oneOffTotal)}</span>
           )}
         </div>
         {dr.oneOff.length > 0 ? (
@@ -781,7 +784,7 @@ function DiscountsTab({ data: d }: { data: ReportData }) {
                     <td className="py-2.5 pr-3 text-muted-foreground">{r.roomNumber ? `Rm ${r.roomNumber}` : "—"}</td>
                     <td className="py-2.5 pr-3 text-right text-muted-foreground">{r.forMonth}</td>
                     <td className="py-2.5 pr-3 text-right text-purple-400 font-medium tabular-nums">{r.percent}%</td>
-                    <td className="py-2.5 text-right text-rose-400 font-semibold tabular-nums">−{formatCurrency(r.amount)}</td>
+                    <td className="py-2.5 text-right text-rose-400 font-semibold tabular-nums">−{money(r.amount)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -811,6 +814,7 @@ function acStatusColor(status: string): string {
 }
 
 function AcAnalyticsTab({ data: d }: { data: ReportData }) {
+  const money = useMoney();
   const [statusFilter, setStatusFilter] = useState("all");
 
   const filteredRows = useMemo(() => {
@@ -829,7 +833,7 @@ function AcAnalyticsTab({ data: d }: { data: ReportData }) {
         {[
           { label: "Total AC Tenants", value: String(d.acStats.totalAcTenants), color: "text-amber", bg: "bg-amber/10 border-amber/20" },
           { label: "AC Bills Paid", value: String(d.acStats.paidAcTenants), color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
-          { label: "Total AC Revenue", value: formatCurrency(d.acStats.totalAcRevenue), color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
+          { label: "Total AC Revenue", value: money(d.acStats.totalAcRevenue), color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
         ].map(({ label, value, color, bg }) => (
           <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-5">
             <div className={`flex items-center justify-center w-9 h-9 rounded-xl border ${bg} mb-3`}>
@@ -881,7 +885,7 @@ function AcAnalyticsTab({ data: d }: { data: ReportData }) {
                     <td className="py-2.5 pr-3 font-medium">Rm {r.roomNumber}</td>
                     <td className="py-2.5 pr-3 text-muted-foreground">{r.tenantName}</td>
                     <td className="py-2.5 pr-3 text-right text-blue-400 font-medium">{r.unitsConsumed}</td>
-                    <td className="py-2.5 pr-3 text-right font-semibold">{formatCurrency(r.acCharge)}</td>
+                    <td className="py-2.5 pr-3 text-right font-semibold">{money(r.acCharge)}</td>
                     <td className="py-2.5 pr-3 text-right text-muted-foreground">{r.forMonth}</td>
                     <td className="py-2.5 text-right">
                       <span className={`text-xs font-medium capitalize ${acStatusColor(r.status)}`}>
@@ -921,6 +925,7 @@ function methodColor(method: string) {
 
 // ── Reconciliation tab ────────────────────────────────────────────────────────
 function ReconciliationTab({ data: d, period }: { data: ReportData; period: string }) {
+  const money = useMoney();
   const [methodFilter, setMethodFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState<"pdf" | "xlsx" | null>(null);
@@ -946,7 +951,7 @@ function ReconciliationTab({ data: d, period }: { data: ReportData; period: stri
     setExporting("pdf");
     try {
       const { exportReconciliationPDF } = await import("@/lib/report-export");
-      await exportReconciliationPDF(filteredList, d.hostelName, period, activeMethodLabel);
+      await exportReconciliationPDF(filteredList, d.hostelName, period, activeMethodLabel, d.country);
       toast({ title: "PDF downloaded" });
     } catch (err) {
       toast({ title: "Export failed", description: String(err), variant: "destructive" });
@@ -959,7 +964,7 @@ function ReconciliationTab({ data: d, period }: { data: ReportData; period: stri
     setExporting("xlsx");
     try {
       const { exportReconciliationExcel } = await import("@/lib/report-export");
-      await exportReconciliationExcel(filteredList, d.hostelName, period, activeMethodLabel);
+      await exportReconciliationExcel(filteredList, d.hostelName, period, activeMethodLabel, d.country);
       toast({ title: "Excel downloaded" });
     } catch (err) {
       toast({ title: "Export failed", description: String(err), variant: "destructive" });
@@ -987,7 +992,7 @@ function ReconciliationTab({ data: d, period }: { data: ReportData; period: stri
               <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: methodColor(m.method) }} />
               <p className="text-xs text-muted-foreground font-medium">{m.label}</p>
             </div>
-            <p className="text-lg font-bold text-foreground">{formatCurrency(m.amount)}</p>
+            <p className="text-lg font-bold text-foreground">{money(m.amount)}</p>
             <p className="text-xs text-muted-foreground mt-0.5">{m.count} payment{m.count !== 1 ? "s" : ""}</p>
           </div>
         ))}
@@ -1000,7 +1005,7 @@ function ReconciliationTab({ data: d, period }: { data: ReportData; period: stri
             <div>
               <h2 className="text-sm font-semibold">Payment Transactions</h2>
               <p className="text-xs text-muted-foreground mt-0.5">
-                {filteredList.length} transaction{filteredList.length !== 1 ? "s" : ""} · {formatCurrency(filteredTotal)}
+                {filteredList.length} transaction{filteredList.length !== 1 ? "s" : ""} · {money(filteredTotal)}
                 {methodFilter !== "all" && <span className="ml-1 text-amber">· {activeMethodLabel}</span>}
               </p>
             </div>
@@ -1089,7 +1094,7 @@ function ReconciliationTab({ data: d, period }: { data: ReportData; period: stri
                     <td className="py-2.5 pr-3 text-xs text-muted-foreground">
                       {p.paymentDate ? new Date(p.paymentDate).toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
                     </td>
-                    <td className="py-2.5 text-right font-semibold text-emerald-400">{formatCurrency(p.amount)}</td>
+                    <td className="py-2.5 text-right font-semibold text-emerald-400">{money(p.amount)}</td>
                   </tr>
                 ))
               )}
@@ -1098,7 +1103,7 @@ function ReconciliationTab({ data: d, period }: { data: ReportData; period: stri
               <tfoot>
                 <tr className="border-t-2 border-sidebar-border font-semibold">
                   <td colSpan={7} className="pt-2.5 text-xs text-muted-foreground">Total</td>
-                  <td className="pt-2.5 text-right text-emerald-400">{formatCurrency(filteredTotal)}</td>
+                  <td className="pt-2.5 text-right text-emerald-400">{money(filteredTotal)}</td>
                 </tr>
               </tfoot>
             )}
@@ -1129,6 +1134,7 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 
 function ExpenseReportTab({ data: d, period }: { data: ReportData; period: string }) {
+  const money = useMoney();
   const [sourceFilter, setSourceFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState<"pdf" | "xlsx" | null>(null);
@@ -1151,7 +1157,7 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
     setExporting("pdf");
     try {
       const { exportExpenseReportPDF } = await import("@/lib/report-export");
-      await exportExpenseReportPDF(filteredList, d.hostelName, period, activeSourceLabel);
+      await exportExpenseReportPDF(filteredList, d.hostelName, period, activeSourceLabel, d.country);
       toast({ title: "PDF downloaded" });
     } catch (err) {
       toast({ title: "Export failed", description: String(err), variant: "destructive" });
@@ -1164,7 +1170,7 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
     setExporting("xlsx");
     try {
       const { exportExpenseReportExcel } = await import("@/lib/report-export");
-      await exportExpenseReportExcel(filteredList, d.hostelName, period, activeSourceLabel);
+      await exportExpenseReportExcel(filteredList, d.hostelName, period, activeSourceLabel, d.country);
       toast({ title: "Excel downloaded" });
     } catch (err) {
       toast({ title: "Export failed", description: String(err), variant: "destructive" });
@@ -1191,11 +1197,11 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: sourceColor("bill") }} />
             <p className="text-xs text-muted-foreground font-medium">Bills</p>
           </div>
-          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.paidBySource.bills)}</p>
+          <p className="text-lg font-bold text-foreground">{money(d.expenseReport.paidBySource.bills)}</p>
           {d.expenseReport.unpaidBillsTotal > 0 && (
             <p className="text-xs text-rose-400 mt-0.5">
-              {formatCurrency(d.expenseReport.unpaidBillsTotal)} unpaid
-              <span className="text-muted-foreground"> · {formatCurrency(d.expenseReport.totalsBySource.bills)} total</span>
+              {money(d.expenseReport.unpaidBillsTotal)} unpaid
+              <span className="text-muted-foreground"> · {money(d.expenseReport.totalsBySource.bills)} total</span>
             </p>
           )}
         </div>
@@ -1204,19 +1210,19 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: sourceColor("salary") }} />
             <p className="text-xs text-muted-foreground font-medium">Staff Salaries</p>
           </div>
-          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.paidBySource.staff)}</p>
+          <p className="text-lg font-bold text-foreground">{money(d.expenseReport.paidBySource.staff)}</p>
           {/* Names the advance portion. Without it the headline (cash paid out,
               advances included) sits above "X total" (salary earned, advances
               excluded) and reads as paying more than the total. */}
           {d.expenseReport.advancesTotal > 0 && (
             <p className="text-xs text-muted-foreground mt-0.5">
-              Includes {formatCurrency(d.expenseReport.advancesTotal)} advance
+              Includes {money(d.expenseReport.advancesTotal)} advance
             </p>
           )}
           {d.expenseReport.pendingSalariesTotal > 0 && (
             <p className="text-xs text-amber mt-0.5">
-              {formatCurrency(d.expenseReport.pendingSalariesTotal)} remaining
-              <span className="text-muted-foreground"> · {formatCurrency(d.expenseReport.totalsBySource.staff)} salary total</span>
+              {money(d.expenseReport.pendingSalariesTotal)} remaining
+              <span className="text-muted-foreground"> · {money(d.expenseReport.totalsBySource.staff)} salary total</span>
             </p>
           )}
         </div>
@@ -1225,14 +1231,14 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: sourceColor("expense") }} />
             <p className="text-xs text-muted-foreground font-medium">General Expenses</p>
           </div>
-          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.totalsBySource.expenses)}</p>
+          <p className="text-lg font-bold text-foreground">{money(d.expenseReport.totalsBySource.expenses)}</p>
         </div>
         <div className="rounded-2xl border border-sidebar-border bg-card p-4">
           <div className="flex items-center gap-2 mb-2">
             <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: sourceColor("kitchen") }} />
             <p className="text-xs text-muted-foreground font-medium">Kitchen</p>
           </div>
-          <p className="text-lg font-bold text-foreground">{formatCurrency(d.expenseReport.totalsBySource.kitchen)}</p>
+          <p className="text-lg font-bold text-foreground">{money(d.expenseReport.totalsBySource.kitchen)}</p>
         </div>
         {/* 5 cards can't split evenly across the 2-col (mobile) or 3-col (sm)
             grids — spanning the remainder here avoids leaving this one alone
@@ -1242,10 +1248,10 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
             <Receipt className="w-3 h-3 text-amber shrink-0" />
             <p className="text-xs text-amber font-medium">Grand Total</p>
           </div>
-          <p className="text-lg font-bold text-amber">{formatCurrency(d.expenseReport.grandTotal)}</p>
+          <p className="text-lg font-bold text-amber">{money(d.expenseReport.grandTotal)}</p>
           {d.expenseReport.unpaidBillsTotal + d.expenseReport.pendingSalariesTotal > 0 && (
             <p className="text-xs text-muted-foreground mt-0.5">
-              {formatCurrency(d.expenseReport.unpaidBillsTotal + d.expenseReport.pendingSalariesTotal)} still due
+              {money(d.expenseReport.unpaidBillsTotal + d.expenseReport.pendingSalariesTotal)} still due
             </p>
           )}
         </div>
@@ -1258,7 +1264,7 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
             <div>
               <h2 className="text-sm font-semibold">Expense Line Items</h2>
               <p className="text-xs text-muted-foreground mt-0.5">
-                {filteredList.length} item{filteredList.length !== 1 ? "s" : ""} · {formatCurrency(filteredTotal)}
+                {filteredList.length} item{filteredList.length !== 1 ? "s" : ""} · {money(filteredTotal)}
                 {sourceFilter !== "all" && <span className="ml-1 text-amber">· {activeSourceLabel}</span>}
               </p>
             </div>
@@ -1351,7 +1357,7 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
                         <span className="text-xs text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="py-2.5 text-right font-semibold">{formatCurrency(r.amount)}</td>
+                    <td className="py-2.5 text-right font-semibold">{money(r.amount)}</td>
                   </tr>
                 ))
               )}
@@ -1360,7 +1366,7 @@ function ExpenseReportTab({ data: d, period }: { data: ReportData; period: strin
               <tfoot>
                 <tr className="border-t-2 border-sidebar-border font-semibold">
                   <td colSpan={5} className="pt-2.5 text-xs text-muted-foreground">Total</td>
-                  <td className="pt-2.5 text-right">{formatCurrency(filteredTotal)}</td>
+                  <td className="pt-2.5 text-right">{money(filteredTotal)}</td>
                 </tr>
               </tfoot>
             )}
@@ -1378,9 +1384,9 @@ const LEDGER_STATUS_LABELS: Record<string, string> = {
   checked_out: "Checked Out",
 };
 
-function ledgerPackagePriceLabel(r: { packagePrice: number; billingType: "monthly" | "daily" }): string {
+function ledgerPackagePriceLabel(r: { packagePrice: number; billingType: "monthly" | "daily" }, money: (n: number) => string): string {
   if (r.packagePrice <= 0) return "—";
-  return `${formatCurrency(r.packagePrice)}/${r.billingType === "daily" ? "day" : "mo"}`;
+  return `${money(r.packagePrice)}/${r.billingType === "daily" ? "day" : "mo"}`;
 }
 
 const LEDGER_PACKAGE_OPTIONS: { value: string; label: string }[] = [
@@ -1393,15 +1399,17 @@ const LEDGER_PACKAGE_OPTIONS: { value: string; label: string }[] = [
 ];
 
 function MemberLedgerTab({
-  hostelId, hostelName, roomOptions, from, to, period,
+  hostelId, hostelName, country, roomOptions, from, to, period,
 }: {
   hostelId: string;
   hostelName: string;
+  country: string | null;
   roomOptions: { id: string; roomNumber: string }[];
   from: string;
   to: string;
   period: string;
 }) {
+  const money = useMoney();
   const [rows, setRows] = useState<LedgerTenantRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [roomFilter, setRoomFilter] = useState("all");
@@ -1489,7 +1497,7 @@ function MemberLedgerTab({
     setExporting("pdf");
     try {
       const { exportLedgerPDF } = await import("@/lib/report-export");
-      await exportLedgerPDF(filteredRows, hostelName, period, exportFilterLabel);
+      await exportLedgerPDF(filteredRows, hostelName, period, exportFilterLabel, country);
       toast({ title: "PDF downloaded" });
     } catch (err) {
       toast({ title: "Export failed", description: String(err), variant: "destructive" });
@@ -1502,7 +1510,7 @@ function MemberLedgerTab({
     setExporting("xlsx");
     try {
       const { exportLedgerExcel } = await import("@/lib/report-export");
-      await exportLedgerExcel(filteredRows, hostelName, period, exportFilterLabel);
+      await exportLedgerExcel(filteredRows, hostelName, period, exportFilterLabel, country);
       toast({ title: "Excel downloaded" });
     } catch (err) {
       toast({ title: "Export failed", description: String(err), variant: "destructive" });
@@ -1667,7 +1675,7 @@ function MemberLedgerTab({
                       </div>
                       <p className="text-xs text-blue-400 mt-0.5">
                         {r.packageLabel}
-                        {r.packagePrice > 0 && <span className="text-muted-foreground"> · {ledgerPackagePriceLabel(r)}</span>}
+                        {r.packagePrice > 0 && <span className="text-muted-foreground"> · {ledgerPackagePriceLabel(r, money)}</span>}
                       </p>
                     </div>
                     <Badge variant={r.status === "active" ? "default" : "secondary"} className="text-xs capitalize shrink-0">
@@ -1677,23 +1685,23 @@ function MemberLedgerTab({
                   <div className="grid grid-cols-3 gap-2 pt-2 border-t border-white/5 text-center">
                     <div>
                       <p className="text-[10px] text-muted-foreground">Charged</p>
-                      <p className="text-xs font-semibold">{formatCurrency(r.totalCharged)}</p>
-                      {r.totalFoodCharge > 0 && <p className="text-[9px] text-amber">incl. {formatCurrency(r.totalFoodCharge)} food</p>}
+                      <p className="text-xs font-semibold">{money(r.totalCharged)}</p>
+                      {r.totalFoodCharge > 0 && <p className="text-[9px] text-amber">incl. {money(r.totalFoodCharge)} food</p>}
                     </div>
                     <div>
                       <p className="text-[10px] text-muted-foreground">Paid</p>
-                      <p className="text-xs font-semibold text-emerald-400">{formatCurrency(r.totalPaid)}</p>
+                      <p className="text-xs font-semibold text-emerald-400">{money(r.totalPaid)}</p>
                     </div>
                     <div>
                       <p className="text-[10px] text-muted-foreground">Due</p>
                       <p className={`text-xs font-semibold ${r.totalOwed > 0 ? "text-rose-400" : "text-muted-foreground"}`}>
-                        {r.totalOwed > 0 ? formatCurrency(r.totalOwed) : "—"}
+                        {r.totalOwed > 0 ? money(r.totalOwed) : "—"}
                       </p>
                     </div>
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     {r.securityDeposit > 0 ? (
-                      <span className="text-xs text-violet-400 flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> {formatCurrency(r.securityDeposit)} deposit held</span>
+                      <span className="text-xs text-violet-400 flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> {money(r.securityDeposit)} deposit held</span>
                     ) : <span />}
                     {r.lastPaymentDate && (
                       <p className="text-xs text-muted-foreground">Last paid {formatDate(r.lastPaymentDate)}</p>
@@ -1730,21 +1738,21 @@ function MemberLedgerTab({
                       </td>
                       <td className="py-2.5 pr-3 text-muted-foreground">{r.roomNumber ? `Rm ${r.roomNumber}` : "—"}</td>
                       <td className="py-2.5 pr-3 text-blue-400">{r.packageLabel}</td>
-                      <td className="py-2.5 pr-3 text-right text-muted-foreground">{ledgerPackagePriceLabel(r)}</td>
+                      <td className="py-2.5 pr-3 text-right text-muted-foreground">{ledgerPackagePriceLabel(r, money)}</td>
                       <td className="py-2.5 pr-3">
                         <Badge variant={r.status === "active" ? "default" : "secondary"} className="text-xs capitalize">
                           {LEDGER_STATUS_LABELS[r.status]}
                         </Badge>
                       </td>
                       <td className="py-2.5 pr-3 text-right">
-                        {formatCurrency(r.totalCharged)}
-                        {r.totalFoodCharge > 0 && <p className="text-[10px] text-amber font-normal">incl. {formatCurrency(r.totalFoodCharge)} food</p>}
+                        {money(r.totalCharged)}
+                        {r.totalFoodCharge > 0 && <p className="text-[10px] text-amber font-normal">incl. {money(r.totalFoodCharge)} food</p>}
                       </td>
-                      <td className="py-2.5 pr-3 text-right text-emerald-400">{formatCurrency(r.totalPaid)}</td>
+                      <td className="py-2.5 pr-3 text-right text-emerald-400">{money(r.totalPaid)}</td>
                       <td className={`py-2.5 pr-3 text-right ${r.totalOwed > 0 ? "text-rose-400 font-semibold" : "text-muted-foreground"}`}>
-                        {r.totalOwed > 0 ? formatCurrency(r.totalOwed) : "—"}
+                        {r.totalOwed > 0 ? money(r.totalOwed) : "—"}
                       </td>
-                      <td className="py-2.5 pr-3 text-right text-violet-400">{r.securityDeposit > 0 ? formatCurrency(r.securityDeposit) : "—"}</td>
+                      <td className="py-2.5 pr-3 text-right text-violet-400">{r.securityDeposit > 0 ? money(r.securityDeposit) : "—"}</td>
                       <td className="py-2.5 pr-3 text-muted-foreground">{r.lastPaymentDate ? formatDate(r.lastPaymentDate) : "—"}</td>
                       <td className="py-2.5 text-right">
                         <Button variant="ghost" size="sm" className="h-7 text-xs">View</Button>
@@ -1772,7 +1780,7 @@ function MemberLedgerTab({
                 {drillIn.roomNumber && <span>Room {drillIn.roomNumber}</span>}
                 <span className="text-blue-400">
                   {drillIn.packageLabel}
-                  {drillIn.packagePrice > 0 && ` · ${ledgerPackagePriceLabel(drillIn)}`}
+                  {drillIn.packagePrice > 0 && ` · ${ledgerPackagePriceLabel(drillIn, money)}`}
                 </span>
                 <Badge variant={drillIn.status === "active" ? "default" : "secondary"} className="text-xs capitalize">
                   {LEDGER_STATUS_LABELS[drillIn.status]}
@@ -1782,15 +1790,15 @@ function MemberLedgerTab({
               <div className="rounded-xl bg-sidebar-accent/30 px-3 py-2.5 grid grid-cols-3 gap-2 text-center">
                 <div>
                   <p className="text-xs text-muted-foreground">Charged</p>
-                  <p className="text-sm font-semibold">{formatCurrency(drillIn.totalCharged)}</p>
+                  <p className="text-sm font-semibold">{money(drillIn.totalCharged)}</p>
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Paid</p>
-                  <p className="text-sm font-semibold text-emerald-400">{formatCurrency(drillIn.totalPaid)}</p>
+                  <p className="text-sm font-semibold text-emerald-400">{money(drillIn.totalPaid)}</p>
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Due</p>
-                  <p className={`text-sm font-semibold ${drillIn.totalOwed > 0 ? "text-rose-400" : ""}`}>{formatCurrency(drillIn.totalOwed)}</p>
+                  <p className={`text-sm font-semibold ${drillIn.totalOwed > 0 ? "text-rose-400" : ""}`}>{money(drillIn.totalOwed)}</p>
                 </div>
               </div>
 
@@ -1798,7 +1806,7 @@ function MemberLedgerTab({
                 <div className="rounded-xl border border-violet-500/20 bg-violet-500/[0.05] px-3 py-2 flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-violet-400 shrink-0" />
                   <p className="text-sm">
-                    <span className="font-semibold text-violet-400">{formatCurrency(drillIn.securityDeposit)}</span>
+                    <span className="font-semibold text-violet-400">{money(drillIn.securityDeposit)}</span>
                     <span className="text-muted-foreground"> security deposit held</span>
                   </p>
                 </div>
@@ -1865,6 +1873,7 @@ function MemberLedgerTab({
 // ── Legacy view (backward compat) ────────────────────────────────────────────
 function LegacyReportsView({ data }: { data: LegacyProps["data"] }) {
   const [period, setPeriod] = useState<3 | 6 | 12>(6);
+  const money = useMoney();
 
   if (!data) {
     return (
@@ -1923,10 +1932,10 @@ function LegacyReportsView({ data }: { data: LegacyProps["data"] }) {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: `${period}-Mo Revenue`, value: formatCurrency(totalCollected), sub: `${avgCollectionRate}% collection rate`, icon: TrendingUp, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
-          { label: `${period}-Mo Expenses`, value: formatCurrency(totalExpenses), sub: `${formatCurrency(Math.round(totalExpenses / Math.max(1, period)))}/mo avg`, icon: BarChart3, color: "text-rose-400", bg: "bg-rose-500/10 border-rose-500/20" },
-          { label: `${period}-Mo Net Profit`, value: formatCurrency(totalProfit), sub: `${profitMargin >= 0 ? "+" : ""}${profitMargin}% margin`, icon: Banknote, color: totalProfit >= 0 ? "text-yellow-400" : "text-red-400", bg: totalProfit >= 0 ? "bg-yellow-500/10 border-yellow-500/20" : "bg-red-500/10 border-red-500/20" },
-          { label: "Avg Occupancy", value: `${avgOccupancy}%`, sub: revPerBed > 0 ? `${formatCurrency(revPerBed)}/bed/mo` : "", icon: BedDouble, color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
+          { label: `${period}-Mo Revenue`, value: money(totalCollected), sub: `${avgCollectionRate}% collection rate`, icon: TrendingUp, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
+          { label: `${period}-Mo Expenses`, value: money(totalExpenses), sub: `${money(Math.round(totalExpenses / Math.max(1, period)))}/mo avg`, icon: BarChart3, color: "text-rose-400", bg: "bg-rose-500/10 border-rose-500/20" },
+          { label: `${period}-Mo Net Profit`, value: money(totalProfit), sub: `${profitMargin >= 0 ? "+" : ""}${profitMargin}% margin`, icon: Banknote, color: totalProfit >= 0 ? "text-yellow-400" : "text-red-400", bg: totalProfit >= 0 ? "bg-yellow-500/10 border-yellow-500/20" : "bg-red-500/10 border-red-500/20" },
+          { label: "Avg Occupancy", value: `${avgOccupancy}%`, sub: revPerBed > 0 ? `${money(revPerBed)}/bed/mo` : "", icon: BedDouble, color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
         ].map(({ label, value, sub, icon: Icon, color, bg }) => (
           <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-5">
             <div className="flex items-center gap-3">

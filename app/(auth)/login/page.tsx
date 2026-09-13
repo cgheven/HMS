@@ -259,10 +259,11 @@ export default function LoginPage() {
             </form>
           )}
 
-          <p className="text-center text-xs text-muted-foreground/60 mt-6 leading-relaxed">
-            Access restricted to authorized users only.
-            <br />
-            Contact your administrator for access.
+          <p className="text-center text-sm text-muted-foreground mt-6">
+            New to Pulse? <Link href="/signup" className="text-amber hover:underline">Create an account</Link>
+          </p>
+          <p className="text-center text-xs text-muted-foreground/60 mt-2 leading-relaxed">
+            Managers: contact your hostel owner for access.
           </p>
         </div>
 

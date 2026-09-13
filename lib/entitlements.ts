@@ -3,10 +3,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 // Account-level Pulse plan. NULL/unknown = "no explicit plan" → callers fall
 // back to today's per-capability flags (blocks nobody).
-export type Plan = "basic" | "standard";
+export type Plan = "basic" | "standard" | "business" | "enterprise";
+
+const PLANS: readonly Plan[] = ["basic", "standard", "business", "enterprise"];
 
 export function asPlan(value: string | null | undefined): Plan | null {
-  return value === "basic" || value === "standard" ? value : null;
+  return PLANS.includes(value as Plan) ? (value as Plan) : null;
 }
 
 /**
@@ -24,8 +26,11 @@ export interface PlanEntitlements {
 }
 
 export function entitlementsForPlan(plan: Plan): PlanEntitlements {
-  const standard = plan === "standard";
-  return { brandedSubdomain: standard, referralEngine: standard, whatsappAutomation: standard };
+  // Every paid tier (standard / business / enterprise) grants the same paid
+  // capabilities; only Basic is the entry tier. Business ⊇ Standard is a higher
+  // property cap + price, not a new feature set.
+  const paid = plan !== "basic";
+  return { brandedSubdomain: paid, referralEngine: paid, whatsappAutomation: paid };
 }
 
 /**

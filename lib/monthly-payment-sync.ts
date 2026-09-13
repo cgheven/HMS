@@ -1,5 +1,5 @@
 import "server-only";
-import { pktYearMonth } from "@/lib/pkt-time";
+import { yearMonthInZone, DEFAULT_TIMEZONE } from "@/lib/pkt-time";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   VALID_TIERS, calcBaseRentServer, dailySnapshot, computeDepositCharge,
@@ -91,13 +91,17 @@ export function expectedChargesFor(
  * date input produces things like "0202-08"), and the caller then simply skips
  * the sync.
  */
-export function syncableCheckoutMonth(month: string): string | null {
+export function syncableCheckoutMonth(month: string, timeZone: string = DEFAULT_TIMEZONE): string | null {
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return null;
-  const { year, month: m } = pktYearMonth();
+  // Bounds are the hostel's own calendar months (its timezone), not a fixed PKT
+  // — at a month boundary Karachi (UTC+5) and London disagree for a few hours,
+  // which would wrongly reject a legitimate current-month checkout for a UK
+  // branch. Falls open to Karachi (byte-identical for PK).
+  const { year, month: m } = yearMonthInZone(timeZone);
   const current = `${year}-${String(m).padStart(2, "0")}`;
   const ahead = new Date();
   ahead.setDate(ahead.getDate() + 7);
-  const { year: aY, month: aM } = pktYearMonth(ahead);
+  const { year: aY, month: aM } = yearMonthInZone(timeZone, ahead);
   const latest = `${aY}-${String(aM).padStart(2, "0")}`;
   return month >= current && month <= latest ? month : null;
 }

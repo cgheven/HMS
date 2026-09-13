@@ -89,6 +89,8 @@ interface RoomDetailModalProps {
 }
 
 function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
+  // Public page — money follows the listed hostel's country (PK falls open, byte-identical).
+  const money = (n: number) => formatCurrency(n, hostel.country);
   const photos = [room.photo_path, room.photo_path_2, room.photo_path_3, room.photo_path_4, room.photo_path_5].filter(Boolean) as string[];
   const [photoIdx, setPhotoIdx]   = useState(0);
   const [selectedTier, setSelectedTier] = useState("space_only");
@@ -116,7 +118,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
 
   const waMsg = buildWhatsAppUrl(
     contactPhone,
-    `Hi! I'm interested in Room ${room.room_number} at ${hostel.name}.\nPackage: ${selected.label}${mealsLabel ? `\nMeals: ${mealsLabel} (+${formatCurrency(mealsCharge)})` : ""}\nMonthly: ${formatCurrency(selected.price + mealsCharge)}\nDeposit: ${formatCurrency(SECURITY_DEPOSIT)}\n\nPlease let me know next steps.`
+    `Hi! I'm interested in Room ${room.room_number} at ${hostel.name}.\nPackage: ${selected.label}${mealsLabel ? `\nMeals: ${mealsLabel} (+${money(mealsCharge)})` : ""}\nMonthly: ${money(selected.price + mealsCharge)}\nDeposit: ${money(SECURITY_DEPOSIT)}\n\nPlease let me know next steps.`
   );
 
   useEffect(() => {
@@ -254,7 +256,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                   {room.has_ac ? (
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-pub-info/10 border border-pub-info/25 text-pub-info">
                       <Wind className="w-3 h-3" />
-                      AC Available{hostel.package_config ? ` · ${formatCurrency(hostel.package_config.ac_per_unit_rate)}/unit` : ""}
+                      AC Available{hostel.package_config ? ` · ${money(hostel.package_config.ac_per_unit_rate)}/unit` : ""}
                     </span>
                   ) : (
                     <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-muted border border-border text-muted-foreground">
@@ -340,7 +342,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                           </div>
                         </div>
                         <div className="shrink-0 text-right">
-                          <p className="text-sm font-semibold text-primary">{formatCurrency(pkg.price)}</p>
+                          <p className="text-sm font-semibold text-primary">{money(pkg.price)}</p>
                           <p className="text-[10px] text-muted-foreground mt-0.5">/mo</p>
                         </div>
                       </div>
@@ -351,7 +353,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                 {/* AC rate callout */}
                 {room.has_ac && hostel.package_config && (
                   <div className="mt-3 rounded-lg border border-pub-info/25 bg-pub-info/[0.06] px-3 py-2 text-[11px] text-pub-info">
-                    AC units charged separately at {formatCurrency(hostel.package_config.ac_per_unit_rate)}/unit consumed
+                    AC units charged separately at {money(hostel.package_config.ac_per_unit_rate)}/unit consumed
                   </div>
                 )}
               </div>
@@ -384,7 +386,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                                 </span>
                                 <span className={checked ? "text-foreground" : "text-muted-foreground"}>{m.label}</span>
                               </span>
-                              <span className={`text-xs font-medium ${checked ? "text-primary" : "text-muted-foreground"}`}>+{formatCurrency(m.rate)}</span>
+                              <span className={`text-xs font-medium ${checked ? "text-primary" : "text-muted-foreground"}`}>+{money(m.rate)}</span>
                             </button>
                           );
                         })}
@@ -393,7 +395,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                         && Number(foodRates.food_all_meals_rate) > 0
                         && Number(foodRates.food_all_meals_rate) < (Number(foodRates.food_breakfast_rate) + Number(foodRates.food_lunch_rate) + Number(foodRates.food_dinner_rate)) && (
                         <p className="text-[11px] text-pub-success mt-2">
-                          All-3-meals bundle applied: {formatCurrency(Number(foodRates.food_all_meals_rate))}/mo
+                          All-3-meals bundle applied: {money(Number(foodRates.food_all_meals_rate))}/mo
                         </p>
                       )}
                     </>
@@ -414,7 +416,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                             </span>
                             <span className={checked ? "text-foreground" : "text-muted-foreground"}>All Meals (Breakfast + Lunch + Dinner)</span>
                           </span>
-                          <span className={`text-xs font-medium ${checked ? "text-primary" : "text-muted-foreground"}`}>+{formatCurrency(Number(foodRates.food_all_meals_rate))}</span>
+                          <span className={`text-xs font-medium ${checked ? "text-primary" : "text-muted-foreground"}`}>+{money(Number(foodRates.food_all_meals_rate))}</span>
                         </button>
                       );
                     })()
@@ -426,21 +428,21 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
               <div className="rounded-xl border border-border bg-card overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3">
                   <span className="text-sm text-muted-foreground">{selected.label}</span>
-                  <span className="text-sm font-semibold text-primary">{formatCurrency(selected.price)}</span>
+                  <span className="text-sm font-semibold text-primary">{money(selected.price)}</span>
                 </div>
                 {mealsCharge > 0 && (
                   <div className="flex items-center justify-between px-4 py-3 border-t border-border">
                     <span className="text-sm text-muted-foreground">{mealsLabel}</span>
-                    <span className="text-sm font-semibold text-primary">{formatCurrency(mealsCharge)}</span>
+                    <span className="text-sm font-semibold text-primary">{money(mealsCharge)}</span>
                   </div>
                 )}
                 <div className="flex items-center justify-between px-4 py-3 border-t border-border">
                   <span className="text-sm text-muted-foreground">Security Deposit</span>
-                  <span className="text-sm font-semibold">{formatCurrency(SECURITY_DEPOSIT)}</span>
+                  <span className="text-sm font-semibold">{money(SECURITY_DEPOSIT)}</span>
                 </div>
                 <div className="flex items-center justify-between px-4 py-3 border-t border-border bg-muted">
                   <span className="text-sm font-semibold">Total Due Today</span>
-                  <span className="text-sm font-bold text-primary">{formatCurrency(selected.price + mealsCharge + SECURITY_DEPOSIT)}</span>
+                  <span className="text-sm font-bold text-primary">{money(selected.price + mealsCharge + SECURITY_DEPOSIT)}</span>
                 </div>
               </div>
               <p className="text-[11px] text-muted-foreground -mt-3">Monthly rent due on the 1st of each month</p>
@@ -676,6 +678,7 @@ function WaitlistModal({ hostelId, hostelName, onClose }: { hostelId: string; ho
 // ── Room card ─────────────────────────────────────────────────────────────────
 
 function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDetail }) {
+  const money = (n: number) => formatCurrency(n, hostel.country);
   const [detailOpen, setDetailOpen] = useState(false);
   const [activePhoto, setActivePhoto] = useState(0);
 
@@ -763,7 +766,7 @@ function RoomCard({ room, hostel }: { room: PublicRoom; hostel: PublicHostelDeta
               and without the wrap "2/4 occupied" broke mid-phrase and sat
               baseline-misaligned against the price. */}
           <div className="flex items-baseline justify-between gap-x-2 gap-y-1 flex-wrap text-xs">
-            <span className="font-semibold text-primary whitespace-nowrap">{formatCurrency(cardPrice)}<span className="text-muted-foreground font-normal">/mo</span></span>
+            <span className="font-semibold text-primary whitespace-nowrap">{money(cardPrice)}<span className="text-muted-foreground font-normal">/mo</span></span>
             <span className="text-muted-foreground whitespace-nowrap">{room.occupied}/{room.capacity} occupied</span>
           </div>
 
@@ -803,13 +806,16 @@ const PUBLIC_PRICING_TIERS: { tier: PackageTier; label: string; subtitle: string
 
 function PackagePricingSection({
   config,
+  country,
   hasAcRooms,
   hasNonAcRooms,
 }: {
   config: PackageConfig;
+  country: string | null;
   hasAcRooms: boolean;
   hasNonAcRooms: boolean;
 }) {
+  const money = (n: number) => formatCurrency(n, country);
   const prices = config.package_prices ?? {};
   const rows = PUBLIC_PRICING_TIERS.filter((t) => {
     const p = prices[t.tier];
@@ -858,14 +864,14 @@ function PackagePricingSection({
                   {hasNonAcRooms && (
                     <td className="px-4 py-3 text-right">
                       {p.no_ac > 0
-                        ? <span className="text-sm font-semibold text-primary tabular-nums">{formatCurrency(p.no_ac)}</span>
+                        ? <span className="text-sm font-semibold text-primary tabular-nums">{money(p.no_ac)}</span>
                         : <span className="text-xs text-muted-foreground">—</span>}
                     </td>
                   )}
                   {hasAcRooms && (
                     <td className="px-4 py-3 text-right">
                       {p.ac > 0
-                        ? <span className="text-sm font-semibold text-pub-info tabular-nums">{formatCurrency(p.ac)}</span>
+                        ? <span className="text-sm font-semibold text-pub-info tabular-nums">{money(p.ac)}</span>
                         : <span className="text-xs text-muted-foreground">—</span>}
                     </td>
                   )}
@@ -878,7 +884,7 @@ function PackagePricingSection({
         {hasAcRooms && config.ac_per_unit_rate > 0 && (
           <div className="border-t border-border px-4 py-2.5 flex items-center gap-2">
             <Wind className="w-3 h-3 text-pub-info shrink-0" />
-            <span className="text-[11px] text-pub-info">AC rooms billed additionally at {formatCurrency(config.ac_per_unit_rate)}/unit consumed</span>
+            <span className="text-[11px] text-pub-info">AC rooms billed additionally at {money(config.ac_per_unit_rate)}/unit consumed</span>
           </div>
         )}
         {/* Security deposit */}
@@ -888,7 +894,7 @@ function PackagePricingSection({
               <Banknote className="w-3 h-3 text-primary shrink-0" />
               <span className="text-[11px] text-muted-foreground">Security Deposit (one-time, refundable)</span>
             </div>
-            <span className="text-[11px] font-semibold text-primary tabular-nums">{formatCurrency(config.security_deposit)}</span>
+            <span className="text-[11px] font-semibold text-primary tabular-nums">{money(config.security_deposit)}</span>
           </div>
         )}
       </div>
@@ -900,15 +906,18 @@ function PackagePricingSection({
 
 function SeaterPricingSection({
   config,
+  country,
   hasAcRooms,
   hasNonAcRooms,
   hasWashroomRooms,
 }: {
   config: PackageConfig;
+  country: string | null;
   hasAcRooms: boolean;
   hasNonAcRooms: boolean;
   hasWashroomRooms: boolean;
 }) {
+  const money = (n: number) => formatCurrency(n, country);
   const seaterPrices = config.seater_prices ?? {};
   const rows = SEATER_CAPACITIES.filter((c) => {
     const p = seaterPrices[c];
@@ -958,20 +967,20 @@ function SeaterPricingSection({
                   {hasNonAcRooms && (
                     <td className="px-4 py-3 text-right">
                       {p.no_ac > 0
-                        ? <span className="text-sm font-semibold text-primary tabular-nums">{formatCurrency(p.no_ac)}</span>
+                        ? <span className="text-sm font-semibold text-primary tabular-nums">{money(p.no_ac)}</span>
                         : <span className="text-xs text-muted-foreground">—</span>}
                       {p.no_ac > 0 && depositNoAc > 0 && (
-                        <span className="block text-[10px] text-muted-foreground mt-0.5">Dep {formatCurrency(depositNoAc)}</span>
+                        <span className="block text-[10px] text-muted-foreground mt-0.5">Dep {money(depositNoAc)}</span>
                       )}
                     </td>
                   )}
                   {hasAcRooms && (
                     <td className="px-4 py-3 text-right">
                       {p.ac > 0
-                        ? <span className="text-sm font-semibold text-pub-info tabular-nums">{formatCurrency(p.ac)}</span>
+                        ? <span className="text-sm font-semibold text-pub-info tabular-nums">{money(p.ac)}</span>
                         : <span className="text-xs text-muted-foreground">—</span>}
                       {p.ac > 0 && depositAc > 0 && (
-                        <span className="block text-[10px] text-muted-foreground mt-0.5">Dep {formatCurrency(depositAc)}</span>
+                        <span className="block text-[10px] text-muted-foreground mt-0.5">Dep {money(depositAc)}</span>
                       )}
                     </td>
                   )}
@@ -984,13 +993,13 @@ function SeaterPricingSection({
         {hasAcRooms && config.ac_per_unit_rate > 0 && (
           <div className="border-t border-border px-4 py-2.5 flex items-center gap-2">
             <Wind className="w-3 h-3 text-pub-info shrink-0" />
-            <span className="text-[11px] text-pub-info">AC rooms billed additionally at {formatCurrency(config.ac_per_unit_rate)}/unit consumed</span>
+            <span className="text-[11px] text-pub-info">AC rooms billed additionally at {money(config.ac_per_unit_rate)}/unit consumed</span>
           </div>
         )}
         {/* Washroom note */}
         {hasWashroomRooms && config.washroom_premium > 0 && (
           <div className="border-t border-border px-4 py-2.5 flex items-center gap-2">
-            <span className="text-[11px] text-muted-foreground">Rooms with an attached washroom: +{formatCurrency(config.washroom_premium)}/month</span>
+            <span className="text-[11px] text-muted-foreground">Rooms with an attached washroom: +{money(config.washroom_premium)}/month</span>
           </div>
         )}
       </div>
@@ -1319,6 +1328,7 @@ export function HostelDetailClient({
                   return (
                     <SeaterPricingSection
                       config={config}
+                      country={hostel.country}
                       hasAcRooms={seaterVals.some((p) => p!.ac > 0)}
                       hasNonAcRooms={seaterVals.some((p) => p!.no_ac > 0)}
                       hasWashroomRooms={hostel.rooms.some((r) => r.has_attached_washroom)}
@@ -1331,6 +1341,7 @@ export function HostelDetailClient({
                 return (
                   <PackagePricingSection
                     config={config}
+                    country={hostel.country}
                     hasAcRooms={vals.some((p) => p.ac > 0)}
                     hasNonAcRooms={vals.some((p) => p.no_ac > 0)}
                   />

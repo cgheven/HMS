@@ -1,22 +1,30 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { pktYearMonth } from "@/lib/pkt-time";
+import { yearMonthInZone, DEFAULT_TIMEZONE } from "@/lib/pkt-time";
+import { getCountryConfig } from "@/lib/country-config";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatCurrency(amount: number, currency = "PKR") {
-  return new Intl.NumberFormat("en-PK", {
+// Country-driven currency. The 2nd arg is now the HOSTEL/OWNER's ISO country
+// (operational primitive), NOT a currency code — resolved to symbol+locale via
+// the registry. Omitting it (or an unknown code) falls open to Pakistan
+// (PKR/en-PK), so every existing call site is a verified no-op. Do NOT use this
+// for Pulse's own SaaS billing to owners (that is USD/PKR and has its own
+// formatter) — only for a hostel's own money.
+export function formatCurrency(amount: number, country?: string | null) {
+  const cfg = getCountryConfig(country);
+  return new Intl.NumberFormat(cfg.locale, {
     style: "currency",
-    currency,
+    currency: cfg.currency,
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   }).format(amount);
 }
 
-export function formatDate(date: string | Date) {
-  return new Intl.DateTimeFormat("en-PK", {
+export function formatDate(date: string | Date, country?: string | null) {
+  return new Intl.DateTimeFormat(getCountryConfig(country).locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -27,22 +35,22 @@ export function formatDate(date: string | Date) {
 // "2026-07" in a sentence about their money reads as a serial number.
 // Built from parts because new Date("2026-07") is parsed as UTC midnight, which
 // in Pakistan (UTC+5) is still 30 June locally and renders as the wrong month.
-export function formatMonthLong(forMonth: string) {
+export function formatMonthLong(forMonth: string, country?: string | null) {
   const [y, m] = forMonth.split("-").map(Number);
   if (!y || !m) return forMonth;
-  return new Date(y, m - 1, 1).toLocaleDateString("en-PK", { month: "long", year: "numeric" });
+  return new Date(y, m - 1, 1).toLocaleDateString(getCountryConfig(country).locale, { month: "long", year: "numeric" });
 }
 
 // "2026-08-05" -> "5 August 2026". Unabbreviated, for prose telling an owner
 // exactly which date to type; formatDate's "5 Aug 2026" is for dense UI.
-export function formatDayLong(date: string) {
+export function formatDayLong(date: string, country?: string | null) {
   const [y, m, d] = date.slice(0, 10).split("-").map(Number);
   if (!y || !m || !d) return date;
-  return new Date(y, m - 1, d).toLocaleDateString("en-PK", { day: "numeric", month: "long", year: "numeric" });
+  return new Date(y, m - 1, d).toLocaleDateString(getCountryConfig(country).locale, { day: "numeric", month: "long", year: "numeric" });
 }
 
-export function formatDateTime(date: string | Date) {
-  return new Intl.DateTimeFormat("en-PK", {
+export function formatDateTime(date: string | Date, country?: string | null) {
+  return new Intl.DateTimeFormat(getCountryConfig(country).locale, {
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -72,8 +80,8 @@ export function formatDateInput(date: Date) {
 // exact same real-world moment computes a different month depending on which
 // server happens to be running the code — which is exactly what caused local
 // dev to show August while Vercel still showed July at the same instant.
-export function getMonthRange(date = new Date()) {
-  const { year, month } = pktYearMonth(date); // month is 1-indexed (7 = July)
+export function getMonthRange(date = new Date(), timezone: string = DEFAULT_TIMEZONE) {
+  const { year, month } = yearMonthInZone(timezone, date); // month is 1-indexed (7 = July)
   const start = `${year}-${String(month).padStart(2, "0")}-01`;
   // Date.UTC's month argument is 0-indexed, so passing the 1-indexed `month`
   // here lands one month ahead; day 0 of that rolls back to the last day of

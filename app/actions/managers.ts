@@ -11,7 +11,7 @@ import { sendManagerInviteEmail } from "@/lib/email"
 import { getAuthContext } from "@/lib/data"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { requireManagerWrite } from "@/lib/manager-auth"
-import { logActivity } from "@/lib/audit"
+import { logActivity, logPiiAudit, changedPiiFields } from "@/lib/audit"
 import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation"
 import { notifyOwnerPaymentRecorded, notifyOwnerPaymentUndone } from "@/lib/payment-notifications"
 import { performPaymentUndo } from "@/lib/payment-undo"
@@ -25,7 +25,7 @@ import { carriedTransferCharges } from "@/lib/ac-transfer"
 import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, splitPaymentCharges, grossAmountOf, computeRentDiscount, combinedDiscountPercent } from "@/lib/payment-calc"
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
-import { pktYearMonth } from "@/lib/pkt-time"
+import { yearMonthInZone } from "@/lib/pkt-time"
 import { isValidNationalId, normalizeNationalId } from "@/lib/national-id"
 import { getCountryConfig, DEFAULT_COUNTRY } from "@/lib/country-config"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
@@ -939,10 +939,9 @@ function validateManagerTenantPayload(payload: ManagerTenantPayload, country: st
   // — the tenant would be created months in the past owing nothing, and the
   // branch would under-report receivables with nobody aware.
   if (!payload.is_waiting && payload.check_in) {
-    // Pakistan-anchored, not the server process's own OS timezone — Vercel's
-    // serverless functions default to UTC, which can silently disagree with
-    // Pakistan on what "this month" is.
-    const { year: curYear, month: curMonth } = pktYearMonth()
+    // The hostel's own calendar month (its timezone), not the server's OS
+    // timezone nor a fixed PKT — a UK branch rolls over at London time.
+    const { year: curYear, month: curMonth } = yearMonthInZone(getCountryConfig(country).timezone)
     const currentMonth = `${curYear}-${String(curMonth).padStart(2, "0")}`
     if (payload.check_in.slice(0, 7) < currentMonth) {
       return "Check-in date can't be in a previous month. Ask the owner to add a back-dated tenant so past dues are billed correctly."
@@ -1056,6 +1055,8 @@ export async function addTenantAsManager(
     if (insErr) return { error: insErr.message }
     const tenantId = created.id as string
 
+    await logPiiAudit({ hostelId, action: "resident.create", tenantId })
+
     // Fire-and-forget welcome WhatsApp — never awaited, never blocks this action.
     // The emergency contact gets a separate one-time admission confirmation.
     if (!payload.is_waiting) {
@@ -1090,8 +1091,8 @@ export async function addTenantAsManager(
     // never blocks tenant creation either way.
     if (!payload.is_waiting && payload.check_in) {
       const checkInMonth = payload.check_in.slice(0, 7)
-      // Pakistan-anchored — see addTenantAsManager above for why.
-      const { year: curYear, month: curMonth } = pktYearMonth()
+      // Hostel-timezone-anchored — see validateManagerTenantPayload above for why.
+      const { year: curYear, month: curMonth } = yearMonthInZone(getCountryConfig(country).timezone)
       const currentMonth = `${curYear}-${String(curMonth).padStart(2, "0")}`
       if (checkInMonth < currentMonth) {
         try {
@@ -1232,6 +1233,14 @@ export async function editTenantAsManager(
       department: payload.department || null,
     }
 
+    // PII snapshot BEFORE the write, so the audit records which personal-data
+    // fields actually changed (names only, never values).
+    const { data: beforePii } = await admin
+      .from("hms_tenants")
+      .select("full_name, phone, email, cnic, id_type, father_name, emergency_contact, emergency_phone, emergency_relationship, permanent_address, permanent_province, permanent_district, date_of_birth, address_line1, address_line2, city, county_state, postcode, address_country, vehicle_number")
+      .eq("id", tenantId)
+      .maybeSingle()
+
     const { error } = await admin
       .from("hms_tenants")
       .update(updatePayload)
@@ -1239,6 +1248,11 @@ export async function editTenantAsManager(
       .eq("hostel_id", hostelId)
 
     if (error) return { error: error.message }
+
+    const piiChanged = changedPiiFields(beforePii as Record<string, unknown> | null, updatePayload)
+    if (piiChanged.length > 0) {
+      await logPiiAudit({ hostelId, action: "resident.pii_update", tenantId, meta: { fields: piiChanged } })
+    }
 
     // Fire-and-forget welcome WhatsApp — only on the waiting-list → active
     // transition, not on every routine edit of an already-active tenant.

@@ -2,7 +2,8 @@ import { getAuthContext } from "@/lib/data";
 import { getReportData } from "@/app/actions/reports";
 import { ReportsClient } from "@/components/modules/reports/reports-client";
 import { redirect } from "next/navigation";
-import { pktYearMonth } from "@/lib/pkt-time";
+import { yearMonthInZone } from "@/lib/pkt-time";
+import { getCountryConfig } from "@/lib/country-config";
 
 export default async function ReportsPage() {
   const ctx = await getAuthContext();
@@ -12,10 +13,9 @@ export default async function ReportsPage() {
     return <ReportsClient hostelId="" initialData={null} initialFrom="" initialTo="" />;
   }
 
-  // Pakistan-anchored, not the server process's own OS timezone — Vercel's
-  // serverless functions default to UTC, which can silently disagree with
-  // Pakistan on what "this month" is.
-  const { year, month } = pktYearMonth();
+  // Active hostel's own calendar month (its timezone), not the server's OS
+  // timezone nor a fixed PKT — a UK branch rolls over at London time.
+  const { year, month } = yearMonthInZone(getCountryConfig(ctx.hostel?.country).timezone);
   const to = `${year}-${String(month).padStart(2, "0")}`;
   const from = to;
   const label = "This Month";

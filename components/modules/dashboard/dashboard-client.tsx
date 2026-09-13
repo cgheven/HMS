@@ -5,6 +5,7 @@ import {
   CalendarClock, MessageSquareHeart,
 } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { terms } from "@/lib/country-config";
 import { Badge } from "@/components/ui/badge";
 import { ExpenseChartClient as ExpenseChart } from "./expense-chart-client";
 import type { DashboardStats, Bill, Defaulter, UpcomingVacancy, NewFeedbackItem } from "@/types";
@@ -12,6 +13,7 @@ import type { DashboardStats, Bill, Defaulter, UpcomingVacancy, NewFeedbackItem 
 interface Props {
   data: {
     hostelId: string;
+    country: string | null;
     stats: DashboardStats;
     upcomingBills: Bill[];
     monthlyData: { month: string; expenses: number; kitchen: number; collected: number }[];
@@ -32,6 +34,12 @@ export function DashboardClient({ data }: Props) {
   }
 
   const { stats, upcomingBills, monthlyData, defaulters, upcomingVacancies, newFeedback } = data;
+  // Server component — money follows the hostel's country via the threaded
+  // `data.country` (PK falls open, byte-identical); no client hook needed.
+  const money = (n: number) => formatCurrency(n, data.country);
+  // Country terminology: PK renders Tenants / AC Units; non-PK renders the
+  // international words. Fails open to PK (byte-identical).
+  const words = terms(data.country);
   const attentionCount = newFeedback.filter((f) => f.needsAttention).length;
   const isProfit = stats.net_profit >= 0;
   const monthlyExpected = stats.monthly_collected + stats.monthly_uncollected;
@@ -58,7 +66,7 @@ export function DashboardClient({ data }: Props) {
             <div className="min-w-0 flex-1">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Net Profit</p>
               <p className={`mt-2 text-3xl font-bold leading-none ${isProfit ? "text-emerald-400" : "text-rose-400"}`}>
-                {formatCurrency(stats.net_profit)}
+                {money(stats.net_profit)}
               </p>
               <p className="mt-2 text-xs text-muted-foreground">
                 {isProfit ? "↑ Profit this month" : "↓ Loss this month"}
@@ -75,14 +83,14 @@ export function DashboardClient({ data }: Props) {
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
               <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">Collected</p>
-              <p className="mt-2 text-lg sm:text-2xl font-bold leading-none">{formatCurrency(stats.monthly_collected)}</p>
+              <p className="mt-2 text-lg sm:text-2xl font-bold leading-none">{money(stats.monthly_collected)}</p>
               <div className="mt-2 flex items-center gap-2">
                 <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
                   <div className="h-full bg-emerald-400 rounded-full transition-all" style={{ width: `${collectionRate}%` }} />
                 </div>
                 <span className="text-xs text-emerald-400 font-semibold shrink-0">{collectionRate}%</span>
               </div>
-              <p className="mt-1 text-[10px] sm:text-xs text-muted-foreground">{formatCurrency(monthlyExpected)} expected</p>
+              <p className="mt-1 text-[10px] sm:text-xs text-muted-foreground">{money(monthlyExpected)} expected</p>
             </div>
             <div className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 shrink-0">
               <Wallet className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-400" />
@@ -95,7 +103,7 @@ export function DashboardClient({ data }: Props) {
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
               <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">Outstanding</p>
-              <p className="mt-2 text-lg sm:text-2xl font-bold leading-none">{formatCurrency(stats.monthly_uncollected)}</p>
+              <p className="mt-2 text-lg sm:text-2xl font-bold leading-none">{money(stats.monthly_uncollected)}</p>
               <p className="mt-2 text-[10px] sm:text-xs text-muted-foreground">
                 {defaulters.length > 0
                   ? `${defaulters.length} tenant${defaulters.length !== 1 ? "s" : ""} yet to pay`
@@ -115,7 +123,7 @@ export function DashboardClient({ data }: Props) {
         <div className="col-span-2 lg:col-span-1 relative rounded-2xl border border-sidebar-border bg-card p-4 sm:p-5 hover:border-blue-500/30 transition-all animate-fade-up" style={{ animationDelay: "225ms" }}>
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0 flex-1">
-              <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">AC Units</p>
+              <p className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wide leading-tight">{words.acUnits}</p>
               <p className="mt-2 text-lg sm:text-2xl font-bold leading-none">{stats.monthly_ac_units.toLocaleString()}</p>
               <p className="mt-2 text-[10px] sm:text-xs text-muted-foreground">Consumed this month</p>
             </div>
@@ -129,8 +137,8 @@ export function DashboardClient({ data }: Props) {
       {/* ── Quick Stats ─────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         {[
-          { label: "Active Tenants", value: String(stats.total_tenants),           sub: `Space Available ${stats.available_rooms}`, icon: Users,        color: "text-blue-400",   iconBg: "bg-blue-500/10 border-blue-500/20",     hover: "hover:border-blue-500/30",   delay: 150 },
-          { label: "Kitchen Costs",  value: formatCurrency(stats.monthly_kitchen),  sub: undefined,                                          icon: ChefHat,      color: "text-amber",       iconBg: "bg-amber/10 border-amber/20",            hover: "hover:border-amber/30",       delay: 225 },
+          { label: `Active ${words.tenants}`, value: String(stats.total_tenants),           sub: `Space Available ${stats.available_rooms}`, icon: Users,        color: "text-blue-400",   iconBg: "bg-blue-500/10 border-blue-500/20",     hover: "hover:border-blue-500/30",   delay: 150 },
+          { label: "Kitchen Costs",  value: money(stats.monthly_kitchen),  sub: undefined,                                          icon: ChefHat,      color: "text-amber",       iconBg: "bg-amber/10 border-amber/20",            hover: "hover:border-amber/30",       delay: 225 },
           {
             // The headline is cash actually paid to staff this month — net
             // salaries plus any advance handed over. The sub-line breaks out the
@@ -138,22 +146,22 @@ export function DashboardClient({ data }: Props) {
             // against their salary register finds an unexplained gap: money that
             // left the drawer without a salary being marked paid.
             label: "Staff Salaries",
-            value: formatCurrency(stats.monthly_salaries),
+            value: money(stats.monthly_salaries),
             sub: stats.monthly_salary_advances > 0
-              ? `Includes ${formatCurrency(stats.monthly_salary_advances)} advance`
+              ? `Includes ${money(stats.monthly_salary_advances)} advance`
               : undefined,
             icon: UserCog, color: "text-purple-400", iconBg: "bg-purple-500/10 border-purple-500/20", hover: "hover:border-purple-500/30", delay: 300,
           },
-          { label: "Total Expenses", value: formatCurrency(stats.monthly_expenses), sub: undefined,                                          icon: TrendingDown, color: "text-rose-400",   iconBg: "bg-rose-500/10 border-rose-500/20",      hover: "hover:border-rose-500/30",    delay: 375 },
+          { label: "Total Expenses", value: money(stats.monthly_expenses), sub: undefined,                                          icon: TrendingDown, color: "text-rose-400",   iconBg: "bg-rose-500/10 border-rose-500/20",      hover: "hover:border-rose-500/30",    delay: 375 },
           {
             // This month's intake leads, because it is the figure net profit
             // subtracts and the one an owner reconciles the profit tile
             // against. The running total held is the slower-moving background
             // number, so it drops to the sub-line with the tenant count.
             label: "Deposits Collected",
-            value: formatCurrency(stats.deposits_collected_month),
+            value: money(stats.deposits_collected_month),
             sub: stats.security_deposit_count > 0
-              ? `${formatCurrency(stats.security_deposit_total)} held · ${stats.security_deposit_count} tenant${stats.security_deposit_count !== 1 ? "s" : ""}`
+              ? `${money(stats.security_deposit_total)} held · ${stats.security_deposit_count} tenant${stats.security_deposit_count !== 1 ? "s" : ""}`
               : "No deposits yet",
             icon: ShieldCheck, color: "text-violet-400", iconBg: "bg-violet-500/10 border-violet-500/20", hover: "hover:border-violet-500/30", delay: 450,
           },
@@ -220,7 +228,7 @@ export function DashboardClient({ data }: Props) {
                       {d.status}
                     </span>
                   </div>
-                  <p className="text-sm font-bold text-foreground shrink-0">{formatCurrency(d.amount)}</p>
+                  <p className="text-sm font-bold text-foreground shrink-0">{money(d.amount)}</p>
                 </div>
               ))}
             </div>
@@ -264,7 +272,7 @@ export function DashboardClient({ data }: Props) {
                   <p className="text-xs text-muted-foreground">Due {formatDate(bill.due_date)}</p>
                 </div>
                 <div className="text-right shrink-0">
-                  <p className="text-sm font-semibold text-foreground">{formatCurrency(bill.amount)}</p>
+                  <p className="text-sm font-semibold text-foreground">{money(bill.amount)}</p>
                   <p className={`text-xs font-medium capitalize ${bill.status === "overdue" ? "text-rose-400" : "text-amber"}`}>
                     {bill.status}
                   </p>
@@ -313,7 +321,7 @@ export function DashboardClient({ data }: Props) {
               href="/tenants"
               className="mt-3 inline-block text-xs text-blue-400 hover:text-blue-300 transition-colors"
             >
-              +{upcomingVacancies.length - 5} more — view all in Tenants
+              +{upcomingVacancies.length - 5} more — view all in {words.tenants}
             </Link>
           )}
         </div>

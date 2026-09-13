@@ -11,10 +11,15 @@
 --   canonicalize the domain to gmail.com.
 -- Account-creation server actions write normalized_email via that function.
 --
--- PROD CAVEAT: this is applied to STAGE only. Production currently has a duplicate
--- (malikmajid940@gmail.com resolves to two hms_profiles rows); the UNIQUE index
--- would fail there until that duplicate is resolved. Do not apply to prod before
--- de-duplicating.
+-- NOTE (uniqueness moved to 238): the UNIQUE index is built in migration 238, and
+-- is scoped to role='owner' there — NOT all-role. An earlier version of this file
+-- created an ALL-ROLE unique index here, which aborts on prod because (a) prod has a
+-- known duplicate (malikmajid940@gmail.com → two rows) and (b) an all-role index
+-- also false-rejects a legitimate owner who is ALSO a manager/partner elsewhere on
+-- the same email. 238 drops any such index and replaces it with the owner-scoped one.
+-- So this migration is now purely additive (column + backfill) and cannot abort.
+-- PROD PRE-FLIGHT still required before 238: de-duplicate any two OWNER rows that
+-- share a canonical email (see the deploy runbook) or 238's owner-scoped index fails.
 
 ALTER TABLE public.hms_profiles ADD COLUMN IF NOT EXISTS normalized_email text;
 
@@ -26,11 +31,6 @@ SET normalized_email = CASE
     ELSE regexp_replace(lower(split_part(email, '@', 1)), '\+.*$', '') || '@' || lower(split_part(email, '@', 2))
   END
 WHERE email IS NOT NULL AND normalized_email IS NULL;
-
--- Partial unique index: one account per canonical email. NULLs (a profile row with
--- no email — shouldn't happen, but defensively) are exempt.
-CREATE UNIQUE INDEX IF NOT EXISTS hms_profiles_normalized_email_unique
-  ON public.hms_profiles (normalized_email) WHERE normalized_email IS NOT NULL;
 
 COMMENT ON COLUMN public.hms_profiles.normalized_email IS
   'Canonical email identity (lib/email-normalize.ts: +tag stripped, Gmail dots removed). UNIQUE — collapses aliases to one account. Set by account-creation server actions.';

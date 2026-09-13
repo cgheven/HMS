@@ -1,12 +1,24 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { initializePaddle, type Paddle } from "@paddle/paddle-js";
-import { Wallet, CheckCircle2, Clock, Download, CreditCard, Loader2, Check } from "lucide-react";
+import { Wallet, CheckCircle2, Clock, Download, CreditCard, Loader2, Check, Building2 } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import { clientDiscountPct } from "@/lib/pricing";
-import { createPlanCheckoutAction } from "@/app/actions/paddle";
+import {
+  SELF_SERVE_TIERS,
+  TIER_LABEL,
+  TIER_PROPERTIES_LABEL,
+  priceFor,
+  type PricingTier,
+  type TierBillingCycle,
+} from "@/lib/tier-pricing";
+import type { Plan } from "@/lib/entitlements";
+import { createPlanCheckoutAction, reconcileCheckoutAction } from "@/app/actions/paddle";
 import type { ClientBilling, PlatformInvoice } from "@/types";
+
+const SUPPORT_EMAIL = "hello@yourpulse.io";
+
+const TIER_ORDER: PricingTier[] = ["basic", "standard", "business", "enterprise"];
 
 type PaddlePayment = {
   transaction_id: string;
@@ -41,6 +53,12 @@ interface Props {
     prices: { basicMonthly: string; standardMonthly: string; basicAnnual: string; standardAnnual: string };
     checkoutUrl: string;
   };
+  /** The owner's billing/legal country (ISO alpha-2). Drives the local tier price. */
+  country: string | null;
+  /** The tier the owner's billable-property count puts them on (server-computed). */
+  tier: PricingTier;
+  /** Self-serve trial expiry (ISO). Non-null only for trial accounts. */
+  trialEndsAt: string | null;
   /** The owner's Paddle subscription (mirror), or null if not set up yet. */
   subscription: {
     status: string;
@@ -53,7 +71,7 @@ interface Props {
   /** Paddle card-payment receipts, newest first. */
   paddlePayments: PaddlePayment[];
   /** The owner's account plan (features). NULL if unset. */
-  plan: "basic" | "standard" | null;
+  plan: Plan | null;
   /** A grandfathered per-branch USD rate. When set, this owner pays their
    *  negotiated rate on their fixed plan — no plan picker. */
   customUnitAmountUsd: number | null;
@@ -64,13 +82,8 @@ interface Props {
   manualBankBilling: boolean;
 }
 
-type PlanKey = "basic" | "standard";
-type Cycle = "monthly" | "annual";
-
-const PLAN_FEATURES: Record<PlanKey, string[]> = {
-  basic: ["Core HMS", "Reports & billing", "RedFlag", "Multi-branch", "Hotel Eye"],
-  standard: ["Everything in Basic", "Branded subdomain", "Email reminders", "WhatsApp automation (Pakistan)", "Referral engine"],
-};
+type SelfServeTier = (typeof SELF_SERVE_TIERS)[number];
+type Cycle = TierBillingCycle;
 
 function statusBadge(status: PlatformInvoice["status"]) {
   if (status === "paid") return { label: "Paid", cls: "text-emerald-400 bg-emerald-500/10 border-emerald-500/20", icon: CheckCircle2 };
@@ -78,7 +91,7 @@ function statusBadge(status: PlatformInvoice["status"]) {
   return { label: "Unpaid", cls: "text-amber bg-amber/10 border-amber/20", icon: Clock };
 }
 
-export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEmail, paddle, subscription, paddlePayments, plan, customUnitAmountUsd, checkoutSuccess, manualBankBilling }: Props) {
+export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEmail, paddle, subscription, paddlePayments, plan, customUnitAmountUsd, checkoutSuccess, manualBankBilling, country, tier, trialEndsAt }: Props) {
   const outstanding = invoices.filter((i) => i.status === "unpaid").reduce((s, i) => s + Number(i.amount), 0);
   const qty = Math.max(1, branchCount);
 
@@ -91,21 +104,37 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
   const refreshedRef = useRef(false);
   useEffect(() => {
     if (!checkoutSuccess || subActive || refreshedRef.current) return;
-    let seen = 0;
-    try { seen = Number(sessionStorage.getItem("pulse_checkout_refresh") ?? "0"); } catch {}
-    if (seen >= 3) return;
     refreshedRef.current = true;
-    const t = setTimeout(() => {
-      try { sessionStorage.setItem("pulse_checkout_refresh", String(seen + 1)); } catch {}
-      window.location.reload();
-    }, 4000);
-    return () => clearTimeout(t);
+    let cancelled = false;
+    (async () => {
+      let txn = "";
+      try { txn = sessionStorage.getItem("pulse_last_txn") ?? ""; } catch {}
+      // Activate the subscription by reading it straight from Paddle — the inbound
+      // webhook is delayed under load and cannot reach a localhost/tunnel-less app.
+      // Poll a few times in case the payment is still settling into a subscription.
+      for (let i = 0; i < 5 && !cancelled; i++) {
+        const res = await reconcileCheckoutAction({ transactionId: txn });
+        if (res.active) {
+          try { sessionStorage.removeItem("pulse_last_txn"); } catch {}
+          window.location.reload();
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    })();
+    return () => { cancelled = true; };
   }, [checkoutSuccess, subActive]);
 
-  // Clear the guard once the subscription is live so a future checkout starts fresh.
+  // Once the subscription is live, tidy up: drop the stashed transaction id and
+  // strip ?checkout=success from the URL so a manual reload doesn't keep showing
+  // the "Payment received" banner.
   useEffect(() => {
-    if (subActive) { try { sessionStorage.removeItem("pulse_checkout_refresh"); } catch {} }
-  }, [subActive]);
+    if (!subActive) return;
+    try { sessionStorage.removeItem("pulse_last_txn"); } catch {}
+    if (checkoutSuccess && typeof window !== "undefined" && window.location.search) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [subActive, checkoutSuccess]);
   // What the owner actually pays each cycle. The subscription mirror only stores
   // the LIST unit price (the per-country override lands on the real charge), so
   // the last payment is the accurate figure and currency to show.
@@ -116,49 +145,40 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
       : subscription?.unit_amount != null
         ? formatMoney(Number(subscription.unit_amount) * (subscription.quantity ?? 1), subscription.currency_code)
         : null;
+  // The RECURRING amount shown on the active card = the tier's price (the mirror's
+  // unit_amount is now the resolved tier price). Grandfathered custom-rate owners
+  // keep the last-actual-charge figure (their mirror stores a list price, not their
+  // negotiated rate).
+  const recurringLabel = customUnitAmountUsd
+    ? subAmountLabel
+    : subscription?.unit_amount != null
+      ? formatMoney(Number(subscription.unit_amount), subscription.currency_code)
+      : subAmountLabel;
 
-  const paddleEnabled = !!paddle.clientToken && !!paddle.prices.basicMonthly && !!paddle.prices.standardMonthly;
-  const [paddleInst, setPaddleInst] = useState<Paddle | undefined>(undefined);
+  // Card billing is "on" when a Paddle client token is configured. Prices are
+  // now resolved server-side (per-country tier pricing), so there is no
+  // client-side Paddle.PricePreview and no PADDLE_PRICE_ID preview ids.
+  const paddleEnabled = !!paddle.clientToken;
   const [cycle, setCycle] = useState<Cycle>("monthly");
-  // priceId -> localized formatted total for `qty` branches (from Paddle.PricePreview)
-  const [previewTotals, setPreviewTotals] = useState<Record<string, string>>({});
-  const [previewLoading, setPreviewLoading] = useState(true);
-  const [choosing, setChoosing] = useState<PlanKey | null>(null);
+  const [choosing, setChoosing] = useState<PricingTier | null>(null);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [contactUs, setContactUs] = useState(false);
 
-  useEffect(() => {
-    if (!paddleEnabled) { setPreviewLoading(false); return; }
-    let cancelled = false;
-    initializePaddle({ environment: paddle.environment, token: paddle.clientToken })
-      .then((p) => { if (!cancelled && p) setPaddleInst(p); })
-      .catch(() => { if (!cancelled) setPreviewLoading(false); });
-    return () => { cancelled = true; };
-  }, [paddleEnabled, paddle.environment, paddle.clientToken]);
-
-  // Localized price preview for all four prices at the owner's real branch count.
-  useEffect(() => {
-    if (!paddleInst || subActive) return;
-    const ids = Object.values(paddle.prices).filter(Boolean);
-    if (ids.length === 0) { setPreviewLoading(false); return; }
-    let cancelled = false;
-    paddleInst.PricePreview({ items: ids.map((priceId) => ({ priceId, quantity: qty })) })
-      .then((res) => {
-        if (cancelled) return;
-        const m: Record<string, string> = {};
-        for (const li of res.data.details.lineItems) m[li.price.id] = li.formattedTotals.total;
-        setPreviewTotals(m);
-        setPreviewLoading(false);
-      })
-      .catch(() => { if (!cancelled) setPreviewLoading(false); });
-    return () => { cancelled = true; };
-  }, [paddleInst, subActive, qty, paddle.prices]);
-
-  const choose = useCallback(async (plan: PlanKey) => {
+  const choose = useCallback(async (clicked: PricingTier) => {
     if (choosing) return;
     setCheckoutError(null);
-    setChoosing(plan);
+    setContactUs(false);
+    setChoosing(clicked);
     try {
-      const res = await createPlanCheckoutAction({ plan, cycle });
+      // The tier is authoritative server-side (computed from the owner's billable
+      // property count) — the button only carries the billing cycle.
+      const res = await createPlanCheckoutAction({ cycle });
+      if (res.contactUs) {
+        // Enterprise: no self-serve price — surface the contact-us path instead.
+        setContactUs(true);
+        setChoosing(null);
+        return;
+      }
       if (res.error || !res.transactionId) {
         setCheckoutError(res.error ?? "Could not start checkout. Please try again.");
         setChoosing(null);
@@ -169,6 +189,9 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
       // launches Paddle.js checkout and doesn't need domain approval. `return`
       // tells it where to send the buyer after a successful payment. The line
       // items + quantity are already locked server-side on the transaction.
+      // Stash the transaction id so, on return, we can reconcile the subscription
+      // straight from Paddle instead of waiting on the (possibly unreachable) webhook.
+      try { sessionStorage.setItem("pulse_last_txn", res.transactionId); } catch {}
       const base = paddle.checkoutUrl || "/checkout";
       const sep = base.includes("?") ? "&" : "?";
       window.location.href =
@@ -180,22 +203,31 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
     }
   }, [choosing, cycle, paddle.checkoutUrl]);
 
-  const priceIdFor = (plan: PlanKey): string =>
-    plan === "basic"
-      ? (cycle === "monthly" ? paddle.prices.basicMonthly : paddle.prices.basicAnnual)
-      : (cycle === "monthly" ? paddle.prices.standardMonthly : paddle.prices.standardAnnual);
-
   const cycleTotal = billing?.monthly_rate != null
     ? billing.monthly_rate * (billing.billing_cycle === "annual" ? 12 : 1) * branchCount
     : null;
-  const currentDiscountPct = billing?.monthly_rate != null ? clientDiscountPct(billing.monthly_rate, plan) : 0;
+  // Legacy per-branch discount reference only applies to the original basic/standard
+  // packages; higher tiers have no per-branch list rate to compare against.
+  const legacyDiscountPlan = plan === "standard" ? "standard" : plan === "basic" ? "basic" : null;
+  const currentDiscountPct = billing?.monthly_rate != null ? clientDiscountPct(billing.monthly_rate, legacyDiscountPlan) : 0;
 
   // Grandfathered client: a fixed negotiated USD rate on their existing plan —
   // no plan choice, just their rate. Annual mirrors the pay-10-get-12 (× 10).
-  const isLegacy = paddleEnabled && customUnitAmountUsd != null && customUnitAmountUsd > 0;
-  const legacyPlan: PlanKey = plan === "standard" ? "standard" : "basic";
+  // A grandfathered custom-rate owner on the CARD rail keeps their "pay by card"
+  // option. Manual/bank-billed owners (PK) never do — even with a custom rate — or
+  // they'd see a "Pay by card" button that createPlanCheckoutAction rejects with
+  // "billed by invoice". Gating on !manualBankBilling keeps that dead-end button
+  // away from grandfathered manual (PK) clients.
+  const isLegacy = paddleEnabled && !manualBankBilling && customUnitAmountUsd != null && customUnitAmountUsd > 0;
+  const legacyPlanLabel = plan === "standard" ? "standard" : "basic";
   const legacyPerBranch = (customUnitAmountUsd ?? 0) * (cycle === "annual" ? 10 : 1);
   const legacyTotal = legacyPerBranch * qty;
+
+  // Trial pay-after messaging: non-PK owner, no active subscription, and a
+  // future trial-end date. The freeze itself is enforced by the daily cron.
+  const trialEnd = trialEndsAt ? new Date(trialEndsAt) : null;
+  const showTrialBanner =
+    !subActive && !manualBankBilling && trialEnd != null && !Number.isNaN(trialEnd.getTime()) && trialEnd.getTime() > Date.now();
 
   return (
     <div className="space-y-6">
@@ -210,6 +242,15 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
           <p className="text-sm">
             <span className="font-semibold">Payment received.</span>{" "}
             {subActive ? "Your subscription is active." : "Activating your subscription — this can take a few seconds."}
+          </p>
+        </div>
+      )}
+
+      {showTrialBanner && trialEnd && (
+        <div className="rounded-xl border border-amber/20 bg-amber/10 px-4 py-3 flex items-center gap-3">
+          <Clock className="w-4 h-4 text-amber shrink-0" />
+          <p className="text-sm">
+            <span className="font-semibold">Add a card to keep your account active</span> — trial ends {formatDate(trialEnd.toISOString())}.
           </p>
         </div>
       )}
@@ -256,8 +297,9 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
             <div>
               <p className="text-sm font-semibold">Automatic card payment active{subscription!.status === "trialing" ? " (trial)" : ""}</p>
               <p className="text-xs text-muted-foreground">
-                {subAmountLabel && <>{subAmountLabel}{subscription!.quantity ? ` · ${subscription!.quantity} branch${subscription!.quantity > 1 ? "es" : ""}` : ""} · </>}
-                Renews {subscription!.current_period_end ? formatDate(subscription!.current_period_end) : "—"}
+                {recurringLabel && <>{recurringLabel} · </>}
+                {plan && <>{TIER_LABEL[plan]} · </>}
+                {qty} propert{qty > 1 ? "ies" : "y"} · Renews {subscription!.current_period_end ? formatDate(subscription!.current_period_end) : "—"}
               </p>
             </div>
           </div>
@@ -279,7 +321,7 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
           </div>
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-5 flex items-end justify-between gap-4 flex-wrap">
             <div>
-              <p className="text-sm font-bold capitalize">{legacyPlan} <span className="ml-1 text-[10px] font-semibold text-amber uppercase tracking-wide align-middle">Your rate</span></p>
+              <p className="text-sm font-bold capitalize">{legacyPlanLabel} <span className="ml-1 text-[10px] font-semibold text-amber uppercase tracking-wide align-middle">Your rate</span></p>
               <p className="mt-1 text-2xl font-bold">
                 {formatMoney(legacyTotal, "USD")}
                 <span className="text-xs font-normal text-muted-foreground"> / {cycle === "monthly" ? "month" : "year"}</span>
@@ -287,7 +329,7 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
               <p className="text-[11px] text-muted-foreground">{formatMoney(legacyPerBranch, "USD")}/{cycle === "monthly" ? "mo" : "yr"} per branch · {qty} {qty > 1 ? "branches" : "branch"}</p>
             </div>
             <button
-              onClick={() => choose(legacyPlan)}
+              onClick={() => choose(tier)}
               disabled={!!choosing}
               className="inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium px-4 py-2 transition-colors disabled:opacity-50 bg-emerald-600 hover:bg-emerald-600/90 text-white"
             >
@@ -297,12 +339,14 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
           </div>
           {checkoutError && <p className="text-xs text-rose-400">{checkoutError}</p>}
         </div>
-      ) : paddleEnabled ? (
+      ) : manualBankBilling ? null : paddleEnabled ? (
         <div className="rounded-2xl border border-sidebar-border bg-card p-6 space-y-5">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div>
               <p className="text-sm font-semibold">Choose a plan</p>
-              <p className="text-xs text-muted-foreground">Pay automatically by card — renews each cycle, no manual transfers. Priced per branch ({qty} {qty > 1 ? "branches" : "branch"}).</p>
+              <p className="text-xs text-muted-foreground">
+                Flat price per tier — add properties within a tier at no extra cost. Your properties: {qty}.
+              </p>
             </div>
             {/* Monthly / Annual toggle */}
             <div className="inline-flex rounded-lg border border-sidebar-border p-0.5 text-xs">
@@ -311,51 +355,94 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            {(["basic", "standard"] as PlanKey[]).map((plan) => {
-              const pid = priceIdFor(plan);
-              const total = previewTotals[pid];
-              const isStd = plan === "standard";
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {SELF_SERVE_TIERS.map((t) => {
+              const price = priceFor(country, t, cycle);
+              const isCurrent = t === tier;
               return (
-                <div key={plan} className={cn("rounded-xl border p-5 flex flex-col gap-4", isStd ? "border-emerald-500/30 bg-emerald-500/5" : "border-sidebar-border bg-background/40")}>
+                <div key={t} className={cn("rounded-xl border p-5 flex flex-col gap-4", isCurrent ? "border-emerald-500/40 bg-emerald-500/5" : "border-sidebar-border bg-background/40")}>
                   <div>
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm font-bold capitalize">{plan}</p>
-                      {isStd && <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wide">Most features</span>}
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <p className="text-sm font-bold">{TIER_LABEL[t]}</p>
+                      <div className="flex items-center gap-1.5">
+                        {t === "standard" && <span className="text-[10px] font-semibold text-amber uppercase tracking-wide">Most Popular</span>}
+                        {isCurrent && <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wide">Your tier</span>}
+                      </div>
                     </div>
-                    <p className="mt-1 text-2xl font-bold">
-                      {previewLoading ? <span className="inline-block h-7 w-24 animate-pulse rounded bg-white/5 align-middle" /> : (total ?? "—")}
+                    <p className="text-[11px] text-muted-foreground">{TIER_PROPERTIES_LABEL[t]}</p>
+                    <p className="mt-2 text-2xl font-bold">
+                      {formatMoney(price.amount, price.currency)}
                       <span className="text-xs font-normal text-muted-foreground"> / {cycle === "monthly" ? "month" : "year"}</span>
                     </p>
-                    <p className="text-[11px] text-muted-foreground">for {qty} {qty > 1 ? "branches" : "branch"} · billed by card</p>
+                    {cycle === "annual" && <p className="text-[11px] text-emerald-400">2 months free</p>}
                   </div>
-                  <ul className="space-y-1.5 flex-1">
-                    {PLAN_FEATURES[plan].map((f) => (
-                      <li key={f} className="flex items-center gap-2 text-xs text-muted-foreground"><Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> {f}</li>
-                    ))}
-                  </ul>
-                  <button
-                    onClick={() => choose(plan)}
-                    disabled={!!choosing}
-                    className={cn("inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium px-4 py-2 transition-colors disabled:opacity-50",
-                      isStd ? "bg-emerald-600 hover:bg-emerald-600/90 text-white" : "border border-sidebar-border hover:bg-white/5")}
-                  >
-                    {choosing === plan ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
-                    {choosing === plan ? "Opening…" : `Choose ${plan}`}
-                  </button>
+                  <div className="flex-1">
+                    <p className="flex items-center gap-2 text-xs text-muted-foreground"><Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> Full PulseHub access</p>
+                  </div>
+                  {/* Only the owner's CURRENT tier (their property count) can be
+                      checked out — the charge is server-computed from that count,
+                      so a button on any other card would open checkout at a price
+                      that doesn't match the card the owner clicked. Other tiers are
+                      shown for reference only. */}
+                  {isCurrent ? (
+                    <button
+                      onClick={() => choose(t)}
+                      disabled={!!choosing}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium px-4 py-2 transition-colors disabled:opacity-50 bg-emerald-600 hover:bg-emerald-600/90 text-white"
+                    >
+                      {choosing === t ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
+                      {choosing === t ? "Opening…" : "Subscribe"}
+                    </button>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground text-center py-2">
+                      {TIER_ORDER.indexOf(t) < TIER_ORDER.indexOf(tier) ? "Below your property count" : "Add properties to reach this tier"}
+                    </p>
+                  )}
                 </div>
               );
             })}
+
+            {/* Enterprise — custom quote, no self-serve checkout. */}
+            <div className={cn("rounded-xl border p-5 flex flex-col gap-4", tier === "enterprise" ? "border-emerald-500/40 bg-emerald-500/5" : "border-sidebar-border bg-background/40")}>
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold">{TIER_LABEL.enterprise}</p>
+                  {tier === "enterprise" && <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wide">Your tier</span>}
+                </div>
+                <p className="text-[11px] text-muted-foreground">{TIER_PROPERTIES_LABEL.enterprise}</p>
+                <p className="mt-2 text-2xl font-bold">Custom<span className="text-xs font-normal text-muted-foreground"> pricing</span></p>
+              </div>
+              <div className="flex-1">
+                <p className="flex items-center gap-2 text-xs text-muted-foreground"><Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> Full PulseHub access + dedicated support</p>
+              </div>
+              <a
+                href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Pulse Enterprise enquiry")}`}
+                className="inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium px-4 py-2 transition-colors border border-sidebar-border hover:bg-white/5"
+              >
+                <Building2 className="w-4 h-4" /> Contact us
+              </a>
+            </div>
           </div>
+          <div className="rounded-xl border border-sidebar-border bg-background/40 p-5">
+            <p className="text-sm font-semibold mb-1.5">Everything included</p>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Residents • Rooms &amp; Beds • Rent &amp; Payments • Deposits • Electricity Units • Expenses • Complaints • Announcements • Staff &amp; Permissions • Reports • Admission Forms • Website • Feedback • Multi-Property Management
+            </p>
+          </div>
+          {contactUs && (
+            <p className="text-xs text-muted-foreground">
+              With {qty} properties you&apos;re on our Enterprise tier — <a href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Pulse Enterprise enquiry")}`} className="text-emerald-400 hover:underline">contact us</a> for a custom quote.
+            </p>
+          )}
           {checkoutError && <p className="text-xs text-rose-400">{checkoutError}</p>}
         </div>
-      ) : !manualBankBilling ? (
+      ) : (
         // Paddle-only (non-PK) owner but card billing isn't configured yet — never
         // leave them at a dead end with no manual rail to fall back to.
         <div className="rounded-2xl border border-sidebar-border bg-card p-6 text-sm text-muted-foreground">
           Card billing for your region is being set up. Please contact support to activate your subscription.
         </div>
-      ) : null}
+      )}
 
       <div className="rounded-2xl border border-sidebar-border bg-card overflow-hidden">
         <div className="px-5 py-3 border-b border-sidebar-border">

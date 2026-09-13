@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getOwnerBilling, getAuthContext } from "@/lib/data";
 import { getPaddleClientConfig } from "@/lib/paddle";
+import { reconcileSubscriptionMirror } from "@/lib/tier-sync";
 import { BillingClient } from "@/components/modules/billing/billing-client";
 
 export default async function BillingPage({
@@ -19,7 +20,11 @@ export default async function BillingPage({
   if (ctx?.profile?.role !== "owner" && ctx?.profile?.role !== "super_admin") redirect("/dashboard");
 
   const { checkout } = await searchParams;
-  const { billing, invoices, branchCount, subscription, paddlePayments, plan, customUnitAmountUsd, manualBankBilling } = await getOwnerBilling();
+  // Self-heal the subscription mirror from Paddle before reading it, so the page is
+  // never stale when the activation/upgrade webhook is delayed or (on localhost)
+  // unreachable. Side-effect-safe: refreshes the display only, never charges.
+  if (ctx?.user?.id) await reconcileSubscriptionMirror(ctx.user.id);
+  const { billing, invoices, branchCount, subscription, paddlePayments, plan, customUnitAmountUsd, manualBankBilling, country, tier, trialEndsAt } = await getOwnerBilling();
   return (
     <BillingClient
       billing={billing}
@@ -30,6 +35,9 @@ export default async function BillingPage({
       plan={plan}
       customUnitAmountUsd={customUnitAmountUsd}
       manualBankBilling={manualBankBilling}
+      country={country}
+      tier={tier}
+      trialEndsAt={trialEndsAt}
       checkoutSuccess={checkout === "success"}
       ownerId={ctx?.user?.id ?? ""}
       ownerEmail={ctx?.user?.email ?? ""}

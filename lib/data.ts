@@ -2,13 +2,14 @@ import { cache } from "react";
 import { cookies } from "next/headers";
 import { createClient } from "@/lib/supabase/server";
 import { getMonthRange, formatDateInput } from "@/lib/utils";
-import { pktYearMonth, pktTodayDateString } from "@/lib/pkt-time";
+import { yearMonthInZone, todayInZone } from "@/lib/pkt-time";
 import { calcDailyRent } from "@/lib/daily-billing";
 import { effectivePaymentStatus } from "@/lib/payment-calc";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { feedbackBucket, VERDICT_LABEL } from "@/lib/feedback-options";
 import { asPlan, type Plan } from "@/lib/entitlements";
-import { getCountryConfig, isSupportedCountry } from "@/lib/country-config";
+import { tierForPropertyCount, type PricingTier } from "@/lib/tier-pricing";
+import { getCountryConfig, isManualBankBilling } from "@/lib/country-config";
 import type {
   Room, Expense, KitchenExpense, FoodItem, Bill, DashboardStats,
   Profile, Hostel, Tenant, Payment, Complaint, Announcement, RevenueMonth, AgingBucket,
@@ -147,13 +148,14 @@ export async function getDashboardData() {
   const ctx = await getAuthContext();
   if (!ctx?.hostelId) return null;
   const { supabase, hostelId } = ctx;
-  const { start, end } = getMonthRange();
-  // Anchored to Pakistan time, not the server process's own OS timezone —
+  const dashTz = getCountryConfig(ctx.hostel?.country).timezone;
+  const { start, end } = getMonthRange(new Date(), dashTz);
+  // Anchored to the HOSTEL's timezone, not the server process's own OS timezone —
   // otherwise the exact same moment computes a different "current month" on
   // Vercel (UTC by default) than on a developer's own machine, which is
   // exactly what made the Dashboard show July on production and August
   // locally at the same real-world instant.
-  const { year: curYear, month: curMonth } = pktYearMonth(); // curMonth is 1-indexed
+  const { year: curYear, month: curMonth } = yearMonthInZone(dashTz); // curMonth is 1-indexed
   const currentMonthKey = `${curYear}-${String(curMonth).padStart(2, "0")}`;
 
   // Compute ranges first so monthKeys are available for queries. Built in UTC
@@ -387,7 +389,8 @@ export async function getDashboardData() {
     }));
 
   return {
-    hostelId, stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters, upcomingVacancies,
+    hostelId, country: ctx.hostel?.country ?? null,
+    stats, upcomingBills: unpaidBills as Bill[], monthlyData, defaulters, upcomingVacancies,
     newFeedback,
   };
 }
@@ -396,12 +399,15 @@ export async function getDashboardData() {
 // so this deliberately does NOT depend on ctx.hostelId / the branch switcher.
 export async function getOwnerBilling() {
   const ctx = await getAuthContext();
-  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1, subscription: null as OwnerPaddleSubscription | null, paddlePayments: [] as OwnerPaddlePayment[], plan: null as Plan | null, customUnitAmountUsd: null as number | null, manualBankBilling: true };
+  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1, subscription: null as OwnerPaddleSubscription | null, paddlePayments: [] as OwnerPaddlePayment[], plan: null as Plan | null, customUnitAmountUsd: null as number | null, manualBankBilling: true, country: null as string | null, tier: "basic" as PricingTier, trialEndsAt: null as string | null };
   const { supabase, user } = ctx;
   // Billing rail resolves via the OWNER's PROFILE country (billing/legal contract).
   // PK keeps the manual/bank rail; every other country is Paddle-only (card).
   const ownerCountry = ctx.profile?.country;
-  const manualBankBilling = isSupportedCountry(ownerCountry) && getCountryConfig(ownerCountry).manualBankBilling;
+  // ONE shared test across the billing UI, checkout action, and tier-sync so they
+  // can never disagree about who is on cards vs. hand-invoicing (a null-country
+  // legacy owner resolves to PK/manual — never accidentally shown card checkout).
+  const manualBankBilling = isManualBankBilling(ownerCountry);
 
   const [{ data: billing }, { data: invoices }, { count: branchCount }, { data: subscription }, { data: paddlePayments }] = await Promise.all([
     supabase.from("hms_client_billing").select("*").eq("owner_id", user.id).maybeSingle(),
@@ -439,6 +445,9 @@ export async function getOwnerBilling() {
     plan: asPlan(ctx.profile?.plan),
     customUnitAmountUsd: ctx.profile?.custom_unit_amount_usd != null ? Number(ctx.profile.custom_unit_amount_usd) : null,
     manualBankBilling,
+    country: ctx.profile?.country ?? null,
+    tier: tierForPropertyCount(branchCount ?? 1),
+    trialEndsAt: ctx.profile?.trial_ends_at ?? null,
   };
 }
 
@@ -482,9 +491,9 @@ export async function getTenants() {
     };
   }
   const { supabase, hostelId } = ctx;
-  // Pakistan-anchored — see getDashboardData for why this can't be the
-  // server process's own local getters.
-  const { year: pktYear, month: pktMonth } = pktYearMonth();
+  // Hostel-timezone-anchored — see getDashboardData for why this can't be the
+  // server process's own local getters, and why a fixed PKT is wrong for a UK branch.
+  const { year: pktYear, month: pktMonth } = yearMonthInZone(getCountryConfig(ctx.hostel?.country).timezone);
   const currentMonthKey = `${pktYear}-${String(pktMonth).padStart(2, "0")}`;
 
   const [{ data: tenants }, { data: rooms }, packageConfig, { data: currentMonthPayments }] = await Promise.all([
@@ -658,9 +667,10 @@ export async function getReportsData() {
   if (!ctx?.hostelId) return null;
   const { supabase, hostelId } = ctx;
 
-  // Pakistan-anchored — see getDashboardData for why this can't be the
-  // server process's own local getters.
-  const { year: curYear, month: curMonth } = pktYearMonth(); // curMonth is 1-indexed
+  // Hostel-timezone-anchored — see getDashboardData for why this can't be the
+  // server process's own local getters, and why a fixed PKT is wrong for a UK branch.
+  const reportsTz = getCountryConfig(ctx.hostel?.country).timezone;
+  const { year: curYear, month: curMonth } = yearMonthInZone(reportsTz); // curMonth is 1-indexed
   const ranges = Array.from({ length: 12 }, (_, i) => {
     const d = new Date(Date.UTC(curYear, curMonth - 1 - (11 - i), 1));
     const y = d.getUTCFullYear();
@@ -734,9 +744,9 @@ export async function getReportsData() {
     };
   });
 
-  // Pakistan-anchored, same reasoning as the ranges above — "today" for aging
-  // buckets must agree regardless of which server's OS timezone is running this.
-  const today = pktTodayDateString();
+  // Hostel-timezone-anchored, same reasoning as the ranges above — "today" for
+  // aging buckets follows the hostel's own calendar day, not a fixed PKT.
+  const today = todayInZone(reportsTz);
   const overduePayments = payments.filter((p) => p.status === "pending" || p.status === "overdue");
   const aging: { d30: AgingBucket; d60: AgingBucket; d90: AgingBucket; d90plus: AgingBucket } = {
     d30: { count: 0, amount: 0 },

@@ -159,7 +159,7 @@ export async function GET(
       .single(),
     supabase
       .from("hms_hostels")
-      .select("name, address, phone")
+      .select("name, address, phone, country")
       .eq("id", link.hostel_id)
       .single(),
     supabase
@@ -343,6 +343,7 @@ export async function GET(
     },
     {
       name: hostel.name,
+      country: (hostel as { country?: string | null }).country ?? null,
       acChargeLabel: pkgConfig?.ac_charge_label ?? null,
       address: hostel.address,
       phone: hostel.phone,

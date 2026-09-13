@@ -13,7 +13,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
-import { formatCurrency, formatDate, formatDateInput, capitalize } from "@/lib/utils";
+import { formatDate, formatDateInput, capitalize } from "@/lib/utils";
+import { useMoney, useHostelContext } from "@/contexts/hostel-context";
+import { getCountryConfig } from "@/lib/country-config";
 import type { Bill, BillCategory, BillStatus, PartnerTier } from "@/types";
 
 const categories: BillCategory[] = ["electricity", "water", "internet", "gas", "maintenance", "other"];
@@ -39,6 +41,10 @@ const emptyForm = { title: "", category: "electricity" as BillCategory, amount: 
 interface Props { hostelId: string | null; initialBills: Bill[]; partnerTier?: PartnerTier | null; }
 
 export function BillsClient({ hostelId, initialBills, partnerTier = null }: Props) {
+  const money = useMoney();
+  // ISO code for the parenthetical field caption ("Amount (PKR)"): PK stays
+  // "PKR" byte-identical, GB reads "GBP". Symbols are only for inline amounts.
+  const curCode = getCountryConfig(useHostelContext().hostel?.country).currency;
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const [bills, setBills] = useState<Bill[]>(initialBills);
   const [search, setSearch] = useState("");
@@ -150,8 +156,8 @@ export function BillsClient({ hostelId, initialBills, partnerTier = null }: Prop
           these filled the whole screen and pushed the bills themselves under it. */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
         {[
-          { label: "Pending Amount", value: formatCurrency(totals.unpaid), icon: Clock, color: "text-amber", bg: "bg-amber/10 border border-amber/20", wide: true },
-          { label: "Paid This Period", short: "Paid", value: formatCurrency(totals.paid), icon: CheckCircle2, color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20", wide: false },
+          { label: "Pending Amount", value: money(totals.unpaid), icon: Clock, color: "text-amber", bg: "bg-amber/10 border border-amber/20", wide: true },
+          { label: "Paid This Period", short: "Paid", value: money(totals.paid), icon: CheckCircle2, color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20", wide: false },
           { label: "Overdue Bills", short: "Overdue", value: totals.overdue, icon: AlertTriangle, color: "text-rose-400", bg: "bg-rose-500/10 border border-rose-500/20", wide: false },
         ].map(({ label, short, value, icon: Icon, color, bg, wide }) => (
           <Card key={label} className={wide ? "col-span-2 sm:col-span-1" : ""}>
@@ -205,7 +211,7 @@ export function BillsClient({ hostelId, initialBills, partnerTier = null }: Prop
                         the 2xl icon plus its gap — and is dropped at sm where
                         this returns to being the tail of a single row. */}
                     <div className="flex items-center justify-between gap-2 pl-11 sm:pl-0 sm:justify-end sm:gap-3 sm:shrink-0">
-                      <p className="font-bold text-sm">{formatCurrency(bill.amount)}</p>
+                      <p className="font-bold text-sm">{money(bill.amount)}</p>
                     <div className="flex items-center gap-1 shrink-0">
                       {canStandardTier && bill.status !== "paid" && <Button variant="ghost" size="sm" className="h-8 text-xs gap-1 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 border border-emerald-500/20" onClick={() => markPaid(bill)}><CheckCircle2 className="w-3 h-3" /> Pay</Button>}
                       {canStandardTier && <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(bill); setForm({ title: bill.title, category: bill.category, amount: bill.amount.toString(), due_date: bill.due_date, paid_date: bill.paid_date ?? "", status: bill.status, notes: bill.notes ?? "" }); setDialogOpen(true); }}><Edit2 className="w-3.5 h-3.5" /></Button>}
@@ -235,7 +241,7 @@ export function BillsClient({ hostelId, initialBills, partnerTier = null }: Prop
             <div className="space-y-1.5"><Label>Title *</Label><Input placeholder="e.g. Electricity Bill" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5"><Label>Category</Label><Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v as BillCategory })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{categories.map((c) => <SelectItem key={c} value={c}>{categoryIcons[c]} {capitalize(c)}</SelectItem>)}</SelectContent></Select></div>
-              <div className="space-y-1.5"><Label>Amount (PKR) *</Label><Input type="number" placeholder="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Amount ({curCode}) *</Label><Input type="number" placeholder="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5"><Label>Due Date</Label><Input type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} /></div>

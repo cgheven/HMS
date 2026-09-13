@@ -4,6 +4,7 @@
  */
 
 import { splitPaymentCharges } from "@/lib/payment-calc";
+import { getCountryConfig, terms } from "@/lib/country-config";
 
 interface ReceiptPayment {
   receipt_number?: string | null;
@@ -75,6 +76,9 @@ interface ReceiptTenant {
 
 interface ReceiptHostel {
   name: string;
+  /** ISO country — drives the receipt's currency (Rs for PK, £ for GB) and date
+   *  locale. Omitted → Pakistan (byte-identical to the pre-multi-country receipt). */
+  country?: string | null;
   address?: string | null;
   phone?: string | null;
   /** Renames the metered AC line for branches that bill it as one electricity
@@ -99,7 +103,20 @@ function sanitizeForPdf(str: string): string {
     .replace(/…/g, "...")                   // ellipsis
     .replace(/ /g, " ")                     // non-breaking space
     .normalize("NFKD").replace(/[̀-ͯ]/g, "") // strip diacritics
-    .replace(/[^\x20-\x7E]/g, "?");              // anything still non-ASCII
+    // Keep printable Latin-1 (0xA0–0xFF) — the base Helvetica fonts render it via
+    // WinAnsiEncoding, so currency symbols like "£" (0xA3) print correctly. Only
+    // characters outside Latin-1 (Urdu names, ₹, €, …) fall back to "?".
+    .replace(/[^\x20-\x7E\u00A0-\u00FF]/g, "?");
+}
+
+// Latin-1 (single-byte) encoder. The base-14 fonts are WinAnsi/Latin-1, so the
+// content stream must be Latin-1 bytes, NOT UTF-8 — otherwise "£" (U+00A3) is
+// emitted as the two UTF-8 bytes C2 A3 and renders as mojibake. sanitizeForPdf
+// guarantees every character is ≤ 0xFF, so the low byte is the exact code point.
+function latin1Bytes(s: string): Uint8Array {
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 0xff;
+  return out;
 }
 
 function encodePdfString(str: string): string {
@@ -111,39 +128,43 @@ function encodePdfString(str: string): string {
     .replace(/\n/g, "\\n");
 }
 
-function pk(amount: number): string {
-  return `Rs. ${amount.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
-}
-
 // numeric(5,2) arrives as 10 or 10.5 — print 10, not 10.00, and never a
 // trailing ".50" on a whole percentage.
 function fmtPct(pct: number): string {
   return String(Math.round(pct * 100) / 100);
 }
 
-function fmtDate(dateStr: string | null | undefined): string {
-  // ASCII only: the text is written into the PDF stream in a single-byte font
-  // encoding, so an em dash (U+2014) emerges as "\u00e2" — visible as `Date: \u00e2` on a
-  // real receipt.
-  if (!dateStr) return "-";
-  const d = new Date(dateStr);
-  return d.toLocaleDateString("en-PK", { day: "2-digit", month: "short", year: "numeric" });
+// Currency + date formatters bound to a country. PKR keeps the exact legacy
+// "Rs. 13,000.00" prefix (byte-identical for every existing PK receipt); other
+// currencies use their own symbol ("£420.00"). Dates/months use the country locale.
+function makeReceiptFormatters(country: string | null | undefined) {
+  const cfg = getCountryConfig(country);
+  const pk = (amount: number): string => {
+    const n = amount.toLocaleString(cfg.locale, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    return cfg.currency === "PKR" ? `Rs. ${n}` : `${cfg.currencySymbol}${n}`;
+  };
+  const fmtDate = (dateStr: string | null | undefined): string => {
+    if (!dateStr) return "-";
+    return new Date(dateStr).toLocaleDateString(cfg.locale, { day: "2-digit", month: "short", year: "numeric" });
+  };
+  const fmtMonth = (yyyyMM: string): string => {
+    const [y, m] = yyyyMM.split("-");
+    return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString(cfg.locale, { month: "long", year: "numeric" });
+  };
+  // Symbol used inline in rate copy ("… x Rs. 25/unit" / "… x £0.30/unit").
+  const rateSym = cfg.currency === "PKR" ? "Rs." : cfg.currencySymbol;
+  return { pk, fmtDate, fmtMonth, rateSym };
 }
 
-function fmtMonth(yyyyMM: string): string {
-  const [y, m] = yyyyMM.split("-");
-  const date = new Date(Number(y), Number(m) - 1, 1);
-  return date.toLocaleDateString("en-PK", { month: "long", year: "numeric" });
-}
 
 function methodLabel(m: string | null | undefined): string {
   if (!m) return "-";
   return m.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function amountInWords(n: number): string {
+function amountInWords(n: number, unit = "Rupees"): string {
   const rounded = Math.round(n);
-  if (rounded === 0) return "Zero Rupees Only";
+  if (rounded === 0) return `Zero ${unit} Only`;
   const ones = [
     "", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
     "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
@@ -159,7 +180,7 @@ function amountInWords(n: number): string {
     if (num < 10000000) return words(Math.floor(num / 100000)) + " Lakh" + (num % 100000 ? " " + words(num % 100000) : "");
     return words(Math.floor(num / 10000000)) + " Crore" + (num % 10000000 ? " " + words(num % 10000000) : "");
   }
-  return words(rounded) + " Rupees Only";
+  return words(rounded) + ` ${unit} Only`;
 }
 
 /**
@@ -198,6 +219,12 @@ export function generateReceiptPDF(
   // on it). Printing a "Monthly Rent: Rs. 0" line and a "Period: July 2026"
   // header on it would read as a monthly bill the tenant does not owe.
   const isReservation = !!payment.is_reservation;
+  // Currency + date formatters follow the hostel's country (Rs for PK, £ for GB).
+  const { pk, fmtDate, fmtMonth, rateSym } = makeReceiptFormatters(hostel.country);
+  // Terminology follows the hostel country: PK = "Tenant" (byte-identical),
+  // non-PK = "Resident".
+  const residentLabel = terms(hostel.country).tenant;
+  const isPk = getCountryConfig(hostel.country).currency === "PKR";
 
   // Collect commands top-down (y=0 at top), convert to PDF coords (y=0 at bottom) after.
   type Cmd =
@@ -280,7 +307,7 @@ export function generateReceiptPDF(
   }
   addDash(); nl(10);
 
-  add(ML, "Tenant:", 8, true); nl(12);
+  add(ML, `${residentLabel}:`, 8, true); nl(12);
   add(ML, tenant.full_name, 8, false); nl(12);
   if (tenant.phone) { add(ML, `Phone: ${tenant.phone}`, 8, false); nl(12); }
   // Room the tenant occupies — a reservation has no assigned room yet, so it's
@@ -289,7 +316,7 @@ export function generateReceiptPDF(
   // Printed on every receipt (not just the first month) — it's a permanent
   // reference the tenant can always point back to if AC billing is disputed.
   if (tenant.joining_meter_reading != null) {
-    add(ML, `AC Meter Reading at Move-in: ${tenant.joining_meter_reading}`, 7, false); nl(11);
+    add(ML, `${isPk ? "AC" : "Electricity"} Meter Reading at Move-in: ${tenant.joining_meter_reading}`, 7, false); nl(11);
   }
   nl(2); addDash(); nl(10);
 
@@ -354,11 +381,11 @@ export function generateReceiptPDF(
         // Rounded to 2dp (ac_units_consumed's DB precision), not a whole unit —
         // otherwise an even split like 72.5 would display as "73".
         const displayUnits = Math.round((payment.ac_charge! / realRate) * 100) / 100;
-        add(ML + 4, `${displayUnits} units x Rs. ${realRate}/unit`, 6, false); nl(9);
+        add(ML + 4, `${displayUnits} units x ${rateSym} ${realRate}/unit`, 6, false); nl(9);
       } else if (storedUnits > 0) {
         // Fallback: back-calculate rate from stored units (regular monthly pay path)
         const rate = Math.round(payment.ac_charge! / storedUnits);
-        add(ML + 4, `${storedUnits} units x Rs. ${rate}/unit`, 6, false); nl(9);
+        add(ML + 4, `${storedUnits} units x ${rateSym} ${rate}/unit`, 6, false); nl(9);
       } else {
         nl(1);
       }
@@ -372,7 +399,7 @@ export function generateReceiptPDF(
       // Actually charged as part of THIS bill (first month) — already included
       // in `payment.amount`, so it's itemized here, not added again below.
       addKv("Security Deposit", pk(payment.security_deposit_charge!)); nl(12);
-      add(ML, "(refundable on checkout)", 6, false); nl(10);
+      add(ML, "(subject to applicable deductions/refund terms)", 6, false); nl(10);
     }
     if ((payment.registration_fee_charge ?? 0) > 0) {
       addKv("Registration Fee", pk(payment.registration_fee_charge!)); nl(12);
@@ -382,7 +409,7 @@ export function generateReceiptPDF(
       // Informational only — the deposit was already collected at move-in, not
       // part of this checkout payment's amount.
       addKv("Security Deposit Refund", pk(payment.security_deposit!)); nl(12);
-      add(ML, "(to be returned to tenant)", 6, false); nl(10);
+      add(ML, `(to be returned to ${residentLabel.toLowerCase()})`, 6, false); nl(10);
     }
     // LAST, immediately above the total. Everything above it is added; this is
     // the only line that is taken off, so putting it anywhere in the middle
@@ -418,6 +445,9 @@ export function generateReceiptPDF(
 
   // For a partial payment, spell out what was actually received — spelling out
   // the full amount due here would misrepresent it as fully paid.
+  // "Amount in words" is a Pakistani receipt convention using lakh/crore
+  // numbering — only rendered for PKR. Other currencies omit this line.
+  if (getCountryConfig(hostel.country).currency === "PKR") {
   const wordsStr = amountInWords(
     isInvoice
       ? Math.max(0, total - Number(payment.amount_paid ?? 0))
@@ -450,6 +480,7 @@ export function generateReceiptPDF(
     if (line) { add(ML + labelW, line, 7, false); nl(9); }
   }
   nl(4); addDash(); nl(10);
+  }
 
   if (isInvoice) {
     addCenter("This is a bill, not a receipt.", 7, false); nl(9);
@@ -476,7 +507,7 @@ export function generateReceiptPDF(
   }
 
   const streamContent = streamLines.join("\n");
-  const streamBytes = new TextEncoder().encode(streamContent);
+  const streamBytes = latin1Bytes(streamContent);
   const streamLen = streamBytes.length;
 
   const objects: string[] = [];
@@ -487,11 +518,11 @@ export function generateReceiptPDF(
     `/Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>\nendobj`;
   objects[3] =
     `4 0 obj\n<< /Length ${streamLen} >>\nstream\n${streamContent}\nendstream\nendobj`;
-  objects[4] = "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj";
-  objects[5] = "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj";
+  objects[4] = "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj";
+  objects[5] = "6 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>\nendobj";
 
   // Build PDF using byte arrays so xref offsets are byte-accurate (handles non-ASCII safely).
-  const enc = new TextEncoder();
+  const enc = { encode: latin1Bytes };
   const headerBytes = enc.encode("%PDF-1.4\n");
   const objBytes = objects.map((o) => enc.encode(o + "\n"));
 

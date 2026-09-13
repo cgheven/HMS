@@ -5,9 +5,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useHostelContext } from "@/contexts/hostel-context";
+import { getCountryConfig } from "@/lib/country-config";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
@@ -50,6 +52,16 @@ export function SettingsClient() {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const hostelId = hostel?.id ?? null;
+  // Currency indicator for these config-field captions. PK keeps "Rs." (period,
+  // byte-identical); other countries use their symbol (e.g. "£").
+  const curCfg = getCountryConfig(hostel?.country);
+  const curSym = curCfg.currency === "PKR" ? "Rs." : curCfg.currencySymbol;
+  // PK renders the exact incumbent rate labels (with their (Rs. …) captions + a
+  // plain <Input>); non-PK renders the inline-symbol MoneyInput. Formatting only.
+  const isPk = (hostel?.country ?? "PK").toUpperCase() === "PK";
+  // Country terminology: PK renders Branch/Branches/Tenant; non-PK renders
+  // Property/Properties/Resident. Fails open to PK (byte-identical).
+  const words = curCfg.terms;
   // Branch-scoped cards are shown to partners; the Branches and Partners cards
   // are not. Those two are account-level — creating branches on the owner's
   // account, and adding/removing/re-tiering partners (which would let a partner
@@ -240,7 +252,7 @@ export function SettingsClient() {
       meal_times: mealTimes,
     });
     setSavingWelcome(false);
-    if (result.success) toast({ title: "Tenant welcome settings saved" });
+    if (result.success) toast({ title: `${words.tenant} welcome settings saved` });
     else toast({ title: "Error", description: result.error, variant: "destructive" });
   }
   const welcomePreview = buildWelcomeMessage({
@@ -468,7 +480,7 @@ export function SettingsClient() {
     const result = await switchActiveHostel(branchId);
     setSwitchingBranch(null);
     if (result.error) {
-      toast({ title: "Could not switch branch", description: result.error, variant: "destructive" });
+      toast({ title: `Could not switch ${words.branch.toLowerCase()}`, description: result.error, variant: "destructive" });
       return;
     }
     startTransition(() => { router.refresh(); });
@@ -490,7 +502,7 @@ export function SettingsClient() {
       toast({ title: "Failed to rename", description: result.error, variant: "destructive" });
       return;
     }
-    toast({ title: "Branch renamed", description: `"${editName}" saved.` });
+    toast({ title: `${words.branch} renamed`, description: `"${editName}" saved.` });
     setEditingBranchId(null);
     await fetchBranches();
   }
@@ -726,14 +738,18 @@ export function SettingsClient() {
               </div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
+              <div className={isPk ? "space-y-1.5" : "space-y-1.5 sm:col-span-2"}>
                 <Label>Phone</Label>
                 <Input placeholder="+92 300 0000000" value={hostelForm.phone} onChange={(e) => setHostelForm({ ...hostelForm, phone: e.target.value })} />
               </div>
-              <div className="space-y-1.5">
-                <Label>WhatsApp</Label>
-                <Input placeholder="+92 300 0000000" value={hostelForm.whatsapp} onChange={(e) => setHostelForm({ ...hostelForm, whatsapp: e.target.value })} />
-              </div>
+              {/* WhatsApp powers PK-only tenant messaging; hidden for non-PK where
+                  it's an unused second number. */}
+              {isPk && (
+                <div className="space-y-1.5">
+                  <Label>WhatsApp</Label>
+                  <Input placeholder="+92 300 0000000" value={hostelForm.whatsapp} onChange={(e) => setHostelForm({ ...hostelForm, whatsapp: e.target.value })} />
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
@@ -802,7 +818,7 @@ export function SettingsClient() {
                 { key: "emergency_contact",  label: "Emergency Contact",    description: "Contact name, phone, and relationship" },
                 { key: "permanent_address",  label: "Permanent Address",    description: "Tenant's home address — where they return to, separate from the hostel" },
                 { key: "father_name",        label: "Father Name",          description: "Standard admission-register field" },
-                { key: "purpose_of_visit",   label: "Purpose of Visit",     description: "Why they're in the city — Education, Job, Exam, Medical, and so on. Separate from Type, which is what they are" },
+                { key: "purpose_of_visit",   label: words.purposeOfVisit,   description: "Why they're in the city — Education, Job, Exam, Medical, and so on. Separate from Type, which is what they are" },
                 { key: "notes",              label: "Message / Questions",  description: "Free text for special requests" },
                 { key: "institute_name",     label: "Institute Name",       description: "Shown only when Type is Student — college, university, or training institute" },
                 { key: "student_category",   label: "Student Category",     description: "Shown only when Type is Student — University/College, Exam Prep, Professional Course, or Skills Training" },
@@ -1137,6 +1153,7 @@ export function SettingsClient() {
             {/* AC rate + Security Deposit */}
             <div className="flex flex-wrap gap-6">
               <div className="space-y-1.5">
+                {isPk ? <>
                 <Label className="text-xs">AC Per Unit Rate (Rs. / unit consumed)</Label>
                 <Input
                   type="number" min="0" step="0.01" placeholder="e.g. 80"
@@ -1144,7 +1161,15 @@ export function SettingsClient() {
                   onChange={(e) => setPackageForm({ ...packageForm, ac_per_unit_rate: e.target.value })}
                   disabled={!packageLoaded}
                   className="max-w-[180px]"
-                />
+                /></> : <>
+                <Label className="text-xs">AC Per Unit Rate (per unit consumed)</Label>
+                <MoneyInput symbol={curSym}
+                  type="number" min="0" step="0.01" placeholder="e.g. 80"
+                  value={packageForm.ac_per_unit_rate}
+                  onChange={(e) => setPackageForm({ ...packageForm, ac_per_unit_rate: e.target.value })}
+                  disabled={!packageLoaded}
+                  className="max-w-[180px]"
+                /></>}
                 <p className="text-xs text-muted-foreground">Billed on top of the monthly rate for AC rooms.</p>
               </div>
               <div className="space-y-1.5">
@@ -1179,6 +1204,7 @@ export function SettingsClient() {
                 </label>
               </div>
               <div className="space-y-1.5">
+                {isPk ? <>
                 <Label className="text-xs">Attached Washroom Premium (Rs. / month)</Label>
                 <Input
                   type="number" min="0" step="1" placeholder="e.g. 3000"
@@ -1186,10 +1212,19 @@ export function SettingsClient() {
                   onChange={(e) => setPackageForm({ ...packageForm, washroom_premium: e.target.value })}
                   disabled={!packageLoaded}
                   className="max-w-[180px]"
-                />
+                /></> : <>
+                <Label className="text-xs">Attached Washroom Premium (per month)</Label>
+                <MoneyInput symbol={curSym}
+                  type="number" min="0" step="1" placeholder="e.g. 3000"
+                  value={packageForm.washroom_premium}
+                  onChange={(e) => setPackageForm({ ...packageForm, washroom_premium: e.target.value })}
+                  disabled={!packageLoaded}
+                  className="max-w-[180px]"
+                /></>}
                 <p className="text-xs text-muted-foreground">Added on top of the seater rate for rooms with an attached washroom.</p>
               </div>
               <div className="space-y-1.5">
+                {isPk ? <>
                 <Label className="text-xs">Default Security Deposit (Rs.)</Label>
                 <Input
                   type="number" min="0" step="1" placeholder="e.g. 10000"
@@ -1197,7 +1232,15 @@ export function SettingsClient() {
                   onChange={(e) => setPackageForm({ ...packageForm, security_deposit: e.target.value })}
                   disabled={!packageLoaded}
                   className="max-w-[180px]"
-                />
+                /></> : <>
+                <Label className="text-xs">Default Security Deposit</Label>
+                <MoneyInput symbol={curSym}
+                  type="number" min="0" step="1" placeholder="e.g. 10000"
+                  value={packageForm.security_deposit}
+                  onChange={(e) => setPackageForm({ ...packageForm, security_deposit: e.target.value })}
+                  disabled={!packageLoaded}
+                  className="max-w-[180px]"
+                /></>}
                 <p className="text-xs text-muted-foreground">Fallback when no per-package deposit is set above. Shown on the public hostel page.</p>
               </div>
               <div className="space-y-1.5">
@@ -1212,6 +1255,7 @@ export function SettingsClient() {
                 <p className="text-xs text-muted-foreground">Minimum notice a tenant should give before checking out.</p>
               </div>
               <div className="space-y-1.5">
+                {isPk ? <>
                 <Label className="text-xs">Default Registration Fee (Rs.)</Label>
                 <Input
                   type="number" min="0" step="1" placeholder="e.g. 2000"
@@ -1219,10 +1263,19 @@ export function SettingsClient() {
                   onChange={(e) => setPackageForm({ ...packageForm, registration_fee: e.target.value })}
                   disabled={!packageLoaded}
                   className="max-w-[180px]"
-                />
+                /></> : <>
+                <Label className="text-xs">Default Registration Fee</Label>
+                <MoneyInput symbol={curSym}
+                  type="number" min="0" step="1" placeholder="e.g. 2000"
+                  value={packageForm.registration_fee}
+                  onChange={(e) => setPackageForm({ ...packageForm, registration_fee: e.target.value })}
+                  disabled={!packageLoaded}
+                  className="max-w-[180px]"
+                /></>}
                 <p className="text-xs text-muted-foreground">One-time, non-refundable, billed only in the tenant&apos;s first month. Hidden on the Tenants page unless set here.</p>
               </div>
               <div className="space-y-1.5">
+                {isPk ? <>
                 <Label className="text-xs">AC Maintenance Rate (Rs. / month)</Label>
                 <Input
                   type="number" min="0" step="1" placeholder="e.g. 500"
@@ -1230,7 +1283,15 @@ export function SettingsClient() {
                   onChange={(e) => setPackageForm({ ...packageForm, ac_maintenance_rate: e.target.value })}
                   disabled={!packageLoaded}
                   className="max-w-[180px]"
-                />
+                /></> : <>
+                <Label className="text-xs">AC Maintenance Rate (per month)</Label>
+                <MoneyInput symbol={curSym}
+                  type="number" min="0" step="1" placeholder="e.g. 500"
+                  value={packageForm.ac_maintenance_rate}
+                  onChange={(e) => setPackageForm({ ...packageForm, ac_maintenance_rate: e.target.value })}
+                  disabled={!packageLoaded}
+                  className="max-w-[180px]"
+                /></>}
                 <p className="text-xs text-muted-foreground">Flat monthly charge automatically applied to every tenant in an AC room, regardless of package.</p>
               </div>
             </div>
@@ -1245,6 +1306,7 @@ export function SettingsClient() {
               </div>
               <div className="flex flex-wrap gap-6">
                 <div className="space-y-1.5">
+                  {isPk ? <>
                   <Label className="text-xs">Breakfast (Rs. / month)</Label>
                   <Input
                     type="number" min="0" step="1" placeholder="e.g. 5000"
@@ -1252,9 +1314,18 @@ export function SettingsClient() {
                     onChange={(e) => setFoodAddonForm({ ...foodAddonForm, breakfast: e.target.value })}
                     disabled={!packageLoaded}
                     className="max-w-[160px]"
-                  />
+                  /></> : <>
+                  <Label className="text-xs">Breakfast (per month)</Label>
+                  <MoneyInput symbol={curSym}
+                    type="number" min="0" step="1" placeholder="e.g. 5000"
+                    value={foodAddonForm.breakfast}
+                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, breakfast: e.target.value })}
+                    disabled={!packageLoaded}
+                    className="max-w-[160px]"
+                  /></>}
                 </div>
                 <div className="space-y-1.5">
+                  {isPk ? <>
                   <Label className="text-xs">Lunch (Rs. / month)</Label>
                   <Input
                     type="number" min="0" step="1" placeholder="e.g. 5000"
@@ -1262,9 +1333,18 @@ export function SettingsClient() {
                     onChange={(e) => setFoodAddonForm({ ...foodAddonForm, lunch: e.target.value })}
                     disabled={!packageLoaded}
                     className="max-w-[160px]"
-                  />
+                  /></> : <>
+                  <Label className="text-xs">Lunch (per month)</Label>
+                  <MoneyInput symbol={curSym}
+                    type="number" min="0" step="1" placeholder="e.g. 5000"
+                    value={foodAddonForm.lunch}
+                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, lunch: e.target.value })}
+                    disabled={!packageLoaded}
+                    className="max-w-[160px]"
+                  /></>}
                 </div>
                 <div className="space-y-1.5">
+                  {isPk ? <>
                   <Label className="text-xs">Dinner (Rs. / month)</Label>
                   <Input
                     type="number" min="0" step="1" placeholder="e.g. 5000"
@@ -1272,9 +1352,18 @@ export function SettingsClient() {
                     onChange={(e) => setFoodAddonForm({ ...foodAddonForm, dinner: e.target.value })}
                     disabled={!packageLoaded}
                     className="max-w-[160px]"
-                  />
+                  /></> : <>
+                  <Label className="text-xs">Dinner (per month)</Label>
+                  <MoneyInput symbol={curSym}
+                    type="number" min="0" step="1" placeholder="e.g. 5000"
+                    value={foodAddonForm.dinner}
+                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, dinner: e.target.value })}
+                    disabled={!packageLoaded}
+                    className="max-w-[160px]"
+                  /></>}
                 </div>
                 <div className="space-y-1.5">
+                  {isPk ? <>
                   <Label className="text-xs">All 3 Meals Bundle (Rs. / month)</Label>
                   <Input
                     type="number" min="0" step="1" placeholder="e.g. 15000"
@@ -1282,7 +1371,15 @@ export function SettingsClient() {
                     onChange={(e) => setFoodAddonForm({ ...foodAddonForm, allMeals: e.target.value })}
                     disabled={!packageLoaded}
                     className="max-w-[160px]"
-                  />
+                  /></> : <>
+                  <Label className="text-xs">All 3 Meals Bundle (per month)</Label>
+                  <MoneyInput symbol={curSym}
+                    type="number" min="0" step="1" placeholder="e.g. 15000"
+                    value={foodAddonForm.allMeals}
+                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, allMeals: e.target.value })}
+                    disabled={!packageLoaded}
+                    className="max-w-[160px]"
+                  /></>}
                   <p className="text-xs text-muted-foreground">Used automatically when cheaper than the sum of all 3.</p>
                 </div>
               </div>
@@ -1383,7 +1480,7 @@ export function SettingsClient() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <GitBranch className="w-4 h-4 text-muted-foreground" />
-              <CardTitle className="text-base">Branches</CardTitle>
+              <CardTitle className="text-base">{words.branches}</CardTitle>
             </div>
             <Button
               variant="outline"
@@ -1410,7 +1507,7 @@ export function SettingsClient() {
           ) : branches.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground">
               <GitBranch className="w-8 h-8 opacity-20" />
-              <p className="text-sm">No branches yet</p>
+              <p className="text-sm">No {words.branches.toLowerCase()} yet</p>
             </div>
           ) : (
             <div className="rounded-xl border border-sidebar-border overflow-hidden">
@@ -1426,7 +1523,7 @@ export function SettingsClient() {
                     {isEditing ? (
                       <div className="px-4 py-3 space-y-3">
                         <div className="space-y-1.5">
-                          <Label className="text-xs">Branch Name *</Label>
+                          <Label className="text-xs">{words.branch} Name *</Label>
                           <Input
                             autoFocus
                             value={editName}
@@ -1802,7 +1899,7 @@ export function SettingsClient() {
                       {addingExistingPartner ? (
                         <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Adding…</>
                       ) : (
-                        <><Plus className="w-3.5 h-3.5" /> Add to Branch</>
+                        <><Plus className="w-3.5 h-3.5" /> Add to {words.branch}</>
                       )}
                     </Button>
                   </div>
@@ -2062,7 +2159,7 @@ export function SettingsClient() {
         <CardHeader>
           <div className="flex items-center gap-2">
             <MessageCircle className="w-4 h-4 text-muted-foreground" />
-            <CardTitle className="text-base">Tenant Welcome &amp; WiFi</CardTitle>
+            <CardTitle className="text-base">{words.tenant} Welcome &amp; WiFi</CardTitle>
           </div>
           <CardDescription>
             Automatic WhatsApp message sent the moment a tenant becomes active — room, WiFi, and the monthly menu link.

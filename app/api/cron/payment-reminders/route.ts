@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { pktTodayDateString } from "@/lib/pkt-time";
+import { yearMonthInZone } from "@/lib/pkt-time";
 import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
 import { settleReferralRewards } from "@/lib/referral-rewards";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
@@ -35,7 +35,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const forMonth = pktTodayDateString().slice(0, 7);
   const admin = createAdminClient();
 
   const { data: grantedHostels } = await admin
@@ -44,6 +43,16 @@ export async function GET(request: NextRequest) {
     // Candidates: WhatsApp-granted (PK), referral-enabled, or any non-PK hostel
     // (whose reminder channel is email — PK is the only WhatsApp country today).
     .or("whatsapp_enabled.eq.true,referral_enabled.eq.true,country.neq.PK");
+
+  // The billing month is resolved PER HOSTEL in its own timezone: at a month
+  // boundary Karachi (UTC+5) rolls into the new month hours before London, so a
+  // single global forMonth would bill/remind a UK branch for the wrong month for
+  // that window. Falls open to Karachi for an unknown country (byte-identical PK).
+  const monthOf = (country: string | null): string => {
+    const { year, month } = yearMonthInZone(getCountryConfig(country).timezone);
+    return `${year}-${String(month).padStart(2, "0")}`;
+  };
+  const countryById = new Map((grantedHostels ?? []).map((h) => [h.id, h.country as string | null]));
 
   // Which hostels actually get a reminder pass this run: a WhatsApp-country hostel
   // needs the Super-Admin grant (unchanged); a non-WhatsApp country (non-PK) is
@@ -66,21 +75,21 @@ export async function GET(request: NextRequest) {
   // simply never appear. Failures are swallowed inside settleReferralRewards —
   // reminders are the job here, rewards are the passenger.
   const referralHostelIds = (grantedHostels ?? []).filter((h) => h.referral_enabled).map((h) => h.id);
-  await Promise.all(referralHostelIds.map((id) => settleReferralRewards(admin, id, forMonth)));
+  await Promise.all(referralHostelIds.map((id) => settleReferralRewards(admin, id, monthOf(countryById.get(id) ?? null))));
 
   // A tenant's rent row for this month only exists once someone opens Monthly
   // View for it — guarantee it exists for every granted branch (only those;
   // every other branch is left exactly as before) so the scan below never
   // silently finds nothing just because no one has visited the Payments page
   // yet this month.
-  await Promise.all(hostelIds.map((id) => ensureMonthlyPaymentRows(admin, id, forMonth)));
+  await Promise.all(hostelIds.map((id) => ensureMonthlyPaymentRows(admin, id, monthOf(countryById.get(id) ?? null))));
 
   // Isolated per hostel — one branch's DB error shouldn't block every other
   // granted branch's reminders from going out.
   const results = await Promise.all(
     hostelIds.map(async (id): Promise<ReminderSummary & { error?: string }> => {
       try {
-        return await runReminderPass(admin, id, forMonth, true);
+        return await runReminderPass(admin, id, monthOf(countryById.get(id) ?? null), true);
       } catch (err) {
         console.error(`[payment-reminders] hostel ${id} failed:`, err instanceof Error ? err.message : err);
         return { checked: 0, sent: 0, skipped: 0, failed: 0, markFailed: 0, error: err instanceof Error ? err.message : String(err) };

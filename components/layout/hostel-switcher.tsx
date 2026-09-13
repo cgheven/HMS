@@ -1,8 +1,12 @@
 "use client";
 import { useState, useEffect, useTransition } from "react";
-import { Building2, ChevronDown, Check, Loader2, Home } from "lucide-react";
+import { Building2, ChevronDown, Check, Loader2, Home, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { switchActiveHostel } from "@/app/actions/branches";
+import { MAX_PROPERTIES } from "@/lib/validation";
+import { terms } from "@/lib/country-config";
+import { useHostelContext } from "@/contexts/hostel-context";
+import { AddPropertyDialog } from "@/components/layout/add-property-dialog";
 import type { Hostel } from "@/types";
 
 type OwnedHostel = Hostel & { is_primary?: boolean };
@@ -15,9 +19,18 @@ interface Props {
 export function HostelSwitcher({ activeHostel, hostels }: Props) {
   const [isPending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const [optimisticName, setOptimisticName] = useState<string | null>(null);
 
+  const { profile } = useHostelContext();
+  // Adding a property is owner-only (createBranch enforces it server-side too).
+  const isOwner = profile?.role === "owner";
   const multiHostel = hostels.length > 1;
+  // Owners always get the dropdown (so they can reach "Add"); everyone else only
+  // when there is more than one property to switch between.
+  const showDropdown = multiHostel || isOwner;
+  const atMax = hostels.length >= MAX_PROPERTIES;
+  const t = terms(activeHostel?.country);
 
   function handleSwitch(hostelId: string) {
     if (hostelId === activeHostel?.id) {
@@ -50,15 +63,15 @@ export function HostelSwitcher({ activeHostel, hostels }: Props) {
     setOptimisticName(null);
   }, [activeHostel?.id]);
 
-  // Single-hostel: just show the name, no switcher needed
-  if (!multiHostel) {
+  // Single-hostel non-owner: just show the name, nothing to switch or add.
+  if (!showDropdown) {
     return (
       <div className="flex items-center gap-2 min-w-0 flex-1">
         <div className="flex items-center justify-center w-6 h-6 rounded-md bg-amber/10 border border-amber/20 shrink-0">
           <Home className="w-3.5 h-3.5 text-amber" />
         </div>
         <span className="font-semibold text-sm truncate text-foreground min-w-0">
-          {optimisticName ?? activeHostel?.name ?? "No branch assigned"}
+          {optimisticName ?? activeHostel?.name ?? `No ${t.branch.toLowerCase()} assigned`}
         </span>
       </div>
     );
@@ -76,7 +89,7 @@ export function HostelSwitcher({ activeHostel, hostels }: Props) {
         disabled={isPending}
       >
         <span className="truncate max-w-[130px] sm:max-w-[220px]">
-          {optimisticName ?? activeHostel?.name ?? "No branch assigned"}
+          {optimisticName ?? activeHostel?.name ?? `No ${t.branch.toLowerCase()} assigned`}
         </span>
         {isPending ? (
           <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin shrink-0" />
@@ -94,11 +107,6 @@ export function HostelSwitcher({ activeHostel, hostels }: Props) {
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           <div className="absolute left-0 top-full mt-2 w-80 z-20 rounded-xl border border-sidebar-border bg-sidebar shadow-2xl overflow-hidden animate-fade-up">
-            <div className="px-3 py-2.5 border-b border-sidebar-border">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Switch Branch
-              </p>
-            </div>
             <div className="p-1 max-h-64 overflow-y-auto">
               {hostels.map((h) => {
                 const isActive = h.id === activeHostel?.id;
@@ -134,9 +142,32 @@ export function HostelSwitcher({ activeHostel, hostels }: Props) {
                 );
               })}
             </div>
+            {isOwner && (
+              <div className="border-t border-sidebar-border p-1">
+                <button
+                  type="button"
+                  onClick={() => { if (!atMax) { setOpen(false); setAddOpen(true); } }}
+                  disabled={atMax}
+                  className={cn(
+                    "w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm transition-colors text-left",
+                    atMax ? "text-muted-foreground/50 cursor-not-allowed" : "text-amber hover:bg-amber/10"
+                  )}
+                >
+                  <Plus className="w-4 h-4 shrink-0" />
+                  <span>{atMax ? `Maximum ${MAX_PROPERTIES} ${t.branches.toLowerCase()}` : `Add ${t.branch}`}</span>
+                </button>
+              </div>
+            )}
           </div>
         </>
       )}
+
+      <AddPropertyDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        hostels={hostels}
+        defaultCountry={activeHostel?.country}
+      />
     </div>
   );
 }

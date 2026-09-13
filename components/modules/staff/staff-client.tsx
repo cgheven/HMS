@@ -18,7 +18,9 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { QuickAddTray } from "@/components/ui/quick-add-tray";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
-import { cn, formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
+import { cn, formatDate, formatDateInput } from "@/lib/utils";
+import { useMoney, useHostelContext } from "@/contexts/hostel-context";
+import { getCountryConfig } from "@/lib/country-config";
 import type { Employee, EmployeeRole, EmployeeStatus, SalaryPayment, SalaryAdvance, PaymentMethod, PartnerTier } from "@/types";
 
 const ROLES: { value: EmployeeRole; label: string; icon: string }[] = [
@@ -96,20 +98,23 @@ function genReceipt(name: string, month: string) {
  * own WhatsApp, so this works for every hostel including those that never
  * enabled automated messaging.
  */
-function waReceiptLink(phone: string, employeeName: string, a: SalaryAdvance): string {
-  // wa.me rejects spaces, dashes and a leading zero; Pakistan numbers become 92…
-  const digits = phone.replace(/\D/g, "").replace(/^0/, "92");
+function waReceiptLink(phone: string, employeeName: string, a: SalaryAdvance, country?: string | null): string {
+  const cfg = getCountryConfig(country);
+  const sym = cfg.currencySymbol;
+  // wa.me rejects spaces, dashes and a leading zero; a local number's leading 0
+  // becomes the country dial code (Pakistan 92, UK 44, …).
+  const digits = phone.replace(/\D/g, "").replace(/^0/, cfg.dialCode);
   const lines = [
     `*Salary Advance Receipt*`,
     ``,
     `Name: ${employeeName}`,
-    `Amount: Rs ${Number(a.amount).toLocaleString()}`,
+    `Amount: ${sym} ${Number(a.amount).toLocaleString()}`,
     `Date: ${formatDate(a.advance_date)}`,
     a.receipt_number ? `Receipt No: ${a.receipt_number}` : null,
     a.payment_method ? `Paid by: ${a.payment_method}` : null,
     ``,
-    `Recovered so far: Rs ${Number(a.recovered_amount).toLocaleString()}`,
-    `*Balance owed: Rs ${Number(a.balance).toLocaleString()}*`,
+    `Recovered so far: ${sym} ${Number(a.recovered_amount).toLocaleString()}`,
+    `*Balance owed: ${sym} ${Number(a.balance).toLocaleString()}*`,
     ``,
     `This amount will be deducted from your upcoming salary.`,
   ].filter(Boolean);
@@ -125,6 +130,9 @@ interface Props {
 }
 
 export function StaffClient({ hostelId, employees: initialEmployees, salaryPayments: initialPayments, advances: initialAdvances, partnerTier = null }: Props) {
+  const money = useMoney();
+  const activeCountry = useHostelContext().hostel?.country ?? null;
+  const curCode = getCountryConfig(activeCountry).currency; // ISO code for "(PKR)"-style captions
   const canFullTier = !partnerTier || partnerTier === "full";
   // ── Employee state ────────────────────────────────────────
   const [employees, setEmployees] = useState(initialEmployees);
@@ -195,7 +203,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
     });
     setSavingAdvance(false);
     if (res.error) { toast({ title: "Error", description: res.error, variant: "destructive" }); return; }
-    toast({ title: `Advance of ${formatCurrency(Number(advanceForm.amount) || 0)} recorded` });
+    toast({ title: `Advance of ${money(Number(advanceForm.amount) || 0)} recorded` });
     setAdvanceDialog(null);
     await reloadAdvances();
   }
@@ -205,7 +213,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
     if (res.error) { toast({ title: "Error", description: res.error, variant: "destructive" }); return; }
     toast({
       title: "Advance written off",
-      description: `${formatCurrency(res.writtenOff ?? 0)} booked as an expense today — earlier months are unchanged.`,
+      description: `${money(res.writtenOff ?? 0)} booked as an expense today — earlier months are unchanged.`,
     });
     setWriteOffId(null);
     await reloadAdvances();
@@ -349,7 +357,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
     toast({
       title: "Salary paid",
       description: deduct > 0
-        ? `${formatCurrency(res.netPaid ?? 0)} handed over · ${formatCurrency(deduct)} advance recovered`
+        ? `${money(res.netPaid ?? 0)} handed over · ${money(deduct)} advance recovered`
         : undefined,
     });
     setPayDialog(null);
@@ -393,9 +401,9 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: "Total Staff",     short: "Staff",   value: stats.total,              icon: Users,        color: "text-blue-400",    bg: "bg-blue-500/10 border border-blue-500/20" },
-          { label: "Monthly Payroll", short: "Payroll", value: formatCurrency(stats.payroll), icon: TrendingDown, color: "text-amber",        bg: "bg-amber/10 border border-amber/20" },
-          { label: "Paid This Month", short: "Paid",    value: formatCurrency(stats.paid),    icon: CheckCircle2, color: "text-emerald-400",  bg: "bg-emerald-500/10 border border-emerald-500/20" },
-          { label: "Pending",                           value: formatCurrency(stats.pending),  icon: Clock,        color: "text-rose-400",    bg: "bg-rose-500/10 border border-rose-500/20" },
+          { label: "Monthly Payroll", short: "Payroll", value: money(stats.payroll), icon: TrendingDown, color: "text-amber",        bg: "bg-amber/10 border border-amber/20" },
+          { label: "Paid This Month", short: "Paid",    value: money(stats.paid),    icon: CheckCircle2, color: "text-emerald-400",  bg: "bg-emerald-500/10 border border-emerald-500/20" },
+          { label: "Pending",                           value: money(stats.pending),  icon: Clock,        color: "text-rose-400",    bg: "bg-rose-500/10 border border-rose-500/20" },
         ].map(({ label, short, value, icon: Icon, color, bg }) => (
           <Card key={label}>
             <CardContent className="p-4 flex items-center gap-2 lg:gap-3">
@@ -493,7 +501,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                           {emp.status === "inactive" && <Badge variant="destructive" className="text-xs">Inactive</Badge>}
                           {(outstandingByEmployee[emp.id] ?? 0) > 0 && (
                             <Badge variant="secondary" className="text-xs bg-amber/10 text-amber border-amber/25">
-                              Advance due {formatCurrency(outstandingByEmployee[emp.id])}
+                              Advance due {money(outstandingByEmployee[emp.id])}
                             </Badge>
                           )}
                         </div>
@@ -510,7 +518,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                           inline on its own line instead of being dropped. */}
                       <div className="flex items-center justify-between gap-3 pl-12 sm:pl-0 sm:justify-end sm:shrink-0">
                       <div className="text-right shrink-0">
-                        <p className="text-sm font-semibold">{formatCurrency(emp.monthly_salary)}</p>
+                        <p className="text-sm font-semibold">{money(emp.monthly_salary)}</p>
                         <p className="text-xs text-muted-foreground">/month</p>
                       </div>
                       {/* Actions */}
@@ -594,7 +602,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                             <Badge variant="secondary" className={`text-xs ${rc.color}`}>{rc.label}</Badge>
                             {(outstandingByEmployee[p.employee_id] ?? 0) > 0 && (
                               <Badge variant="secondary" className="text-xs bg-amber/10 text-amber border-amber/25">
-                                Advance due {formatCurrency(outstandingByEmployee[p.employee_id])}
+                                Advance due {money(outstandingByEmployee[p.employee_id])}
                               </Badge>
                             )}
                           </div>
@@ -607,7 +615,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                           text-lg icon plus its gap) and is dropped at sm. */}
                       <div className="flex items-center justify-between gap-3 pl-7 sm:pl-0 sm:justify-end sm:shrink-0">
                       <div className="sm:text-right shrink-0">
-                        <p className="text-sm font-semibold">{formatCurrency(p.amount)}</p>
+                        <p className="text-sm font-semibold">{money(p.amount)}</p>
                         <p className={`text-xs font-medium ${isPaid ? "text-emerald-400" : "text-amber"}`}>
                           {isPaid ? "Paid" : "Pending"}
                         </p>
@@ -681,8 +689,8 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                         {a.status === "written_off" && <Badge variant="destructive" className="text-xs">Written off</Badge>}
                       </div>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {formatCurrency(a.amount)} on {formatDate(a.advance_date)}
-                        {Number(a.recovered_amount) > 0 && ` · ${formatCurrency(a.recovered_amount)} recovered`}
+                        {money(a.amount)} on {formatDate(a.advance_date)}
+                        {Number(a.recovered_amount) > 0 && ` · ${money(a.recovered_amount)} recovered`}
                         {a.receipt_number && ` · ${a.receipt_number}`}
                       </p>
                       {a.notes && <p className="text-xs text-muted-foreground/70 mt-0.5">{a.notes}</p>}
@@ -696,7 +704,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                     <div className="flex items-center justify-between gap-3 sm:contents">
                     <div className="text-left sm:text-right shrink-0">
                       <p className={cn("text-sm font-bold", bal > 0 ? "text-amber" : "text-muted-foreground")}>
-                        {formatCurrency(bal)}
+                        {money(bal)}
                       </p>
                       <p className="text-[10px] text-muted-foreground">still owed</p>
                     </div>
@@ -707,7 +715,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                             receipt IS the message, with every detail spelled out. */}
                         {emp?.phone && (
                           <a
-                            href={waReceiptLink(emp.phone, name, a)}
+                            href={waReceiptLink(emp.phone, name, a, activeCountry)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center justify-center h-8 w-8 rounded-md text-emerald-400 hover:bg-emerald-500/10 transition-colors"
@@ -785,7 +793,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
               <div className="space-y-1.5"><Label>CNIC</Label><Input placeholder="00000-0000000-0" value={form.cnic} onChange={(e) => setForm({ ...form, cnic: e.target.value })} /></div>
             </div>
             <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5"><Label>Monthly Salary (PKR) *</Label><Input type="number" placeholder="0" value={form.monthly_salary} onChange={(e) => setForm({ ...form, monthly_salary: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Monthly Salary ({curCode}) *</Label><Input type="number" placeholder="0" value={form.monthly_salary} onChange={(e) => setForm({ ...form, monthly_salary: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Join Date</Label><Input type="date" value={form.join_date} onChange={(e) => setForm({ ...form, join_date: e.target.value })} /></div>
             </div>
             <div className="space-y-1.5"><Label>Notes</Label><Textarea placeholder="Optional…" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={2} /></div>
@@ -821,7 +829,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
               />
               {advanceDialog && Number(advanceForm.amount) > Number(advanceDialog.monthly_salary) && (
                 <p className="text-[11px] text-amber/80">
-                  More than one month&apos;s salary of {formatCurrency(advanceDialog.monthly_salary)} — it will be recovered over several months.
+                  More than one month&apos;s salary of {money(advanceDialog.monthly_salary)} — it will be recovered over several months.
                 </p>
               )}
             </div>
@@ -879,14 +887,14 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
                 <div className="rounded-lg bg-emerald-500/[0.06] border border-emerald-500/20 px-4 py-3 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-muted-foreground">Salary</span>
-                    <span className="text-sm font-semibold">{formatCurrency(gross)}</span>
+                    <span className="text-sm font-semibold">{money(gross)}</span>
                   </div>
 
                   {owed > 0 && (
                     <>
                       <div className="flex items-center justify-between">
                         <span className="text-sm text-muted-foreground">Advance taken</span>
-                        <span className="text-sm font-semibold text-amber">{formatCurrency(owed)}</span>
+                        <span className="text-sm font-semibold text-amber">{money(owed)}</span>
                       </div>
                       <div className="flex items-center justify-between gap-3 pt-1">
                         <Label className="text-sm text-muted-foreground shrink-0">Deduct now</Label>
@@ -902,14 +910,14 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
 
                   <div className="flex items-center justify-between border-t border-emerald-500/20 pt-2">
                     <span className="text-sm text-muted-foreground">Pay now</span>
-                    <span className="text-lg font-bold text-emerald-400">{formatCurrency(net)}</span>
+                    <span className="text-lg font-bold text-emerald-400">{money(net)}</span>
                   </div>
 
                   {/* Says out loud that lowering the deduction is not forgiveness —
                       the rest simply follows them into next month. */}
                   {carried > 0 && (
                     <p className="text-[11px] text-amber/80">
-                      {formatCurrency(carried)} advance still owed after this — carries to next month.
+                      {money(carried)} advance still owed after this — carries to next month.
                     </p>
                   )}
                 </div>

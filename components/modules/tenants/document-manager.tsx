@@ -15,16 +15,17 @@ import {
   getDocumentSignedUrl,
 } from "@/app/actions/tenants";
 import type { TenantDocument, DocumentType } from "@/types";
-import { DOCUMENT_TYPE_LABELS } from "@/types";
+import { DOCUMENT_TYPE_LABELS, DOCUMENT_TYPE_LABELS_INTL, PK_DOCUMENT_TYPES, INTL_DOCUMENT_TYPES } from "@/types";
 
 interface Props {
   tenantId: string;
   tenantName: string;
   documents: TenantDocument[];
   onChange: (docs: TenantDocument[]) => void;
+  // PK keeps its CNIC/police list + labels; non-PK gets the international set.
+  // Defaults to PK so any caller that doesn't pass it stays byte-identical.
+  isPk?: boolean;
 }
-
-const DOC_TYPE_OPTIONS = Object.entries(DOCUMENT_TYPE_LABELS) as [DocumentType, string][];
 
 function docIcon(type: DocumentType) {
   if (type === "cnic" || type === "passport") return <FileImage className="w-4 h-4 text-blue-400 shrink-0" />;
@@ -36,7 +37,11 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-PK", { day: "numeric", month: "short", year: "numeric" });
 }
 
-export function DocumentManager({ tenantId, tenantName, documents, onChange }: Props) {
+export function DocumentManager({ tenantId, tenantName, documents, onChange, isPk = true }: Props) {
+  const labels = isPk ? DOCUMENT_TYPE_LABELS : DOCUMENT_TYPE_LABELS_INTL;
+  const docTypeOptions = (isPk ? PK_DOCUMENT_TYPES : INTL_DOCUMENT_TYPES).map(
+    (t) => [t, labels[t]] as [DocumentType, string]
+  );
   const fileRef = useRef<HTMLInputElement>(null);
   const [adding, setAdding] = useState(false);
   const [docType, setDocType] = useState<DocumentType>("cnic");
@@ -66,7 +71,7 @@ export function DocumentManager({ tenantId, tenantName, documents, onChange }: P
     } else if (result.document) {
       onChange([...documents, result.document]);
       setAdding(false);
-      toast({ title: "Document uploaded", description: `${DOCUMENT_TYPE_LABELS[docType]} added for ${tenantName}.` });
+      toast({ title: "Document uploaded", description: `${labels[docType]} added for ${tenantName}.` });
     }
   }
 
@@ -140,7 +145,7 @@ export function DocumentManager({ tenantId, tenantName, documents, onChange }: P
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {DOC_TYPE_OPTIONS.map(([k, label]) => (
+                {docTypeOptions.map(([k, label]) => (
                   <SelectItem key={k} value={k}>{label}</SelectItem>
                 ))}
               </SelectContent>
@@ -174,7 +179,7 @@ export function DocumentManager({ tenantId, tenantName, documents, onChange }: P
         <div className="rounded-xl border border-dashed border-sidebar-border py-6 flex flex-col items-center gap-2 text-center">
           <ShieldCheck className="w-8 h-8 text-muted-foreground/30" />
           <p className="text-xs text-muted-foreground">No documents yet</p>
-          <p className="text-xs text-muted-foreground/60">Upload CNIC, police verification, or lease agreement</p>
+          <p className="text-xs text-muted-foreground/60">{isPk ? "Upload CNIC, police verification, or lease agreement" : "Upload an identification document, passport, or tenancy agreement"}</p>
         </div>
       ) : (
         <div className="space-y-2">
@@ -187,7 +192,7 @@ export function DocumentManager({ tenantId, tenantName, documents, onChange }: P
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-medium text-foreground truncate">{doc.name}</p>
                 <p className="text-xs text-muted-foreground">
-                  {DOCUMENT_TYPE_LABELS[doc.type]} · {formatDate(doc.uploaded_at)}
+                  {labels[doc.type]} · {formatDate(doc.uploaded_at)}
                 </p>
               </div>
               <div className="flex items-center gap-1 shrink-0">

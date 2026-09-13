@@ -17,6 +17,7 @@ import { normalizeVisitPurpose } from "@/lib/visit-purpose";
 import type { RedflagMatch } from "@/types";
 import type { ApplicationStatus, PackageTier, Profile } from "@/types";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
+import { logPiiAudit } from "@/lib/audit";
 import { ensureAndSendReferralInvite } from "@/lib/whatsapp-referral-invite";
 
 /**
@@ -359,6 +360,15 @@ export interface ConvertFormData {
   permanent_address?: string | null;
   permanent_province?: string | null;
   permanent_district?: string | null;
+  // International admission (non-guest-registration countries): structured address
+  // the approver can review/correct. Undefined leaves the application's value intact.
+  date_of_birth?: string | null;
+  address_line1?: string | null;
+  address_line2?: string | null;
+  city?: string | null;
+  county_state?: string | null;
+  postcode?: string | null;
+  address_country?: string | null;
   father_name?: string | null;
   purpose_of_visit?: string | null;
   purpose_of_visit_detail?: string | null;
@@ -501,17 +511,22 @@ export async function convertToTenant(
     organization: extra.organization ?? app.organization ?? null,
     organization_type: extra.organization_type ?? app.organization_type ?? null,
     department: extra.department ?? app.department ?? null,
-    // International admission fields carried from the application to the tenant.
-    date_of_birth: app.date_of_birth ?? null,
-    address_line1: app.address_line1 ?? null,
-    address_line2: app.address_line2 ?? null,
-    city: app.city ?? null,
-    county_state: app.county_state ?? null,
-    postcode: app.postcode ?? null,
-    address_country: app.address_country ?? null,
+    // International admission fields — the approver's edits win, otherwise the
+    // value the applicant submitted is carried through unchanged.
+    date_of_birth: extra.date_of_birth ?? app.date_of_birth ?? null,
+    address_line1: extra.address_line1 ?? app.address_line1 ?? null,
+    address_line2: extra.address_line2 ?? app.address_line2 ?? null,
+    city: extra.city ?? app.city ?? null,
+    county_state: extra.county_state ?? app.county_state ?? null,
+    postcode: extra.postcode ?? app.postcode ?? null,
+    address_country: extra.address_country ?? app.address_country ?? null,
   }).select("id").single();
 
   if (tenantError) return { success: false, error: tenantError.message };
+
+  if (newTenant?.id) {
+    await logPiiAudit({ hostelId: app.hostel_id, action: "resident.create", tenantId: newTenant.id, meta: { source: "application_approved", applicationId: appId } });
+  }
 
   // Fire-and-forget welcome WhatsApp — never awaited, never blocks approval.
   // The emergency contact gets a separate one-time admission confirmation.

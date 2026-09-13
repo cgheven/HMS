@@ -17,6 +17,8 @@
  * Static, non-secret config — safe to import from server and client alike.
  */
 
+import { COUNTRY_CURRENCY, COUNTRY_TIMEZONE, COUNTRY_DIAL_CODE } from "./country-reference";
+
 export type CountryCode = string; // ISO 3166-1 alpha-2, uppercase (e.g. "PK", "BD")
 
 export interface NationalIdRule {
@@ -30,6 +32,53 @@ export interface NationalIdRule {
    *  Omitted → the digits are shown as typed. */
   groups?: number[];
 }
+
+/**
+ * Per-country user-facing terminology. PK keeps the incumbent words the app has
+ * always shown; every non-PK market uses the international set. This is FORMATTING
+ * (a label swap), never a gate — it resolves through getCountryConfig, which fails
+ * OPEN to PK, so any null/legacy/unknown code renders the exact legacy words.
+ *
+ * Swap ONLY display strings (JSX text, headings, buttons, placeholders, empty
+ * states, column headers, toasts) for these. NEVER touch identifiers: variable /
+ * prop / function names, the hms_tenants / hms_hostels table names, the
+ * ac_per_unit_rate columns, the hms_active_hostel cookie, or route paths
+ * (/tenants stays /tenants).
+ */
+export interface CountryTerms {
+  tenant: string;
+  tenants: string;
+  branch: string;
+  branches: string;
+  acBilling: string;
+  acUnits: string;
+  mobileNumber: string;
+  purposeOfVisit: string;
+}
+
+/** The exact legacy words PK has always shown. */
+export const PK_TERMS: CountryTerms = {
+  tenant: "Tenant",
+  tenants: "Tenants",
+  branch: "Branch",
+  branches: "Branches",
+  acBilling: "AC Billing",
+  acUnits: "AC Units",
+  mobileNumber: "WhatsApp Number",
+  purposeOfVisit: "Purpose of Visit",
+};
+
+/** The international word set (GB and every future non-PK market). */
+export const INTERNATIONAL_TERMS: CountryTerms = {
+  tenant: "Resident",
+  tenants: "Residents",
+  branch: "Property",
+  branches: "Properties",
+  acBilling: "Electricity Billing",
+  acUnits: "Electricity Units",
+  mobileNumber: "Mobile Number",
+  purposeOfVisit: "Purpose of Stay",
+};
 
 export interface CountryConfig {
   /** ISO 3166-1 alpha-2, uppercase. */
@@ -69,6 +118,9 @@ export interface CountryConfig {
    *  invoice framing and the platform-invoice generation. Resolve via the OWNER's
    *  PROFILE country (billing/legal), not the hostel. */
   manualBankBilling: boolean;
+  /** User-facing terminology set. PK gets the incumbent words; every non-PK
+   *  market gets the international set. See CountryTerms. */
+  terms: CountryTerms;
 }
 
 export const DEFAULT_COUNTRY: CountryCode = "PK";
@@ -87,6 +139,7 @@ export const COUNTRY_CONFIG: Record<CountryCode, CountryConfig> = {
     redflag: true,
     whatsapp: true,
     manualBankBilling: true,
+    terms: PK_TERMS,
   },
   GB: {
     code: "GB",
@@ -108,6 +161,7 @@ export const COUNTRY_CONFIG: Record<CountryCode, CountryConfig> = {
     redflag: false,
     whatsapp: false,
     manualBankBilling: false,
+    terms: INTERNATIONAL_TERMS,
   },
 };
 
@@ -116,9 +170,107 @@ export const COUNTRY_CONFIG: Record<CountryCode, CountryConfig> = {
  * to the default (Pakistan) so no caller can ever get `undefined` and every
  * pre-keystone row keeps behaving exactly as before.
  */
+// The currency symbol for an ISO 4217 code, via Intl (narrow symbol: "£", "€",
+// "$", "₨"). Falls back to the code itself if Intl doesn't recognise it.
+function currencySymbolOf(currency: string): string {
+  try {
+    const parts = new Intl.NumberFormat("en", {
+      style: "currency", currency, currencyDisplay: "narrowSymbol",
+    }).formatToParts(0);
+    return parts.find((p) => p.type === "currency")?.value || currency;
+  } catch {
+    return currency;
+  }
+}
+
+function regionName(code: string): string {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "region" }).of(code) || code;
+  } catch {
+    return code;
+  }
+}
+
+/**
+ * True for any real ISO 3166-1 country we can build a config for (present in the
+ * reference data). PK/GB have explicit hand-tuned configs; every other real
+ * country is SYNTHESIZED with its own currency/timezone and PK-only features off.
+ *
+ * NOT a feature gate — features stay off for synthesized countries anyway; use
+ * isSupportedCountry for entitlement gating (fail closed to the PK/GB set).
+ */
+export function isKnownCountry(code: string | null | undefined): boolean {
+  if (!code) return false;
+  const key = code.trim().toUpperCase();
+  return Object.prototype.hasOwnProperty.call(COUNTRY_CONFIG, key)
+    || Object.prototype.hasOwnProperty.call(COUNTRY_CURRENCY, key);
+}
+
+// Build a config for a country with no explicit entry: currency / symbol / locale
+// / timezone / dial code from the reference data, INTERNATIONAL terminology, and
+// every PK-only rail (guest registration, RedFlag, WhatsApp, bank billing) OFF —
+// so no country ever inherits Pakistan's privileged features. PK and GB, having
+// explicit configs, never reach here.
+function synthesizeCountryConfig(key: string): CountryConfig {
+  const currency = COUNTRY_CURRENCY[key] || "USD";
+  return {
+    code: key,
+    name: regionName(key),
+    currency,
+    currencySymbol: currencySymbolOf(currency),
+    locale: `en-${key}`,
+    timezone: COUNTRY_TIMEZONE[key] || "UTC",
+    dialCode: COUNTRY_DIAL_CODE[key] || "",
+    nationalId: { label: "ID", digitLengths: [] },
+    guestRegistration: false,
+    redflag: false,
+    whatsapp: false,
+    manualBankBilling: false,
+    terms: INTERNATIONAL_TERMS,
+  };
+}
+
 export function getCountryConfig(code: string | null | undefined): CountryConfig {
   const key = (code ?? "").trim().toUpperCase();
-  return COUNTRY_CONFIG[key] ?? COUNTRY_CONFIG[DEFAULT_COUNTRY];
+  // Explicit hand-tuned configs (PK, GB) win.
+  if (COUNTRY_CONFIG[key]) return COUNTRY_CONFIG[key];
+  // Any other REAL country code is synthesized. The valid-code check keeps
+  // null / legacy / garbage falling back to Pakistan, so every pre-keystone /
+  // all-PK render stays byte-identical.
+  if (key && Object.prototype.hasOwnProperty.call(COUNTRY_CURRENCY, key)) {
+    return synthesizeCountryConfig(key);
+  }
+  return COUNTRY_CONFIG[DEFAULT_COUNTRY];
+}
+
+/**
+ * The user-facing terminology set for a country. Server components/actions call
+ * this directly with the hostel/owner country in scope; client components use the
+ * useTerms() hook (contexts/hostel-context.tsx), which mirrors useMoney().
+ *
+ * FORMATTING, never a gate — it fails OPEN to PK (via getCountryConfig), so
+ * terms(null | undefined | "PK" | garbage) returns the exact legacy words and
+ * every pre-keystone / all-PK render is byte-identical.
+ */
+export function terms(code: string | null | undefined): CountryTerms {
+  return getCountryConfig(code).terms;
+}
+
+/**
+ * Whether Pulse SaaS billing uses the manual/bank-transfer rail (PK) rather than
+ * Paddle card checkout. THE single source of truth for the billing-rail gate —
+ * the billing UI, the checkout action, and the tier-sync reconciler must all use
+ * THIS one test so they never disagree about who is on cards.
+ *
+ * Resolves through getCountryConfig, which fails OPEN to Pakistan for null /
+ * legacy / unknown codes. That direction is deliberate and money-safe here: a
+ * pre-keystone owner with no country stored is a legacy PK client, so treating
+ * an unknown code as manual keeps them on hand-invoicing and can NEVER
+ * accidentally charge a card. (Contrast the feature gates, which fail CLOSED via
+ * isSupportedCountry — the safe direction there is the opposite.)
+ */
+export function isManualBankBilling(code: string | null | undefined): boolean {
+  return getCountryConfig(code).manualBankBilling;
 }
 
 /**
@@ -134,3 +286,12 @@ export function getCountryConfig(code: string | null | undefined): CountryConfig
 export function isSupportedCountry(code: string | null | undefined): boolean {
   return !!code && Object.prototype.hasOwnProperty.call(COUNTRY_CONFIG, code.trim().toUpperCase());
 }
+
+/**
+ * Every country the app fully serves, for a signup/setup country picker. Order
+ * is the registry's own (Pakistan first, the incumbent market). The server still
+ * re-validates the chosen code with isSupportedCountry, so this is a convenience
+ * for the UI, never the authority.
+ */
+export const SUPPORTED_COUNTRIES: { code: CountryCode; name: string; dialCode: string }[] =
+  Object.entries(COUNTRY_CONFIG).map(([code, cfg]) => ({ code, name: cfg.name, dialCode: cfg.dialCode }));

@@ -2,7 +2,8 @@
 import { requireOwnerOrAbove } from "@/lib/auth";
 import { getAuthContext } from "@/lib/data";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { pktYearMonth } from "@/lib/pkt-time";
+import { yearMonthInZone } from "@/lib/pkt-time";
+import { getCountryConfig } from "@/lib/country-config";
 import {
   collectedFrom,
   pendingFrom,
@@ -141,7 +142,9 @@ function emptySummary(windowFrom: string, windowTo: string, currentMonthKey: str
 export async function getPortfolioSummary(): Promise<PortfolioSummary> {
   const [, ctx] = await Promise.all([requireOwnerOrAbove(), getAuthContext()]);
 
-  const { year, month } = pktYearMonth();
+  // Anchored to the active hostel's timezone (a single owner's branches are one
+  // country in practice; see overview-client for the mixed-country caveat).
+  const { year, month } = yearMonthInZone(getCountryConfig(ctx?.hostel?.country).timezone);
   const currentMonthKey = `${year}-${String(month).padStart(2, "0")}`;
   const windowTo = currentMonthKey;
   const windowFrom = monthKeyMinus(windowTo, WINDOW_MONTHS - 1);

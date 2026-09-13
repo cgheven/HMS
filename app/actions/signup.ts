@@ -4,7 +4,7 @@ import { headers } from "next/headers";
 import { randomBytes, createHash } from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { normalizeEmail, isDisposableEmailDomain } from "@/lib/email-normalize";
-import { EMAIL_RE } from "@/lib/validation";
+import { EMAIL_RE, PROPERTY_TYPES, PROPERTY_TYPE_MAX_LEN } from "@/lib/validation";
 import { siteUrl } from "@/lib/site-url";
 import { sendSignupVerificationEmail } from "@/lib/email";
 import { isSupportedCountry, DEFAULT_COUNTRY } from "@/lib/country-config";
@@ -57,6 +57,9 @@ export async function requestSignup(input: {
   // Optional client hint; the server re-derives from IP and only trusts a
   // supported code, so a spoofed value can't unlock an unsupported country.
   country?: string;
+  // Optional business attribute. One of the presets, or free text (from the
+  // "Other" option). Length-capped server-side; never gated on.
+  propertyType?: string;
   // Honeypot — real users leave it empty; bots fill it. Deliberately NOT named
   // "website"/"url" etc. so aggressive password-manager autofill can't populate
   // it and silently drop a legitimate signup (uniform response hides the loss).
@@ -97,6 +100,17 @@ export async function requestSignup(input: {
     });
     if (emailErr || emailOk === false) return { message: UNIFORM_RESPONSE };
 
+    // Property type: accept a known preset verbatim, else treat as custom free
+    // text (trim + length-cap). The literal "Other" is the picker sentinel, never
+    // a stored value. Empty/absent -> null.
+    const rawPropertyType = (input.propertyType ?? "").trim();
+    const propertyType =
+      !rawPropertyType || rawPropertyType === "Other"
+        ? null
+        : (PROPERTY_TYPES as readonly string[]).includes(rawPropertyType)
+          ? rawPropertyType
+          : rawPropertyType.slice(0, PROPERTY_TYPE_MAX_LEN);
+
     const rawToken = randomBytes(32).toString("base64url");
     const tokenHash = sha256(rawToken);
     const expiresAt = new Date(Date.now() + LINK_TTL_MINUTES * 60_000).toISOString();
@@ -115,6 +129,7 @@ export async function requestSignup(input: {
       owner_name: input.ownerName?.trim() || null,
       phone: input.phone?.trim() || null,
       country,
+      property_type: propertyType,
       token_hash: tokenHash,
       expires_at: expiresAt,
     });
@@ -169,7 +184,7 @@ export async function verifySignupAndProvision(
 
     const { data: pending, error: lookErr } = await admin
       .from("hms_pending_signups")
-      .select("id, email, business_name, owner_name, phone, country, expires_at, consumed_at")
+      .select("id, email, business_name, owner_name, phone, country, property_type, expires_at, consumed_at")
       .eq("token_hash", tokenHash)
       .maybeSingle();
     if (lookErr) {
@@ -216,13 +231,18 @@ export async function verifySignupAndProvision(
     // these accounts are trial-gated; the daily cron freezes them (read-only) at
     // expiry unless they subscribe, which clears this (Paddle webhook).
     const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
-    const [{ error: profErr }, { error: hostErr }] = await Promise.all([
+    const [{ error: profErr }, { data: hostData, error: hostErr }] = await Promise.all([
       admin.from("hms_profiles")
         .update({ country: pending.country, full_name: pending.owner_name || null, phone: pending.phone || null, trial_ends_at: trialEndsAt })
         .eq("id", ownerId),
       admin.from("hms_hostels")
-        .update({ country: pending.country, listing_enabled: false })
-        .eq("owner_id", ownerId),
+        // Public listing ON by default so the owner's /join admission form works
+        // immediately (product decision). Trade-off: the branch appears in the
+        // public directory before it's set up — the onboarding wizard is where a
+        // "go live" gate belongs if we later want listing separate from /join.
+        .update({ country: pending.country, listing_enabled: true, property_type: pending.property_type ?? null })
+        .eq("owner_id", ownerId)
+        .select("id"),
     ]);
     if (profErr || hostErr) {
       // Check BOTH — supabase-js returns {error}, never throws. Roll back rather
@@ -234,6 +254,35 @@ export async function verifySignupAndProvision(
       if (delErr) console.error("[verifySignup] rollback deleteUser failed:", delErr.message);
       await admin.from("hms_pending_signups").update({ consumed_at: null }).eq("id", pending.id);
       return { error: "Something went wrong creating your account. Please try the link again." };
+    }
+
+    // The profile trigger auto-creates the starter hostel but NOT its pricing
+    // config, and the whole app assumes one exists — the payment-amount trigger
+    // reads rates from it, and with no row it writes a NULL amount (NOT-NULL
+    // violation), so no bill can ever be generated and every active tenant is
+    // invisible on the Payments Monthly View. The super-admin onboarding path
+    // seeds this row; self-registration must too. Zeroed rates, 30-day notice —
+    // the owner sets real numbers in setup. Best-effort: the account is already
+    // usable and settings can create it later, so a failure here only logs.
+    const newHostelId = (hostData as { id: string }[] | null)?.[0]?.id;
+    if (newHostelId) {
+      const { error: cfgErr } = await admin.from("hms_package_configs").upsert(
+        {
+          hostel_id: newHostelId,
+          ac_per_unit_rate: 0,
+          ac_maintenance_rate: 0,
+          security_deposit: 0,
+          notice_period_days: 30,
+          food_monthly_rate: 0,
+          food_breakfast_rate: 0,
+          food_lunch_rate: 0,
+          food_dinner_rate: 0,
+          food_all_meals_rate: 0,
+          seater_prices: {},
+        },
+        { onConflict: "hostel_id", ignoreDuplicates: true }
+      );
+      if (cfgErr) console.error("[verifySignup] default package config insert failed:", cfgErr.message);
     }
 
     // Hand the browser a set-password link (token_hash consumed server-side at

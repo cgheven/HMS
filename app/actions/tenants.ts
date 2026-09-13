@@ -23,14 +23,16 @@ import { performRoomTransfer, isMeteredRoom, findCorrectableTransfer, correctRoo
 // defined". Consumers import the type from @/lib/room-transfer directly.
 import type { RoomTransferResult, CorrectableTransfer, RoomTransferCorrectionResult } from "@/lib/room-transfer";
 import { carriedTransferCharges } from "@/lib/ac-transfer";
-import { pktTodayDateString, pktYearMonth } from "@/lib/pkt-time";
+import { pktTodayDateString, yearMonthInZone, todayInZone, DEFAULT_TIMEZONE } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
+import { getCountryConfig } from "@/lib/country-config";
+import { logPiiAudit } from "@/lib/audit";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
 import { deriveOpeningReading, effectivePrevReading } from "@/lib/ac-billing";
 import { sendWelcomeMessageNow, type WelcomeSendResult } from "@/lib/whatsapp-welcome-action";
 import { sendSeatReservedConfirmation } from "@/lib/whatsapp-seat-reserved";
 import { sendNoticeReceivedToTenant } from "@/lib/whatsapp-notice";
-import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, CheckoutSettlement, TenantEventType, TenantFeedback } from "@/types";
+import type { Payment, PackageTier, PaymentMethod, PaymentStatus, TenantDocument, DocumentType, CheckoutPaymentSettlement, CheckoutInput, CheckoutSettlement, TenantEventType, TenantFeedback, AuditLog } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -75,6 +77,16 @@ async function resolveWelcomeMessageHostelId(): Promise<string> {
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// A hostel's ISO country, for deriving its currency symbol (stored notes) and
+// its timezone (which month a transfer bills). PK falls open (byte-identical).
+async function hostelCountryCode(
+  adminDb: ReturnType<typeof createAdminClient>,
+  hostelId: string
+): Promise<string | null> {
+  const { data } = await adminDb.from("hms_hostels").select("country").eq("id", hostelId).maybeSingle();
+  return (data as { country?: string | null } | null)?.country ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // uploadTenantPhoto
@@ -188,7 +200,7 @@ const DOC_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 const DOC_ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
 // Runtime docType allowlist — TypeScript types are erased at runtime; a direct server-action
 // caller can supply arbitrary strings, so we validate here as well.
-const VALID_DOC_TYPES = new Set<string>(["cnic", "police_verification", "lease_agreement", "passport", "other"]);
+const VALID_DOC_TYPES = new Set<string>(["cnic", "police_verification", "lease_agreement", "passport", "right_to_rent", "other"]);
 
 // F4: derive extension from MIME — never trust filename extension
 const DOC_EXT: Record<string, string> = {
@@ -291,6 +303,7 @@ export async function uploadTenantDocument(
       throw new Error(updateError.message);
     }
 
+    await logPiiAudit({ hostelId, action: "resident.document_add", tenantId, meta: { docType, docId: newDoc.id } });
     return { document: newDoc };
   } catch (err: unknown) {
     unstable_rethrow(err);
@@ -324,6 +337,7 @@ export async function deleteTenantDocument(
       .from("hms_tenants").update({ documents: existing.filter((d) => d.id !== docId) }).eq("id", tenantId);
 
     if (error) throw new Error(error.message);
+    await logPiiAudit({ hostelId, action: "resident.document_remove", tenantId, meta: { docType: doc?.type ?? null, docId } });
     return {};
   } catch (err: unknown) {
     unstable_rethrow(err);
@@ -354,7 +368,42 @@ export async function getDocumentSignedUrl(
       .createSignedUrl(doc.path, 3600, { download: doc.name });
 
     if (error) throw new Error(error.message);
+    // The sensitive-document access event — the CNIC/ID/passport view/download,
+    // the highest-value entry in the GDPR trail.
+    await logPiiAudit({ hostelId, action: "resident.document_view", tenantId, meta: { docType: doc.type, docId } });
     return { url: data.signedUrl };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// listTenantAuditLog — the resident's own "Privacy activity": who accessed,
+// edited, or removed their personal data, and when. Owner/partner-readable,
+// scoped to the caller's active branch and this tenant. Meta holds field names
+// and event facts only (see lib/audit logPiiAudit contract), never PII values.
+// ---------------------------------------------------------------------------
+
+export async function listTenantAuditLog(
+  tenantId: string
+): Promise<{ logs?: AuditLog[]; error?: string }> {
+  try {
+    await requireOwnerOrPartnerTier("full");
+    const hostelId = await resolveHostelId();
+    const supabase = createAdminClient();
+    await assertTenantOwnership(supabase, tenantId, hostelId);
+
+    const { data, error } = await supabase
+      .from("hms_audit_log")
+      .select("*")
+      .eq("entity", "tenant")
+      .eq("entity_id", tenantId)
+      .eq("hostel_id", hostelId)
+      .order("created_at", { ascending: false })
+      .limit(200);
+    if (error) throw new Error(error.message);
+    return { logs: (data ?? []) as AuditLog[] };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };
@@ -431,7 +480,7 @@ export async function getTenantTimeline(
     const hostelId = await resolveHostelId();
     const supabase = await createClient();
 
-    const [tenantRes, paymentsRes, tenantEventsRes, checkoutReadingRes, installmentsRes, feedbackRes, feedbackTokenRes, acRateRes] = await Promise.all([
+    const [tenantRes, paymentsRes, tenantEventsRes, checkoutReadingRes, installmentsRes, feedbackRes, feedbackTokenRes, acRateRes, hostelRes] = await Promise.all([
       supabase
         .from("hms_tenants")
         .select("id, full_name, check_in, check_out, is_active, created_at, joining_meter_reading")
@@ -500,6 +549,11 @@ export async function getTenantTimeline(
         .select("ac_per_unit_rate")
         .eq("hostel_id", hostelId)
         .maybeSingle(),
+      supabase
+        .from("hms_hostels")
+        .select("country")
+        .eq("id", hostelId)
+        .maybeSingle(),
     ]);
 
     if (tenantRes.error || !tenantRes.data) throw new Error("Tenant not found or access denied");
@@ -507,6 +561,13 @@ export async function getTenantTimeline(
 
     const tenant = tenantRes.data;
     const payments = paymentsRes.data;
+    // Timeline money follows the hostel's country. PK is byte-identical: it kept
+    // two written styles — "Rs. 5,000" (period) and "Rs 5,000" (no period) — so
+    // there are two helpers, `m` and `mBare`, each preserving its own PK form.
+    const tlCfg = getCountryConfig((hostelRes.data as { country?: string | null } | null)?.country);
+    const tlIsPk = tlCfg.currency === "PKR";
+    const m = (n: number) => (tlIsPk ? `Rs. ${n.toLocaleString()}` : `${tlCfg.currencySymbol}${n.toLocaleString()}`);
+    const mBare = (n: number) => (tlIsPk ? `Rs ${n.toLocaleString()}` : `${tlCfg.currencySymbol}${n.toLocaleString()}`);
     const acPerUnitRate = Number(acRateRes.data?.ac_per_unit_rate ?? 0);
     const tenantEvents = tenantEventsRes.data ?? [];
     const checkoutReading = checkoutReadingRes.data;
@@ -540,7 +601,7 @@ export async function getTenantTimeline(
       ? [
           `${departureRoom ? `${departureRoom} meter` : "Meter"}: ${checkoutReading.meter_reading}`,
           departureUnits != null && departureCharge > 0
-            ? `${departureUnits.toLocaleString()} units → Rs ${departureCharge.toLocaleString()}`
+            ? `${departureUnits.toLocaleString()} units → ${mBare(departureCharge)}`
             : null,
         ].filter(Boolean).join(" · ")
       : undefined;
@@ -601,13 +662,13 @@ export async function getTenantTimeline(
             // month the tenant has not lived in reads as that month's rent
             // being settled.
             label: p.is_reservation
-              ? `Rs. ${instAmount.toLocaleString()} received to reserve a bed`
+              ? `${m(instAmount)} received to reserve a bed`
               : completesPayment
-                ? `Rs. ${instAmount.toLocaleString()} paid`
-                : `Rs. ${instAmount.toLocaleString()} received (partial)`,
+                ? `${m(instAmount)} paid`
+                : `${m(instAmount)} received (partial)`,
             sub: completesPayment
               ? `${p.for_month}${methodLabel ? " · " + methodLabel : ""}`
-              : `${p.for_month}${methodLabel ? " · " + methodLabel : ""} · Rs. ${dueAfterThis.toLocaleString()} remaining of Rs. ${Number(inst.total_due).toLocaleString()}`,
+              : `${p.for_month}${methodLabel ? " · " + methodLabel : ""} · ${m(dueAfterThis)} remaining of ${m(Number(inst.total_due))}`,
             amount: instAmount,
             method: methodLabel,
             forMonth: p.for_month,
@@ -658,8 +719,8 @@ export async function getTenantTimeline(
           // settled. Unlabelled it reads as "July was paid" on the timeline, which
           // is the same confusion the WhatsApp text was reworded to avoid.
           label: p.is_reservation
-            ? `Rs. ${totalPaid.toLocaleString()} received to reserve a bed`
-            : `Rs. ${totalPaid.toLocaleString()} paid`,
+            ? `${m(totalPaid)} received to reserve a bed`
+            : `${m(totalPaid)} paid`,
           sub: `${p.for_month}${methodLabel ? " · " + methodLabel : ""}`,
           amount: totalPaid,
           method: methodLabel,
@@ -694,8 +755,8 @@ export async function getTenantTimeline(
           id: `partial-${p.id}`,
           type: "partially_paid",
           date: eventDate,
-          label: `Rs. ${amountPaidVal.toLocaleString()} received (partial)`,
-          sub: `${p.for_month}${methodLabel ? " · " + methodLabel : ""} · Rs. ${remaining.toLocaleString()} remaining of Rs. ${fullDue.toLocaleString()}`,
+          label: `${m(amountPaidVal)} received (partial)`,
+          sub: `${p.for_month}${methodLabel ? " · " + methodLabel : ""} · ${m(remaining)} remaining of ${m(fullDue)}`,
           amount: amountPaidVal,
           method: methodLabel,
           forMonth: p.for_month,
@@ -731,7 +792,7 @@ export async function getTenantTimeline(
           id: `pending-${p.id}`,
           type: "pending",
           date: pendingDate,
-          label: `Rs. ${totalPaid.toLocaleString()} ${p.status === "overdue" ? "overdue" : "due"}`,
+          label: `${m(totalPaid)} ${p.status === "overdue" ? "overdue" : "due"}`,
           sub: `${p.for_month} · ${p.status === "overdue" ? "Overdue — not yet collected" : "Pending — not yet collected"}`,
           amount: totalPaid,
           forMonth: p.for_month,
@@ -784,7 +845,7 @@ export async function getTenantTimeline(
           id: `event-${e.id}`,
           type: "deposit_collected",
           date: e.created_at,
-          label: `Rs. ${Number(e.amount ?? 0).toLocaleString()} deposit collected`,
+          label: `${m(Number(e.amount ?? 0))} deposit collected`,
           sub: e.notes ?? undefined,
           amount: e.amount != null ? Number(e.amount) : undefined,
         });
@@ -793,7 +854,7 @@ export async function getTenantTimeline(
           id: `event-${e.id}`,
           type: "deposit_returned",
           date: e.created_at,
-          label: `Rs. ${Number(e.amount ?? 0).toLocaleString()} deposit returned`,
+          label: `${m(Number(e.amount ?? 0))} deposit returned`,
           sub: e.notes ?? undefined,
           amount: e.amount != null ? Number(e.amount) : undefined,
         });
@@ -802,7 +863,7 @@ export async function getTenantTimeline(
           id: `event-${e.id}`,
           type: "deposit_forfeited",
           date: e.created_at,
-          label: `Rs. ${Number(e.amount ?? 0).toLocaleString()} deposit forfeited`,
+          label: `${m(Number(e.amount ?? 0))} deposit forfeited`,
           sub: e.notes ?? undefined,
           amount: e.amount != null ? Number(e.amount) : undefined,
         });
@@ -811,7 +872,7 @@ export async function getTenantTimeline(
           id: `event-${e.id}`,
           type: "deposit_applied",
           date: e.created_at,
-          label: `Rs. ${Number(e.amount ?? 0).toLocaleString()} deposit applied to dues`,
+          label: `${m(Number(e.amount ?? 0))} deposit applied to dues`,
           sub: e.notes ?? undefined,
           amount: e.amount != null ? Number(e.amount) : undefined,
         });
@@ -1101,13 +1162,14 @@ export async function createInstallmentReceiptLink(
 
 const FOOD_TIERS = new Set<string>(["space_food", "space_3meals", "space_food_ac", "space_meals_cooler"]);
 
-function getPastMonths(checkIn: string): string[] {
+function getPastMonths(checkIn: string, timeZone: string = DEFAULT_TIMEZONE): string[] {
   const [ciYear, ciMonth] = checkIn.slice(0, 7).split("-").map(Number);
-  // Pakistan-anchored, not the server process's own OS timezone — Vercel's
-  // serverless functions default to UTC, which can silently disagree with
-  // Pakistan on what "this month" is (and therefore which months count as
-  // "past" here).
-  const { year: curYear, month: curMonth } = pktYearMonth(); // curMonth is 1-indexed
+  // Anchored to the HOSTEL's timezone, not the server process's own OS timezone
+  // (Vercel serverless defaults to UTC) nor a fixed PKT — a UK branch's "this
+  // month" must roll over at London time, or at a month boundary Karachi would
+  // count the just-ended month as "past" and backfill a month still current in
+  // London. Falls open to Karachi (byte-identical for PK).
+  const { year: curYear, month: curMonth } = yearMonthInZone(timeZone); // curMonth is 1-indexed
   const months: string[] = [];
   let y = ciYear, m = ciMonth;
   while (y < curYear || (y === curYear && m < curMonth)) {
@@ -1153,13 +1215,10 @@ export async function backfillTenantPaymentsAction(
     if (!tenant) throw new Error("Tenant not found");
     if (!tenant.check_in) return { success: true, monthsCreated: 0 };
 
-    const pastMonths = getPastMonths(tenant.check_in);
-    if (pastMonths.length === 0) return { success: true, monthsCreated: 0 };
-
     // Get food + AC maintenance rates from package config, and whether this
     // tenant's room has AC (constant across every backfilled month, unlike
     // the registration fee which only applies in the check-in month).
-    const [{ data: pkgConfig }, { data: roomData }] = await Promise.all([
+    const [{ data: pkgConfig }, { data: roomData }, { data: bfHostelRow }] = await Promise.all([
       adminDb
         .from("hms_package_configs")
         .select("food_monthly_rate, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, ac_maintenance_rate")
@@ -1168,7 +1227,14 @@ export async function backfillTenantPaymentsAction(
       tenant.room_id
         ? adminDb.from("hms_rooms").select("has_ac").eq("id", tenant.room_id).maybeSingle()
         : Promise.resolve({ data: null }),
+      adminDb.from("hms_hostels").select("country").eq("id", hostelId).maybeSingle(),
     ]);
+    // Inline symbol for the stored deposit note (PK "Rs" — byte-identical).
+    const bfCountry = (bfHostelRow as { country?: string | null } | null)?.country ?? null;
+    const bfSym = getCountryConfig(bfCountry).currencySymbol;
+    // "Past months" anchored to the hostel's timezone (see getPastMonths).
+    const pastMonths = getPastMonths(tenant.check_in, getCountryConfig(bfCountry).timezone);
+    if (pastMonths.length === 0) return { success: true, monthsCreated: 0 };
     const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
     const tierFoodCharge = FOOD_TIERS.has(tenant.package_tier ?? "") ? foodRate : 0;
     const addonFoodCharge = pkgConfig ? calcFoodAddonCharge(tenant, pkgConfig) : 0;
@@ -1255,7 +1321,7 @@ export async function backfillTenantPaymentsAction(
         payment_package_tier: tenant.package_tier,
         billed_days: nights,
         daily_rate_billed: isDaily ? dailyRate : null,
-        ...(depositCharge > 0 ? { notes: `Security deposit: Rs ${depositCharge} (paid on joining)` } : {}),
+        ...(depositCharge > 0 ? { notes: `Security deposit: ${bfSym} ${depositCharge} (paid on joining)` } : {}),
       }];
     });
 
@@ -1333,7 +1399,7 @@ export async function recordReservationDepositAction(
     const notes = input.notes?.trim() ? input.notes.trim().slice(0, 500) : null;
     const forMonth = input.collectedOn.slice(0, 7);
 
-    const [{ data: tenant, error: tenantErr }, { data: existingReservations, error: existingErr }] = await Promise.all([
+    const [{ data: tenant, error: tenantErr }, { data: existingReservations, error: existingErr }, { data: hostelRow }] = await Promise.all([
       adminDb
         .from("hms_tenants")
         .select("id, full_name, phone, check_in, is_waiting, security_deposit, deposit_collected_on, deposit_collected_amount")
@@ -1347,11 +1413,18 @@ export async function recordReservationDepositAction(
         .eq("hostel_id", hostelId)
         .eq("is_reservation", true)
         .limit(1),
+      adminDb
+        .from("hms_hostels")
+        .select("country")
+        .eq("id", hostelId)
+        .maybeSingle(),
     ]);
 
     if (tenantErr) throw new Error(tenantErr.message);
     if (!tenant) throw new Error("Tenant not found or access denied");
     if (existingErr) throw new Error(existingErr.message);
+    const depositCountry = (hostelRow as { country?: string | null } | null)?.country ?? null;
+    const depositMoney = (n: number) => formatCurrency(n, depositCountry);
     if ((existingReservations ?? []).length > 0) {
       throw new Error(`A reservation deposit has already been recorded for ${tenant.full_name}.`);
     }
@@ -1376,8 +1449,8 @@ export async function recordReservationDepositAction(
     }
     if (amount > agreedDeposit) {
       throw new Error(
-        `${tenant.full_name}'s deposit is ${formatCurrency(agreedDeposit)}, so ${formatCurrency(amount)} is more than the whole deposit. ` +
-        `Enter ${formatCurrency(agreedDeposit)} or less, or change the deposit on their profile first.`
+        `${tenant.full_name}'s deposit is ${depositMoney(agreedDeposit)}, so ${depositMoney(amount)} is more than the whole deposit. ` +
+        `Enter ${depositMoney(agreedDeposit)} or less, or change the deposit on their profile first.`
       );
     }
     // hms_payments is unique on (tenant_id, for_month), so a reservation taken
@@ -1598,7 +1671,7 @@ export async function getCheckoutPendingPaymentAction(
     // member hands over 22,000 against a bill the row settles at 16,500.
     // Idempotent, and it touches pending rows only, so collected history is
     // untouched. Fixes the identical pre-existing hazard for a rent change.
-    const syncMonth = syncableCheckoutMonth(maxMonth);
+    const syncMonth = syncableCheckoutMonth(maxMonth, getCountryConfig(await hostelCountryCode(adminDb, hostelId)).timezone);
     if (syncMonth) await ensureMonthlyPaymentRows(adminDb, hostelId, syncMonth);
 
     const { data, error } = await adminDb
@@ -2116,6 +2189,394 @@ export async function deleteTenantAction(
       .single();
     if (tenantErr || !tenant) throw new Error("Tenant not found or access denied");
 
+    // Written BEFORE the delete so the trail survives — the row (and, via
+    // ON DELETE CASCADE, its payments) is about to be destroyed. hms_audit_log
+    // stores entity_id as text and hostel_id ON DELETE SET NULL, so this row
+    // outlives the tenant.
+    await logPiiAudit({ hostelId, action: "resident.delete", tenantId });
+
+    const { error: deleteErr } = await adminDb
+      .from("hms_tenants")
+      .delete()
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId);
+    if (deleteErr) throw new Error(deleteErr.message);
+
+    if (tenant.room_id && tenant.is_active) {
+      const { data: room } = await adminDb
+        .from("hms_rooms")
+        .select("capacity, occupied")
+        .eq("id", tenant.room_id)
+        .single();
+      if (room) {
+        const newOcc = Math.max(0, room.occupied - 1);
+        await adminDb
+          .from("hms_rooms")
+          .update({ occupied: newOcc, status: newOcc < room.capacity ? "available" : "occupied" })
+          .eq("id", tenant.room_id);
+      }
+    }
+
+    revalidatePath("/tenants");
+    return { success: true };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GDPR erasure — anonymise (default) and hard-delete (explicit) a resident.
+//
+// Owner/super_admin ONLY (requireOwnerWrite — no partner, no manager) and always
+// scoped to the caller's own active branch. Both are audit-logged to
+// hms_audit_log via logPiiAudit (field names / event facts only, never values).
+// ---------------------------------------------------------------------------
+
+// Resident PII columns cleared to NULL on anonymise. The resident's full_name is
+// deliberately RETAINED — a hostel must keep enough to identify who a retained
+// payment/receipt belonged to for its financial records, so anonymise strips
+// contact + identity details (below) but not the name. photo_url/documents are
+// cleared alongside their storage objects. Kept here (not in lib/audit's
+// RESIDENT_PII_FIELDS, the narrower "an edit may report these changed" set)
+// because genuine erasure must also strip the weakly-identifying education/employer
+// fields that could re-identify a person in combination.
+const ANONYMISE_NULL_COLUMNS = [
+  "phone", "email", "cnic", "id_type", "father_name",
+  "emergency_contact", "emergency_phone", "emergency_relationship",
+  "permanent_address", "permanent_province", "permanent_district",
+  "date_of_birth", "address_line1", "address_line2", "city",
+  "county_state", "postcode", "address_country",
+  "vehicle_type", "vehicle_number", "vehicle_model",
+  "notes", "purpose_of_visit_detail",
+  "institute_name", "student_category", "student_specialization",
+  "organization", "organization_type", "department",
+] as const;
+
+// Redaction for a NOT NULL contact column that must be wiped but cannot be set to
+// NULL (hms_tenant_applications.phone).
+const REDACTED_VALUE = "[redacted]";
+
+// The public tenant-photos URL carries the object path after the bucket segment;
+// pull it back out so the object itself can be deleted (photo_url alone is not a
+// storage key).
+function photoStoragePathFromUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const marker = `/${BUCKET}/`;
+  const i = url.indexOf(marker);
+  if (i === -1) return null;
+  const path = url.slice(i + marker.length).split("?")[0];
+  return path || null;
+}
+
+// hms_activity_log.meta holds a full tenant-row snapshot (migration 088 trigger),
+// so it is itself a PII store that erasure must scrub — otherwise the name/phone/
+// cnic survive in the log after the tenant row is cleaned. Rewrites each snapshot
+// with the same fields blanked as the row, keeping the row shape.
+async function scrubActivityLogPii(
+  adminDb: ReturnType<typeof createAdminClient>,
+  tenantId: string
+): Promise<void> {
+  const { data: rows } = await adminDb
+    .from("hms_activity_log")
+    .select("id, meta")
+    .eq("entity", "tenant")
+    .eq("entity_id", tenantId);
+  for (const row of (rows ?? []) as { id: string; meta: Record<string, unknown> | null }[]) {
+    if (!row.meta || typeof row.meta !== "object") continue;
+    const scrubbed: Record<string, unknown> = { ...row.meta };
+    // full_name is deliberately kept (see ANONYMISE_NULL_COLUMNS note).
+    if ("photo_url" in scrubbed) scrubbed.photo_url = null;
+    if ("documents" in scrubbed) scrubbed.documents = [];
+    for (const col of ANONYMISE_NULL_COLUMNS) {
+      if (col in scrubbed) scrubbed[col] = null;
+    }
+    // The snapshot is to_jsonb(NEW) of the whole tenant row, so it carries the
+    // GENERATED identifier columns too (phone_digits, migration 184). Those hold
+    // the resident's phone as digits and are NOT in ANONYMISE_NULL_COLUMNS, so
+    // blank every derived *_digits key or the number survives in the log.
+    for (const k of Object.keys(scrubbed)) {
+      if (k.endsWith("_digits")) scrubbed[k] = null;
+    }
+    // Surface a failed row instead of silently moving on: the caller stamps
+    // anonymised_at only after this returns, so a thrown error leaves the record
+    // un-stamped and a retry re-runs the whole scrub rather than reporting the
+    // PII as erased while it still sits in a log row.
+    const { error } = await adminDb.from("hms_activity_log").update({ meta: scrubbed }).eq("id", row.id);
+    if (error) throw new Error(`Activity-log scrub failed: ${error.message}`);
+  }
+}
+
+// Delete a tenant's photo + document objects from storage. Storage objects do NOT
+// cascade with the row, so both erasure paths must remove them explicitly or the
+// PII files are orphaned in the bucket.
+async function deleteTenantStorageObjects(
+  adminDb: ReturnType<typeof createAdminClient>,
+  photoUrl: string | null | undefined,
+  documents: TenantDocument[] | null | undefined
+): Promise<void> {
+  const photoPath = photoStoragePathFromUrl(photoUrl);
+  if (photoPath) {
+    try { await adminDb.storage.from(BUCKET).remove([photoPath]); } catch { /* best-effort */ }
+  }
+  const docPaths = (documents ?? []).map((d) => d.path).filter((p): p is string => !!p);
+  if (docPaths.length > 0) {
+    try { await adminDb.storage.from(DOC_BUCKET).remove(docPaths); } catch { /* best-effort */ }
+  }
+}
+
+// The admission application the resident was converted from (hms_tenant_applications,
+// migration 023) holds a SECOND, independent copy of their full_name/phone/email/
+// cnic/notes/photo — linked only by hostel_id, with no FK from the tenant row, so a
+// tenant delete never cascades it and it stays readable in the Applications UI. It
+// must be erased alongside the tenant or the erasure leaves that PII fully intact.
+// Matched within the branch on the phone/cnic captured BEFORE the tenant row is
+// scrubbed. Two separate equality queries, never an interpolated `.or()` filter, so
+// a phone/cnic value can't smuggle PostgREST filter syntax.
+async function eraseTenantApplications(
+  adminDb: ReturnType<typeof createAdminClient>,
+  hostelId: string,
+  phone: string | null | undefined,
+  cnic: string | null | undefined,
+  mode: "anonymise" | "hard_delete"
+): Promise<void> {
+  const found = new Map<string, { id: string; photo_url: string | null }>();
+  const collect = async (column: "phone" | "cnic", value: string) => {
+    const { data } = await adminDb
+      .from("hms_tenant_applications")
+      .select("id, photo_url")
+      .eq("hostel_id", hostelId)
+      .eq(column, value);
+    for (const r of (data ?? []) as { id: string; photo_url: string | null }[]) found.set(r.id, r);
+  };
+  if (phone && phone.trim()) await collect("phone", phone.trim());
+  if (cnic && cnic.trim()) await collect("cnic", cnic.trim());
+  const rows = [...found.values()];
+  if (rows.length === 0) return;
+
+  const photoPaths = rows
+    .map((r) => photoStoragePathFromUrl(r.photo_url))
+    .filter((p): p is string => !!p);
+  if (photoPaths.length > 0) {
+    try { await adminDb.storage.from(BUCKET).remove(photoPaths); } catch { /* best-effort */ }
+  }
+
+  const ids = rows.map((r) => r.id);
+  if (mode === "hard_delete") {
+    await adminDb.from("hms_tenant_applications").delete().in("id", ids);
+  } else {
+    await adminDb
+      .from("hms_tenant_applications")
+      .update({
+        // full_name kept for financial-record identification; phone is NOT NULL so
+        // it is redacted rather than nulled.
+        phone: REDACTED_VALUE,
+        email: null,
+        cnic: null,
+        notes: null,
+        photo_url: null,
+        anonymised_at: new Date().toISOString(),
+      })
+      .in("id", ids);
+  }
+}
+
+const RECEIPT_BUCKET = "receipts";
+
+// Cached receipt/invoice PDFs (RECEIPT_BUCKET) embed the resident's name, and
+// hms_invoice_links.pdf_filename embeds it too. app/r/[token] serves the cached
+// object directly while pdf_stamp still matches, so an erased resident's name
+// stays publicly retrievable through any previously-shared link. Storage objects
+// do NOT cascade with the payment rows, so both erasure paths must clear them.
+// For anonymise the link rows survive: null the pdf_* bookkeeping so the next
+// view regenerates against the now-anonymised tenant. For hard_delete the rows
+// cascade with the payments, but this must still run FIRST to find the objects
+// while the payments (and thus the links) still exist.
+async function purgeTenantReceiptCache(
+  adminDb: ReturnType<typeof createAdminClient>,
+  tenantId: string,
+  hostelId: string,
+  mode: "anonymise" | "hard_delete"
+): Promise<void> {
+  const [{ data: pays }, { data: insts }] = await Promise.all([
+    adminDb.from("hms_payments").select("id").eq("tenant_id", tenantId).eq("hostel_id", hostelId),
+    adminDb.from("hms_payment_installments").select("id").eq("tenant_id", tenantId).eq("hostel_id", hostelId),
+  ]);
+  const paymentIds = ((pays ?? []) as { id: string }[]).map((p) => p.id);
+  const instIds = ((insts ?? []) as { id: string }[]).map((i) => i.id);
+
+  const links = new Map<string, { id: string; pdf_path: string | null }>();
+  const collectLinks = async (column: "payment_id" | "installment_id", vals: string[]) => {
+    if (vals.length === 0) return;
+    const { data } = await adminDb
+      .from("hms_invoice_links")
+      .select("id, pdf_path")
+      .eq("hostel_id", hostelId)
+      .in(column, vals);
+    for (const r of (data ?? []) as { id: string; pdf_path: string | null }[]) links.set(r.id, r);
+  };
+  await collectLinks("payment_id", paymentIds);
+  await collectLinks("installment_id", instIds);
+
+  const linkRows = [...links.values()];
+  const paths = [...new Set(linkRows.map((l) => l.pdf_path).filter((p): p is string => !!p))];
+  if (paths.length > 0) {
+    try { await adminDb.storage.from(RECEIPT_BUCKET).remove(paths); } catch { /* best-effort */ }
+  }
+  if (mode === "anonymise" && linkRows.length > 0) {
+    await adminDb
+      .from("hms_invoice_links")
+      .update({ pdf_path: null, pdf_stamp: null, pdf_filename: null })
+      .in("id", linkRows.map((l) => l.id));
+  }
+}
+
+// Resident-authored / operator free-text that can carry the resident's own name
+// or contact. Both tables cascade on hard_delete, so this is only needed for
+// anonymise, and is best-effort — a stray note must not block the core erasure.
+async function scrubTenantFreeText(
+  adminDb: ReturnType<typeof createAdminClient>,
+  tenantId: string,
+  hostelId: string
+): Promise<void> {
+  try {
+    await adminDb.from("hms_tenant_feedback").update({ comment: null }).eq("tenant_id", tenantId).eq("hostel_id", hostelId);
+  } catch { /* best-effort */ }
+  try {
+    await adminDb.from("hms_tenant_events").update({ notes: null }).eq("tenant_id", tenantId).eq("hostel_id", hostelId);
+  } catch { /* best-effort */ }
+}
+
+export async function anonymiseTenantResidentAction(
+  tenantId: string
+): Promise<{ success: boolean; alreadyAnonymised?: boolean; error?: string }> {
+  try {
+    // Owner/super_admin only — never partners or managers. Frozen accounts blocked.
+    await requireOwnerWrite();
+    const hostelId = await resolveHostelId();
+    const adminDb = createAdminClient();
+
+    const { data: tenant, error: tenantErr } = await adminDb
+      .from("hms_tenants")
+      .select("id, phone, cnic, photo_url, documents, anonymised_at")
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+      .single();
+    if (tenantErr || !tenant) throw new Error("Member not found or access denied");
+
+    // Idempotent — a second run would only add confusing audit noise.
+    if (tenant.anonymised_at) return { success: true, alreadyAnonymised: true };
+
+    const tPhone = (tenant as { phone?: string | null }).phone;
+    const tCnic = (tenant as { cnic?: string | null }).cnic;
+
+    // Every ancillary PII store is scrubbed BEFORE the tenant row is touched, and
+    // anonymised_at is stamped only in the final tenant UPDATE below. This is the
+    // atomicity guarantee: if any step here throws, the row stays un-stamped and a
+    // retry re-runs everything with the phone/cnic still present to match on —
+    // rather than the old order, which stamped first and then, on a scrub failure,
+    // short-circuited every retry while PII lingered in the logs/applications.
+    await eraseTenantApplications(adminDb, hostelId, tPhone, tCnic, "anonymise");
+    await purgeTenantReceiptCache(adminDb, tenantId, hostelId, "anonymise");
+    await scrubTenantFreeText(adminDb, tenantId, hostelId);
+    await deleteTenantStorageObjects(
+      adminDb,
+      (tenant as { photo_url?: string | null }).photo_url,
+      (tenant as { documents?: TenantDocument[] | null }).documents
+    );
+    // Scrub the trigger's row snapshots too, or the PII survives erasure there.
+    await scrubActivityLogPii(adminDb, tenantId);
+
+    // Field names / event facts only — never the values (see logPiiAudit contract).
+    await logPiiAudit({ hostelId, action: "resident.anonymise", tenantId, meta: { fields: [...ANONYMISE_NULL_COLUMNS, "photo_url", "documents"] } });
+
+    // full_name is intentionally NOT in this scrub — it is retained so the owner
+    // can still identify who a kept payment/receipt belonged to.
+    const scrub: Record<string, unknown> = {
+      photo_url: null,
+      documents: [],
+      anonymised_at: new Date().toISOString(),
+    };
+    for (const col of ANONYMISE_NULL_COLUMNS) scrub[col] = null;
+
+    // Last write. The NEW-row snapshot the activity-log trigger records for this
+    // update is already clean (PII nulled, phone_digits generated from a null
+    // phone), so nothing re-dirties the log after the scrub above.
+    const { error: updateErr } = await adminDb
+      .from("hms_tenants")
+      .update(scrub)
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId);
+    if (updateErr) throw new Error(updateErr.message);
+
+    revalidatePath("/tenants");
+    return { success: true };
+  } catch (err: unknown) {
+    unstable_rethrow(err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function hardDeleteTenantResidentAction(
+  tenantId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    // Owner/super_admin only — never partners or managers. Frozen accounts blocked.
+    await requireOwnerWrite();
+    const hostelId = await resolveHostelId();
+    const adminDb = createAdminClient();
+
+    const { data: tenant, error: tenantErr } = await adminDb
+      .from("hms_tenants")
+      .select("id, room_id, is_active, phone, cnic, photo_url, documents")
+      .eq("id", tenantId)
+      .eq("hostel_id", hostelId)
+      .single();
+    if (tenantErr || !tenant) throw new Error("Member not found or access denied");
+
+    // A hard delete cascades hms_referrals.referrer_tenant_id and
+    // hms_referral_rewards.tenant_id (both ON DELETE CASCADE, migrations 173/184),
+    // which carry Pulse's own commission / platform-revenue accounting — records
+    // migrations 194/197 warn must never be destroyed. Refuse when any exist and
+    // steer to Anonymise, which removes the resident's PII while keeping every FK
+    // (so the commission record survives). Fail-closed: nothing is deleted.
+    const [{ count: rewardCount }, { count: referrerCount }] = await Promise.all([
+      adminDb.from("hms_referral_rewards").select("id", { count: "exact", head: true }).eq("tenant_id", tenantId),
+      adminDb.from("hms_referrals").select("id", { count: "exact", head: true }).eq("referrer_tenant_id", tenantId),
+    ]);
+    if ((rewardCount ?? 0) > 0 || (referrerCount ?? 0) > 0) {
+      return {
+        success: false,
+        error:
+          "This resident is tied to referral commission records that must be retained. Use Anonymise instead — it removes their personal data while keeping those financial records intact.",
+      };
+    }
+
+    // Storage objects first — they do not cascade with the row.
+    await deleteTenantStorageObjects(
+      adminDb,
+      (tenant as { photo_url?: string | null }).photo_url,
+      (tenant as { documents?: TenantDocument[] | null }).documents
+    );
+
+    // The admission application and cached receipt PDFs do not cascade with the
+    // tenant (application has no FK; receipt objects live in storage). Purge them
+    // now, while the payments that let us find the cached receipts still exist.
+    await eraseTenantApplications(
+      adminDb,
+      hostelId,
+      (tenant as { phone?: string | null }).phone,
+      (tenant as { cnic?: string | null }).cnic,
+      "hard_delete"
+    );
+    await purgeTenantReceiptCache(adminDb, tenantId, hostelId, "hard_delete");
+
+    // Written BEFORE the delete so the trail survives — the row (and, via
+    // hms_payments.tenant_id ON DELETE CASCADE, its financial history) is about to
+    // be destroyed. hms_audit_log keeps entity_id as text and hostel_id ON DELETE
+    // SET NULL, so this row outlives the tenant.
+    await logPiiAudit({ hostelId, action: "resident.hard_delete", tenantId });
+
     const { error: deleteErr } = await adminDb
       .from("hms_tenants")
       .delete()
@@ -2199,7 +2660,7 @@ export async function getRoomTransferPreviewAction(
       tenant.room_id
         ? adminDb.from("hms_rooms").select("id, room_number, has_ac").eq("id", tenant.room_id).eq("hostel_id", hostelId).maybeSingle()
         : Promise.resolve({ data: null }),
-      adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).single(),
+      adminDb.from("hms_hostels").select("meter_all_rooms, country").eq("id", hostelId).single(),
     ]);
     if (!toRoom) return { ...empty, error: "Destination room not found." };
 
@@ -2233,7 +2694,7 @@ export async function getRoomTransferPreviewAction(
     // takes the newest reading from any month, so it is happily non-null for a
     // room whose meter was last read in June. Asked here so the panel can say so
     // BEFORE the operator fills the form, instead of after they press Save.
-    const forMonth = pktTodayDateString().slice(0, 7);
+    const forMonth = todayInZone(getCountryConfig((hostel as { country?: string | null } | null)?.country).timezone).slice(0, 7);
     const [y, mo] = forMonth.split("-").map(Number);
     const pd = new Date(y, mo - 2, 1);
     const prevMonth = `${pd.getFullYear()}-${String(pd.getMonth() + 1).padStart(2, "0")}`;
@@ -2285,8 +2746,11 @@ export async function getRoomTransferPreviewAction(
 async function reapplyStaleRooms(
   rooms: { roomId: string; roomNumber: string; reading: number }[],
   asManager: boolean,
+  timeZone: string = DEFAULT_TIMEZONE,
 ): Promise<string | undefined> {
-  const month = pktTodayDateString().slice(0, 7);
+  // The month to re-apply is the hostel's current month in its own timezone —
+  // at a boundary a fixed PKT month would re-split the wrong month's bill.
+  const month = todayInZone(timeZone).slice(0, 7);
   const failed: string[] = [];
   for (const r of rooms) {
     try {
@@ -2330,7 +2794,9 @@ export async function transferTenantRoomAction(input: {
     const adminDb = createAdminClient();
 
     const result = await performRoomTransfer(adminDb, hostelId, input);
-    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel);
+    const transferCountry = await hostelCountryCode(adminDb, hostelId);
+    const sym = getCountryConfig(transferCountry).currencySymbol;
+    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel, getCountryConfig(transferCountry).timezone);
 
     // Ledger entry, with the meter evidence in the note — the Member Ledger is
     // where an owner goes to answer "why was I charged for two rooms in March?".
@@ -2342,7 +2808,7 @@ export async function transferTenantRoomAction(input: {
       noteParts.push(
         `${result.fromRoomNumber} meter: ${Math.round(Number(input.fromRoomReading))}` +
         ` · ${result.closedUnits} units` +
-        (result.closedCharge > 0 ? ` → Rs ${result.closedCharge.toLocaleString()}` : "")
+        (result.closedCharge > 0 ? ` → ${sym} ${result.closedCharge.toLocaleString()}` : "")
       );
     }
     if (result.openedMeter) {
@@ -2409,11 +2875,13 @@ export async function correctRoomTransferAction(input: {
     }
     const adminDb = createAdminClient();
     const result = await correctRoomTransferReadings(adminDb, hostelId, input);
+    const transferCountry = await hostelCountryCode(adminDb, hostelId);
+    const sym = getCountryConfig(transferCountry).currencySymbol;
 
     // Both rooms, not just the destination — a move re-cuts the leaver's share in
     // the room they left, and the roommates who stayed keep the smaller share they
     // were given while the leaver was still counted.
-    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel);
+    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel, getCountryConfig(transferCountry).timezone);
 
     // Appended, never rewritten. The original move is what the operator recorded
     // at the time; a correction is a second fact about the same move, and an
@@ -2421,12 +2889,12 @@ export async function correctRoomTransferAction(input: {
     const noteParts = [
       `${result.fromRoomNumber} meter: ${Math.round(Number(input.fromRoomReading))}` +
       ` · ${result.closedUnits} units` +
-      (result.closedCharge > 0 ? ` → Rs ${result.closedCharge.toLocaleString()}` : ""),
+      (result.closedCharge > 0 ? ` → ${sym} ${result.closedCharge.toLocaleString()}` : ""),
     ];
     if (result.openedMeter && input.toRoomReading != null) {
       noteParts.push(`${result.toRoomNumber} meter: ${Math.round(Number(input.toRoomReading))}`);
     }
-    noteParts.push(`was ${result.previousUnits} units → Rs ${result.previousCharge.toLocaleString()}`);
+    noteParts.push(`was ${result.previousUnits} units → ${sym} ${result.previousCharge.toLocaleString()}`);
 
     await adminDb.from("hms_tenant_events").insert({
       hostel_id: hostelId,
@@ -2626,7 +3094,7 @@ export async function getBranchTransferPreviewAction(
       tenant.room_id
         ? adminDb.from("hms_rooms").select("id, room_number, has_ac").eq("id", tenant.room_id).eq("hostel_id", srcHostelId).maybeSingle()
         : Promise.resolve({ data: null }),
-      adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", srcHostelId).single(),
+      adminDb.from("hms_hostels").select("meter_all_rooms, country").eq("id", srcHostelId).single(),
       adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", toHostelId).single(),
     ]);
     if (!toRoom) return { ...empty, error: "Destination room not found." };
@@ -2653,7 +3121,7 @@ export async function getBranchTransferPreviewAction(
       return Math.max(a, b);
     };
 
-    const forMonth = pktTodayDateString().slice(0, 7);
+    const forMonth = todayInZone(getCountryConfig((srcHostel as { country?: string | null } | null)?.country).timezone).slice(0, 7);
     const [y, mo] = forMonth.split("-").map(Number);
     const pd = new Date(y, mo - 2, 1);
     const prevMonth = `${pd.getFullYear()}-${String(pd.getMonth() + 1).padStart(2, "0")}`;
@@ -2706,12 +3174,14 @@ export async function branchTransferTenantAction(input: {
     // BEFORE anything changes so the transfer can be rolled back cleanly if the
     // re-home fails partway.
     const [{ data: srcHostelRow }, { data: destHostelRow }, { data: preTenant }] = await Promise.all([
-      adminDb.from("hms_hostels").select("name").eq("id", srcHostelId).single(),
+      adminDb.from("hms_hostels").select("name, country").eq("id", srcHostelId).single(),
       adminDb.from("hms_hostels").select("name").eq("id", input.toHostelId).single(),
       adminDb.from("hms_tenants").select("id, room_id, joining_meter_reading, is_active").eq("id", input.tenantId).eq("hostel_id", srcHostelId).single(),
     ]);
     if (!preTenant) throw new Error("Member not found in this branch.");
     if (!preTenant.is_active) throw new Error("This member is not active.");
+    // Source-branch country: its timezone sets the billing month, its symbol the notes.
+    const transferCountry = (srcHostelRow as { country?: string | null } | null)?.country ?? null;
 
     // Defensive: a feedback row or token pins (tenant_id, hostel_id) to this
     // branch (migration 161), which would block the hostel_id move. Those exist
@@ -2726,7 +3196,7 @@ export async function branchTransferTenantAction(input: {
       throw new Error("This member has a feedback record tied to this branch and cannot be moved automatically. Contact support.");
     }
 
-    const forMonth = pktTodayDateString().slice(0, 7);
+    const forMonth = todayInZone(getCountryConfig(transferCountry).timezone).slice(0, 7);
     const origRoomId = (preTenant.room_id as string | null) ?? null;
     const origJoiningMeter = preTenant.joining_meter_reading as number | null;
     // The current-month bill as it stands now — the one thing performRoomTransfer
@@ -2758,6 +3228,9 @@ export async function branchTransferTenantAction(input: {
       toRoomReading: input.toRoomReading,
       toHostelId: input.toHostelId,
     });
+    // The AC charge being closed is in the SOURCE branch (the room being left),
+    // so its symbol follows the source hostel's country (resolved above).
+    const sym = getCountryConfig(transferCountry).currencySymbol;
 
     // Undo everything performRoomTransfer did, to put the member back exactly
     // where they started. Used only when the re-home below fails: the member is
@@ -2848,7 +3321,7 @@ export async function branchTransferTenantAction(input: {
       // branch and cannot be applied from here — the owner is told to finish it there.
       const srcReapply = result.reapply.filter((r) => r.roomId !== input.toRoomId);
       const destReapply = result.reapply.filter((r) => r.roomId === input.toRoomId);
-      const reapplyWarning = await reapplyStaleRooms(srcReapply, isManager);
+      const reapplyWarning = await reapplyStaleRooms(srcReapply, isManager, getCountryConfig(transferCountry).timezone);
       if (reapplyWarning) postWarning = reapplyWarning;
       if (destReapply.length > 0) {
         const dn = destHostelRow?.name ?? "the destination branch";
@@ -2863,7 +3336,7 @@ export async function branchTransferTenantAction(input: {
       if (result.closedMeter) {
         noteParts.push(
           `${result.fromRoomNumber} meter: ${Math.round(Number(input.fromRoomReading))} · ${result.closedUnits} units` +
-          (result.closedCharge > 0 ? ` → Rs ${result.closedCharge.toLocaleString()}` : "")
+          (result.closedCharge > 0 ? ` → ${sym} ${result.closedCharge.toLocaleString()}` : "")
         );
       }
       if (result.openedMeter) noteParts.push(`${result.toRoomNumber} meter: ${Math.round(Number(input.toRoomReading))}`);

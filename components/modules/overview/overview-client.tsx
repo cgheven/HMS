@@ -1,7 +1,8 @@
 "use client";
 import { useMemo, useState } from "react";
 import { Layers, Banknote, Wallet, Receipt, Users, ShieldCheck } from "lucide-react";
-import { formatCurrency, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { useMoney } from "@/contexts/hostel-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { PortfolioSummary } from "@/types";
@@ -50,15 +51,17 @@ const EMPTY_TOTALS = {
   pending: 0, deposits: 0, costs: 0, profit: 0,
 };
 
-function money(n: number) {
-  return n === 0 ? "—" : formatCurrency(n);
-}
-
 function pct(part: number, whole: number) {
   return whole > 0 ? Math.round((part / whole) * 100) : 0;
 }
 
 export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
+  // Portfolio money follows the active hostel's country (PK falls open, byte-
+  // identical). NOTE: a single owner's branches are one country in practice; a
+  // mixed-country portfolio would render every row in one symbol and its summed
+  // totals would not be meaningful — flagged as a known limitation for review.
+  const fmt = useMoney();
+  const money = (n: number) => (n === 0 ? "—" : fmt(n));
   const [preset, setPreset] = useState<PresetId>("this_month");
   const [showCustom, setShowCustom] = useState(false);
   const [customFrom, setCustomFrom] = useState(summary.windowFrom);
@@ -162,7 +165,7 @@ export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
   const heldRounded = Math.round(depositsHeld.held);
   const unreceivedRounded = Math.round(depositsHeld.unreceived);
 
-  const insight = useMemo(() => buildInsight(rows, periodLabel), [rows, periodLabel]);
+  const insight = useMemo(() => buildInsight(rows, periodLabel, fmt), [rows, periodLabel, fmt]);
 
   const isProfit = totals.profit >= 0;
   const collectionRate = pct(totals.collected, totals.collected + totals.pending);
@@ -328,7 +331,7 @@ export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
             <div className="min-w-0 flex-1">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Net Profit</p>
               <p className={`mt-2 text-3xl font-bold leading-none ${isProfit ? "text-emerald-400" : "text-rose-400"}`}>
-                {formatCurrency(totals.profit)}
+                {fmt(totals.profit)}
               </p>
               <p className="mt-2 text-xs text-muted-foreground">
                 {totals.collected > 0 ? `${totalMargin}% margin on collected` : "Nothing collected yet"}
@@ -405,7 +408,7 @@ export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
             </p>
             {unreceivedRounded > 0 && (
               <p className="text-xs mt-1.5 text-amber">
-                {formatCurrency(unreceivedRounded)} billed but not received
+                {fmt(unreceivedRounded)} billed but not received
               </p>
             )}
             <p className="text-xs mt-1.5 text-muted-foreground">
@@ -456,10 +459,10 @@ export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
                   </td>
                   <td className="py-3 pr-3 text-right text-emerald-400">{money(r.collected)}</td>
                   <td className="py-3 pr-3 text-right text-muted-foreground">{money(r.pending)}</td>
-                  <td className="py-3 pr-3 text-right text-violet-400">{r.deposits === 0 ? "—" : `− ${formatCurrency(r.deposits)}`}</td>
+                  <td className="py-3 pr-3 text-right text-violet-400">{r.deposits === 0 ? "—" : `− ${fmt(r.deposits)}`}</td>
                   <td className="py-3 pr-3 text-right text-muted-foreground">{money(r.costs)}</td>
                   <td className={cn("py-3 pr-4 text-right", r.profit < 0 ? "text-rose-400 font-semibold" : "font-medium")}>
-                    {formatCurrency(r.profit)}
+                    {fmt(r.profit)}
                     {r.collected > 0 && <p className="text-xs font-normal text-muted-foreground">{r.margin}% margin</p>}
                   </td>
                 </tr>
@@ -474,10 +477,10 @@ export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
                 </td>
                 <td className="py-3 pr-3 text-right text-emerald-400">{money(totals.collected)}</td>
                 <td className="py-3 pr-3 text-right text-muted-foreground">{money(totals.pending)}</td>
-                <td className="py-3 pr-3 text-right text-violet-400">{totals.deposits === 0 ? "—" : `− ${formatCurrency(totals.deposits)}`}</td>
+                <td className="py-3 pr-3 text-right text-violet-400">{totals.deposits === 0 ? "—" : `− ${fmt(totals.deposits)}`}</td>
                 <td className="py-3 pr-3 text-right text-muted-foreground">{money(totals.costs)}</td>
                 <td className={cn("py-3 pr-4 text-right", isProfit ? "text-emerald-400" : "text-rose-400")}>
-                  {formatCurrency(totals.profit)}
+                  {fmt(totals.profit)}
                 </td>
               </tr>
             </tfoot>
@@ -498,7 +501,7 @@ export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
                 </div>
                 <div className="text-right shrink-0">
                   <p className={cn("font-bold", r.profit < 0 ? "text-rose-400" : "text-emerald-400")}>
-                    {formatCurrency(r.profit)}
+                    {fmt(r.profit)}
                   </p>
                   {r.collected > 0 && <p className="text-[10px] text-muted-foreground">{r.margin}% margin</p>}
                 </div>
@@ -506,14 +509,14 @@ export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
               <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                 <Fact label="Collected" value={money(r.collected)} tone="text-emerald-400" />
                 <Fact label="Pending" value={money(r.pending)} />
-                <Fact label="Deposits" value={r.deposits === 0 ? "—" : `− ${formatCurrency(r.deposits)}`} tone="text-violet-400" />
+                <Fact label="Deposits" value={r.deposits === 0 ? "—" : `− ${fmt(r.deposits)}`} tone="text-violet-400" />
                 <Fact label="Costs" value={money(r.costs)} />
               </div>
             </div>
           ))}
           <div className="p-4 flex items-center justify-between bg-white/[0.02] font-semibold text-sm">
             <span>Total</span>
-            <span className={isProfit ? "text-emerald-400" : "text-rose-400"}>{formatCurrency(totals.profit)}</span>
+            <span className={isProfit ? "text-emerald-400" : "text-rose-400"}>{fmt(totals.profit)}</span>
           </div>
         </div>
       </div>
@@ -538,14 +541,14 @@ function Fact({ label, value, tone }: { label: string; value: string; tone?: str
   );
 }
 
-function buildInsight(rows: BranchRow[], periodLabel: string): string | null {
+function buildInsight(rows: BranchRow[], periodLabel: string, fmtMoney: (n: number) => string): string | null {
   if (rows.length === 0) return null;
   const losing = rows.filter((r) => r.profit < 0);
   const best = rows[0];
 
   if (rows.length === 1) {
     return best.profit < 0
-      ? `${best.name} is running at a loss of ${formatCurrency(Math.abs(best.profit))} in ${periodLabel}.`
+      ? `${best.name} is running at a loss of ${fmtMoney(Math.abs(best.profit))} in ${periodLabel}.`
       : null;
   }
 

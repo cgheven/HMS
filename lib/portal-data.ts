@@ -3,7 +3,8 @@ import { cache } from "react";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getManagerContext } from "@/lib/manager-auth";
 import { formatDateInput } from "@/lib/utils";
-import { pktYearMonth } from "@/lib/pkt-time";
+import { yearMonthInZone } from "@/lib/pkt-time";
+import { getCountryConfig } from "@/lib/country-config";
 import type {
   Room, Tenant, Payment, Expense, KitchenExpense, PackageConfig, PackageTier, Hostel,
   TenantApplication, WaitlistEntry,
@@ -64,10 +65,11 @@ export async function getManagerTenants() {
 
   const { hostelId } = scope;
   const admin = createAdminClient();
-  // Pakistan-anchored, not the server process's own OS timezone — Vercel's
-  // serverless functions default to UTC, which can silently disagree with
-  // Pakistan on what "this month" is.
-  const { year: curYear, month: curMonth } = pktYearMonth();
+  // "This month" is the HOSTEL's own calendar month (its timezone), not the
+  // server's OS timezone nor a fixed PKT — a UK branch's month must roll over at
+  // London time. Resolved up-front because it feeds the payments query below.
+  const { data: tzRow } = await admin.from("hms_hostels").select("country").eq("id", hostelId).maybeSingle();
+  const { year: curYear, month: curMonth } = yearMonthInZone(getCountryConfig((tzRow as { country?: string | null } | null)?.country).timezone);
   const currentMonthKey = `${curYear}-${String(curMonth).padStart(2, "0")}`;
 
   const [

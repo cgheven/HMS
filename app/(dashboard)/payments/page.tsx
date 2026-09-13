@@ -4,18 +4,20 @@ import { countBillableNights } from "@/lib/daily-billing";
 import { expectedChargesFor } from "@/lib/monthly-payment-sync";
 import { splitPaymentCharges } from "@/lib/payment-calc";
 import { PaymentsClient } from "@/components/modules/payments/payments-client";
-import { pktYearMonth } from "@/lib/pkt-time";
+import { yearMonthInZone } from "@/lib/pkt-time";
+import { getCountryConfig } from "@/lib/country-config";
 import { settleReferralRewards } from "@/lib/referral-rewards";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export default async function PaymentsPage() {
-  // Pakistan-anchored, not the server process's own OS timezone — Vercel's
-  // serverless functions default to UTC, a developer's own machine is
-  // whatever it's set to, and "this month" must agree between them.
-  const { year, month } = pktYearMonth();
+  // "This month" is the active hostel's own calendar month (its timezone), not
+  // the server's OS timezone nor a fixed PKT — a UK branch rolls over at London
+  // time. getAuthContext is cache()'d, so awaiting it first is a cache hit.
+  const ctx = await getAuthContext();
+  const { year, month } = yearMonthInZone(getCountryConfig(ctx?.hostel?.country).timezone);
   const defaultMonth = `${year}-${String(month).padStart(2, "0")}`;
 
-  const [data, ctx] = await Promise.all([getPaymentsPageData(defaultMonth), getAuthContext()]);
+  const data = await getPaymentsPageData(defaultMonth);
 
   // Referral rewards reconcile on EVERY load, unconditionally — not inside
   // ensureMonthlyPaymentRows below, which only does work when a row is already

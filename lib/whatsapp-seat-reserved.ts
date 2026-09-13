@@ -26,7 +26,7 @@ export async function sendSeatReservedConfirmation(tenantId: string): Promise<vo
     const { data: tenant } = await admin
       .from("hms_tenants")
       .select(
-        "id, full_name, phone, email, check_in, deposit_collected_amount, hostel_id, hostel:hms_hostels(name, whatsapp_enabled)"
+        "id, full_name, phone, email, check_in, deposit_collected_amount, hostel_id, hostel:hms_hostels(name, whatsapp_enabled, country)"
       )
       .eq("id", tenantId)
       .maybeSingle();
@@ -54,6 +54,7 @@ export async function sendSeatReservedConfirmation(tenantId: string): Promise<vo
           tenantEmail,
           tenantName: tenant.full_name,
           hostelName: hostel?.name ?? "your hostel",
+          country: (hostel as { country?: string | null } | null)?.country ?? null,
           depositCollected: collected,
           expectedJoining: tenant.check_in ? formatDayLong(tenant.check_in as string) : null,
         });

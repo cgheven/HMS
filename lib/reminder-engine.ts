@@ -1,6 +1,6 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { pktTodayDateString } from "@/lib/pkt-time";
+import { todayInZone } from "@/lib/pkt-time";
 import { TEMPLATES, reminderFullParams, reminderFullV2Params, reminderPartialParams } from "@/lib/whatsapp-templates";
 import { billLinkForPayment } from "@/lib/bill-link";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
@@ -91,9 +91,6 @@ export async function runReminderPass(
   forMonth: string,
   scheduleGate: boolean
 ): Promise<ReminderSummary> {
-  const today = pktTodayDateString();
-  const dayOfMonth = Number(today.slice(8, 10));
-
   const { data: payments, error } = await admin
     .from("hms_payments")
     .select(
@@ -107,6 +104,14 @@ export async function runReminderPass(
     .returns<ReminderPaymentRow[]>();
 
   if (error) throw new Error(error.message);
+
+  // "Today" and the tenant's due-day cadence are anchored to the HOSTEL's own
+  // timezone, not a fixed PKT offset — a London due-day must roll over at
+  // London midnight (with DST), not Karachi's. Single-hostel pass, so every row
+  // shares this zone; falls open to Karachi when there are no rows.
+  const tz = getCountryConfig(payments?.[0]?.hostel?.country).timezone;
+  const today = todayInZone(tz);
+  const dayOfMonth = Number(today.slice(8, 10));
 
   const due: ReminderPaymentRow[] = [];
   let skipped = 0;
@@ -152,7 +157,7 @@ export async function runReminderPass(
 
     // Already reminded today (cron retry, or a manual click after the cron
     // already fired, or vice versa) — never double-send within the same day.
-    if (p.last_reminder_sent_at && pktTodayDateString(new Date(p.last_reminder_sent_at)) === today) {
+    if (p.last_reminder_sent_at && todayInZone(tz, new Date(p.last_reminder_sent_at)) === today) {
       skipped++;
       continue;
     }

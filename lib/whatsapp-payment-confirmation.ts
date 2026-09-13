@@ -30,7 +30,7 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<void> 
     const { data: payment } = await admin
       .from("hms_payments")
       .select(
-        "id, hostel_id, tenant_id, for_month, amount, late_fee, amount_paid, status, discount_amount, discount_percent, tenant:hms_tenants(full_name, phone, email), hostel:hms_hostels(name, whatsapp_enabled)"
+        "id, hostel_id, tenant_id, for_month, amount, late_fee, amount_paid, status, discount_amount, discount_percent, tenant:hms_tenants(full_name, phone, email), hostel:hms_hostels(name, whatsapp_enabled, country)"
       )
       .eq("id", paymentId)
       .maybeSingle();
@@ -92,6 +92,7 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<void> 
           tenantEmail,
           tenantName: tenant?.full_name ?? "there",
           hostelName: hostel?.name ?? "your hostel",
+          country: (hostel as { country?: string | null } | null)?.country ?? null,
           amountPaid: Number(payment.amount_paid ?? 0),
           forMonth: formatMonthLong(payment.for_month as string),
           receiptUrl,

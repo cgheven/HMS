@@ -9,5 +9,7 @@ export default async function SignupPage() {
   // the authoritative value on submit; getCountryConfig fails open to PK).
   const h = await headers();
   const detected = getCountryConfig((h.get("x-vercel-ip-country") || "").toUpperCase());
-  return <SignupForm detectedCountryName={detected.name} dialCode={detected.dialCode} />;
+  // `detected.code` is a supported code (getCountryConfig falls open to PK), so it
+  // is a safe default selection for the country picker.
+  return <SignupForm detectedCountryCode={detected.code} />;
 }

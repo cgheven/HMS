@@ -16,7 +16,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
-import { formatCurrency, formatDate, formatDateInput } from "@/lib/utils";
+import { formatDate, formatDateInput } from "@/lib/utils";
+import { useMoney, useHostelContext } from "@/contexts/hostel-context";
+import { getCountryConfig } from "@/lib/country-config";
 import type { Expense, ExpenseCategory, PartnerTier, StaffPermission } from "@/types";
 
 const categories: ExpenseCategory[] = ["furniture", "repairs", "cleaning", "security", "utilities", "groceries", "capital", "other"];
@@ -85,6 +87,16 @@ interface Props { hostelId: string | null; initialExpenses: Expense[]; defaultMo
 const expenseCache = new Map<string, Expense[]>();
 
 export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partnerTier = null, managerPermissions = null }: Props) {
+  const money = useMoney();
+  const activeCountry = useHostelContext().hostel?.country;
+  // ISO code for parenthetical column/field captions ("Amount (PKR)"): PK stays
+  // "PKR" byte-identical, GB reads "GBP". Symbols are only for inline amounts.
+  const curCode = getCountryConfig(activeCountry).currency;
+  // The grocery/mess quick-add presets (Atta, Sabzi, Daal Chawal, …) are
+  // Pakistan-specific food items — hidden for other countries. The "groceries"
+  // category itself stays available in the dropdown for anyone who wants it.
+  const isPk = (activeCountry ?? "PK").toUpperCase() === "PK";
+  const quickItems = isPk ? QUICK_ITEMS : QUICK_ITEMS.filter((i) => i.category !== "groceries");
   const router = useRouter();
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const isManager = !!managerPermissions;
@@ -227,7 +239,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
       Date: e.date,
       Title: e.title,
       Category: e.category,
-      "Amount (PKR)": e.amount,
+      [`Amount (${curCode})`]: e.amount,
       Notes: e.notes ?? "",
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
@@ -276,11 +288,11 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
           expense list — the reason the page exists — below two folds. */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
         {[
-          { label: customFrom ? "Total (Range)" : "Total This Month", value: formatCurrency(total), icon: TrendingDown, color: "text-rose-400", bg: "bg-rose-500/10 border border-rose-500/20", wide: true },
+          { label: customFrom ? "Total (Range)" : "Total This Month", value: money(total), icon: TrendingDown, color: "text-rose-400", bg: "bg-rose-500/10 border border-rose-500/20", wide: true },
           { label: "Entries", value: filtered.length, icon: Receipt, color: "text-blue-400", bg: "bg-blue-500/10 border border-blue-500/20", wide: false },
           {
             label: topCategory ? `Top: ${topCategory.category}` : "Top category",
-            value: topCategory ? formatCurrency(topCategory.amount) : "—",
+            value: topCategory ? money(topCategory.amount) : "—",
             icon: Tag, color: "text-purple-400", bg: "bg-purple-500/10 border border-purple-500/20", wide: false,
           },
         ].map(({ label, value, icon: Icon, color, bg, wide }) => (
@@ -300,8 +312,8 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
 
       {/* Quick Add */}
       {canAdd && (
-      <QuickAddTray count={QUICK_ITEMS.length} hint="— tap to pre-fill the form">
-        {QUICK_ITEMS.map((item) => (
+      <QuickAddTray count={quickItems.length} hint="— tap to pre-fill the form">
+        {quickItems.map((item) => (
           <button
             key={item.label}
             onClick={() => quickAdd(item)}
@@ -372,7 +384,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
                         {exp.notes && <p className="text-xs text-muted-foreground truncate max-w-[200px]">{exp.notes}</p>}</td>
                       <td className="px-4 py-3 hidden sm:table-cell"><Badge variant={categoryColors[exp.category]} className="capitalize text-xs">{exp.category}</Badge></td>
                       <td className="px-4 py-3 text-sm text-muted-foreground hidden md:table-cell">{formatDate(exp.date)}</td>
-                      <td className="px-4 py-3 text-right font-semibold text-sm">{formatCurrency(exp.amount)}</td>
+                      <td className="px-4 py-3 text-right font-semibold text-sm">{money(exp.amount)}</td>
                       <td className="px-4 py-3 text-right"><div className="flex items-center justify-end gap-1">
                         {canEdit && (
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => { setEditing(exp); setForm({ title: exp.title, amount: exp.amount.toString(), category: exp.category, date: exp.date, notes: exp.notes ?? "" }); setDialogOpen(true); }}><Edit2 className="w-3.5 h-3.5" /></Button>
@@ -388,7 +400,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
                     Category is hidden below sm and Date below md, so on a phone the
                     table has three columns while colSpan={3} still claimed five —
                     and the Total figure drifted out from under the Amount column. */}
-                <tfoot><tr className="border-t bg-muted/30"><td className="px-4 py-3 text-sm font-semibold">Total</td><td className="hidden sm:table-cell" /><td className="hidden md:table-cell" /><td className="px-4 py-3 text-right font-bold">{formatCurrency(total)}</td><td /></tr></tfoot>
+                <tfoot><tr className="border-t bg-muted/30"><td className="px-4 py-3 text-sm font-semibold">Total</td><td className="hidden sm:table-cell" /><td className="hidden md:table-cell" /><td className="px-4 py-3 text-right font-bold">{money(total)}</td><td /></tr></tfoot>
               </table>
             </div>
           )}
@@ -408,7 +420,7 @@ export function ExpensesClient({ hostelId, initialExpenses, defaultMonth, partne
           <div className="grid gap-4 py-2">
             <div className="space-y-1.5"><Label>Title *</Label><Input placeholder="e.g. Chair purchase" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
             <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5"><Label>Amount (PKR) *</Label><Input type="number" placeholder="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Amount ({curCode}) *</Label><Input type="number" placeholder="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Category</Label><Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v as ExpenseCategory })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{categories.map((c) => <SelectItem key={c} value={c} className="capitalize">{c}</SelectItem>)}</SelectContent></Select></div>
             </div>
             <div className="space-y-1.5"><Label>Date</Label><Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></div>

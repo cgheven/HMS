@@ -1,12 +1,13 @@
 "use client";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { formatCurrency } from "@/lib/utils";
+import { useMoney } from "@/contexts/hostel-context";
 
 interface Props {
   data: { month: string; expenses: number; kitchen: number; collected: number }[];
 }
 
 function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: { name: string; value: number; color: string }[]; label?: string }) {
+  const money = useMoney();
   if (!active || !payload?.length) return null;
   return (
     <div className="rounded-xl border border-sidebar-border bg-card px-3 py-2.5 shadow-xl text-xs">
@@ -15,7 +16,7 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
         <div key={p.name} className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
           <span className="text-muted-foreground">{p.name}:</span>
-          <span className="font-medium text-foreground">{formatCurrency(p.value)}</span>
+          <span className="font-medium text-foreground">{money(p.value)}</span>
         </div>
       ))}
     </div>

@@ -5,20 +5,19 @@ import { countBillableNights } from "@/lib/daily-billing"
 import { expectedChargesFor } from "@/lib/monthly-payment-sync"
 import { splitPaymentCharges } from "@/lib/payment-calc"
 import { PaymentsClient } from "@/components/modules/payments/payments-client"
-import { pktYearMonth } from "@/lib/pkt-time"
+import { yearMonthInZone } from "@/lib/pkt-time"
+import { getCountryConfig } from "@/lib/country-config"
 import { settleReferralRewards } from "@/lib/referral-rewards"
 import { createAdminClient } from "@/lib/supabase/admin"
 
 export default async function PortalPaymentsPage() {
-  // Pakistan-anchored, not the server process's own OS timezone — see
+  // The manager's hostel's own calendar month (its timezone) — see
   // app/(dashboard)/payments/page.tsx for why.
-  const { year, month } = pktYearMonth()
+  const ctx = await requireManagerPermission("collect_payments")
+  const { year, month } = yearMonthInZone(getCountryConfig(ctx.activeHostel?.country).timezone)
   const defaultMonth = `${year}-${String(month).padStart(2, "0")}`
 
-  const [ctx, data] = await Promise.all([
-    requireManagerPermission("collect_payments"),
-    getManagerPaymentsPageData(defaultMonth),
-  ])
+  const data = await getManagerPaymentsPageData(defaultMonth)
 
   // Unconditional, same as the owner page — a manager may well be the only
   // person who ever opens Payments for a branch, and a reward granted after its

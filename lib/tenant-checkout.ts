@@ -8,6 +8,7 @@ import { clampGrossToCollected } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
 import { carriedTransferCharges } from "@/lib/ac-transfer";
 import { isMeteredRoom } from "@/lib/room-transfer";
+import { getCountryConfig } from "@/lib/country-config";
 import { voidReferralRewardsForTenant } from "@/lib/referral-rewards";
 import { mintFeedbackToken } from "@/lib/tenant-feedback";
 import { sendCheckoutMessage } from "@/lib/whatsapp-checkout";
@@ -82,7 +83,10 @@ export async function performTenantCheckout(
     // bound, so an out-of-range month either invents history or invents debts
     // nobody has reached. Safe here regardless because of the 7-day rule above,
     // but shared so the two cannot drift apart.
-    const syncMonth = syncableCheckoutMonth(input.checkoutDate.substring(0, 7));
+    // Bound the checkout month in the hostel's own timezone (a UK branch's month
+    // boundary is London's, not Karachi's). Falls open to PK if country is unset.
+    const { data: coHostel } = await adminDb.from("hms_hostels").select("country").eq("id", hostelId).maybeSingle();
+    const syncMonth = syncableCheckoutMonth(input.checkoutDate.substring(0, 7), getCountryConfig((coHostel as { country?: string | null } | null)?.country).timezone);
     if (syncMonth) await ensureMonthlyPaymentRows(adminDb, hostelId, syncMonth);
 
     // Step 2: Verify payment belongs to this tenant and hostel (prevents IDOR)

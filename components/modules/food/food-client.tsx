@@ -10,6 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { formatDateInput } from "@/lib/utils";
+import { useHostelContext } from "@/contexts/hostel-context";
+import { getCountryConfig } from "@/lib/country-config";
 import type { FoodItem, MealType, PartnerTier, FoodMenuType } from "@/types";
 
 const mealTypes: MealType[] = ["breakfast", "lunch", "dinner"];
@@ -82,6 +84,7 @@ const monthCache = new Map<string, FoodItem[]>();
 const weeklyCache = new Map<string, FoodItem[]>();
 
 export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuType, partnerTier = null }: Props) {
+  const curCode = getCountryConfig(useHostelContext().hostel?.country).currency; // ISO code for "(PKR)"-style caption
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
   // Menu-type lives on hms_hostels, whose RLS update policy requires full
   // tier for partners (same reason the Settings "Save Listing" button — the
@@ -556,7 +559,7 @@ export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuTy
                 <Input placeholder="e.g. 2 kg" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} />
               </div>
               <div className="space-y-1.5">
-                <Label className="flex items-center gap-1.5">Cost (PKR) <span className="text-muted-foreground/50 font-normal text-xs">optional</span></Label>
+                <Label className="flex items-center gap-1.5">Cost ({curCode}) <span className="text-muted-foreground/50 font-normal text-xs">optional</span></Label>
                 <Input type="number" placeholder="0" value={form.unit_cost} onChange={(e) => setForm({ ...form, unit_cost: e.target.value })} />
               </div>
             </div>

@@ -5,7 +5,8 @@ import { Home, Banknote, LogOut, AlertCircle, Clock, ChevronDown, FileText, Load
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
+import { useMoney, useHostelContext } from "@/contexts/hostel-context";
 import { getTenantTimeline, createInvoiceLink, createInstallmentReceiptLink, type TimelineEvent } from "@/app/actions/tenants";
 import { toast } from "@/hooks/use-toast";
 import type { Tenant, Room, PackageTier, TenantDocument, TenantFeedback } from "@/types";
@@ -21,6 +22,7 @@ import { FeedbackSummary } from "@/components/modules/feedback/feedback-summary"
  * invisible on the one screen an owner opens to settle a dispute.
  */
 export function TimelineEventBody({ event }: { event: TimelineEvent }) {
+  const money = useMoney();
   return (
     <div className="flex-1 min-w-0">
       <div className="flex items-center gap-1.5">
@@ -31,16 +33,16 @@ export function TimelineEventBody({ event }: { event: TimelineEvent }) {
       {event.detail && <p className="mt-1 text-xs text-muted-foreground">{event.detail}</p>}
       {event.type === "payment" && (
         <p className="mt-1 text-xs text-muted-foreground">
-          Rent: {formatCurrency(event.rentCharge ?? 0)}
-          {(event.foodCharge ?? 0) > 0 && <> · Food: {formatCurrency(event.foodCharge!)}</>}
+          Rent: {money(event.rentCharge ?? 0)}
+          {(event.foodCharge ?? 0) > 0 && <> · Food: {money(event.foodCharge!)}</>}
           {(event.acCharge ?? 0) > 0 && (
-            <> · AC: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{formatCurrency(event.acCharge!)}</>
+            <> · AC: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{money(event.acCharge!)}</>
           )}
           {(event.discountCharge ?? 0) > 0 && (
-            <> · <span className="text-emerald-400">Discount: -{formatCurrency(event.discountCharge!)}</span></>
+            <> · <span className="text-emerald-400">Discount: -{money(event.discountCharge!)}</span></>
           )}
-          {(event.depositCharge ?? 0) > 0 && <> · Deposit: {formatCurrency(event.depositCharge!)}</>}
-          {(event.lateFee ?? 0) > 0 && <> · Late Fee: {formatCurrency(event.lateFee!)}</>}
+          {(event.depositCharge ?? 0) > 0 && <> · Deposit: {money(event.depositCharge!)}</>}
+          {(event.lateFee ?? 0) > 0 && <> · Late Fee: {money(event.lateFee!)}</>}
         </p>
       )}
     </div>
@@ -133,6 +135,8 @@ export function eventDotColor(type: TimelineEvent["type"]): string {
 }
 
 export function TenantTimeline({ tenant, room, open, onClose }: Props) {
+  const money = useMoney();
+  const isPk = (useHostelContext().hostel?.country ?? "PK").toUpperCase() === "PK";
   const [events, setEvents] = useState<TimelineEvent[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [showAll, setShowAll] = useState(false);
@@ -240,7 +244,7 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 rounded-xl border border-sidebar-border bg-card/50 p-3">
           {[
             { label: "Check-in", value: tenant.check_in ? formatDate(tenant.check_in) : "—" },
-            { label: "Total Paid", value: formatCurrency(totalPaid) },
+            { label: "Total Paid", value: money(totalPaid) },
             {
               label: "Package",
               value: PACKAGE_TIER_SHORT[tenant.package_tier ?? "space_only"] ?? "—",
@@ -276,6 +280,7 @@ export function TenantTimeline({ tenant, room, open, onClose }: Props) {
             tenantName={tenant.full_name}
             documents={localDocs}
             onChange={setLocalDocs}
+            isPk={isPk}
           />
         </div>
 

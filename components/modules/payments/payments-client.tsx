@@ -8,12 +8,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { RowMenu, type RowMenuItem } from "@/components/ui/row-menu";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
-import { cn, formatCurrency, formatDate, formatDateInput, formatDateTime, formatDayLong, formatMonthLong } from "@/lib/utils";
+import { cn, formatDate, formatDateInput, formatDateTime, formatDayLong, formatMonthLong } from "@/lib/utils";
+import { useMoney, useHostelContext } from "@/contexts/hostel-context";
+import { getCountryConfig } from "@/lib/country-config";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier, StaffPermission } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { countBillableNights } from "@/lib/daily-billing";
@@ -21,7 +24,7 @@ import { splitPaymentCharges, computeRentDiscount, combinedDiscountPercent, perc
 import { MeterPhoto } from "@/components/modules/ac/meter-photo";
 import { uploadMonthlyMeterPhoto, deleteMonthlyMeterPhoto } from "@/app/actions/ac-meter-photos";
 import { tenantDueDay, shouldRemindToday, hasCollected, effectivePaymentStatus } from "@/lib/payment-calc";
-import { pktTodayDateString } from "@/lib/pkt-time";
+import { todayInZone } from "@/lib/pkt-time";
 import {
   syncMonthAction,
   markPaymentPaidAction,
@@ -344,6 +347,19 @@ const NO_AC_CHECKOUTS: { room_id: string; for_month: string; meter_reading: numb
 const NO_AC_READINGS: NonNullable<Props["acReadings"]> = [];
 
 export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, payments: initialPayments, tenants, rooms, initialMonth, packageConfig, paymentMethods = [], reminderTemplate, autoReminderEnabled = false, meterAllRooms = false, acReadings: allAcReadings = NO_AC_READINGS, acCheckoutReadings = NO_AC_CHECKOUTS, acJoinReadings = [], lastWhatsApp = {}, partnerTier = null, managerPermissions = null, waitingTenantIds = [], carriedTransferByTenant = {} }: Props) {
+  // Currency follows the active hostel's country (£ / Rs). `money()` formats
+  // amounts; `curSym` is the symbol shown in rate/label copy and inside money
+  // input boxes.
+  const money = useMoney();
+  const activeCountry = useHostelContext().hostel?.country;
+  const activeCountryCfg = getCountryConfig(activeCountry);
+  const curSym = activeCountryCfg.currencySymbol;
+  // PK renders the exact incumbent money labels (with the (PKR) caption + a plain
+  // <Input>); non-PK renders the inline-symbol MoneyInput. Formatting gate only.
+  const isPk = (activeCountry ?? "PK").toUpperCase() === "PK";
+  // Country terminology: PK renders AC Billing / AC Units; non-PK renders
+  // Electricity Billing / Electricity Units. Fails open to PK (byte-identical).
+  const words = activeCountryCfg.terms;
   const isPartner = !!partnerTier;
   const isManager = !!managerPermissions;
   const canCollect = managerPermissions?.includes("collect_payments") ?? false;
@@ -453,7 +469,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   }, [tenants]);
 
   const dailyBasisLabel = (b: { nights: number; rate: number }) =>
-    `${b.nights} day${b.nights === 1 ? "" : "s"} × ${formatCurrency(b.rate)}`;
+    `${b.nights} day${b.nights === 1 ? "" : "s"} × ${money(b.rate)}`;
 
   // Pre-populate the meter reading input from saved readings on mount / when acReadings changes
   useEffect(() => {
@@ -642,7 +658,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     }
     toast({
       title: "Payment undone",
-      description: `${formatCurrency(result.undone?.amount ?? 0)} reversed. Record it again with the correct amount.`,
+      description: `${money(result.undone?.amount ?? 0)} reversed. Record it again with the correct amount.`,
     });
     setUndoTarget(null);
     await syncMonth(selectedMonth);
@@ -1235,7 +1251,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           })()
         : await applyRoomACUnitsAction(roomId, selectedMonth, meterReading, openingReading);
       if (!result.success) {
-        toast({ title: "AC Billing Error", description: result.error ?? "Failed to apply AC units.", variant: "destructive" });
+        toast({ title: `${words.acBilling} Error`, description: result.error ?? "Failed to apply AC units.", variant: "destructive" });
       } else {
         const derivedUnits = result.derivedUnits ?? 0;
         // A vacant room writes no payment rows, so none of the tenant-facing
@@ -1269,7 +1285,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             ? "AC charges removed for all tenants in this room."
             : result.proRatedCount && result.proRatedCount > 0
               ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · ${result.proRatedCount} with segment billing${result.unassignedUnits ? ` · ${result.unassignedUnits} units unassigned` : ""}`
-              : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · ${result.perTenantUnits} units each · Rs ${result.perTenantCharge?.toLocaleString()} each`,
+              : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · ${result.perTenantUnits} units each · ${curSym} ${result.perTenantCharge?.toLocaleString()} each`,
         });
         await syncMonth(selectedMonth);
         router.refresh();
@@ -1366,18 +1382,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // due day is a day-of-month, and comparing it against today's real
   // day-of-month while viewing a different month's payment rows would show
   // an unrelated month's tenants as if they were due right now.
-  const currentRealMonth = useMemo(() => pktTodayDateString().slice(0, 7), []);
+  // "Now" follows the HOSTEL's timezone (its calendar day/month), not the
+  // browser's and not a fixed PKT — a UK branch's "today" is London's.
+  const currentRealMonth = useMemo(() => todayInZone(activeCountryCfg.timezone).slice(0, 7), [activeCountryCfg.timezone]);
   const isViewingCurrentMonth = selectedMonth === currentRealMonth;
   const dueTodayPayments = useMemo(() => {
     if (!isViewingCurrentMonth) return [];
-    const todayDayOfMonth = Number(pktTodayDateString().slice(8, 10));
+    const todayDayOfMonth = Number(todayInZone(activeCountryCfg.timezone).slice(8, 10));
     return activePayments.filter((p) => {
       if (p.status !== "pending" && p.status !== "overdue" && p.status !== "partially_paid") return false;
       const checkIn = p.tenant?.check_in;
       if (!checkIn) return false;
       return shouldRemindToday(tenantDueDay(checkIn, selectedMonth), todayDayOfMonth);
     });
-  }, [activePayments, isViewingCurrentMonth, selectedMonth]);
+  }, [activePayments, isViewingCurrentMonth, selectedMonth, activeCountryCfg.timezone]);
 
   // Rooms that have at least one payment this month — for the Room filter
   const roomsInMonth = useMemo(() => {
@@ -1676,19 +1694,19 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               {joinsOn && <p className="text-xs text-muted-foreground mt-0.5">Holds a bed from {joinsOn}</p>}
             </div>
             <div className="text-right shrink-0">
-              <p className="text-base font-bold text-foreground">{formatCurrency(total)}</p>
+              <p className="text-base font-bold text-foreground">{money(total)}</p>
               {basis && <p className="text-xs text-muted-foreground">{dailyBasisLabel(basis)}</p>}
               {/* One line each. Joined with a separator these were the widest
                   element in the card, so the nowrap forced the right column wide
                   enough to crowd the plan label beside it. */}
               {isReservation
                 ? <p className="text-xs text-violet-400 whitespace-nowrap">Reservation deposit</p>
-                : <p className="text-xs text-muted-foreground whitespace-nowrap">Rent {formatCurrency(charges.rent)}</p>}
+                : <p className="text-xs text-muted-foreground whitespace-nowrap">Rent {money(charges.rent)}</p>}
               {charges.ac > 0 && (
                 <p className="text-xs text-cyan-400 whitespace-nowrap">
-                  AC {formatCurrency(charges.ac)}
+                  AC {money(charges.ac)}
                   {charges.acMaintenance > 0 && (
-                    <span className="text-muted-foreground"> +{formatCurrency(charges.acMaintenance)} mnt</span>
+                    <span className="text-muted-foreground"> +{money(charges.acMaintenance)} mnt</span>
                   )}
                   {carriedScope && (
                     <span className="text-[10px] text-muted-foreground"> · ⚡ prev. {carriedScope}</span>
@@ -1696,14 +1714,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 </p>
               )}
               {charges.ac === 0 && charges.acMaintenance > 0 && (
-                <p className="text-xs text-muted-foreground whitespace-nowrap">AC mnt {formatCurrency(charges.acMaintenance)}</p>
+                <p className="text-xs text-muted-foreground whitespace-nowrap">AC mnt {money(charges.acMaintenance)}</p>
               )}
-              {charges.food > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.food)} food</p>}
-              {!isReservation && charges.deposit > 0 && <p className="text-xs text-violet-400 whitespace-nowrap">incl. {formatCurrency(charges.deposit)} deposit</p>}
-              {charges.registrationFee > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {formatCurrency(charges.registrationFee)} reg.</p>}
+              {charges.food > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {money(charges.food)} food</p>}
+              {!isReservation && charges.deposit > 0 && <p className="text-xs text-violet-400 whitespace-nowrap">incl. {money(charges.deposit)} deposit</p>}
+              {charges.registrationFee > 0 && <p className="text-xs text-muted-foreground whitespace-nowrap">incl. {money(charges.registrationFee)} reg.</p>}
               {charges.referralDiscount > 0 && (
                 <p className="text-xs text-emerald-400 whitespace-nowrap flex items-center justify-end gap-1">
-                  <Gift className="w-3 h-3 shrink-0" />Referral −{formatCurrency(charges.referralDiscount)}
+                  <Gift className="w-3 h-3 shrink-0" />Referral −{money(charges.referralDiscount)}
                 </p>
               )}
               {/* splitPaymentCharges reports GROSS rent, so without this line a
@@ -1711,12 +1729,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   for the gap. Managers collect on phones. */}
               {charges.discount > 0 && (
                 <p className="text-xs text-emerald-400 whitespace-nowrap">
-                  Discount {Number(p.discount_percent ?? 0)}% −{formatCurrency(charges.discount)}
+                  Discount {Number(p.discount_percent ?? 0)}% −{money(charges.discount)}
                 </p>
               )}
-              {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
+              {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{money(p.late_fee)} late</p>}
               {displayStatus(p) === "partially_paid" && (
-                <p className="text-xs text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
+                <p className="text-xs text-blue-400">{money(Number(p.amount_paid ?? 0))} received</p>
               )}
               <span className={`inline-flex items-center mt-1 px-2 py-0.5 rounded-full text-xs font-medium border ${statusColors[displayStatus(p)]}`}>
                 {cfg.label}
@@ -1774,7 +1792,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               <p className="text-sm text-muted-foreground/30">—</p>
             ) : (
               <>
-                <p className="text-sm text-foreground tabular-nums">{formatCurrency(charges.rent)}</p>
+                <p className="text-sm text-foreground tabular-nums">{money(charges.rent)}</p>
                 {basis && <p className="text-[10px] leading-tight text-muted-foreground">{dailyBasisLabel(basis)}</p>}
               </>
             )}
@@ -1787,7 +1805,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           <div className="text-right">
             {charges.ac > 0 ? (
               <>
-                <p className="text-sm text-cyan-400 tabular-nums">{formatCurrency(charges.ac)}</p>
+                <p className="text-sm text-cyan-400 tabular-nums">{money(charges.ac)}</p>
                 {carriedScope && (
                   <p className="text-[10px] text-muted-foreground whitespace-nowrap" title={carriedScope === "branch" ? "Includes electricity from the room they left in another branch, billed up to the branch move" : "Includes electricity from the room they moved out of, billed up to the move"}>
                     ⚡ prev. {carriedScope}
@@ -1802,32 +1820,32 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           {/* Sub-lines wrap rather than nowrap. Held on one line they were wider than
               the column and bled into Status, which is what made these read as merged. */}
           <div className="text-right">
-            <p className="text-sm font-semibold text-foreground tabular-nums">{formatCurrency(total)}</p>
-            {charges.food > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {formatCurrency(charges.food)} food</p>}
+            <p className="text-sm font-semibold text-foreground tabular-nums">{money(total)}</p>
+            {charges.food > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {money(charges.food)} food</p>}
             {charges.deposit > 0 && (
               <p className="text-[10px] leading-tight text-violet-400">
-                {isReservation ? "reservation deposit" : `incl. ${formatCurrency(charges.deposit)} deposit`}
+                {isReservation ? "reservation deposit" : `incl. ${money(charges.deposit)} deposit`}
               </p>
             )}
-            {charges.acMaintenance > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {formatCurrency(charges.acMaintenance)} AC mnt</p>}
-            {charges.registrationFee > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {formatCurrency(charges.registrationFee)} reg.</p>}
+            {charges.acMaintenance > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {money(charges.acMaintenance)} AC mnt</p>}
+            {charges.registrationFee > 0 && <p className="text-[10px] leading-tight text-muted-foreground">incl. {money(charges.registrationFee)} reg.</p>}
             {/* Rent above stays GROSS (splitPaymentCharges adds the discount back),
                 so this line is what reconciles Rent + AC + extras with Total. */}
             {charges.referralDiscount > 0 && (
               <p className="text-[10px] leading-tight text-emerald-400 flex items-center justify-end gap-1">
-                <Gift className="w-2.5 h-2.5 shrink-0" />Referral −{formatCurrency(charges.referralDiscount)}
+                <Gift className="w-2.5 h-2.5 shrink-0" />Referral −{money(charges.referralDiscount)}
               </p>
             )}
             {/* Same reason as the referral line above: Rent is gross, so the rent
                 discount has to show or the row does not reconcile. */}
             {charges.discount > 0 && (
               <p className="text-[10px] leading-tight text-emerald-400">
-                Discount {Number(p.discount_percent ?? 0)}% −{formatCurrency(charges.discount)}
+                Discount {Number(p.discount_percent ?? 0)}% −{money(charges.discount)}
               </p>
             )}
-            {Number(p.late_fee) > 0 && <p className="text-[10px] leading-tight text-rose-400">+{formatCurrency(p.late_fee)} late</p>}
+            {Number(p.late_fee) > 0 && <p className="text-[10px] leading-tight text-rose-400">+{money(p.late_fee)} late</p>}
             {displayStatus(p) === "partially_paid" && (
-              <p className="text-[10px] leading-tight text-blue-400">{formatCurrency(Number(p.amount_paid ?? 0))} received</p>
+              <p className="text-[10px] leading-tight text-blue-400">{money(Number(p.amount_paid ?? 0))} received</p>
             )}
           </div>
           <div className="flex justify-center w-28">
@@ -1879,7 +1897,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       {(() => {
         const hasAc = (stats.acCollected + stats.acPending) > 0;
         const cards = [
-          { label: "Total Due",       value: formatCurrency(stats.due),        icon: CreditCard, color: "text-foreground",   bg: "bg-white/5 border border-white/10" },
+          { label: "Total Due",       value: money(stats.due),        icon: CreditCard, color: "text-foreground",   bg: "bg-white/5 border border-white/10" },
           // The sub-line exists because "Collected" means two different things
           // across the app: this card strips metered AC into its own tile, while
           // the Dashboard's Collected is the whole cash figure. Spelling out
@@ -1887,20 +1905,20 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           // leaving a Rs 12,325 gap between screens that reads as a bug.
           {
             label: "Collected",
-            value: formatCurrency(stats.collected),
+            value: money(stats.collected),
             // Deliberately terse: the AC figure itself is already on the AC Collected
             // tile two cards along, so this only has to carry the combined total.
             // Spelling both out wrapped onto a second line, which stretched this
             // card and pulled every other card in the row taller with it.
             sub: stats.acCollected > 0
-              ? `+ AC = ${formatCurrency(stats.collected + stats.acCollected)}`
+              ? `+ AC = ${money(stats.collected + stats.acCollected)}`
               : undefined,
             icon: Wallet, color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20",
           },
-          { label: "Pending",         value: formatCurrency(stats.pending),     icon: Clock,      color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
+          { label: "Pending",         value: money(stats.pending),     icon: Clock,      color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
           ...(hasAc ? [
-            { label: "AC Collected",  value: formatCurrency(stats.acCollected), icon: Zap,        color: "text-cyan-400",    bg: "bg-cyan-500/10 border border-cyan-500/20" },
-            { label: "AC Pending",    value: formatCurrency(stats.acPending),   icon: Zap,        color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
+            { label: "AC Collected",  value: money(stats.acCollected), icon: Zap,        color: "text-cyan-400",    bg: "bg-cyan-500/10 border border-cyan-500/20" },
+            { label: "AC Pending",    value: money(stats.acPending),   icon: Zap,        color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
           ] : []),
         ];
         return (
@@ -1944,7 +1962,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           </TabsTrigger>
           <TabsTrigger value="history"><Clock className="w-3.5 h-3.5" /> All History</TabsTrigger>
           {acRooms.length > 0 && (
-            <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> AC Billing</TabsTrigger>
+            <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> {words.acBilling}</TabsTrigger>
           )}
         </TabsList>
 
@@ -2205,7 +2223,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         <p className="text-xs text-muted-foreground">{p.for_month}</p>
                       </div>
                       <div className="text-right shrink-0">
-                        <p className="text-sm font-semibold">{formatCurrency(p.amount)}</p>
+                        <p className="text-sm font-semibold">{money(p.amount)}</p>
                         <p className={`text-xs ${statusConfig[displayStatus(p)].color}`}>{statusConfig[displayStatus(p)].label}</p>
                       </div>
                       {p.status === "paid" && (
@@ -2239,7 +2257,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           <div className="rounded-2xl border border-sidebar-border bg-card p-4 space-y-3">
             <div className="flex items-center gap-2 flex-wrap mb-1">
               <Zap className="w-4 h-4 text-amber" />
-              <h3 className="text-sm font-semibold">AC Billing</h3>
+              <h3 className="text-sm font-semibold">{words.acBilling}</h3>
               <span className="text-xs text-muted-foreground">— enter total units consumed per room for {selectedMonth}</span>
               {occupancyAcRooms.length > 1 && (
                 <div className="ml-auto">
@@ -2363,7 +2381,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                             {/* per_unit_rate is NOT NULL (migration 044) so it is stored
                                 regardless, but quoting a tenant recovery rate on a reading
                                 nobody was billed for invites the reader to multiply. */}
-                            {!monthWasVacant && ` · Rs ${saved.per_unit_rate}/unit · ${saved.tenant_count} tenants billed`}
+                            {!monthWasVacant && ` · ${curSym} ${saved.per_unit_rate}/unit · ${saved.tenant_count} tenants billed`}
                           </p>
                         ) : (
                           <p className="text-xs text-muted-foreground/50 mt-0.5">No reading for this month yet</p>
@@ -2710,7 +2728,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               </span>
                               <span className="tabular-nums text-foreground">{r.units} units</span>
                               <span className="text-muted-foreground/40">·</span>
-                              <span className="tabular-nums text-emerald-400">{formatCurrency(r.charge)}</span>
+                              <span className="tabular-nums text-emerald-400">{money(r.charge)}</span>
                             </div>
                           ))}
                           {unbilled.map(r => (
@@ -2718,7 +2736,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               <span className="text-rose-400/80 flex-1 min-w-0 truncate">{r.name} — not billed</span>
                               <span className="tabular-nums text-rose-400/80">0 units</span>
                               <span className="text-muted-foreground/40">·</span>
-                              <span className="tabular-nums text-rose-400/80">{formatCurrency(0)}</span>
+                              <span className="tabular-nums text-rose-400/80">{money(0)}</span>
                             </div>
                           ))}
                           {unassignedUnits > 0 && (
@@ -2730,7 +2748,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               </span>
                               <span className="tabular-nums text-amber/70">{unassignedUnits} units</span>
                               <span className="text-muted-foreground/40">·</span>
-                              <span className="tabular-nums text-amber/70">{formatCurrency(unassignedCharge)}</span>
+                              <span className="tabular-nums text-amber/70">{money(unassignedCharge)}</span>
                             </div>
                           )}
                           {overAssignedUnits > 0 && (
@@ -2740,14 +2758,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               </span>
                               <span className="tabular-nums text-rose-400">+{overAssignedUnits} units</span>
                               <span className="text-muted-foreground/40">·</span>
-                              <span className="tabular-nums text-rose-400">{formatCurrency(Math.round(overAssignedUnits * saved.per_unit_rate))}</span>
+                              <span className="tabular-nums text-rose-400">{money(Math.round(overAssignedUnits * saved.per_unit_rate))}</span>
                             </div>
                           )}
                           <div className="flex items-center gap-2 text-xs pt-0.5 border-t border-white/5 mt-1">
                             <span className="text-muted-foreground flex-1">{unassignedUnits > 0 ? "Total entered" : "Total"}</span>
                             <span className="tabular-nums text-foreground font-medium">{saved.total_units} units</span>
                             <span className="text-muted-foreground/40">·</span>
-                            <span className="tabular-nums text-emerald-400 font-medium">{formatCurrency(unassignedUnits > 0 || overAssignedUnits > 0 ? totalCharge : assignedCharge)}</span>
+                            <span className="tabular-nums text-emerald-400 font-medium">{money(unassignedUnits > 0 || overAssignedUnits > 0 ? totalCharge : assignedCharge)}</span>
                           </div>
                         </div>
                       );
@@ -2796,31 +2814,31 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 return (
                   <div className="pt-1.5 border-t border-white/10 space-y-1">
                     <div className="flex justify-between text-xs text-muted-foreground">
-                      <span>{basis ? dailyBasisLabel(basis) : "Rent"}</span><span>{formatCurrency(Math.max(0, baseRent))}</span>
+                      <span>{basis ? dailyBasisLabel(basis) : "Rent"}</span><span>{money(Math.max(0, baseRent))}</span>
                     </div>
                     {food > 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>Food{mealsLabel ? ` (${mealsLabel})` : ""}</span><span>{formatCurrency(food)}</span>
+                        <span>Food{mealsLabel ? ` (${mealsLabel})` : ""}</span><span>{money(food)}</span>
                       </div>
                     )}
                     {ac > 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>AC</span><span>{formatCurrency(ac)}</span>
+                        <span>AC</span><span>{money(ac)}</span>
                       </div>
                     )}
                     {depositCharge > 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>Security Deposit</span><span>{formatCurrency(depositCharge)}</span>
+                        <span>Security Deposit</span><span>{money(depositCharge)}</span>
                       </div>
                     )}
                     {registrationFeeCharge > 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>Registration Fee</span><span>{formatCurrency(registrationFeeCharge)}</span>
+                        <span>Registration Fee</span><span>{money(registrationFeeCharge)}</span>
                       </div>
                     )}
                     {acMaintenanceCharge > 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>AC Maintenance</span><span>{formatCurrency(acMaintenanceCharge)}</span>
+                        <span>AC Maintenance</span><span>{money(acMaintenanceCharge)}</span>
                       </div>
                     )}
                     {/* Rent above is gross, so the discount has to appear as its own
@@ -2830,7 +2848,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         <span className="flex items-center gap-1 min-w-0">
                           <Gift className="w-3 h-3 shrink-0" /><span className="truncate">Referral Discount</span>
                         </span>
-                        <span className="shrink-0 tabular-nums">−{formatCurrency(referralDiscount)}</span>
+                        <span className="shrink-0 tabular-nums">−{money(referralDiscount)}</span>
                       </div>
                     )}
                     {/* Live: this is the standing discount plus whatever percentage
@@ -2841,11 +2859,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         <span className="flex items-center gap-1 min-w-0">
                           <span className="truncate">Discount ({preview.totalPercent}% of rent)</span>
                         </span>
-                        <span className="shrink-0 tabular-nums">−{formatCurrency(preview.discount)}</span>
+                        <span className="shrink-0 tabular-nums">−{money(preview.discount)}</span>
                       </div>
                     )}
                     <div className="flex justify-between text-xs font-medium text-foreground">
-                      <span>Total</span><span>{formatCurrency(preview.total)}</span>
+                      <span>Total</span><span>{money(preview.total)}</span>
                     </div>
                     {/* Total is the whole bill (what the receipt and the Member
                         Ledger's "Charged" column show), including any discount
@@ -2854,10 +2872,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     {Number(markDialog.amount_paid ?? 0) > 0 && (
                       <>
                         <div className="flex justify-between text-xs text-emerald-400">
-                          <span>Already Paid</span><span>-{formatCurrency(Number(markDialog.amount_paid ?? 0))}</span>
+                          <span>Already Paid</span><span>-{money(Number(markDialog.amount_paid ?? 0))}</span>
                         </div>
                         <div className="flex justify-between text-xs font-semibold text-amber">
-                          <span>Balance Due</span><span>{formatCurrency(preview.remaining)}</span>
+                          <span>Balance Due</span><span>{money(preview.remaining)}</span>
                         </div>
                       </>
                     )}
@@ -2866,7 +2884,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         own line within Total, so repeating it here would double it up. */}
                     {deposit > 0 && depositCharge === 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground border-t border-white/10 pt-1">
-                        <span>Deposit Held</span><span>{formatCurrency(deposit)}</span>
+                        <span>Deposit Held</span><span>{money(deposit)}</span>
                       </div>
                     )}
                   </div>
@@ -2900,7 +2918,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 // phantom balance the reminder cron chases.
                 return preview.alreadyPercent > 0 ? (
                   <p className="text-xs text-emerald-400">
-                    {preview.alreadyPercent}% discount ({formatCurrency(preview.discount)}) is fixed on this bill — money has
+                    {preview.alreadyPercent}% discount ({money(preview.discount)}) is fixed on this bill — money has
                     already been collected against it, so it keeps the discount it was collected with.
                   </p>
                 ) : (
@@ -2918,6 +2936,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         whichever way it is typed, a percentage is what gets
                         stored, because that is the only discount the pricing
                         trigger accepts. */}
+                    {/* Percent / fixed-amount toggle only for PK. Non-PK is
+                        percentage-only (no currency mode). */}
+                    {isPk && (
                     <div className="inline-flex rounded-md border border-sidebar-border overflow-hidden text-xs">
                       {(["pct", "rs"] as const).map(m => (
                         <button
@@ -2938,11 +2959,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         </button>
                       ))}
                     </div>
+                    )}
                   </div>
-                  {discountMode === "pct" ? (
+                  {(!isPk || discountMode === "pct") ? (
                     <Input
                       type="number"
-                      placeholder="0"
+                      placeholder={isPk ? "0" : "%"}
                       min="0"
                       max="100"
                       step="0.01"
@@ -2966,7 +2988,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   )}
                   {preview.discount > 0 && (
                     <p className="text-xs text-muted-foreground">
-                      {preview.totalPercent}% of {formatCurrency(preview.rent)} rent = −{formatCurrency(preview.discount)} · new total {formatCurrency(preview.total)}
+                      {preview.totalPercent}% of {money(preview.rent)} rent = −{money(preview.discount)} · new total {money(preview.total)}
                     </p>
                   )}
                   {/* Said plainly whenever the stored percentage cannot land on
@@ -2976,7 +2998,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   {discountMode === "rs" && discountRupees.trim() !== "" && preview.discount > 0
                     && Math.abs(preview.discount - Number(discountRupees)) > 0.004 && (
                     <p className="text-xs text-amber/80">
-                      Closest available is {formatCurrency(preview.discount)} — a discount is stored as a percentage, and {markForm.discount_percent}% is the nearest to {formatCurrency(Number(discountRupees))}.
+                      Closest available is {money(preview.discount)} — a discount is stored as a percentage, and {markForm.discount_percent}% is the nearest to {money(Number(discountRupees))}.
                     </p>
                   )}
                 </div>
@@ -2996,21 +3018,37 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       know why before they type it, not after. */}
                   {referralDiscount > 0 && (
                     <p className="text-xs text-emerald-400">
-                      {formatCurrency(referralDiscount)} referral discount already applied.
+                      {money(referralDiscount)} referral discount already applied.
                     </p>
                   )}
-                  <Label>Amount Received (PKR)</Label>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={markForm.amount_received}
-                    onChange={(e) => setMarkForm({ ...markForm, amount_received: e.target.value })}
-                  />
+                  {isPk ? (
+                    <>
+                      <Label>Amount Received (PKR)</Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={markForm.amount_received}
+                        onChange={(e) => setMarkForm({ ...markForm, amount_received: e.target.value })}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <Label>Amount Received</Label>
+                      <MoneyInput
+                        symbol={curSym}
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={markForm.amount_received}
+                        onChange={(e) => setMarkForm({ ...markForm, amount_received: e.target.value })}
+                      />
+                    </>
+                  )}
                   {(() => {
                     const entered = parseFloat(markForm.amount_received);
                     if (Number.isFinite(entered) && entered > 0 && entered < remaining) {
-                      return <p className="text-xs text-amber">Partial payment — {formatCurrency(remaining - entered)} will remain due after this.</p>;
+                      return <p className="text-xs text-amber">Partial payment — {money(remaining - entered)} will remain due after this.</p>;
                     }
                     return null;
                   })()}
@@ -3021,7 +3059,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             {/* AC units consumed — only for space_food_ac (F-003, F-004) */}
             {markDialog?.payment_package_tier === "space_food_ac" && (
               <div className="space-y-1.5">
-                <Label>AC Units Consumed (kWh)</Label>
+                <Label>{words.acUnits} Consumed (kWh)</Label>
                 <Input
                   type="number"
                   placeholder="0"
@@ -3033,8 +3071,8 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 />
                 {packageConfig && (
                   <p className="text-xs text-muted-foreground">
-                    Rate: {formatCurrency(packageConfig.ac_per_unit_rate)}/unit ·
-                    Est. Charge: {formatCurrency((parseFloat(markForm.ac_units_consumed) || 0) * packageConfig.ac_per_unit_rate)}
+                    Rate: {money(packageConfig.ac_per_unit_rate)}/unit ·
+                    Est. Charge: {money((parseFloat(markForm.ac_units_consumed) || 0) * packageConfig.ac_per_unit_rate)}
                   </p>
                 )}
                 <p className="text-xs text-muted-foreground/60">Final amount is calculated server-side using the current rate.</p>
@@ -3078,7 +3116,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5"><Label>Payment Date</Label><Input type="date" value={markForm.date} onChange={(e) => setMarkForm({ ...markForm, date: e.target.value })} /></div>
                   {/* F-005: min="0" prevents negative late fees in the UI */}
-                  <div className="space-y-1.5"><Label>Late Fee (PKR)</Label><Input type="number" placeholder="0" min="0" step="0.01" value={markForm.late_fee} onChange={(e) => setMarkForm({ ...markForm, late_fee: e.target.value })} /></div>
+                  {isPk
+                    ? <div className="space-y-1.5"><Label>Late Fee (PKR)</Label><Input type="number" placeholder="0" min="0" step="0.01" value={markForm.late_fee} onChange={(e) => setMarkForm({ ...markForm, late_fee: e.target.value })} /></div>
+                    : <div className="space-y-1.5"><Label>Late Fee</Label><MoneyInput symbol={curSym} type="number" placeholder="0" min="0" step="0.01" value={markForm.late_fee} onChange={(e) => setMarkForm({ ...markForm, late_fee: e.target.value })} /></div>}
                 </div>
                 <div className="space-y-1.5"><Label>Receipt No.</Label><Input value={markForm.receipt_number} onChange={(e) => setMarkForm({ ...markForm, receipt_number: e.target.value })} /></div>
               </>
@@ -3207,7 +3247,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               <p className="text-sm font-medium text-foreground">{undoTarget?.tenant?.full_name}</p>
               <p className="text-xs text-muted-foreground mt-0.5">{undoTarget?.for_month}</p>
               <p className="text-lg font-bold text-foreground mt-1">
-                {formatCurrency(Number(undoTarget?.amount_paid ?? 0))}
+                {money(Number(undoTarget?.amount_paid ?? 0))}
                 <span className="text-xs font-normal text-muted-foreground"> collected so far</span>
               </p>
             </div>
@@ -3239,11 +3279,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               {/* Amount actually received THIS transaction — not the full bill total,
                   which would misrepresent a partial payment as fully settled. */}
               <p className="text-lg font-bold text-emerald-400 mt-1">
-                {formatCurrency(postPaymentWa?.amountReceivedNow ?? 0)}
+                {money(postPaymentWa?.amountReceivedNow ?? 0)}
               </p>
               {postPaymentWa?.payment.status === "partially_paid" && (
                 <p className="text-xs text-blue-400 mt-1">
-                  {formatCurrency(Number(postPaymentWa.payment.amount_paid ?? 0))} received so far · {formatCurrency(Math.max(0, Number(postPaymentWa.payment.amount) + Number(postPaymentWa.payment.late_fee ?? 0) - Number(postPaymentWa.payment.amount_paid ?? 0)))} remaining
+                  {money(Number(postPaymentWa.payment.amount_paid ?? 0))} received so far · {money(Math.max(0, Number(postPaymentWa.payment.amount) + Number(postPaymentWa.payment.late_fee ?? 0) - Number(postPaymentWa.payment.amount_paid ?? 0)))} remaining
                 </p>
               )}
             </div>

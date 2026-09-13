@@ -18,17 +18,20 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
+import { MoneyInput } from "@/components/ui/money-input";
 import { organizationPresetsFor } from "@/lib/organization-presets";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, formatMonthLong, capitalize, cn, sortRooms } from "@/lib/utils";
+import { useMoney } from "@/contexts/hostel-context";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates, type FoodAddonFlags } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
 import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets , departmentPresetsFor } from "@/lib/student-category-labels";
 import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling } from "@/lib/ac-billing";
 import { formatNationalId, isValidNationalId, normalizeNationalId, nationalIdLabel, requiresGuestRegistration } from "@/lib/national-id";
-import { getCountryConfig, DEFAULT_COUNTRY } from "@/lib/country-config";
+import { getCountryConfig, DEFAULT_COUNTRY, terms } from "@/lib/country-config";
+import { COUNTRY_NAMES, countryNameOf, countryCodeOfName, addressRegionLabel, looksLikeUkPostcode, validateDocumentNumber, looksLikePhone } from "@/lib/countries";
 import { discountedRent } from "@/lib/tenant-discount";
 import { VISIT_PURPOSE_OPTIONS, VISIT_PURPOSE_LABELS, visitPurposeLabel } from "@/lib/visit-purpose";
 import { RELATIONSHIP_OPTIONS } from "@/types";
@@ -36,7 +39,7 @@ import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplica
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager } from "./document-manager";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
-import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, recordReservationDepositAction, resendTenantWelcomeMessageAction, getRoomTransferPreviewAction, transferTenantRoomAction, getRoomTransferCorrectionAction, correctRoomTransferAction, getBranchTransferRoomsAction, getBranchTransferPreviewAction, branchTransferTenantAction, type RoomTransferPreview, type BranchTransferTarget, type BranchTransferRoom } from "@/app/actions/tenants";
+import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, anonymiseTenantResidentAction, hardDeleteTenantResidentAction, recordReservationDepositAction, resendTenantWelcomeMessageAction, getRoomTransferPreviewAction, transferTenantRoomAction, getRoomTransferCorrectionAction, correctRoomTransferAction, getBranchTransferRoomsAction, getBranchTransferPreviewAction, branchTransferTenantAction, type RoomTransferPreview, type BranchTransferTarget, type BranchTransferRoom } from "@/app/actions/tenants";
 // Straight from the module that declares it. Re-exporting it through the
 // "use server" file as `export type { RoomTransferResult }` did not survive
 // Turbopack — a re-exported import binding is emitted as a real runtime export,
@@ -232,7 +235,8 @@ const DELETE_TENANT_BASE = "This tenant and all associated payment records will 
 function buildDeleteDescription(
   t: Tenant | null,
   money: { total: number; byMonth: { month: string; amount: number }[] } | null,
-  error: string | null
+  error: string | null,
+  country?: string | null
 ): string {
   if (error) {
     return `${DELETE_TENANT_BASE} Their recorded payments could NOT be checked (${error}), so if any money was collected from them it will vanish from those months' totals without appearing here.`;
@@ -242,9 +246,9 @@ function buildDeleteDescription(
 
   const name = t?.full_name ?? "This tenant";
   const removals = money.byMonth
-    .map((m) => `${formatCurrency(m.amount)} from ${formatMonthLong(m.month)}'s collected total`)
+    .map((m) => `${formatCurrency(m.amount, country)} from ${formatMonthLong(m.month)}'s collected total`)
     .join(", ");
-  return `${name} has ${formatCurrency(money.total)} in recorded payments. Deleting will remove ${removals}. ${DELETE_TENANT_BASE}`;
+  return `${name} has ${formatCurrency(money.total, country)} in recorded payments. Deleting will remove ${removals}. ${DELETE_TENANT_BASE}`;
 }
 
 function approveFormFoodFlags(form: ConvertFormData): FoodAddonFlags {
@@ -286,7 +290,7 @@ const emptyForm = {
   room_id: "", bed_number: "",
   check_in: formatDateInput(new Date()),
   billing_type: "monthly" as "monthly" | "daily",
-  monthly_rent: "", daily_rate: "", discount_percent: "", check_out: "", security_deposit: "0",
+  monthly_rent: "", daily_rate: "", discount_percent: "", check_out: "", intended_checkout_date: "", security_deposit: "0",
   registration_fee: "",
   ac_maintenance: "",
   vehicle_type: "", vehicle_number: "", vehicle_model: "",
@@ -341,6 +345,7 @@ interface TenantRowProps {
 }
 
 function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = true, showDelete = true, showGiveNotice = true, showSendWelcome = false, showRecordDeposit = false, roomMap, foodAddonRates, noticePeriodDays = 30, currentMonthPaymentByTenant, sendingWelcome = false, printingForm = false, onView, onPrintForm, onCheckout, onActivate, onEdit, onDelete, onGiveNotice, onSendWelcome, onRecordDeposit, onMoveBranch }: TenantRowProps) {
+  const fmtMoney = useMoney();
   const room = t.room_id ? roomMap[t.room_id] : null;
   const foodCharge = calcFoodAddonCharge(t, foodAddonRates);
   const initials = t.full_name[0].toUpperCase();
@@ -426,14 +431,14 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
                 className="inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
                 title={
                   depositBalance > 0
-                    ? `Seat held — ${formatCurrency(depositCollected)} received${t.deposit_collected_on ? ` on ${formatDate(t.deposit_collected_on)}` : ""}. ${formatCurrency(depositBalance)} of the deposit will be billed on the first monthly bill.`
+                    ? `Seat held — ${fmtMoney(depositCollected)} received${t.deposit_collected_on ? ` on ${formatDate(t.deposit_collected_on)}` : ""}. ${fmtMoney(depositBalance)} of the deposit will be billed on the first monthly bill.`
                     : `Seat confirmed — full deposit received${t.deposit_collected_on ? ` on ${formatDate(t.deposit_collected_on)}` : ""}`
                 }
               >
                 <Banknote className="w-2.5 h-2.5 shrink-0" />
                 {depositBalance > 0
-                  ? `${formatCurrency(depositCollected)} of ${formatCurrency(t.security_deposit)} deposit received`
-                  : `${formatCurrency(depositCollected)} deposit received`}
+                  ? `${fmtMoney(depositCollected)} of ${fmtMoney(t.security_deposit)} deposit received`
+                  : `${fmtMoney(depositCollected)} deposit received`}
                 {t.deposit_collected_on ? ` ${formatDate(t.deposit_collected_on)}` : ""}
               </span>
             ) : (
@@ -469,7 +474,7 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
               </span>
               {showDueChip && (
                 <span className="inline-flex items-center gap-0.5 whitespace-nowrap px-1.5 py-0.5 rounded-full text-xs font-medium border text-rose-400 bg-rose-500/10 border-rose-500/20">
-                  ⚠ {formatCurrency(duePayment!.remaining)} due
+                  ⚠ {fmtMoney(duePayment!.remaining)} due
                 </span>
               )}
             </div>
@@ -483,8 +488,8 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
           and drifts horizontally, breaking alignment down the list. */}
       <div className="text-right shrink-0 hidden md:block w-28">
         {t.billing_type === "daily"
-          ? <p className="text-sm font-semibold text-foreground">{formatCurrency(t.daily_rate)}<span className="text-xs text-muted-foreground font-normal">/day</span></p>
-          : <p className="text-sm font-semibold text-foreground">{formatCurrency(t.monthly_rent + foodCharge)}<span className="text-xs text-muted-foreground font-normal">/mo</span></p>
+          ? <p className="text-sm font-semibold text-foreground">{fmtMoney(t.daily_rate)}<span className="text-xs text-muted-foreground font-normal">/day</span></p>
+          : <p className="text-sm font-semibold text-foreground">{fmtMoney(t.monthly_rent + foodCharge)}<span className="text-xs text-muted-foreground font-normal">/mo</span></p>
         }
         {foodCharge > 0 && (
           <p className="text-xs text-amber flex items-center justify-end gap-0.5">
@@ -494,12 +499,12 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
         {t.billing_type === "monthly" && (t.discount_percent ?? 0) > 0 && (
           <p
             className="text-xs text-emerald-400"
-            title={`Standing discount on rent — bills ${formatCurrency(discountedRent(t.monthly_rent, t.discount_percent!))}/month`}
+            title={`Standing discount on rent — bills ${fmtMoney(discountedRent(t.monthly_rent, t.discount_percent!))}/month`}
           >
             {t.discount_percent}% off
           </p>
         )}
-        {t.security_deposit > 0 && <p className="text-xs text-muted-foreground">Dep: {formatCurrency(t.security_deposit)}</p>}
+        {t.security_deposit > 0 && <p className="text-xs text-muted-foreground">Dep: {fmtMoney(t.security_deposit)}</p>}
       </div>
 
       <div className="flex items-center gap-0.5 shrink-0">
@@ -626,6 +631,7 @@ function RedflagWarningDialog({
   onCancel: () => void;
   onProceed: () => void;
 }) {
+  const fmtMoney = useMoney();
   const list = matches ?? [];
   const identityMatch = list.some((m) => m.matchKind === "cnic");
   return (
@@ -662,7 +668,7 @@ function RedflagWarningDialog({
               <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                 {m.cnicMasked && <span>CNIC {m.cnicMasked}</span>}
                 {m.phoneMasked && <span>Phone {m.phoneMasked}</span>}
-                <span className={m.matchKind === "cnic" ? "text-rose-400" : "text-amber"}>Owes {formatCurrency(m.amount)}</span>
+                <span className={m.matchKind === "cnic" ? "text-rose-400" : "text-amber"}>Owes {fmtMoney(m.amount)}</span>
                 {m.monthsUnpaid != null && (
                   <span>{m.monthsUnpaid} month{m.monthsUnpaid === 1 ? "" : "s"} unpaid</span>
                 )}
@@ -721,7 +727,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const idLabel = nationalIdLabel(country);
   const idExample = getCountryConfig(country).nationalId.example;
   const needsGuestRegistration = requiresGuestRegistration(country);
+  // Country terminology: PK renders Tenant/Tenants; non-PK renders Resident/
+  // Residents. Fails open to PK, so existing clients are byte-identical. Named
+  // `words` because `t` is already the per-row tenant object in this module.
+  const words = terms(country);
+  const fmtMoney = useMoney();
+  // `curSym` = symbol for inline amounts ("Rs 5,000" / "£5,000"); `curCode` =
+  // ISO code for a parenthetical field caption ("Monthly Rent (PKR)" stays "PKR"
+  // for PK — byte-identical — and reads "GBP" for a UK hostel).
+  const curSym = getCountryConfig(country).currencySymbol;
+  const curCode = getCountryConfig(country).currency;
   const isPartner = !!partnerTier;
+  // GDPR erasure is a new, non-PK surface: PK stays byte-identical (the danger
+  // zone never renders for a PK hostel). The server actions are country-agnostic
+  // and simply lie dormant for PK until this is opened up.
+  const isPk = (country ?? "PK").toUpperCase() === "PK";
   const canFullTier = !partnerTier || partnerTier === "full";
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const router = useRouter();
@@ -877,6 +897,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   // letting the warning arrive after the click it exists to inform.
   const [deleteMoney, setDeleteMoney] = useState<{ total: number; byMonth: { month: string; amount: number }[] } | null>(null);
   const [deleteMoneyError, setDeleteMoneyError] = useState<string | null>(null);
+  // GDPR erasure (owner/super_admin only). One dialog serves both paths; the mode
+  // decides the copy, the type-to-confirm word and which action runs.
+  const [erasure, setErasure] = useState<{ tenant: Tenant; mode: "anonymise" | "hard_delete" } | null>(null);
+  const [erasureConfirmText, setErasureConfirmText] = useState("");
+  const [erasureSubmitting, setErasureSubmitting] = useState(false);
   const [pkgPrices, setPkgPrices] = useState<Partial<Record<PackageTier, PackagePrices>>>({});
   const [customPackages, setCustomPackages] = useState<CustomPackage[]>([]);
   const [configSecurityDeposit, setConfigSecurityDeposit] = useState<number>(0);
@@ -1193,7 +1218,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     } else if (r.closedMeter && r.closedCharge > 0) {
       toast({
         title: `Moved to ${branchName}`,
-        description: `Room ${r.fromRoomNumber}: ${r.closedUnits} units (${formatCurrency(r.closedCharge)}) billed up to the move. Everything else moved as-is.`,
+        description: `Room ${r.fromRoomNumber}: ${r.closedUnits} units (${fmtMoney(r.closedCharge)}) billed up to the move. Everything else moved as-is.`,
       });
     } else {
       toast({ title: `Moved to ${branchName}`, description: `${branchMoveTenant.full_name} now lives in room ${r.toRoomNumber}. Everything moved as-is.` });
@@ -1260,6 +1285,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       emergency_phone: app.emergency_phone ?? null,
       emergency_relationship: app.emergency_relationship ?? null,
       permanent_address: app.permanent_address ?? null,
+      date_of_birth: app.date_of_birth ?? null,
+      address_line1: app.address_line1 ?? null,
+      address_line2: app.address_line2 ?? null,
+      city: app.city ?? null,
+      county_state: app.county_state ?? null,
+      postcode: app.postcode ?? null,
+      address_country: app.address_country ?? null,
       father_name: app.father_name ?? null,
       purpose_of_visit: app.purpose_of_visit ?? null,
       purpose_of_visit_detail: app.purpose_of_visit_detail ?? null,
@@ -1290,6 +1322,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const approveCategory = (approveForm.student_category ?? "") as "" | StudentCategory;
   const approveOrgType = (approveForm.organization_type ?? "") as "" | "private" | "government";
   function renderApproveInstituteField() {
+    if (!needsGuestRegistration) {
+      // International: one free-text field, no PK institute preset list.
+      return (
+        <Input
+          placeholder="Institution, university or employer"
+          value={approveForm.institute_name ?? ""}
+          onChange={(e) => setApproveForm({ ...approveForm, institute_name: e.target.value })}
+        />
+      );
+    }
     if (!studentCategoryHasInstitutePresets(approveCategory)) {
       return (
         <Input
@@ -1347,6 +1389,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   // server-side against the application row inside convertToTenant.
   async function performApprove(ignoreRedflag: boolean) {
     if (!approvingApp) return;
+    // International address parity with the Add/Edit and public forms: Address
+    // Line 1 + City required (Postcode is soft). Waitlisted approvals skip it.
+    if (!needsGuestRegistration && !approveForm.is_waiting) {
+      if (!(approveForm.address_line1 ?? "").trim() || !(approveForm.city ?? "").trim()) {
+        toast({ title: "Address incomplete", description: "Address Line 1 and City are required.", variant: "destructive" });
+        return;
+      }
+    }
     setApproveSaving(true);
     const result = await convertToTenant(approvingApp.id, {
       ...approveForm,
@@ -1362,6 +1412,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       emergency_phone: approveForm.emergency_phone?.trim() || null,
       emergency_relationship: approveForm.emergency_relationship?.trim() || null,
       permanent_address: approveForm.permanent_address?.trim() || null,
+      // International structured address — normalize cleared inputs to null (the
+      // server's `??` fallback only catches null/undefined). PK sends undefined so
+      // the application's value is kept.
+      date_of_birth: !needsGuestRegistration ? (approveForm.date_of_birth || null) : undefined,
+      address_line1: !needsGuestRegistration ? (approveForm.address_line1?.trim() || null) : undefined,
+      address_line2: !needsGuestRegistration ? (approveForm.address_line2?.trim() || null) : undefined,
+      city: !needsGuestRegistration ? (approveForm.city?.trim() || null) : undefined,
+      county_state: !needsGuestRegistration ? (approveForm.county_state?.trim() || null) : undefined,
+      postcode: !needsGuestRegistration ? (approveForm.postcode?.trim() || null) : undefined,
+      address_country: !needsGuestRegistration ? (approveForm.address_country?.trim() || null) : undefined,
       institute_name: approveForm.type === "student" ? (approveForm.institute_name || null) : null,
       student_category: approveForm.type === "student" ? (approveForm.student_category || null) : null,
       student_specialization: approveForm.type === "student" && studentCategoryHasSpecialization(approveCategory) ? (approveForm.student_specialization || null) : null,
@@ -1380,7 +1440,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               description: `${approvingApp.full_name} has been added, but the defaulter registry could not be reached, so they were not verified.`,
             }
           : {
-              title: approveForm.is_waiting ? "Added to waiting list" : "Tenant activated",
+              title: approveForm.is_waiting ? "Added to waiting list" : `${words.tenant} activated`,
               description: `${approvingApp.full_name} has been added.`,
             }
       );
@@ -1451,6 +1511,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       daily_rate: t.daily_rate?.toString() ?? "0",
       discount_percent: t.discount_percent != null ? t.discount_percent.toString() : "",
       check_out: t.check_out ?? "",
+      intended_checkout_date: (t as { intended_checkout_date?: string | null }).intended_checkout_date ?? "",
       security_deposit: t.security_deposit?.toString() ?? "0",
       registration_fee: t.registration_fee?.toString() ?? "",
       ac_maintenance: t.ac_maintenance?.toString() ?? "",
@@ -1505,6 +1566,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   // Test Preparation/Professional Course/Skills Training (pick what you're doing
   // before where — matches how someone would naturally answer these questions).
   function renderInstituteField() {
+    if (!needsGuestRegistration) {
+      // International: one free-text field, no PK institute preset list.
+      return (
+        <Input
+          placeholder="Institution, university or employer"
+          value={form.institute_name}
+          onChange={(e) => setForm({ ...form, institute_name: e.target.value })}
+        />
+      );
+    }
     if (!studentCategoryHasInstitutePresets(form.student_category)) {
       return (
         <Input
@@ -1591,9 +1662,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       toast({ title: `Invalid ${idLabel}`, description: idExample ? `Format must match ${idExample}.` : `Enter a valid ${idLabel}.`, variant: "destructive" });
       return;
     }
-    if (!needsGuestRegistration && form.cnic.trim() && !form.id_type) {
-      toast({ title: "Select ID type", description: "Choose the identification document type.", variant: "destructive" });
-      return;
+    if (!needsGuestRegistration && form.cnic.trim()) {
+      if (!form.id_type) {
+        toast({ title: "Select ID type", description: "Choose the identification document type.", variant: "destructive" });
+        return;
+      }
+      const idErr = validateDocumentNumber(form.cnic);
+      if (idErr) { toast({ title: "Check the ID number", description: idErr, variant: "destructive" }); return; }
     }
     // Province and district are mandatory only where a government guest-registration
     // portal (PK Smart Eye / Hotel Eye) needs them — required at admission so the
@@ -1604,8 +1679,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     }
     // International admission (non-guest-registration countries): structured address.
     if (!needsGuestRegistration && !form.is_waiting) {
-      if (!form.address_line1.trim() || !form.city.trim() || !form.postcode.trim()) {
-        toast({ title: "Address incomplete", description: "Address Line 1, City and Postcode are required.", variant: "destructive" });
+      if (!form.address_line1.trim() || !form.city.trim()) {
+        toast({ title: "Address incomplete", description: "Address Line 1 and City are required.", variant: "destructive" });
         return;
       }
     }
@@ -1657,6 +1732,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       // NULL, hence the fallback rather than passing through an empty string.
       check_in: form.check_in || formatDateInput(new Date()),
       check_out: form.billing_type === "daily" && form.check_out ? form.check_out : null,
+      // Optional expected leaving date. Round-trips on edit (loaded in openEdit),
+      // so it is preserved unless the owner changes it; the notice flow still
+      // owns notice_given_date.
+      intended_checkout_date: form.intended_checkout_date || null,
       billing_type: form.billing_type,
       monthly_rent: form.billing_type === "monthly" ? parseFloat(form.monthly_rent) || 0 : 0,
       daily_rate: form.billing_type === "daily" ? parseFloat(form.daily_rate) || 0 : 0,
@@ -1721,7 +1800,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       fd.append("file", joiningPhotoFile);
       const res = await uploadJoiningMeterPhoto(tenantId, fd);
       if (res.error) {
-        toast({ title: "Tenant saved, meter photo failed", description: res.error, variant: "destructive" });
+        toast({ title: `${words.tenant} saved, meter photo failed`, description: res.error, variant: "destructive" });
       }
       setJoiningPhotoFile(null);
     };
@@ -1773,7 +1852,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       } else if (transferOutcome.closedMeter && transferOutcome.closedCharge > 0) {
         toast({
           title: `Moved to room ${transferOutcome.toRoomNumber}`,
-          description: `Room ${transferOutcome.fromRoomNumber}: ${transferOutcome.closedUnits} units (${formatCurrency(transferOutcome.closedCharge)}) billed up to the move.`,
+          description: `Room ${transferOutcome.fromRoomNumber}: ${transferOutcome.closedUnits} units (${fmtMoney(transferOutcome.closedCharge)}) billed up to the move.`,
         });
       }
     };
@@ -1795,8 +1874,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       }
       toast({
         title: editing
-          ? editing.is_waiting && !form.is_waiting ? `${form.full_name} activated` : "Tenant updated"
-          : form.is_waiting ? "Added to waiting list" : "Tenant added",
+          ? editing.is_waiting && !form.is_waiting ? `${form.full_name} activated` : `${words.tenant} updated`
+          : form.is_waiting ? "Added to waiting list" : `${words.tenant} added`,
       });
       await uploadStagedJoiningPhoto(editing ? editing.id : (result as { tenantId?: string }).tenantId);
       announceTransfer();
@@ -1825,8 +1904,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       }
       toast({
         title: editing
-          ? editing.is_waiting && !form.is_waiting ? `${form.full_name} activated` : "Tenant updated"
-          : form.is_waiting ? "Added to waiting list" : "Tenant added",
+          ? editing.is_waiting && !form.is_waiting ? `${form.full_name} activated` : `${words.tenant} updated`
+          : form.is_waiting ? "Added to waiting list" : `${words.tenant} added`,
       });
       await uploadStagedJoiningPhoto(editing ? editing.id : (result as { tenantId?: string }).tenantId);
       announceTransfer();
@@ -1932,7 +2011,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       photoData.append("file", joiningPhotoFile);
       const photoRes = await uploadJoiningMeterPhoto(ledgerTenantId, photoData);
       if (photoRes.error) {
-        toast({ title: "Tenant saved, meter photo failed", description: photoRes.error, variant: "destructive" });
+        toast({ title: `${words.tenant} saved, meter photo failed`, description: photoRes.error, variant: "destructive" });
       }
       setJoiningPhotoFile(null);
     }
@@ -1997,7 +2076,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           // history silently loses their referral.
           await attributeIfNewAdmission();
           toast({
-            title: "Tenant added",
+            title: `${words.tenant} added`,
             description: `${backfill.monthsCreated} past month${backfill.monthsCreated === 1 ? "" : "s"} recorded as Paid (Cash).`,
           });
           setDialogOpen(false);
@@ -2014,10 +2093,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       title: editing
         ? editing.is_waiting && !form.is_waiting
           ? `${form.full_name} activated`
-          : "Tenant updated"
+          : `${words.tenant} updated`
         : form.is_waiting
           ? "Added to waiting list"
-          : "Tenant added",
+          : `${words.tenant} added`,
     });
     announceTransfer();
     setDialogOpen(false);
@@ -2235,10 +2314,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const s = result.settlement;
     const settlementLines = s
       ? [
-          s.depositApplied > 0 ? `${formatCurrency(s.depositApplied)} deposit applied to dues` : null,
-          s.cashCollected > 0 ? `${formatCurrency(s.cashCollected)} collected` : null,
-          s.depositReturned > 0 ? `${formatCurrency(s.depositReturned)} refunded` : null,
-          s.depositForfeited > 0 ? `${formatCurrency(s.depositForfeited)} forfeited` : null,
+          s.depositApplied > 0 ? `${fmtMoney(s.depositApplied)} deposit applied to dues` : null,
+          s.cashCollected > 0 ? `${fmtMoney(s.cashCollected)} collected` : null,
+          s.depositReturned > 0 ? `${fmtMoney(s.depositReturned)} refunded` : null,
+          s.depositForfeited > 0 ? `${fmtMoney(s.depositForfeited)} forfeited` : null,
         ].filter(Boolean).join(" · ")
       : "";
 
@@ -2294,6 +2373,38 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const result = await deleteTenantAction(t.id);
     if (result.error) { toast({ title: "Error", description: result.error, variant: "destructive" }); return; }
     toast({ title: "Deleted" });
+    await reload();
+  }
+
+  function openErasure(tenant: Tenant, mode: "anonymise" | "hard_delete") {
+    setErasure({ tenant, mode });
+    setErasureConfirmText("");
+    setErasureSubmitting(false);
+  }
+  function closeErasure() {
+    setErasure(null);
+    setErasureConfirmText("");
+    setErasureSubmitting(false);
+  }
+  async function handleErasure() {
+    if (!erasure) return;
+    setErasureSubmitting(true);
+    const { tenant, mode } = erasure;
+    const result = mode === "anonymise"
+      ? await anonymiseTenantResidentAction(tenant.id)
+      : await hardDeleteTenantResidentAction(tenant.id);
+    setErasureSubmitting(false);
+    if (!result.success) {
+      toast({ title: "Error", description: result.error, variant: "destructive" });
+      return;
+    }
+    toast({
+      title: mode === "anonymise"
+        ? (("alreadyAnonymised" in result && result.alreadyAnonymised) ? "Already anonymised" : "Resident data anonymised")
+        : "Resident permanently deleted",
+    });
+    closeErasure();
+    setDialogOpen(false);
     await reload();
   }
 
@@ -2373,9 +2484,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     ));
     const balance = result.remainingDeposit ?? 0;
     toast({
-      title: `${formatCurrency(amount)} deposit recorded`,
+      title: `${fmtMoney(amount)} deposit recorded`,
       description: balance > 0
-        ? `${depositDialogTenant.full_name}'s bed is held. The remaining ${formatCurrency(balance)} of the deposit will be charged on their first monthly bill. Receipt ${result.receiptNumber ?? ""}`.trim()
+        ? `${depositDialogTenant.full_name}'s bed is held. The remaining ${fmtMoney(balance)} of the deposit will be charged on their first monthly bill. Receipt ${result.receiptNumber ?? ""}`.trim()
         : `${depositDialogTenant.full_name}'s seat is confirmed. Receipt ${result.receiptNumber ?? ""}`.trim(),
     });
     closeDepositDialog();
@@ -2688,7 +2799,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   }[] = [
     { key: "name",    label: "Name",           get: (t) => t.full_name },
     { key: "father",  label: "Father Name",    get: (t) => t.father_name ?? "" },
-    { key: "purpose", label: "Purpose of Visit", get: (t) => visitPurposeLabel(t.purpose_of_visit, t.purpose_of_visit_detail) ?? "" },
+    { key: "purpose", label: words.purposeOfVisit, get: (t) => visitPurposeLabel(t.purpose_of_visit, t.purpose_of_visit_detail) ?? "" },
     { key: "phone",   label: "Phone",          get: (t) => t.phone ?? "" },
     { key: "email",   label: "Email",          sensitive: true, get: (t) => t.email ?? "" },
     { key: "cnic",    label: "CNIC",           sensitive: true, get: (t) => t.cnic ?? "" },
@@ -2729,7 +2840,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       });
       const ws = XLSX.utils.json_to_sheet(rows);
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Tenants");
+      XLSX.utils.book_append_sheet(wb, ws, words.tenants);
       const label = tab === "checkedout" ? "checked-out" : tab;
       XLSX.writeFile(wb, `tenants-${label}-${new Date().toISOString().split("T")[0]}.xlsx`);
     } catch {
@@ -2749,7 +2860,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       const tabLabel = tab === "checkedout" ? "Checked Out" : capitalize(tab);
       doc.setFontSize(16);
       doc.setTextColor(30, 30, 30);
-      doc.text(`Tenants — ${tabLabel}`, 14, 16);
+      doc.text(`${words.tenants} — ${tabLabel}`, 14, 16);
       doc.setFontSize(9);
       doc.setTextColor(120, 120, 120);
       doc.text(`Generated ${new Date().toLocaleDateString()}${typeFilter !== "all" ? ` · Type: ${capitalize(typeFilter)}` : ""}${depositFilter ? " · With Deposit" : ""}`, 14, 23);
@@ -2760,7 +2871,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
         return cols.map((c) => {
           const v = c.get(t, room);
           if (c.key === "rent" || c.key === "deposit") {
-            return Number(v) > 0 ? `Rs ${Number(v).toLocaleString()}` : "—";
+            return Number(v) > 0 ? `${curSym} ${Number(v).toLocaleString()}` : "—";
           }
           return v === "" || v == null ? "—" : String(v);
         });
@@ -2805,7 +2916,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-serif font-normal tracking-tight">Tenants</h1>
+          <h1 className="text-3xl font-serif font-normal tracking-tight">{words.tenants}</h1>
           <p className="text-muted-foreground text-sm mt-1">Manage hostel residents</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
@@ -2823,7 +2934,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           )}
           {canAdd && (
             <Button onClick={openAdd} className="gap-2 bg-amber text-background hover:bg-amber/90 font-semibold flex-1 sm:flex-none">
-              <Plus className="w-4 h-4" /> Add Tenant
+              <Plus className="w-4 h-4" /> Add {words.tenant}
             </Button>
           )}
         </div>
@@ -2832,7 +2943,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       {/* Stats */}
       <div className="grid grid-cols-3 gap-3 sm:gap-4">
         {[
-          { label: "Active Tenants", value: stats.active, icon: UserCheck, color: "text-emerald-400", iconBg: "bg-emerald-500/10 border-emerald-500/20" },
+          { label: `Active ${words.tenants}`, value: stats.active, icon: UserCheck, color: "text-emerald-400", iconBg: "bg-emerald-500/10 border-emerald-500/20" },
           { label: "Waiting List", value: stats.waiting, icon: Clock, color: "text-amber", iconBg: "bg-amber/10 border-amber/20" },
           { label: "Available Beds", value: stats.availableBeds, icon: BedDouble, color: "text-blue-400", iconBg: "bg-blue-500/10 border-blue-500/20" },
         ].map(({ label, value, icon: Icon, color, iconBg }) => (
@@ -3213,7 +3324,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         <th className="text-left px-4 py-2.5">Plate Number</th>
                         <th className="text-left px-4 py-2.5">Type</th>
                         <th className="text-left px-4 py-2.5">Model</th>
-                        <th className="text-left px-4 py-2.5">Tenant</th>
+                        <th className="text-left px-4 py-2.5">{words.tenant}</th>
                         <th className="text-left px-4 py-2.5">Room</th>
                         <th className="text-left px-4 py-2.5">Phone</th>
                       </tr>
@@ -3443,7 +3554,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
               {/* Tenant Type */}
               <div className="space-y-1.5">
-                <Label>Tenant Type</Label>
+                <Label>{words.tenant} Type</Label>
                 <Select value={approveForm.type} onValueChange={(v) => setApproveForm({ ...approveForm, type: v })}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
@@ -3458,7 +3569,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   submitted (convertToTenant falls back to the application's own
                   values if left untouched here), shown so the owner can review
                   and correct it before activating. */}
-              {approveForm.type === "student" && (
+              {/* International: one free-text field, no PK category/specialization/department. */}
+              {!needsGuestRegistration && (approveForm.type === "student" || approveForm.type === "professional") && (
+                <div className="space-y-1.5">
+                  <Label>Institute Name</Label>
+                  {renderApproveInstituteField()}
+                </div>
+              )}
+              {needsGuestRegistration && approveForm.type === "student" && (
                 <div className={studentCategoryHasSpecialization(approveCategory) ? "space-y-1.5" : "grid grid-cols-2 gap-4"}>
                   <div className="space-y-1.5"><Label>Student Category</Label>
                     <Select
@@ -3488,7 +3606,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   )}
                 </div>
               )}
-              {approveForm.type === "student" && studentCategoryHasSpecialization(approveCategory) && (
+              {needsGuestRegistration && approveForm.type === "student" && studentCategoryHasSpecialization(approveCategory) && (
                 <div className="space-y-1.5">
                   <Label>{STUDENT_CATEGORY_LABELS[approveCategory]} — Specialization</Label>
                   {customSpecialization ? (
@@ -3527,12 +3645,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   )}
                 </div>
               )}
-              {approveForm.type === "student" && studentCategoryHasSpecialization(approveCategory) && (
+              {needsGuestRegistration && approveForm.type === "student" && studentCategoryHasSpecialization(approveCategory) && (
                 <div className="space-y-1.5"><Label>Institute Name</Label>
                   {renderApproveInstituteField()}
                 </div>
               )}
-              {approveForm.type === "professional" && (
+              {needsGuestRegistration && approveForm.type === "professional" && (
                 <div className="grid grid-cols-2 gap-4">
                   {/* Type before name — matches the public form and Add Tenant. */}
                   <div className="space-y-1.5"><Label>Organization Type</Label>
@@ -3576,7 +3694,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </div>
                 </div>
               )}
-              {(approveForm.type === "professional" || (approveForm.type === "student" && studentCategoryHasDepartment(approveCategory))) && (
+              {needsGuestRegistration && (approveForm.type === "professional" || (approveForm.type === "student" && studentCategoryHasDepartment(approveCategory))) && (
                 <div className="space-y-1.5"><Label>Department / Field</Label>
                   {!customApproveDepartment ? (
                     <SearchableSelect
@@ -3632,7 +3750,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       <SelectContent>
                         {availableRooms.map((r) => (
                           <SelectItem key={r.id} value={r.id}>
-                            Rm {r.room_number} · {r.capacity - r.occupied} free · {formatCurrency(getSuggestedRent(r, approveForm.package_tier as PackageTier, pkgPrices, seaterPrices, washroomPremium))}/mo
+                            Rm {r.room_number} · {r.capacity - r.occupied} free · {fmtMoney(getSuggestedRent(r, approveForm.package_tier as PackageTier, pkgPrices, seaterPrices, washroomPremium))}/mo
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -3653,7 +3771,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   there's a documented reference if AC billing is ever disputed. */}
               {!approveForm.is_waiting && approveForm.room_id && rooms.find((r) => r.id === approveForm.room_id)?.has_ac && (
                 <div className="space-y-1.5">
-                  <Label>AC Meter Reading at Move-in</Label>
+                  <Label>{isPk ? "AC" : "Electricity"} Meter Reading at Move-in</Label>
                   <Input
                     type="number" min={0} step="0.01"
                     placeholder="e.g. 1284.5"
@@ -3698,7 +3816,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <p className="text-xs text-muted-foreground/60">
                   Food is billed automatically for this package
                   {foodMonthlyRate > 0 && (
-                    <> — Rs. {foodMonthlyRate.toLocaleString()}/mo added on top of rent (total Rs. {(Number(approveForm.monthly_rent || 0) + foodMonthlyRate).toLocaleString()}/mo, shown as a separate line on the receipt)</>
+                    <> — {curSym} {foodMonthlyRate.toLocaleString()}/mo added on top of rent (total {curSym} {(Number(approveForm.monthly_rent || 0) + foodMonthlyRate).toLocaleString()}/mo, shown as a separate line on the receipt)</>
                   )}.
                 </p>
               ) : hasFoodAddonRates(foodAddonRates) && (
@@ -3731,7 +3849,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                                 </span>
                                 {meal.label}
                               </span>
-                              <span className={checked ? "text-amber font-medium" : ""}>+{formatCurrency(meal.rate)}</span>
+                              <span className={checked ? "text-amber font-medium" : ""}>+{fmtMoney(meal.rate)}</span>
                             </button>
                           );
                         })}
@@ -3757,14 +3875,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                               </span>
                               All Meals (Breakfast + Lunch + Dinner)
                             </span>
-                            <span className={checked ? "text-amber font-medium" : ""}>+{formatCurrency(foodAddonRates.food_all_meals_rate)}</span>
+                            <span className={checked ? "text-amber font-medium" : ""}>+{fmtMoney(foodAddonRates.food_all_meals_rate)}</span>
                           </button>
                         );
                       })()
                     )}
                     {(approveForm.food_breakfast || approveForm.food_lunch || approveForm.food_dinner) && (
                       <p className="text-xs text-muted-foreground">
-                        Food add-on: <span className="text-foreground font-medium">{formatCurrency(calcFoodAddonCharge(approveFormFoodFlags(approveForm), foodAddonRates))}</span>/mo — billed automatically on top of rent.
+                        Food add-on: <span className="text-foreground font-medium">{fmtMoney(calcFoodAddonCharge(approveFormFoodFlags(approveForm), foodAddonRates))}</span>/mo — billed automatically on top of rent.
                       </p>
                     )}
                   </div>
@@ -3790,6 +3908,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               {/* Rent + Deposit */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
+                  {isPk ? <>
                   <Label>{approveForm.billing_type === "monthly" ? "Monthly Rent (PKR)" : "Daily Rate (PKR)"}</Label>
                   <Input
                     type="number"
@@ -3801,12 +3920,25 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         ? { ...approveForm, monthly_rent: val }
                         : { ...approveForm, daily_rate: val });
                     }}
-                  />
+                  /></> : <>
+                  <Label>{approveForm.billing_type === "monthly" ? "Monthly Rent" : "Daily Rate"}</Label>
+                  <MoneyInput
+                    symbol={curSym}
+                    type="number"
+                    placeholder="0"
+                    value={approveForm.billing_type === "monthly" ? approveForm.monthly_rent || "" : approveForm.daily_rate || ""}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value) || 0;
+                      setApproveForm(approveForm.billing_type === "monthly"
+                        ? { ...approveForm, monthly_rent: val }
+                        : { ...approveForm, daily_rate: val });
+                    }}
+                  /></>}
                   {approveForm.billing_type === "monthly" && (approveForm.food_breakfast || approveForm.food_lunch || approveForm.food_dinner) && (() => {
                     const foodCharge = calcFoodAddonCharge(approveFormFoodFlags(approveForm), foodAddonRates);
                     return (
                       <p className="text-xs text-amber">
-                        + {formatCurrency(foodCharge)} food = {formatCurrency(approveForm.monthly_rent + foodCharge)}/mo total
+                        + {fmtMoney(foodCharge)} food = {fmtMoney(approveForm.monthly_rent + foodCharge)}/mo total
                       </p>
                     );
                   })()}
@@ -3832,7 +3964,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       if (!(pct > 0) || pct > 100) return null;
                       return (
                         <p className="text-xs text-emerald-400">
-                          Effective rent: {formatCurrency(discountedRent(approveForm.monthly_rent || 0, pct))}/month
+                          Effective rent: {fmtMoney(discountedRent(approveForm.monthly_rent || 0, pct))}/month
                         </p>
                       );
                     })()}
@@ -3840,23 +3972,41 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </div>
                 )}
                 <div className="space-y-1.5">
+                  {isPk ? <>
                   <Label>Security Deposit (PKR)</Label>
                   <Input
                     type="number"
                     placeholder="0"
                     value={approveForm.security_deposit || ""}
                     onChange={(e) => setApproveForm({ ...approveForm, security_deposit: parseFloat(e.target.value) || 0 })}
-                  />
+                  /></> : <>
+                  <Label>Security Deposit</Label>
+                  <MoneyInput
+                    symbol={curSym}
+                    type="number"
+                    placeholder="0"
+                    value={approveForm.security_deposit || ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, security_deposit: parseFloat(e.target.value) || 0 })}
+                  /></>}
                 </div>
                 {configAcMaintenance > 0 && (
                   <div className="space-y-1.5">
+                    {isPk ? <>
                     <Label>AC Maintenance (PKR / month)</Label>
                     <Input
                       type="number" min="0"
                       placeholder={`Default ${configAcMaintenance}`}
                       value={approveForm.ac_maintenance ?? ""}
                       onChange={(e) => setApproveForm({ ...approveForm, ac_maintenance: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })}
-                    />
+                    /></> : <>
+                    <Label>AC Maintenance / month</Label>
+                    <MoneyInput
+                      symbol={curSym}
+                      type="number" min="0"
+                      placeholder={`Default ${configAcMaintenance}`}
+                      value={approveForm.ac_maintenance ?? ""}
+                      onChange={(e) => setApproveForm({ ...approveForm, ac_maintenance: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })}
+                    /></>}
                     <p className="text-xs text-muted-foreground">
                       Enter 0 to waive it for this tenant.
                     </p>
@@ -3903,19 +4053,50 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   the applicant submitted, but an approver is often correcting a
                   typo or a wrong number, and this is the last point before the
                   data becomes a tenant record. */}
-              <div className="space-y-1.5">
-                <Label>Permanent Address</Label>
-                <textarea
-                  rows={2}
-                  placeholder="House / street, area, city — the tenant's home address"
-                  value={approveForm.permanent_address ?? ""}
-                  onChange={(e) => setApproveForm({ ...approveForm, permanent_address: e.target.value })}
-                  className="w-full rounded-lg border border-sidebar-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50 resize-y"
-                />
-              </div>
+              {needsGuestRegistration ? (
+                <div className="space-y-1.5">
+                  <Label>Permanent Address</Label>
+                  <textarea
+                    rows={2}
+                    placeholder="House / street, area, city — the tenant's home address"
+                    value={approveForm.permanent_address ?? ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, permanent_address: e.target.value })}
+                    className="w-full rounded-lg border border-sidebar-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-amber/50 resize-y"
+                  />
+                </div>
+              ) : (
+                // International structured address — mirrors the Add/Edit and public
+                // forms so the approver can review/correct what the applicant entered.
+                // Postcode is soft (warned on format, never required).
+                <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <Label>Country <span className="text-destructive">*</span></Label>
+                    <SearchableSelect
+                      value={approveForm.address_country || countryNameOf(country)}
+                      onValueChange={(v) => setApproveForm({ ...approveForm, address_country: v })}
+                      options={COUNTRY_NAMES}
+                      placeholder="Select country"
+                      searchPlaceholder="Search countries…"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1.5 sm:col-span-2"><Label>Address Line 1 <span className="text-destructive">*</span></Label><Input value={approveForm.address_line1 ?? ""} onChange={(e) => setApproveForm({ ...approveForm, address_line1: e.target.value })} placeholder="House number and street" /></div>
+                    <div className="space-y-1.5"><Label>Address Line 2</Label><Input value={approveForm.address_line2 ?? ""} onChange={(e) => setApproveForm({ ...approveForm, address_line2: e.target.value })} placeholder="Apartment, suite, etc." /></div>
+                    <div className="space-y-1.5"><Label>City / Town <span className="text-destructive">*</span></Label><Input value={approveForm.city ?? ""} onChange={(e) => setApproveForm({ ...approveForm, city: e.target.value })} /></div>
+                    <div className="space-y-1.5"><Label>{addressRegionLabel(countryCodeOfName(approveForm.address_country ?? "") || country)}</Label><Input value={approveForm.county_state ?? ""} onChange={(e) => setApproveForm({ ...approveForm, county_state: e.target.value })} /></div>
+                    <div className="space-y-1.5">
+                      <Label>Postcode / ZIP <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                      <Input value={approveForm.postcode ?? ""} onChange={(e) => setApproveForm({ ...approveForm, postcode: e.target.value })} />
+                      {(countryCodeOfName(approveForm.address_country ?? "") || country) === "GB" && (approveForm.postcode ?? "").trim() && !looksLikeUkPostcode(approveForm.postcode ?? "") && (
+                        <p className="text-xs text-amber">This doesn&apos;t look like a standard UK postcode. Please check it.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-1.5">
-                <Label>Purpose of Visit</Label>
+                <Label>{words.purposeOfVisit}</Label>
                 <Select
                   value={approveForm.purpose_of_visit ?? ""}
                   onValueChange={(v) =>
@@ -3942,14 +4123,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 )}
               </div>
 
-              <div className="space-y-1.5">
-                <Label>Father Name</Label>
-                <Input
-                  placeholder="Muhammad Khan"
-                  value={approveForm.father_name ?? ""}
-                  onChange={(e) => setApproveForm({ ...approveForm, father_name: e.target.value })}
-                />
-              </div>
+              {needsGuestRegistration && (
+                <div className="space-y-1.5">
+                  <Label>Father Name</Label>
+                  <Input
+                    placeholder="Muhammad Khan"
+                    value={approveForm.father_name ?? ""}
+                    onChange={(e) => setApproveForm({ ...approveForm, father_name: e.target.value })}
+                  />
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
@@ -3964,8 +4147,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   <Label>Emergency Phone</Label>
                   <Input
                     placeholder="+92 300 0000000"
+                    inputMode="tel"
                     value={approveForm.emergency_phone ?? ""}
-                    onChange={(e) => setApproveForm({ ...approveForm, emergency_phone: e.target.value })}
+                    onChange={(e) => setApproveForm({ ...approveForm, emergency_phone: e.target.value.replace(/[^\d+\-()\s]/g, "") })}
                   />
                 </div>
               </div>
@@ -4041,7 +4225,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             >
               {approveSaving
                 ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</>
-                : <><CheckCircle2 className="w-4 h-4" /> {approveForm.is_waiting ? "Add to Waitlist" : "Activate Tenant"}</>
+                : <><CheckCircle2 className="w-4 h-4" /> {approveForm.is_waiting ? "Add to Waitlist" : `Activate ${words.tenant}`}</>
               }
             </Button>
           </DialogFooter>
@@ -4063,11 +4247,63 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       <ConfirmDialog
         open={!!deleteTenant}
         title={`Delete ${deleteTenant?.full_name ?? "tenant"}?`}
-        description={buildDeleteDescription(deleteTenant, deleteMoney, deleteMoneyError)}
+        description={buildDeleteDescription(deleteTenant, deleteMoney, deleteMoneyError, country)}
         confirmDisabled={!deleteMoney && !deleteMoneyError}
         onConfirm={() => { if (deleteTenant) { handleDelete(deleteTenant); closeDeleteDialog(); } }}
         onCancel={closeDeleteDialog}
       />
+
+      {/* GDPR erasure — anonymise (default) / hard-delete (explicit). Owner-gated
+          at the call site; type-to-confirm guards the irreversible write. */}
+      <Dialog open={!!erasure} onOpenChange={(o) => { if (!o) closeErasure(); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {erasure?.mode === "anonymise"
+                ? <><ShieldCheck className="w-4 h-4 text-amber" /> Anonymise resident data</>
+                : <><Trash2 className="w-4 h-4 text-rose-400" /> Delete resident permanently</>}
+            </DialogTitle>
+            <DialogDescription>{erasure?.tenant.full_name}</DialogDescription>
+          </DialogHeader>
+          {erasure && (
+            <div className="space-y-3 py-1 text-sm">
+              {erasure.mode === "anonymise" ? (
+                <div className="space-y-2 text-muted-foreground">
+                  <p>This removes the resident&apos;s contact and identity data — phone, email, ID number, date of birth, address, emergency contact, photo and all uploaded documents, including their original application. It cannot be undone.</p>
+                  <p className="text-foreground">Their <span className="font-medium">name</span>, payment and receipt history are kept for legal retention, so you can still see who a payment belonged to.</p>
+                  <p className="text-xs">Any safety report (red flag) filed against this resident is retained where the law allows, so a warning outlives the record.</p>
+                </div>
+              ) : (
+                <div className="space-y-2 text-muted-foreground">
+                  <p className="text-rose-300 font-medium">This permanently deletes the entire record.</p>
+                  <p>Along with the personal data, it also erases every payment, receipt and financial record for this resident. It cannot be undone.</p>
+                  <p className="text-xs">Any safety report (red flag) filed against this resident is retained where the law allows, so a warning outlives the record.</p>
+                  <p>Use <span className="text-foreground">Anonymise</span> instead unless this record has no retention obligation.</p>
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label>Type <span className="font-mono text-foreground">{erasure.mode === "anonymise" ? "ANONYMISE" : "DELETE"}</span> to confirm</Label>
+                <Input value={erasureConfirmText} onChange={(e) => setErasureConfirmText(e.target.value)} autoFocus />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={closeErasure} disabled={erasureSubmitting}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={handleErasure}
+              disabled={
+                erasureSubmitting || !erasure ||
+                erasureConfirmText.trim().toUpperCase() !== (erasure?.mode === "anonymise" ? "ANONYMISE" : "DELETE")
+              }
+            >
+              {erasureSubmitting
+                ? <><Loader2 className="w-4 h-4 animate-spin" /> Working…</>
+                : erasure?.mode === "anonymise" ? "Anonymise" : "Delete permanently"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Add / Edit Dialog */}
       {/* ── Export column picker ─────────────────────────── */}
@@ -4141,12 +4377,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           <DialogHeader>
             <DialogTitle>
               {viewOnly
-                ? "Tenant Details"
+                ? `${words.tenant} Details`
                 : editing
                   ? editing.is_waiting
-                    ? "Activate / Edit Tenant"
-                    : "Edit Tenant"
-                  : "Add Tenant"}
+                    ? `Activate / Edit ${words.tenant}`
+                    : `Edit ${words.tenant}`
+                  : `Add ${words.tenant}`}
             </DialogTitle>
           </DialogHeader>
           <fieldset disabled={viewOnly} className="contents">
@@ -4184,7 +4420,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {/* Personal info */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5 sm:col-span-2"><Label>Full Name *</Label><Input placeholder="Ahmed Khan" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} /></div>
-              <div className="space-y-1.5"><Label>Phone *</Label><Input placeholder="+92 300 0000000" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
+              <div className="space-y-1.5">
+                <Label>Phone *</Label>
+                <Input placeholder="+92 300 0000000" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+                {form.phone.trim() && !looksLikePhone(form.phone) && (
+                  <p className="text-xs text-amber">This doesn&apos;t look like a valid phone number. Please check it.</p>
+                )}
+              </div>
               {needsGuestRegistration ? (
                 <div className="space-y-1.5">
                   <Label>{idLabel}</Label>
@@ -4249,7 +4491,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 step to sequence after), or after Specialization for Test Prep/
                 Professional Course/Skills Training — pick what you're doing before
                 where. */}
-            {form.type === "student" && (
+            {/* International: one free-text field, no PK category/specialization/department. */}
+            {!needsGuestRegistration && (form.type === "student" || form.type === "professional") && (
+              <div className="space-y-1.5">
+                <Label>Institute Name</Label>
+                {renderInstituteField()}
+              </div>
+            )}
+            {needsGuestRegistration && form.type === "student" && (
               <div className={studentCategoryHasSpecialization(form.student_category) ? "space-y-1.5" : "grid grid-cols-2 gap-4"}>
                 <div className="space-y-1.5"><Label>Student Category</Label>
                   <Select
@@ -4279,7 +4528,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 )}
               </div>
             )}
-            {form.type === "student" && studentCategoryHasSpecialization(form.student_category) && (
+            {needsGuestRegistration && form.type === "student" && studentCategoryHasSpecialization(form.student_category) && (
               <div className="space-y-1.5">
                 <Label>{STUDENT_CATEGORY_LABELS[form.student_category]} — Specialization</Label>
                 {customSpecialization ? (
@@ -4318,12 +4567,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 )}
               </div>
             )}
-            {form.type === "student" && studentCategoryHasSpecialization(form.student_category) && (
+            {needsGuestRegistration && form.type === "student" && studentCategoryHasSpecialization(form.student_category) && (
               <div className="space-y-1.5"><Label>Institute Name</Label>
                 {renderInstituteField()}
               </div>
             )}
-            {form.type === "professional" && (
+            {needsGuestRegistration && form.type === "professional" && (
               <div className="grid grid-cols-2 gap-4">
                 {/* Type before name — pick the kind of employer, then name it. */}
                 <div className="space-y-1.5"><Label>Organization Type</Label>
@@ -4367,7 +4616,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </div>
               </div>
             )}
-            {(form.type === "professional" || (form.type === "student" && studentCategoryHasDepartment(form.student_category))) && (
+            {needsGuestRegistration && (form.type === "professional" || (form.type === "student" && studentCategoryHasDepartment(form.student_category))) && (
               <div className="space-y-1.5"><Label>Department / Field</Label>
                 {/* Both types get a dropdown — academic programmes for students,
                     workplace functions for professionals. */}
@@ -4596,7 +4845,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     </p>
                     <p className="text-[11px] text-muted-foreground mt-0.5">
                       {correction.fromRoomNumber} meter: {correction.fromRoomReading.toLocaleString()}
-                      {" · "}{correction.billedUnits} units → {formatCurrency(correction.billedCharge)}
+                      {" · "}{correction.billedUnits} units → {fmtMoney(correction.billedCharge)}
                       {correction.toRoomReading != null && <> · {correction.toRoomNumber} meter: {correction.toRoomReading.toLocaleString()}</>}
                     </p>
                   </div>
@@ -4645,7 +4894,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           toast({
                             title: r.warning ? "Re-priced — one thing left to finish" : "Move re-priced",
                             description: r.warning
-                              ?? `Room ${r.fromRoomNumber}: ${r.closedUnits} units (${formatCurrency(r.closedCharge)}), was ${r.previousUnits} units (${formatCurrency(r.previousCharge)}).`,
+                              ?? `Room ${r.fromRoomNumber}: ${r.closedUnits} units (${fmtMoney(r.closedCharge)}), was ${r.previousUnits} units (${fmtMoney(r.previousCharge)}).`,
                             variant: r.warning ? "destructive" : undefined,
                           });
                           setCorrectionOpen(false);
@@ -4672,7 +4921,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 the room being left, is a question nobody can answer correctly. */}
             {!form.is_waiting && form.room_id && !transferPreview && rooms.find((r) => r.id === form.room_id)?.has_ac && (
               <div className="space-y-1.5">
-                <Label>AC Meter Reading at Move-in</Label>
+                <Label>{isPk ? "AC" : "Electricity"} Meter Reading at Move-in</Label>
                 <Input
                   type="number" min={0} step="0.01"
                   placeholder="e.g. 1284.5"
@@ -4792,7 +5041,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           <SelectItem key={`tier:${tier}`} value={`tier:${tier}`}>
                             <span>{label}</span>
                             {price != null && price > 0 && (
-                              <span className="ml-1.5 text-xs text-muted-foreground">Rs. {price.toLocaleString()}</span>
+                              <span className="ml-1.5 text-xs text-muted-foreground">{curSym} {price.toLocaleString()}</span>
                             )}
                           </SelectItem>
                         );
@@ -4804,7 +5053,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           <SelectItem key={`custom:${c.id}`} value={`custom:${c.id}`}>
                             <span>{c.name}</span>
                             {price != null && price > 0 && (
-                              <span className="ml-1.5 text-xs text-muted-foreground">Rs. {price.toLocaleString()}</span>
+                              <span className="ml-1.5 text-xs text-muted-foreground">{curSym} {price.toLocaleString()}</span>
                             )}
                           </SelectItem>
                         );
@@ -4845,7 +5094,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               <p className="text-xs text-muted-foreground/60">
                 Food is billed automatically for this package
                 {foodMonthlyRate > 0 && (
-                  <> — Rs. {foodMonthlyRate.toLocaleString()}/mo added on top of rent (total Rs. {(Number(form.monthly_rent || 0) + foodMonthlyRate).toLocaleString()}/mo, shown as a separate line on the receipt)</>
+                  <> — {curSym} {foodMonthlyRate.toLocaleString()}/mo added on top of rent (total {curSym} {(Number(form.monthly_rent || 0) + foodMonthlyRate).toLocaleString()}/mo, shown as a separate line on the receipt)</>
                 )}.
               </p>
             ) : hasFoodAddonRates(foodAddonRates) && (
@@ -4878,7 +5127,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                               </span>
                               {meal.label}
                             </span>
-                            <span className={checked ? "text-amber font-medium" : ""}>+{formatCurrency(meal.rate)}</span>
+                            <span className={checked ? "text-amber font-medium" : ""}>+{fmtMoney(meal.rate)}</span>
                           </button>
                         );
                       })}
@@ -4906,14 +5155,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                             </span>
                             All Meals (Breakfast + Lunch + Dinner)
                           </span>
-                          <span className={checked ? "text-amber font-medium" : ""}>+{formatCurrency(foodAddonRates.food_all_meals_rate)}</span>
+                          <span className={checked ? "text-amber font-medium" : ""}>+{fmtMoney(foodAddonRates.food_all_meals_rate)}</span>
                         </button>
                       );
                     })()
                   )}
                   {(form.food_breakfast || form.food_lunch || form.food_dinner) && (
                     <p className="text-xs text-muted-foreground">
-                      Food add-on: <span className="text-foreground font-medium">{formatCurrency(calcFoodAddonCharge(form, foodAddonRates))}</span>/mo — billed automatically on top of rent.
+                      Food add-on: <span className="text-foreground font-medium">{fmtMoney(calcFoodAddonCharge(form, foodAddonRates))}</span>/mo — billed automatically on top of rent.
                     </p>
                   )}
                 </div>
@@ -4936,14 +5185,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {form.billing_type === "monthly" ? (
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <Label>Monthly Rent (PKR)</Label>
-                  <Input type="number" placeholder="0" value={form.monthly_rent} onChange={(e) => setForm({ ...form, monthly_rent: e.target.value })} />
+                  {isPk
+                    ? <><Label>Monthly Rent (PKR)</Label><Input type="number" placeholder="0" value={form.monthly_rent} onChange={(e) => setForm({ ...form, monthly_rent: e.target.value })} /></>
+                    : <><Label>Monthly Rent</Label><MoneyInput symbol={curSym} type="number" placeholder="0" value={form.monthly_rent} onChange={(e) => setForm({ ...form, monthly_rent: e.target.value })} /></>}
                   {(form.food_breakfast || form.food_lunch || form.food_dinner) && (() => {
                     const foodCharge = calcFoodAddonCharge(form, foodAddonRates);
                     const rent = parseFloat(form.monthly_rent) || 0;
                     return (
                       <p className="text-xs text-amber">
-                        + {formatCurrency(foodCharge)} food = {formatCurrency(rent + foodCharge)}/mo total
+                        + {fmtMoney(foodCharge)} food = {fmtMoney(rent + foodCharge)}/mo total
                       </p>
                     );
                   })()}
@@ -4961,6 +5211,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                             discount: whichever way it is typed, a percentage is
                             what gets stored, because that is the only discount
                             the pricing trigger accepts. */}
+                        {/* Percent / fixed-amount toggle only for PK. Non-PK is
+                            percentage-only (no currency mode). */}
+                        {isPk && (
                         <div className="inline-flex rounded-md border border-sidebar-border overflow-hidden text-xs">
                           {(["pct", "rs"] as const).map(m => (
                             <button
@@ -4977,14 +5230,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                                 discountMode === m ? "bg-amber/15 text-amber" : "text-muted-foreground hover:text-foreground"
                               )}
                             >
-                              {m === "pct" ? "%" : "Rs"}
+                              {m === "pct" ? "%" : curSym}
                             </button>
                           ))}
                         </div>
+                        )}
                       </div>
-                      {discountMode === "pct" ? (
+                      {(!isPk || discountMode === "pct") ? (
                         <Input
-                          type="number" min="0" max="100" step="0.01" placeholder="0"
+                          type="number" min="0" max="100" step="0.01" placeholder={isPk ? "0" : "%"}
                           value={form.discount_percent}
                           onChange={(e) => setForm({ ...form, discount_percent: e.target.value })}
                         />
@@ -5005,7 +5259,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       )}
                       {applied > 0 && (
                         <p className="text-xs text-emerald-400">
-                          −{formatCurrency(applied)} · effective rent {formatCurrency(discountedRent(rent, pct))}/month
+                          −{fmtMoney(applied)} · effective rent {fmtMoney(discountedRent(rent, pct))}/month
                         </p>
                       )}
                       {/* Said plainly whenever the stored percentage cannot land
@@ -5015,23 +5269,34 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       {discountMode === "rs" && discountRupees.trim() !== "" && applied > 0
                         && Math.abs(applied - typedRs) > 0.004 && (
                         <p className="text-xs text-amber/80">
-                          Closest available is {formatCurrency(applied)} — a discount is stored as a percentage, and {form.discount_percent}% is the nearest to {formatCurrency(typedRs)}.
+                          Closest available is {fmtMoney(applied)} — a discount is stored as a percentage, and {form.discount_percent}% is the nearest to {fmtMoney(typedRs)}.
                         </p>
                       )}
                       <p className="text-xs text-muted-foreground">Rent only — never food, AC or the deposit.</p>
                     </div>
                   );
                 })()}
-                <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
+                {isPk
+                  ? <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
+                  : <div className="space-y-1.5"><Label>Security Deposit</Label><MoneyInput symbol={curSym} type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>}
                 {configAcMaintenance > 0 && (
                   <div className="space-y-1.5">
+                    {isPk ? <>
                     <Label>AC Maintenance (PKR / month)</Label>
                     <Input
                       type="number" min="0"
                       placeholder={`Default ${configAcMaintenance}`}
                       value={form.ac_maintenance}
                       onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
-                    />
+                    /></> : <>
+                    <Label>AC Maintenance / month</Label>
+                    <MoneyInput
+                      symbol={curSym}
+                      type="number" min="0"
+                      placeholder={`Default ${configAcMaintenance}`}
+                      value={form.ac_maintenance}
+                      onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
+                    /></>}
                     <p className="text-xs text-muted-foreground">
                       Enter 0 to waive it for this tenant.
                     </p>
@@ -5040,7 +5305,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 {configRegistrationFee > 0 && (
                   <div className="space-y-1.5">
                     <Label>Registration Fee</Label>
-                    <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
+                    {isPk
+                      ? <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
+                      : <MoneyInput symbol={curSym} type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />}
                     <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
                   </div>
                 )}
@@ -5077,22 +5344,41 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     </p>
                   )}
                 </div>
+                {!form.is_waiting && (
+                  <div className="space-y-1.5 col-span-2">
+                    <Label>Expected Check-out Date <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                    <Input type="date" value={form.intended_checkout_date} min={form.check_in || undefined} onChange={(e) => setForm({ ...form, intended_checkout_date: e.target.value })} />
+                  </div>
+                )}
               </div>
             ) : (
               <>
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label>Daily Rate (PKR)</Label><Input type="number" placeholder="0" value={form.daily_rate} onChange={(e) => setForm({ ...form, daily_rate: e.target.value })} /></div>
-                  <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
+                  {isPk
+                    ? <div className="space-y-1.5"><Label>Daily Rate (PKR)</Label><Input type="number" placeholder="0" value={form.daily_rate} onChange={(e) => setForm({ ...form, daily_rate: e.target.value })} /></div>
+                    : <div className="space-y-1.5"><Label>Daily Rate</Label><MoneyInput symbol={curSym} type="number" placeholder="0" value={form.daily_rate} onChange={(e) => setForm({ ...form, daily_rate: e.target.value })} /></div>}
+                  {isPk
+                  ? <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
+                  : <div className="space-y-1.5"><Label>Security Deposit</Label><MoneyInput symbol={curSym} type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>}
                 </div>
                 {configAcMaintenance > 0 && (
                   <div className="space-y-1.5">
+                    {isPk ? <>
                     <Label>AC Maintenance (PKR / month)</Label>
                     <Input
                       type="number" min="0"
                       placeholder={`Default ${configAcMaintenance}`}
                       value={form.ac_maintenance}
                       onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
-                    />
+                    /></> : <>
+                    <Label>AC Maintenance / month</Label>
+                    <MoneyInput
+                      symbol={curSym}
+                      type="number" min="0"
+                      placeholder={`Default ${configAcMaintenance}`}
+                      value={form.ac_maintenance}
+                      onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
+                    /></>}
                     <p className="text-xs text-muted-foreground">
                       Enter 0 to waive it for this tenant.
                     </p>
@@ -5102,7 +5388,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                     <Label>Registration Fee</Label>
-                    <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
+                    {isPk
+                      ? <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
+                      : <MoneyInput symbol={curSym} type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />}
                     <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
                   </div>
                   </div>
@@ -5119,8 +5407,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   if (!rate || !days) return null;
                   return (
                     <div className="flex items-center justify-between rounded-lg bg-amber/[0.06] border border-amber/20 px-4 py-2.5">
-                      <span className="text-sm text-muted-foreground">{days} day{days !== 1 ? "s" : ""} × {formatCurrency(rate)}/day</span>
-                      <span className="text-sm font-bold text-amber">{formatCurrency(days * rate)}</span>
+                      <span className="text-sm text-muted-foreground">{days} day{days !== 1 ? "s" : ""} × {fmtMoney(rate)}/day</span>
+                      <span className="text-sm font-bold text-amber">{fmtMoney(days * rate)}</span>
                     </div>
                   );
                 })()}
@@ -5174,20 +5462,37 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             ) : (
               // International structured address (non-guest-registration countries).
+              // Country first (it sets the region label); city/region stay free
+              // text — no per-country region/city dataset by design.
               <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label>Country <span className="text-destructive">*</span></Label>
+                  <SearchableSelect
+                    value={form.address_country || countryNameOf(country)}
+                    onValueChange={(v) => setForm({ ...form, address_country: v })}
+                    options={COUNTRY_NAMES}
+                    placeholder="Select country"
+                    searchPlaceholder="Search countries…"
+                  />
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="space-y-1.5"><Label>Address Line 1</Label><Input value={form.address_line1} onChange={(e) => setForm({ ...form, address_line1: e.target.value })} placeholder="House number and street" /></div>
+                  <div className="space-y-1.5 sm:col-span-2"><Label>Address Line 1 <span className="text-destructive">*</span></Label><Input value={form.address_line1} onChange={(e) => setForm({ ...form, address_line1: e.target.value })} placeholder="House number and street" /></div>
                   <div className="space-y-1.5"><Label>Address Line 2</Label><Input value={form.address_line2} onChange={(e) => setForm({ ...form, address_line2: e.target.value })} placeholder="Apartment, suite, etc." /></div>
-                  <div className="space-y-1.5"><Label>City / Town</Label><Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></div>
-                  <div className="space-y-1.5"><Label>County / State / Province</Label><Input value={form.county_state} onChange={(e) => setForm({ ...form, county_state: e.target.value })} /></div>
-                  <div className="space-y-1.5"><Label>Postcode / ZIP</Label><Input value={form.postcode} onChange={(e) => setForm({ ...form, postcode: e.target.value })} /></div>
-                  <div className="space-y-1.5"><Label>Country</Label><Input value={form.address_country || getCountryConfig(country).name} onChange={(e) => setForm({ ...form, address_country: e.target.value })} /></div>
+                  <div className="space-y-1.5"><Label>City / Town <span className="text-destructive">*</span></Label><Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></div>
+                  <div className="space-y-1.5"><Label>{addressRegionLabel(countryCodeOfName(form.address_country) || country)}</Label><Input value={form.county_state} onChange={(e) => setForm({ ...form, county_state: e.target.value })} /></div>
+                  <div className="space-y-1.5">
+                    <Label>Postcode / ZIP <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                    <Input value={form.postcode} onChange={(e) => setForm({ ...form, postcode: e.target.value })} />
+                    {(countryCodeOfName(form.address_country) || country) === "GB" && form.postcode.trim() && !looksLikeUkPostcode(form.postcode) && (
+                      <p className="text-xs text-amber">This doesn&apos;t look like a standard UK postcode. Please check it.</p>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
 
             <div className="space-y-1.5">
-              <Label>Purpose of Visit</Label>
+              <Label>{words.purposeOfVisit}</Label>
               <Select
                 value={form.purpose_of_visit}
                 onValueChange={(v) =>
@@ -5217,14 +5522,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {/* Required when adding, not when editing: the 671 tenants who
                 predate this field have no father name on record, and blocking
                 Save would lock every one of them out of an unrelated edit. */}
-            <div className="space-y-1.5"><Label>Father Name{editing ? "" : " *"}</Label><Input placeholder="Muhammad Khan" value={form.father_name} onChange={(e) => setForm({ ...form, father_name: e.target.value })} /></div>
+            {needsGuestRegistration && (
+              <div className="space-y-1.5"><Label>Father Name{editing ? "" : " *"}</Label><Input placeholder="Muhammad Khan" value={form.father_name} onChange={(e) => setForm({ ...form, father_name: e.target.value })} /></div>
+            )}
 
             <div className="grid grid-cols-2 gap-4">
               {/* Same add-vs-edit rule as Father Name: 467 of the 671 existing
                   tenants have no emergency contact on record, so gating Save on
                   edit would lock them out of unrelated changes. */}
               <div className="space-y-1.5"><Label>Emergency Contact{editing ? "" : " *"}</Label><Input placeholder="Name" value={form.emergency_contact} onChange={(e) => setForm({ ...form, emergency_contact: e.target.value })} /></div>
-              <div className="space-y-1.5"><Label>Emergency Phone{editing ? "" : " *"}</Label><Input placeholder="+92 300 0000000" value={form.emergency_phone} onChange={(e) => setForm({ ...form, emergency_phone: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Emergency Phone{editing ? "" : " *"}</Label><Input placeholder="+92 300 0000000" inputMode="tel" value={form.emergency_phone} onChange={(e) => setForm({ ...form, emergency_phone: e.target.value.replace(/[^\d+\-()\s]/g, "") })} /></div>
             </div>
             <div className="space-y-1.5">
               <Label>Emergency Relationship</Label>
@@ -5274,7 +5581,40 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 tenantName={editing.full_name}
                 documents={editingDocs}
                 onChange={setEditingDocs}
+                isPk={isPk}
               />
+            </div>
+          )}
+
+          {/* Data & privacy (GDPR erasure) — owner/super_admin only. Never shown
+              to partners or managers, who cannot run these server actions. */}
+          {editing && !isManager && !isPartner && !viewOnly && !isPk && (
+            <div className="pt-3 mt-1 border-t border-rose-500/20">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <ShieldCheck className="w-4 h-4 text-rose-400" />
+                <h4 className="text-sm font-medium text-rose-300">Data &amp; privacy</h4>
+              </div>
+              {editing.anonymised_at ? (
+                <p className="text-xs text-muted-foreground">
+                  Contact &amp; ID data was anonymised on {new Date(editing.anonymised_at).toLocaleDateString()}. Name and financial records were kept.
+                </p>
+              ) : (
+                <>
+                  <p className="text-xs text-muted-foreground mb-2.5">
+                    Erase this resident&apos;s personal data to meet a deletion request. Anonymising removes personal details while retaining necessary financial records; deleting permanently removes everything, finances included.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" variant="outline" size="sm" className="gap-1.5 border-amber/40 text-amber hover:text-amber"
+                      onClick={() => openErasure(editing, "anonymise")}>
+                      <ShieldCheck className="w-3.5 h-3.5" /> Anonymise data
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" className="gap-1.5 border-rose-500/40 text-rose-400 hover:text-rose-300"
+                      onClick={() => openErasure(editing, "hard_delete")}>
+                      <Trash2 className="w-3.5 h-3.5" /> Delete permanently
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           )}
           <DialogFooter>
@@ -5291,7 +5631,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </span>
                 )}
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleSave} disabled={saving || redflagChecking || transferChecking || transferReadingsMissing || transferBlocked || !form.full_name || (!editing && (!form.father_name.trim() || !form.emergency_contact.trim() || !form.emergency_phone.trim())) || (!form.is_waiting && !form.check_in)}>
+                <Button onClick={handleSave} disabled={saving || redflagChecking || transferChecking || transferReadingsMissing || transferBlocked || !form.full_name || !form.phone.trim() || (!editing && ((needsGuestRegistration && !form.father_name.trim()) || !form.emergency_contact.trim() || !form.emergency_phone.trim())) || (!form.is_waiting && !form.check_in)}>
                   {transferChecking
                     ? "Checking meters…"
                     : redflagChecking
@@ -5300,9 +5640,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     ? "Saving…"
                     : editing
                       ? editing.is_waiting && !form.is_waiting
-                        ? "Activate Tenant"
+                        ? `Activate ${words.tenant}`
                         : "Update"
-                      : "Add Tenant"}
+                      : `Add ${words.tenant}`}
                 </Button>
               </>
             )}
@@ -5370,7 +5710,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {checkingOut?.room_id && (roomMap[checkingOut.room_id]?.has_ac || meterAllRooms) && (
               <div className="space-y-2">
                 <Label htmlFor="checkout-ac-reading" className="flex items-center gap-1.5">
-                  AC Meter Reading at Departure
+                  {isPk ? "AC" : "Electricity"} Meter Reading at Departure
                   <span className="text-xs text-muted-foreground font-normal">(optional, for accurate billing)</span>
                 </Label>
 
@@ -5514,8 +5854,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       const shareUnits = Math.round((checkoutMath.estimatedACCharge / rate) * 100) / 100;
                       return (
                         <p className="text-xs text-emerald-400">
-                          Room metered {units.toLocaleString()} unit{units === 1 ? "" : "s"} ({prev.toLocaleString()} → {reading.toLocaleString()}) · their share {shareUnits.toLocaleString()} unit{shareUnits === 1 ? "" : "s"} × PKR {rate.toLocaleString()} ={" "}
-                          <span className="font-medium">PKR {checkoutMath.estimatedACCharge.toLocaleString()}</span>
+                          Room metered {units.toLocaleString()} unit{units === 1 ? "" : "s"} ({prev.toLocaleString()} → {reading.toLocaleString()}) · their share {shareUnits.toLocaleString()} unit{shareUnits === 1 ? "" : "s"} × {curCode} {rate.toLocaleString()} ={" "}
+                          <span className="font-medium">{curCode} {checkoutMath.estimatedACCharge.toLocaleString()}</span>
                         </p>
                       );
                     })()}
@@ -5559,10 +5899,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 {/* Context line */}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                   {checkoutPendingPayment && (
-                    <span>{checkoutPendingPayment.for_month} · <span className="text-foreground font-medium">{formatCurrency(checkoutMath.pending)} outstanding</span></span>
+                    <span>{checkoutPendingPayment.for_month} · <span className="text-foreground font-medium">{fmtMoney(checkoutMath.pending)} outstanding</span></span>
                   )}
                   {(checkingOut?.security_deposit ?? 0) > 0 && (
-                    <span>{formatCurrency(checkingOut!.security_deposit)} deposit held</span>
+                    <span>{fmtMoney(checkingOut!.security_deposit)} deposit held</span>
                   )}
                 </div>
 
@@ -5617,7 +5957,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         <div>
                           <p className="text-sm font-medium">Charge for the final month</p>
                           <p className="text-xs text-muted-foreground mt-0.5">
-                            Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} nights stayed in {checkoutProRateInfo.month}, charged at {formatCurrency(Math.round(checkoutProRateInfo.fullRent / 30))}/day (rent ÷ 30). Food, AC and deposit charges are never pro-rated.
+                            Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} nights stayed in {checkoutProRateInfo.month}, charged at {fmtMoney(Math.round(checkoutProRateInfo.fullRent / 30))}/day (rent ÷ 30). Food, AC and deposit charges are never pro-rated.
                           </p>
                         </div>
                         <div className="grid grid-cols-2 gap-2">
@@ -5630,7 +5970,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                             )}
                           >
                             <p className="text-xs text-muted-foreground">Full month</p>
-                            <p className="text-sm font-semibold mt-0.5">{formatCurrency(checkoutProRateInfo.fullRent)}</p>
+                            <p className="text-sm font-semibold mt-0.5">{fmtMoney(checkoutProRateInfo.fullRent)}</p>
                             <p className="text-[11px] text-muted-foreground mt-0.5">Charge the whole month anyway</p>
                           </button>
                           <button
@@ -5642,7 +5982,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                             )}
                           >
                             <p className="text-xs text-muted-foreground">Days stayed</p>
-                            <p className="text-sm font-semibold mt-0.5">{formatCurrency(checkoutProRateInfo.proRatedRent)}</p>
+                            <p className="text-sm font-semibold mt-0.5">{fmtMoney(checkoutProRateInfo.proRatedRent)}</p>
                             <p className="text-[11px] text-muted-foreground mt-0.5">
                               Default — {checkoutProRateInfo.nights} nights
                             </p>
@@ -5650,7 +5990,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         </div>
                         {checkoutProRate && (
                           <p className="text-xs text-emerald-400">
-                            Rent reduced by {formatCurrency(checkoutProRateInfo.discount)}
+                            Rent reduced by {fmtMoney(checkoutProRateInfo.discount)}
                           </p>
                         )}
                       </div>
@@ -5675,7 +6015,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   <div className="space-y-1">
                     <p className="text-xs text-muted-foreground">
                       {checkoutMath.applied > 0
-                        ? <>Refund to tenant — {formatCurrency(checkoutMath.applied)} of the deposit goes to dues, leaving {formatCurrency(checkoutMath.refundable)}</>
+                        ? <>Refund to tenant — {fmtMoney(checkoutMath.applied)} of the deposit goes to dues, leaving {fmtMoney(checkoutMath.refundable)}</>
                         : <>Refund to tenant (0 = fully forfeited)</>}
                     </p>
                     <input
@@ -5722,7 +6062,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           Outstanding{checkoutPayAction === "waive" && <span className="ml-1 text-xs">(waived)</span>}
                         </span>
                         <span className={cn(checkoutPayAction !== "pay" ? "text-muted-foreground line-through" : "")}>
-                          {formatCurrency(basePending)}
+                          {fmtMoney(basePending)}
                         </span>
                       </div>
                     )}
@@ -5731,7 +6071,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         <span className="text-muted-foreground">
                           Pro-rated ({checkoutProRateInfo?.nights} nights at rent ÷ 30)
                         </span>
-                        <span className="text-emerald-400">− {formatCurrency(proRateDiscount)}</span>
+                        <span className="text-emerald-400">− {fmtMoney(proRateDiscount)}</span>
                       </div>
                     )}
                     {estimatedACCharge > 0 && (
@@ -5740,17 +6080,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           AC charge (est.){checkoutPayAction === "waive" && <span className="ml-1 text-xs">(waived)</span>}
                         </span>
                         <span className={cn(checkoutPayAction !== "pay" ? "text-muted-foreground line-through" : "")}>
-                          {formatCurrency(estimatedACCharge)}
+                          {fmtMoney(estimatedACCharge)}
                         </span>
                       </div>
                     )}
                     {deposit > 0 && (
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">
-                          Deposit held{applied > 0 ? <span className="ml-1 text-xs">(− {formatCurrency(applied)} to dues)</span> : null}
+                          Deposit held{applied > 0 ? <span className="ml-1 text-xs">(− {fmtMoney(applied)} to dues)</span> : null}
                         </span>
                         <span className={applied > 0 ? "text-emerald-400" : ""}>
-                          {formatCurrency(deposit)}
+                          {fmtMoney(deposit)}
                         </span>
                       </div>
                     )}
@@ -5760,7 +6100,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       toCollect > 0 ? (
                         <div className="flex justify-between text-sm font-semibold">
                           <span className="text-amber">Collect from tenant</span>
-                          <span className="text-amber">{formatCurrency(toCollect)}</span>
+                          <span className="text-amber">{fmtMoney(toCollect)}</span>
                         </div>
                       ) : (
                         <div className="flex justify-between text-sm font-semibold">
@@ -5779,12 +6119,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                       <>
                         <div className="flex justify-between text-sm font-semibold">
                           <span className="text-sky-400">Refund to tenant</span>
-                          <span className="text-sky-400">{formatCurrency(refunding)}</span>
+                          <span className="text-sky-400">{fmtMoney(refunding)}</span>
                         </div>
                         {forfeiting > 0 && (
                           <div className="flex justify-between text-xs">
                             <span className="text-muted-foreground">Kept by hostel (forfeited)</span>
-                            <span className="text-muted-foreground">{formatCurrency(forfeiting)}</span>
+                            <span className="text-muted-foreground">{fmtMoney(forfeiting)}</span>
                           </div>
                         )}
                       </>
@@ -5833,22 +6173,35 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           <div className={cn("space-y-4 py-1", depositSubmitting && "pointer-events-none opacity-50")}>
             <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="deposit-amount">Amount received (PKR)</Label>
+                <Label htmlFor="deposit-amount">{isPk ? "Amount received (PKR)" : "Amount received"}</Label>
                 {!!depositDialogTenant && depositDialogTenant.security_deposit > 0 && (
                   <span className="text-xs text-muted-foreground">
-                    Deposit on file: {formatCurrency(depositDialogTenant.security_deposit)}
+                    Deposit on file: {fmtMoney(depositDialogTenant.security_deposit)}
                   </span>
                 )}
               </div>
-              <Input
-                id="deposit-amount"
-                type="number"
-                min={0}
-                max={depositDialogTenant?.security_deposit || undefined}
-                placeholder="0"
-                value={depositForm.amount}
-                onChange={(e) => setDepositForm({ ...depositForm, amount: e.target.value })}
-              />
+              {isPk ? (
+                <Input
+                  id="deposit-amount"
+                  type="number"
+                  min={0}
+                  max={depositDialogTenant?.security_deposit || undefined}
+                  placeholder="0"
+                  value={depositForm.amount}
+                  onChange={(e) => setDepositForm({ ...depositForm, amount: e.target.value })}
+                />
+              ) : (
+                <MoneyInput
+                  symbol={curSym}
+                  id="deposit-amount"
+                  type="number"
+                  min={0}
+                  max={depositDialogTenant?.security_deposit || undefined}
+                  placeholder="0"
+                  value={depositForm.amount}
+                  onChange={(e) => setDepositForm({ ...depositForm, amount: e.target.value })}
+                />
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -5900,15 +6253,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 )}>
                   {over ? (
                     <>
-                      {formatCurrency(entered)} is more than the whole deposit of {formatCurrency(agreed)}. Enter{" "}
-                      {formatCurrency(agreed)} or less, or change the deposit on their profile first.
+                      {fmtMoney(entered)} is more than the whole deposit of {fmtMoney(agreed)}. Enter{" "}
+                      {fmtMoney(agreed)} or less, or change the deposit on their profile first.
                     </>
                   ) : (
                     <>
                       Recorded against {depositForm.date ? formatDate(depositForm.date) : "the date above"} and counted in that month&apos;s
                       collection. Rent still starts on {depositDialogTenant?.check_in ? formatDate(depositDialogTenant.check_in) : "the joining date"}.
                       {balance > 0
-                        ? ` The remaining ${formatCurrency(balance)} of the deposit will be charged on the first monthly bill.`
+                        ? ` The remaining ${fmtMoney(balance)} of the deposit will be charged on the first monthly bill.`
                         : " This deposit will not be charged again on the first bill."}
                     </>
                   )}

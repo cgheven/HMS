@@ -4,7 +4,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { effectivePaymentStatus, splitPaymentCharges, computeRentDiscount } from "@/lib/payment-calc";
 import { createClient } from "@/lib/supabase/server";
 import { capitalize, getMonthRange } from "@/lib/utils";
-import { pktYearMonth } from "@/lib/pkt-time";
+import { yearMonthInZone } from "@/lib/pkt-time";
+import { getCountryConfig } from "@/lib/country-config";
 import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
 import {
   collectedFrom,
@@ -136,6 +137,7 @@ async function verifyReportAccess(
 export interface ReportData {
   hostelId: string;
   hostelName: string;
+  country: string | null;
   from: string;
   to: string;
   label: string;
@@ -388,7 +390,7 @@ export async function getReportData(
   // Verify ownership
   const { data: hostelRow } = await admin
     .from("hms_hostels")
-    .select("id, name, owner_id, slug, kitchen_group_id")
+    .select("id, name, owner_id, slug, kitchen_group_id, country")
     .eq("id", hostelId)
     .single();
 
@@ -404,10 +406,10 @@ export async function getReportData(
   const fullEnd = monthKeys[monthKeys.length - 1]?.end ?? to;
 
   const now = new Date();
-  // Pakistan-anchored, not the server process's own OS timezone — Vercel's
-  // serverless functions default to UTC, a developer's own machine is
-  // whatever it's set to, and "this month" must agree between them.
-  const { year: curYear, month: curMonth } = pktYearMonth(now); // curMonth is 1-indexed
+  // The hostel's own calendar month (its timezone), not the server's OS timezone
+  // nor a fixed PKT — a UK branch's month must roll over at London time.
+  const reportTz = getCountryConfig((hostelRow as { country?: string | null }).country).timezone;
+  const { year: curYear, month: curMonth } = yearMonthInZone(reportTz, now); // curMonth is 1-indexed
   const currentMonthKey = `${curYear}-${String(curMonth).padStart(2, "0")}`;
 
   const [
@@ -1276,12 +1278,11 @@ export async function getReportData(
   // month, not just this one) so an expense/kitchen entry someone logs a few
   // days ahead of today — for their own convenience — doesn't fall off the
   // edge of the window entirely whenever "today" happens to be near month-end.
-  const { start: curStart } = getMonthRange(now);
-  // curYear/curMonth (from pktYearMonth above) instead of now's own local
-  // getters — otherwise "next month" is computed relative to whatever month
-  // the server's own OS timezone thinks it is, which can disagree with
-  // Pakistan time for the same reason getMonthRange itself had to be fixed.
-  const { end: curEnd } = getMonthRange(new Date(Date.UTC(curYear, curMonth, 1)));
+  const { start: curStart } = getMonthRange(now, reportTz);
+  // curYear/curMonth (hostel-timezone above) instead of now's own local getters
+  // — otherwise "next month" is computed relative to whatever month the server's
+  // own OS timezone thinks it is, which can disagree with the hostel's own month.
+  const { end: curEnd } = getMonthRange(new Date(Date.UTC(curYear, curMonth, 1)), reportTz);
   const [
     curExpensesRes, curKitchenRes, curSalariesRes, curBillsRes, curAdvancesRes, monthInstallmentsRes, joinedRes, leftRes, dueRes,
   ] = await Promise.all([
@@ -1532,6 +1533,7 @@ export async function getReportData(
     data: {
       hostelId,
       hostelName: hostelRow.name,
+      country: (hostelRow as { country?: string | null }).country ?? null,
       from,
       to,
       label,

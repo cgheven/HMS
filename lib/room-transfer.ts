@@ -2,7 +2,8 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, round2 } from "@/lib/ac-billing";
 import { carriedTransferCharges } from "@/lib/ac-transfer";
-import { pktTodayDateString } from "@/lib/pkt-time";
+import { todayInZone } from "@/lib/pkt-time";
+import { getCountryConfig } from "@/lib/country-config";
 import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
 
 export interface RoomTransferInput {
@@ -79,14 +80,24 @@ export function isMeteredRoom(room: { has_ac: boolean } | null, meterAllRooms: b
  * are about to disappear from that room's tenant list — and carriedTransferCharges
  * keeps that share alive against every later writer of the same payment row.
  */
+// A hostel's current billing month (YYYY-MM) in ITS OWN timezone. A fixed PKT
+// month is wrong for a UK branch at a month boundary. Falls open to Karachi
+// (byte-identical for PK).
+async function hostelForMonth(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  adminDb: SupabaseClient<any, any, any>,
+  hostelId: string
+): Promise<string> {
+  const { data } = await adminDb.from("hms_hostels").select("country").eq("id", hostelId).maybeSingle();
+  return todayInZone(getCountryConfig((data as { country?: string | null } | null)?.country).timezone).slice(0, 7);
+}
+
 export async function performRoomTransfer(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   adminDb: SupabaseClient<any, any, any>,
   hostelId: string,
   input: RoomTransferInput
 ): Promise<RoomTransferResult> {
-  const today = pktTodayDateString();
-  const forMonth = today.slice(0, 7);
   // Destination branch. Equals the source for a within-branch move; a real other
   // branch for a branch transfer. Every destination-side query below uses this.
   const destHostelId = input.toHostelId ?? hostelId;
@@ -107,12 +118,19 @@ export async function performRoomTransfer(
     tenant.room_id
       ? adminDb.from("hms_rooms").select("id, room_number, has_ac").eq("id", tenant.room_id).eq("hostel_id", hostelId).maybeSingle()
       : Promise.resolve({ data: null }),
-    adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).single(),
+    adminDb.from("hms_hostels").select("meter_all_rooms, country").eq("id", hostelId).single(),
     crossBranch
       ? adminDb.from("hms_hostels").select("meter_all_rooms").eq("id", destHostelId).single()
       : Promise.resolve({ data: null }),
   ]);
   if (!toRoom) throw new Error("Destination room not found in this branch.");
+
+  // "Today" and the billing month are the SOURCE hostel's own timezone (the AC
+  // being closed sits in the room being left), not a fixed PKT — at a month
+  // boundary Karachi and London disagree for a few hours. Falls open to Karachi
+  // (byte-identical for PK).
+  const today = todayInZone(getCountryConfig((hostel as { country?: string | null } | null)?.country).timezone);
+  const forMonth = today.slice(0, 7);
 
   const meterAll = !!hostel?.meter_all_rooms;
   const destMeterAll = crossBranch ? !!destHostel?.meter_all_rooms : meterAll;
@@ -612,7 +630,7 @@ export async function findCorrectableTransfer(
   hostelId: string,
   tenantId: string
 ): Promise<CorrectableTransfer | null> {
-  const forMonth = pktTodayDateString().slice(0, 7);
+  const forMonth = await hostelForMonth(adminDb, hostelId);
 
   const { data: tenant } = await adminDb
     .from("hms_tenants")
@@ -703,7 +721,7 @@ export async function correctRoomTransferReadings(
   hostelId: string,
   input: { tenantId: string; fromRoomReading: number; toRoomReading?: number | null }
 ): Promise<RoomTransferCorrectionResult> {
-  const forMonth = pktTodayDateString().slice(0, 7);
+  const forMonth = await hostelForMonth(adminDb, hostelId);
   const corr = await findCorrectableTransfer(adminDb, hostelId, input.tenantId);
   if (!corr) {
     throw new Error("There is no move from this month left to correct for this member.");

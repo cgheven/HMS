@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { AlertTriangle, ChefHat, ChevronDown, FlaskConical, Info } from "lucide-react";
-import { formatCurrency } from "@/lib/utils";
+import { useMoney } from "@/contexts/hostel-context";
 import type { ReportData } from "@/app/actions/reports";
 
 const BASIS_LABEL: Record<string, string> = {
@@ -44,6 +44,7 @@ function Disclosure({
 }
 
 export function UnitCostTab({ data: d, period }: { data: ReportData; period: string }) {
+  const money = useMoney();
   const u = d.unitCost;
   const meal = u.meal;
   const hasSubscribers = !!meal && meal.subscriberMonths > 0;
@@ -77,7 +78,7 @@ export function UnitCostTab({ data: d, period }: { data: ReportData; period: str
         <div className="rounded-2xl border border-sidebar-border bg-card p-5">
           <p className="text-xs text-muted-foreground font-medium">Cost per resident</p>
           <p className="text-3xl font-bold text-foreground mt-1">
-            {formatCurrency(u.costPerPerson)}
+            {money(u.costPerPerson)}
             <span className="text-sm font-normal text-muted-foreground"> / month</span>
           </p>
           <p className="text-xs text-muted-foreground mt-1.5">
@@ -91,7 +92,7 @@ export function UnitCostTab({ data: d, period }: { data: ReportData; period: str
           {hasSubscribers ? (
             <>
               <p className="text-3xl font-bold text-foreground mt-1">
-                {formatCurrency(meal.costPerSubscriber)}
+                {money(meal.costPerSubscriber)}
                 <span className="text-sm font-normal text-muted-foreground"> / month</span>
               </p>
               <p className="text-xs mt-1.5">
@@ -99,10 +100,10 @@ export function UnitCostTab({ data: d, period }: { data: ReportData; period: str
                   <>
                     <span className={meal.marginPerSubscriber >= 0 ? "text-emerald-400" : "text-rose-400"}>
                       {meal.marginPerSubscriber >= 0 ? "+" : "−"}
-                      {formatCurrency(Math.abs(meal.marginPerSubscriber))}
+                      {money(Math.abs(meal.marginPerSubscriber))}
                     </span>
                     <span className="text-muted-foreground">
-                      {" "}against {formatCurrency(meal.revenuePerSubscriber)} charged
+                      {" "}against {money(meal.revenuePerSubscriber)} charged
                     </span>
                   </>
                 ) : (
@@ -140,7 +141,7 @@ export function UnitCostTab({ data: d, period }: { data: ReportData; period: str
                     {u.costPerPerson > 0 ? `${Math.round((amount / u.costPerPerson) * 100)}%` : "—"}
                   </span>
                   <span className="text-sm font-medium text-foreground tabular-nums">
-                    {formatCurrency(amount)}
+                    {money(amount)}
                   </span>
                 </span>
               </div>
@@ -148,13 +149,13 @@ export function UnitCostTab({ data: d, period }: { data: ReportData; period: str
             <div className="flex items-baseline justify-between gap-4 pt-2.5 mt-1.5 border-t border-sidebar-border">
               <span className="text-sm font-semibold text-foreground">Total</span>
               <span className="text-sm font-bold text-foreground tabular-nums">
-                {formatCurrency(u.costPerPerson)}
+                {money(u.costPerPerson)}
               </span>
             </div>
           </div>
           {u.capitalExcluded > 0 && (
             <p className="text-xs text-muted-foreground mt-3 pt-3 border-t border-sidebar-border">
-              {formatCurrency(u.capitalExcluded)} of one-off capital spend left out — it is not what
+              {money(u.capitalExcluded)} of one-off capital spend left out — it is not what
               running the branch costs each month.
             </p>
           )}
@@ -171,7 +172,7 @@ export function UnitCostTab({ data: d, period }: { data: ReportData; period: str
               <span className="text-foreground font-medium">
                 {(meal.sharePercent * 100).toFixed(0)}%
               </span>{" "}
-              of {formatCurrency(meal.kitchenCost)}
+              of {money(meal.kitchenCost)}
             </>
           }
         >

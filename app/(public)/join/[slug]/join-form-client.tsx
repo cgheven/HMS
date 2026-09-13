@@ -1,10 +1,11 @@
 "use client";
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Home, CheckCircle2, Loader2, Phone, Mail, User, CreditCard, Calendar, MessageSquare, Camera, Upload, X, RefreshCw, BedDouble, Check, ShieldAlert } from "lucide-react";
+import { Home, CheckCircle2, Loader2, Phone, Mail, User, CreditCard, Calendar, MessageSquare, Camera, Upload, X, RefreshCw, BedDouble, Check, ShieldAlert, Hash } from "lucide-react";
 import { submitApplication } from "@/app/actions/applications";
 import { uploadApplicationCnic } from "@/app/actions/public";
 import { formatNationalId, isValidNationalId, nationalIdLabel, requiresGuestRegistration } from "@/lib/national-id";
-import { getCountryConfig } from "@/lib/country-config";
+import { getCountryConfig, terms } from "@/lib/country-config";
+import { COUNTRY_NAMES, countryNameOf, countryCodeOfName, addressRegionLabel, looksLikeUkPostcode, validateDocumentNumber, looksLikePhone } from "@/lib/countries";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -42,6 +43,9 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
   const idLabel = nationalIdLabel(country);
   const idExample = getCountryConfig(country).nationalId.example;
   const needsGuestRegistration = requiresGuestRegistration(country);
+  // Country terminology: PK renders "WhatsApp Number"; non-PK renders "Mobile
+  // Number". Fails open to PK (byte-identical).
+  const words = terms(country);
   // The document-upload noun: the fixed ID name for PK ("CNIC"), a generic "ID"
   // for the international flexible-document form.
   const docLabel = needsGuestRegistration ? idLabel : "ID";
@@ -102,11 +106,15 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
   // applies to Professional always, and to Student only for categories that
   // have a meaningful "department" (not Test Prep/Professional Course/Skills
   // Training, which get a Specialization dropdown instead).
-  const showInstitute = show("institute_name") && form.type === "student";
-  const showStudentCategory = show("student_category") && form.type === "student";
+  // International markets collapse the whole PK student/professional taxonomy
+  // (category, specialization, department, organization presets — all Pakistan-
+  // specific) into ONE free-text "Institution / University / Employer Name".
+  const intlEnrollment = !needsGuestRegistration;
+  const showInstitute = show("institute_name") && (intlEnrollment ? (form.type === "student" || form.type === "professional") : form.type === "student");
+  const showStudentCategory = !intlEnrollment && show("student_category") && form.type === "student";
   const showSpecialization = showStudentCategory && studentCategoryHasSpecialization(form.student_category);
-  const showOrganization = show("organization") && form.type === "professional";
-  const showDepartment = show("department") && (
+  const showOrganization = !intlEnrollment && show("organization") && form.type === "professional";
+  const showDepartment = !intlEnrollment && show("department") && (
     form.type === "professional" || (form.type === "student" && studentCategoryHasDepartment(form.student_category))
   );
 
@@ -115,6 +123,17 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
   // Test Preparation/Professional Course/Skills Training (pick what you're doing
   // before where).
   function renderInstituteField() {
+    if (intlEnrollment) {
+      // One free-text field for international — no PK institute preset list.
+      return (
+        <Input
+          placeholder="Institution, university or employer"
+          value={form.institute_name}
+          onChange={(e) => setForm({ ...form, institute_name: e.target.value })}
+          required
+        />
+      );
+    }
     if (!studentCategoryHasInstitutePresets(form.student_category)) {
       return (
         <Input
@@ -299,10 +318,12 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
         setError(`Enter a valid ${idLabel}${idExample ? `, e.g. ${idExample}` : ""}.`);
         return;
       }
-    } else if (show("cnic") && form.cnic.trim() && !form.id_type) {
-      // International: optional/flexible, but a number needs a document type.
-      setError("Please select the identification document type.");
-      return;
+    } else if (show("cnic") && form.cnic.trim()) {
+      // International: optional/flexible. A number needs a document type, and a
+      // light sanity check on the value (no per-country format — many documents).
+      if (!form.id_type) { setError("Please select the identification document type."); return; }
+      const idErr = validateDocumentNumber(form.cnic);
+      if (idErr) { setError(idErr); return; }
     }
     if (show("type") && !form.type) { setError("Please select a type."); return; }
     if (show("move_in_date") && req("move_in_date") && !form.move_in_date) { setError("Move-in date is required."); return; }
@@ -310,7 +331,10 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       setError("Please select a room.");
       return;
     }
-    if (show("permanent_address") && req("permanent_address") && !form.permanent_address.trim()) {
+    // The free-text "Home Address" field only renders in the guest-registration
+    // (Pakistan) branch. International uses a structured postal address, validated
+    // below, so don't demand permanent_address there.
+    if (needsGuestRegistration && show("permanent_address") && req("permanent_address") && !form.permanent_address.trim()) {
       setError("Permanent address is required.");
       return;
     }
@@ -327,9 +351,10 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       if (!form.date_of_birth) { setError("Date of birth is required."); return; }
       if (!form.address_line1.trim()) { setError("Address Line 1 is required."); return; }
       if (!form.city.trim()) { setError("City / town is required."); return; }
-      if (!form.postcode.trim()) { setError("Postcode / ZIP is required."); return; }
+      // Postcode is soft — many countries/addresses have none; only the format is
+      // warned on (below), never blocked.
     }
-    if (show("father_name") && req("father_name") && !form.father_name.trim()) {
+    if (needsGuestRegistration && show("father_name") && req("father_name") && !form.father_name.trim()) {
       setError("Father name is required.");
       return;
     }
@@ -380,7 +405,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
       permanent_address: show("permanent_address") ? form.permanent_address || undefined : undefined,
       permanent_province: form.permanent_province || undefined,
       permanent_district: form.permanent_district || undefined,
-      father_name: show("father_name") ? form.father_name || undefined : undefined,
+      father_name: needsGuestRegistration && show("father_name") ? form.father_name || undefined : undefined,
       purpose_of_visit: show("purpose_of_visit") ? form.purpose_of_visit || undefined : undefined,
       purpose_of_visit_detail:
         show("purpose_of_visit") && form.purpose_of_visit === "other"
@@ -508,7 +533,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
               />
             </div>
 
-            {show("father_name") && (
+            {needsGuestRegistration && show("father_name") && (
               <div className="space-y-1.5">
                 <Label>
                   Father Name {req("father_name") ? <span className="text-destructive">*</span> : <span className="text-muted-foreground text-xs">(optional)</span>}
@@ -527,7 +552,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
               <div className="space-y-1.5">
                 <Label className="flex items-center gap-1.5">
                   <Phone className="w-3.5 h-3.5 text-muted-foreground" />
-                  WhatsApp Number <span className="text-destructive">*</span>
+                  {words.mobileNumber} <span className="text-destructive">*</span>
                 </Label>
                 <Input
                   placeholder="0300 0000000"
@@ -535,7 +560,10 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                   onChange={(e) => setForm({ ...form, phone: e.target.value })}
                   required
                 />
-                <p className="text-xs text-muted-foreground">Pakistan format: 03XX XXXXXXX</p>
+                <p className="text-xs text-muted-foreground">{needsGuestRegistration ? "Pakistan format: 03XX XXXXXXX" : "Include your country dialling code if outside the country."}</p>
+                {form.phone.trim() && !looksLikePhone(form.phone) && (
+                  <p className="text-xs text-amber">This doesn&apos;t look like a valid phone number. Please check it.</p>
+                )}
               </div>
 
               {show("email") && (
@@ -549,24 +577,6 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                     placeholder="ahmed@email.com"
                     value={form.email}
                     onChange={(e) => setForm({ ...form, email: e.target.value })}
-                    required
-                  />
-                </div>
-              )}
-
-              {/* Date of Birth — international admission form (non-guest-registration
-                  countries). Pakistan's form is unchanged. */}
-              {!needsGuestRegistration && (
-                <div className="space-y-1.5">
-                  <Label className="flex items-center gap-1.5">
-                    <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
-                    Date of Birth <span className="text-destructive">*</span>
-                  </Label>
-                  <Input
-                    type="date"
-                    value={form.date_of_birth}
-                    max={new Date().toISOString().slice(0, 10)}
-                    onChange={(e) => setForm({ ...form, date_of_birth: e.target.value })}
                     required
                   />
                 </div>
@@ -592,25 +602,47 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                 {idExample && <p className="text-xs text-muted-foreground">Format: {idExample}</p>}
               </div>
             )}
-            {show("cnic") && !needsGuestRegistration && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <Label className="flex items-center gap-1.5"><CreditCard className="w-3.5 h-3.5 text-muted-foreground" /> Identification Type</Label>
-                  <Select value={form.id_type} onValueChange={(v) => setForm({ ...form, id_type: v as typeof form.id_type })}>
-                    <SelectTrigger><SelectValue placeholder="Select document" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="passport">Passport</SelectItem>
-                      <SelectItem value="driving_licence">Driving Licence</SelectItem>
-                      <SelectItem value="national_id">National Identity Card</SelectItem>
-                      <SelectItem value="other">Other</SelectItem>
-                    </SelectContent>
-                  </Select>
+            {/* International identity — Date of Birth pairs with Identification
+                Type on one row (no empty half); ID / Document Number sits on its
+                own full-width row below. Pakistan's form is unchanged. */}
+            {!needsGuestRegistration && (
+              <>
+                <div className={`grid gap-4 ${show("cnic") ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
+                  <div className="space-y-1.5">
+                    <Label className="flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-muted-foreground" />
+                      Date of Birth <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      type="date"
+                      value={form.date_of_birth}
+                      max={new Date().toISOString().slice(0, 10)}
+                      onChange={(e) => setForm({ ...form, date_of_birth: e.target.value })}
+                      required
+                    />
+                  </div>
+                  {show("cnic") && (
+                    <div className="space-y-1.5">
+                      <Label className="flex items-center gap-1.5"><CreditCard className="w-3.5 h-3.5 text-muted-foreground" /> Identification Type</Label>
+                      <Select value={form.id_type} onValueChange={(v) => setForm({ ...form, id_type: v as typeof form.id_type })}>
+                        <SelectTrigger><SelectValue placeholder="Select document" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="passport">Passport</SelectItem>
+                          <SelectItem value="driving_licence">Driving Licence</SelectItem>
+                          <SelectItem value="national_id">National Identity Card</SelectItem>
+                          <SelectItem value="other">Other</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
                 </div>
-                <div className="space-y-1.5">
-                  <Label>ID / Document Number</Label>
-                  <Input placeholder="Document number" value={form.cnic} onChange={(e) => setForm({ ...form, cnic: e.target.value })} />
-                </div>
-              </div>
+                {show("cnic") && (
+                  <div className="space-y-1.5">
+                    <Label className="flex items-center gap-1.5"><Hash className="w-3.5 h-3.5 text-muted-foreground" /> ID / Document Number</Label>
+                    <Input placeholder="Document number" value={form.cnic} onChange={(e) => setForm({ ...form, cnic: e.target.value })} />
+                  </div>
+                )}
+              </>
             )}
 
             {/* Type — always required whenever shown: it drives Student Category,
@@ -646,7 +678,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
             {show("purpose_of_visit") && (
               <div className="space-y-1.5">
                 <Label>
-                  Purpose of Visit <span className="text-destructive">*</span>
+                  {words.purposeOfVisit} <span className="text-destructive">*</span>
                 </Label>
                 <Select
                   value={form.purpose_of_visit}
@@ -1020,7 +1052,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                           </p>
                         </div>
                       </div>
-                      <span className="text-sm font-semibold text-primary shrink-0">{formatCurrency(price)}/mo</span>
+                      <span className="text-sm font-semibold text-primary shrink-0">{formatCurrency(price, country)}/mo</span>
                     </button>
                   );
                 })}
@@ -1039,7 +1071,7 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                     <SelectContent>
                       {packageOptions.filter((o) => !o.disabled).map((o) => (
                         <SelectItem key={o.tier} value={o.tier}>
-                          {o.label} <span className="text-muted-foreground">— {formatCurrency(o.price)}/mo</span>
+                          {o.label} <span className="text-muted-foreground">— {formatCurrency(o.price, country)}/mo</span>
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -1113,6 +1145,18 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
               </>
             ) : (
               <>
+                {/* Country first — it sets the region label below. City and
+                    region stay free text (no per-country dataset by design). */}
+                <div className="space-y-1.5">
+                  <Label>Country <span className="text-destructive">*</span></Label>
+                  <SearchableSelect
+                    value={form.address_country || countryNameOf(country)}
+                    onValueChange={(v) => setForm({ ...form, address_country: v })}
+                    options={COUNTRY_NAMES}
+                    placeholder="Select country"
+                    searchPlaceholder="Search countries…"
+                  />
+                </div>
                 <div className="space-y-1.5">
                   <Label>Address Line 1 <span className="text-destructive">*</span></Label>
                   <Input value={form.address_line1} onChange={(e) => setForm({ ...form, address_line1: e.target.value })} placeholder="House number and street" required />
@@ -1121,22 +1165,21 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                   <Label>Address Line 2 <span className="text-muted-foreground text-xs">(optional)</span></Label>
                   <Input value={form.address_line2} onChange={(e) => setForm({ ...form, address_line2: e.target.value })} placeholder="Apartment, suite, etc." />
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="space-y-1.5">
                     <Label>City / Town <span className="text-destructive">*</span></Label>
                     <Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} required />
                   </div>
                   <div className="space-y-1.5">
-                    <Label>County / State / Province <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                    <Label>{addressRegionLabel(countryCodeOfName(form.address_country) || country)} <span className="text-muted-foreground text-xs">(optional)</span></Label>
                     <Input value={form.county_state} onChange={(e) => setForm({ ...form, county_state: e.target.value })} />
                   </div>
                   <div className="space-y-1.5">
-                    <Label>Postcode / ZIP <span className="text-destructive">*</span></Label>
-                    <Input value={form.postcode} onChange={(e) => setForm({ ...form, postcode: e.target.value })} required />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Country <span className="text-destructive">*</span></Label>
-                    <Input value={form.address_country || getCountryConfig(country).name} onChange={(e) => setForm({ ...form, address_country: e.target.value })} required />
+                    <Label>Postcode / ZIP <span className="text-muted-foreground text-xs">(optional)</span></Label>
+                    <Input value={form.postcode} onChange={(e) => setForm({ ...form, postcode: e.target.value })} />
+                    {(countryCodeOfName(form.address_country) || country) === "GB" && form.postcode.trim() && !looksLikeUkPostcode(form.postcode) && (
+                      <p className="text-xs text-amber">This doesn&apos;t look like a standard UK postcode. Please check it.</p>
+                    )}
                   </div>
                 </div>
               </>
@@ -1163,8 +1206,9 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                   <Label>Contact Phone {req("emergency_contact") && <span className="text-destructive">*</span>}</Label>
                   <Input
                     placeholder="0300 0000000"
+                    inputMode="tel"
                     value={form.emergency_phone}
-                    onChange={(e) => setForm({ ...form, emergency_phone: e.target.value })}
+                    onChange={(e) => setForm({ ...form, emergency_phone: e.target.value.replace(/[^\d+\-()\s]/g, "") })}
                     required={req("emergency_contact")}
                   />
                 </div>

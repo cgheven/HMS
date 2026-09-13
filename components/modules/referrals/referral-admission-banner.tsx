@@ -5,7 +5,8 @@ import { Gift } from "lucide-react";
 import { lookupReferralForAdmission } from "@/app/actions/referrals";
 import { computeReferralDiscount } from "@/lib/payment-calc";
 import { normalizePhoneDigits } from "@/lib/phone";
-import { cn, formatCurrency, formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
+import { useMoney } from "@/contexts/hostel-context";
 
 type Lookup = Awaited<ReturnType<typeof lookupReferralForAdmission>>;
 
@@ -69,6 +70,7 @@ export function ReferralAdmissionBanner({
    *  name the system already holds. */
   onReferralFound?: (referredName: string) => void;
 }) {
+  const money = useMoney();
   const [state, setState] = useState<State>(null);
   const digits = normalizePhoneDigits(phone);
 
@@ -202,7 +204,7 @@ export function ReferralAdmissionBanner({
         <p className="text-foreground/80">
           {percent}% off their first bill
           {rentNum > 0 && (
-            <span className="text-emerald-400 font-medium"> (≈ {formatCurrency(estimate)})</span>
+            <span className="text-emerald-400 font-medium"> (≈ {money(estimate)})</span>
           )}
           {" — applied automatically."}
         </p>

@@ -2,6 +2,15 @@ import "server-only";
 import { Resend } from "resend";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import { siteUrl } from "@/lib/site-url";
+import { getCountryConfig } from "@/lib/country-config";
+
+// Inline money for a hostel's own emails to tenants/owners — follows the
+// hostel's country. PK is byte-identical ("Rs 5,000"); a UK hostel reads
+// "£5,000". Distinct from formatPkr below, which is Pulse's OWN SaaS billing
+// (always PKR) and must never be hostel-country-converted.
+function hostelAmount(n: number, country?: string | null): string {
+  return `${getCountryConfig(country).currencySymbol} ${n.toLocaleString()}`;
+}
 
 // Resend's constructor THROWS on a falsy key, at MODULE level. This module is
 // now in the import graph of all three payment-recording server actions (via
@@ -714,6 +723,8 @@ interface PaymentReceiptEmailData {
   tenantEmail: string;
   tenantName: string;
   hostelName: string;
+  /** Hostel ISO country — drives the currency symbol. Omitted falls open to PK. */
+  country?: string | null;
   /** Cumulative received against this bill, not just this transaction. */
   amountPaid: number;
   forMonth: string;
@@ -752,7 +763,7 @@ export async function sendPaymentReceiptEmail(data: PaymentReceiptEmailData): Pr
       <strong style="color:#f59e0b;">${esc(data.forMonth)}</strong>.${
         data.paidInFull
           ? ""
-          : ` <strong style="color:#f59e0b;">Rs ${data.remainingBalance.toLocaleString()}</strong> is still outstanding on this bill.`
+          : ` <strong style="color:#f59e0b;">${hostelAmount(data.remainingBalance, data.country)}</strong> is still outstanding on this bill.`
       }
     </p>
     <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
@@ -764,17 +775,17 @@ export async function sendPaymentReceiptEmail(data: PaymentReceiptEmailData): Pr
       )}
       ${row(
         data.paidInFull ? "Amount Received" : "Received so far",
-        `<span style="color:#4ade80;font-weight:700;">Rs ${data.amountPaid.toLocaleString()}</span>`
+        `<span style="color:#4ade80;font-weight:700;">${hostelAmount(data.amountPaid, data.country)}</span>`
       )}
       ${data.remainingBalance > 0
-        ? row("Remaining", `<span style="color:#f59e0b;font-weight:700;">Rs ${data.remainingBalance.toLocaleString()}</span>`)
+        ? row("Remaining", `<span style="color:#f59e0b;font-weight:700;">${hostelAmount(data.remainingBalance, data.country)}</span>`)
         : ""}
       ${(data.discountAmount ?? 0) > 0
         ? row(
             (data.discountPercent ?? 0) > 0
               ? `Discount (${Math.round((data.discountPercent as number) * 100) / 100}%)`
               : "Discount",
-            `<span style="color:#4ade80;font-weight:700;">&minus; Rs ${(data.discountAmount as number).toLocaleString()}</span>`
+            `<span style="color:#4ade80;font-weight:700;">&minus; ${hostelAmount(data.discountAmount as number, data.country)}</span>`
           )
         : ""}
       ${row("For", esc(data.forMonth))}
@@ -829,6 +840,7 @@ function cap(s: string | null | undefined, n: number): string {
 interface OwnerPaymentAlertEmailData {
   ownerEmail: string;
   hostelName: string;
+  country?: string | null;
   tenantName: string;
   roomNumber?: string | null;
   amountReceived: number;
@@ -872,9 +884,9 @@ export async function sendOwnerPaymentAlertEmail(data: OwnerPaymentAlertEmailDat
           ? `<span style="color:#4ade80;font-weight:700;">Paid in full</span>`
           : `<span style="color:#f59e0b;font-weight:700;">Partial payment</span>`
       )}
-      ${row("Amount Received", `<span style="color:#4ade80;font-weight:700;">Rs ${data.amountReceived.toLocaleString()}</span>`)}
+      ${row("Amount Received", `<span style="color:#4ade80;font-weight:700;">${hostelAmount(data.amountReceived, data.country)}</span>`)}
       ${data.remainingBalance > 0
-        ? row("Remaining", `<span style="color:#f59e0b;font-weight:700;">Rs ${data.remainingBalance.toLocaleString()}</span>`)
+        ? row("Remaining", `<span style="color:#f59e0b;font-weight:700;">${hostelAmount(data.remainingBalance, data.country)}</span>`)
         : ""}
       ${row("Method", esc(cap(data.paymentMethod, 32)))}
       ${row("For", esc(cap(data.forMonth, 32)))}
@@ -901,6 +913,7 @@ export async function sendOwnerPaymentAlertEmail(data: OwnerPaymentAlertEmailDat
 interface OwnerPaymentUndoneEmailData {
   ownerEmail: string;
   hostelName: string;
+  country?: string | null;
   tenantName: string;
   roomNumber?: string | null;
   amountReversed: number;
@@ -931,9 +944,9 @@ export async function sendOwnerPaymentUndoneEmail(data: OwnerPaymentUndoneEmailD
     <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
       ${row("Member", esc(cap(data.tenantName, 80)))}
       ${data.roomNumber ? row("Room", esc(cap(data.roomNumber, 32))) : ""}
-      ${row("Amount reversed", `<span style="color:#f87171;font-weight:700;">Rs ${data.amountReversed.toLocaleString()}</span>`)}
+      ${row("Amount reversed", `<span style="color:#f87171;font-weight:700;">${hostelAmount(data.amountReversed, data.country)}</span>`)}
       ${row("For", esc(cap(data.forMonth, 32)))}
-      ${row("Now outstanding", `<span style="color:#f59e0b;font-weight:700;">Rs ${data.remainingBalance.toLocaleString()}</span>`)}
+      ${row("Now outstanding", `<span style="color:#f59e0b;font-weight:700;">${hostelAmount(data.remainingBalance, data.country)}</span>`)}
       ${row("Reversed by", `${who} · ${data.undoneByRole}`)}
     </table>
     <div style="margin:24px 0 0;">
@@ -959,6 +972,7 @@ interface OwnerDailySummaryEmailData {
   ownerEmail: string;
   ownerName: string | null;
   branchName: string;
+  country?: string | null;
   date: string;
   collection: number;
   kitchen: number;
@@ -979,7 +993,7 @@ interface OwnerDailySummaryEmailData {
 export async function sendOwnerDailySummaryEmail(data: OwnerDailySummaryEmailData): Promise<void> {
   const spent = data.kitchen + data.staff + data.bills + data.other;
   const net = data.collection - spent;
-  const money = (n: number) => `Rs ${Math.round(n).toLocaleString()}`;
+  const money = (n: number) => hostelAmount(Math.round(n), data.country);
 
   const body = `
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Today at ${esc(cap(data.branchName, 64))}</h2>
@@ -1021,6 +1035,7 @@ interface SeatReservedEmailData {
   tenantEmail: string;
   tenantName: string;
   hostelName: string;
+  country?: string | null;
   depositCollected: number;
   expectedJoining: string | null;
 }
@@ -1045,7 +1060,7 @@ export async function sendSeatReservedEmail(data: SeatReservedEmailData): Promis
       <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>. Your seat is held.
     </p>
     <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
-      ${row("Deposit Received", `<span style="color:#4ade80;font-weight:700;">Rs ${data.depositCollected.toLocaleString()}</span>`)}
+      ${row("Deposit Received", `<span style="color:#4ade80;font-weight:700;">${hostelAmount(data.depositCollected, data.country)}</span>`)}
       ${row("Hostel", esc(data.hostelName))}
       ${data.expectedJoining ? row("Expected Joining", esc(data.expectedJoining)) : ""}
     </table>

@@ -1,10 +1,11 @@
 "use client";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { formatCurrency } from "@/lib/utils";
+import { useMoney } from "@/contexts/hostel-context";
 import type { RevenueMonth } from "@/types";
 
-function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: { name: string; value: number; color: string }[]; label?: string }) {
+function CustomTooltip({ active, payload, label, money }: { active?: boolean; payload?: { name: string; value: number; color: string }[]; label?: string; money?: (n: number) => string }) {
   if (!active || !payload?.length) return null;
+  const fmt = money ?? ((n: number) => String(n));
   return (
     <div className="rounded-xl border border-sidebar-border bg-card px-3 py-2.5 shadow-xl text-xs">
       <p className="font-semibold text-foreground mb-1.5">{label}</p>
@@ -12,7 +13,7 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
         <div key={p.name} className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
           <span className="text-muted-foreground">{p.name}:</span>
-          <span className="font-medium text-foreground">{formatCurrency(p.value)}</span>
+          <span className="font-medium text-foreground">{fmt(p.value)}</span>
         </div>
       ))}
     </div>
@@ -20,6 +21,7 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
 }
 
 export function RevenueChart({ data }: { data: RevenueMonth[] }) {
+  const money = useMoney();
   return (
     <ResponsiveContainer width="100%" height={220}>
       <AreaChart data={data} margin={{ top: 5, right: 4, left: 0, bottom: 0 }}>
@@ -36,7 +38,7 @@ export function RevenueChart({ data }: { data: RevenueMonth[] }) {
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(213 30% 16%)" />
         <XAxis dataKey="month" tick={{ fontSize: 11, fill: "hsl(220 18% 50%)" }} axisLine={false} tickLine={false} />
         <YAxis tick={{ fontSize: 11, fill: "hsl(220 18% 50%)" }} axisLine={false} tickLine={false} width={52} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
-        <Tooltip content={<CustomTooltip />} />
+        <Tooltip content={<CustomTooltip money={money} />} />
         <Area type="monotone" dataKey="collected" name="Revenue" stroke="#f5a623" fill="url(#revGrad)" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
         <Area type="monotone" dataKey="expenses" name="Expenses" stroke="#f43f5e" fill="url(#expRevGrad)" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
       </AreaChart>

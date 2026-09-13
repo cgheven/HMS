@@ -10,6 +10,7 @@ import { writeAuditLog } from "@/lib/audit";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import { isTestOwner } from "@/lib/test-accounts";
 import { normalizeSubdomain, subdomainError } from "@/lib/subdomain";
+import { syncSubscriptionTierForOwner } from "@/lib/tier-sync";
 import type { GrowthBranchRow, GrowthTotals } from "@/types";
 
 // ── Guard ─────────────────────────────────────────────────────────────────────
@@ -351,6 +352,13 @@ export async function setBranchBillingActive(
     const caller = await requireSuperAdmin();
     const admin = createAdminClient();
 
+    // Read the owner before flipping so we can reconcile their pricing tier after.
+    const { data: hostelRow } = await admin
+      .from("hms_hostels")
+      .select("owner_id")
+      .eq("id", hostelId)
+      .maybeSingle();
+
     const { error } = await admin
       .from("hms_hostels")
       .update({ billing_active: active, updated_at: new Date().toISOString() })
@@ -365,6 +373,14 @@ export async function setBranchBillingActive(
       entity_id: hostelId,
       meta: { active },
     });
+
+    // Pausing/reactivating a branch changes the owner's BILLABLE property count,
+    // which can cross a pricing tier in either direction — reconcile their Paddle
+    // subscription (up = prorate now; down = at next renewal). Best-effort: the
+    // helper self-gates PK/manual, grandfathered, and no-subscription owners and
+    // swallows its own errors, so a billing hiccup never fails the toggle.
+    const ownerId = (hostelRow as { owner_id?: string | null } | null)?.owner_id ?? null;
+    if (ownerId) await syncSubscriptionTierForOwner(ownerId);
 
     return { success: true };
   } catch (err) {
@@ -710,6 +726,12 @@ export async function deleteHostel(hostelId: string): Promise<{ error?: string }
     const caller = await requireSuperAdmin();
     const admin = createAdminClient();
 
+    // Capture the owner BEFORE deletion so we can reprice their subscription tier
+    // down afterwards (removing a billable property may drop them a band).
+    const { data: hostelRow } = await admin
+      .from("hms_hostels").select("owner_id").eq("id", hostelId).maybeSingle();
+    const ownerId = (hostelRow as { owner_id?: string | null } | null)?.owner_id ?? null;
+
     const { count } = await admin
       .from("hms_tenants")
       .select("id", { count: "exact", head: true })
@@ -722,6 +744,11 @@ export async function deleteHostel(hostelId: string): Promise<{ error?: string }
 
     await admin.from("hms_owner_hostels").delete().eq("hostel_id", hostelId);
     await admin.from("hms_hostels").delete().eq("id", hostelId);
+
+    // Fewer billable properties may drop the owner into a lower tier — reconcile.
+    // Down-crossing applies at the next renewal (no mid-cycle refund); self-gates
+    // PK/manual, grandfathered, and no-subscription owners.
+    if (ownerId) await syncSubscriptionTierForOwner(ownerId);
 
     await writeAuditLog({
       actor_id: caller.id,

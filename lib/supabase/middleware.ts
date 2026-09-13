@@ -34,7 +34,14 @@ export async function updateSession(request: NextRequest) {
   const user = session?.user ?? null;
 
   const { pathname } = request.nextUrl;
-  const isAuthRoute = pathname.startsWith("/login");
+  // /login and /signup are both entry points for someone with no session, and a
+  // signed-in user has no business on either — treated as public below AND
+  // redirected home for an authenticated user. Exact + trailing-slash match
+  // (not a bare startsWith) per the segment-boundary note further down.
+  const isAuthRoute =
+    pathname.startsWith("/login") ||
+    pathname === "/signup" ||
+    pathname.startsWith("/signup/");
   // Segment-boundary match (not a bare startsWith) so a future route like
   // /sales/login-history can't accidentally inherit public access.
   const isSalesLogin = pathname === "/sales/login" || pathname.startsWith("/sales/login/");
@@ -61,6 +68,9 @@ export async function updateSession(request: NextRequest) {
     // Consumes the recovery token_hash and sets the session. Must be reachable
     // by someone who cannot sign in — that is the entire point of it.
     pathname === "/auth/confirm" ||
+    // Self-registration verify link. The token in the URL is the credential and
+    // the clicker has no session yet — same rationale as /auth/confirm.
+    pathname === "/auth/verify-signup" ||
     pathname === "/forgot-password" ||
     pathname.startsWith("/forgot-password/") ||
     pathname === "/reset-password" ||

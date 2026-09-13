@@ -28,7 +28,7 @@ import { LEAD_SOURCES, LEAD_SOURCE_OTHER } from "@/lib/lead-sources";
 import { PK_CITIES, CITY_OTHER } from "@/lib/cities";
 import { LEAD_STATUS_CONFIG as STATUS_CONFIG, LEAD_STATUS_ORDER as STATUS_ORDER, followUpUrgency, parseDateOnly } from "@/lib/lead-status";
 import { LEAD_PRIORITY_CONFIG as PRIORITY_CONFIG, LEAD_PRIORITY_ORDER as PRIORITY_ORDER } from "@/lib/lead-priority";
-import { formatDate, formatDateTime, formatCurrency } from "@/lib/utils";
+import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils";
 import type { PlatformLead, LeadStatus, LeadPriority, LeadActivity, LeadActivityType, SalesRep } from "@/types";
 import { cn } from "@/lib/utils";
 

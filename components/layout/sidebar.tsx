@@ -8,7 +8,7 @@ import { getCountryConfig } from "@/lib/country-config";
 import {
   LayoutDashboard, BedDouble, Users, CreditCard, Receipt,
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
-  MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2, Globe,
+  MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2,
   ClipboardList, ShieldCheck, Search, Wallet, Flag, MessageSquareHeart,
   LayoutTemplate, Layers, Share2, FileCheck2,
 } from "lucide-react";
@@ -109,7 +109,6 @@ const navGroups: { label: string; items: NavItem[] }[] = [
       // row in. Partners edit the Public Listing and the branding here, exactly
       // as they did when both lived in Settings.
       { href: "/website",  label: "Website",          icon: LayoutTemplate },
-      { href: "/find",     label: "My Public Page",   icon: Globe, newTab: true },
     ],
   },
 ];
@@ -153,13 +152,6 @@ export function Sidebar({ open, onClose }: SidebarProps) {
   const pathname = usePathname();
   const { isAdmin } = useIsAdmin();
   const { profile, hostels, hostel } = useHostelContext();
-  // Link straight at the public page instead of at /find, which exists only to
-  // resolve this slug server-side and redirect. That hop costs a full round trip
-  // plus a getAuthContext query before anything paints — and the slug is already
-  // in this context. Falls back to /find when the branch has no slug or is not
-  // listed, so the not-published and no-slug cases keep their existing handling.
-  const publicPageHref =
-    hostel?.slug && hostel.listing_enabled ? `/find/${hostel.slug}` : "/find";
   const isPartner = profile?.role === "partner";
   const singleBranch = (hostels?.length ?? 0) < 2;
   const referralEnabled = hostel?.referral_enabled === true;
@@ -179,10 +171,13 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           !(item.redflagOnly && !countryCfg.redflag) &&
           !(item.guestRegistrationOnly && !countryCfg.guestRegistration)
       ).map((item) =>
-        item.href === "/find" ? { ...item, href: publicPageHref }
         // The guest-registration system is branded per province — "Smart Eye"
         // in Punjab, "Hotel Eye" in Sindh — so the nav shows the local name.
-        : item.href === "/police-verification" ? { ...item, label: smartEyeName({ city: hostel?.city }) }
+        item.href === "/police-verification" ? { ...item, label: smartEyeName({ city: hostel?.city }) }
+        // Country terminology: PK keeps Tenants / All Branches; non-PK shows
+        // Residents / All Properties. countryCfg fails open to PK.
+        : item.href === "/tenants" ? { ...item, label: countryCfg.terms.tenants }
+        : item.href === "/overview" ? { ...item, label: `All ${countryCfg.terms.branches}` }
         : item),
     }))
     .filter((group) => group.items.length > 0);

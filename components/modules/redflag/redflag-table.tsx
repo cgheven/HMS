@@ -1,7 +1,8 @@
 "use client";
 import { CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { cn, formatCurrency, formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
+import { useMoney } from "@/contexts/hostel-context";
 import { REDFLAG_REASON_LABELS } from "@/types";
 import type { RedflagListRow, RedflagReason, RedflagStatus } from "@/types";
 
@@ -71,6 +72,7 @@ interface Props {
 }
 
 export function RedflagTable({ rows, onResolve }: Props) {
+  const money = useMoney();
   return (
     <>
       {/* Mobile cards (< md) */}
@@ -105,7 +107,7 @@ export function RedflagTable({ rows, onResolve }: Props) {
             >
               <div>
                 <p className="text-[10px] text-muted-foreground">Amount</p>
-                <p className="text-xs font-semibold text-rose-400">{formatCurrency(r.amount)}</p>
+                <p className="text-xs font-semibold text-rose-400">{money(r.amount)}</p>
               </div>
               {r.reason === "unpaid_rent" && (
                 <div>
@@ -180,7 +182,7 @@ export function RedflagTable({ rows, onResolve }: Props) {
                 </td>
                 <td className="py-2.5 pr-6 text-muted-foreground whitespace-nowrap">{r.cnicMasked ?? "—"}</td>
                 <td className="py-2.5 pr-6 text-muted-foreground whitespace-nowrap">{r.phoneMasked ?? "—"}</td>
-                <td className="py-2.5 px-5 text-center text-rose-400 font-semibold whitespace-nowrap">{formatCurrency(r.amount)}</td>
+                <td className="py-2.5 px-5 text-center text-rose-400 font-semibold whitespace-nowrap">{money(r.amount)}</td>
                 <td className="py-2.5 px-5 text-center"><RedflagReasonPill reason={r.reason} /></td>
                 <td className="py-2.5 px-5 text-center text-muted-foreground whitespace-nowrap">{monthsLabel(r)}</td>
                 <td className="py-2.5 pl-5 pr-6"><RedflagStatusPill status={r.status} /></td>
