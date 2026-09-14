@@ -73,11 +73,18 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+    <div className="h-[100dvh] overflow-y-auto flex flex-col bg-background">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[600px] h-[400px] rounded-full bg-amber/5 blur-3xl" />
       </div>
 
+      {/* Invisible footer-height spacer so the card centres against the full
+          viewport, not just the space above the in-flow footer. It collapses
+          when the card is tall enough to need the room, so it never pushes the
+          card off-screen. */}
+      <div aria-hidden className="invisible min-h-0 overflow-hidden shrink px-4 pb-4"><LegalFooter /></div>
+
+      <main className="grow shrink-0 basis-0 flex items-center justify-center px-4">
       <div className="w-full max-w-sm relative animate-fade-up">
         {/* Same horizontal lockup as the sidebar. Centred above the card so the
             brand, the form and the button share one vertical axis — a corner
@@ -262,14 +269,12 @@ export default function LoginPage() {
           <p className="text-center text-sm text-muted-foreground mt-6">
             New to Pulse? <Link href="/signup" className="text-amber hover:underline">Create an account</Link>
           </p>
-          <p className="text-center text-xs text-muted-foreground/60 mt-2 leading-relaxed">
-            Managers: contact your hostel owner for access.
-          </p>
         </div>
 
       </div>
+      </main>
 
-      <div className="absolute inset-x-0 bottom-0 z-10 pb-4">
+      <div className="relative z-10 px-4 pb-4 shrink-0">
         <LegalFooter />
       </div>
     </div>
