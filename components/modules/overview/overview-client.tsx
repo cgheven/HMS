@@ -2,7 +2,7 @@
 import { useMemo, useState } from "react";
 import { Layers, Banknote, Wallet, Receipt, Users, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useMoney } from "@/contexts/hostel-context";
+import { useMoney, useTerms } from "@/contexts/hostel-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { PortfolioSummary } from "@/types";
@@ -61,6 +61,7 @@ export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
   // mixed-country portfolio would render every row in one symbol and its summed
   // totals would not be meaningful — flagged as a known limitation for review.
   const fmt = useMoney();
+  const t = useTerms();
   const money = (n: number) => (n === 0 ? "—" : fmt(n));
   const [preset, setPreset] = useState<PresetId>("this_month");
   const [showCustom, setShowCustom] = useState(false);
@@ -165,7 +166,7 @@ export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
   const heldRounded = Math.round(depositsHeld.held);
   const unreceivedRounded = Math.round(depositsHeld.unreceived);
 
-  const insight = useMemo(() => buildInsight(rows, periodLabel, fmt), [rows, periodLabel, fmt]);
+  const insight = useMemo(() => buildInsight(rows, periodLabel, fmt, t.branch.toLowerCase()), [rows, periodLabel, fmt, t]);
 
   const isProfit = totals.profit >= 0;
   const collectionRate = pct(totals.collected, totals.collected + totals.pending);
@@ -192,12 +193,12 @@ export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
     return (
       <div className="space-y-6 animate-fade-in">
         <div>
-          <h1 className="text-3xl font-serif font-normal tracking-tight">All Branches</h1>
-          <p className="text-muted-foreground text-sm mt-1">Every branch&apos;s money in one place</p>
+          <h1 className="text-3xl font-serif font-normal tracking-tight">All {t.branches}</h1>
+          <p className="text-muted-foreground text-sm mt-1">Every {t.branch.toLowerCase()}&apos;s money in one place</p>
         </div>
         <div className="flex flex-col items-center justify-center py-32 gap-2 text-muted-foreground">
           <Layers className="w-10 h-10 opacity-20" />
-          <p className="text-sm">No branches yet. Add one in Settings to see it here.</p>
+          <p className="text-sm">No {t.branches.toLowerCase()} yet. Add one in Settings to see it here.</p>
         </div>
       </div>
     );
@@ -207,13 +208,13 @@ export function OverviewClient({ summary }: { summary: PortfolioSummary }) {
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-serif font-normal tracking-tight">All Branches</h1>
+        <h1 className="text-3xl font-serif font-normal tracking-tight">All {t.branches}</h1>
         <p className="text-sm mt-1 text-muted-foreground">
           {periodLabel} ·{" "}
           <span className={partial ? "text-amber font-semibold" : ""}>
             {partial
-              ? `${selected.size} of ${summary.branches.length} branches`
-              : `${summary.branches.length} branch${summary.branches.length === 1 ? "" : "es"}`}
+              ? `${selected.size} of ${summary.branches.length} ${t.branches.toLowerCase()}`
+              : `${summary.branches.length} ${summary.branches.length === 1 ? t.branch.toLowerCase() : t.branches.toLowerCase()}`}
           </span>
         </p>
       </div>
@@ -541,7 +542,7 @@ function Fact({ label, value, tone }: { label: string; value: string; tone?: str
   );
 }
 
-function buildInsight(rows: BranchRow[], periodLabel: string, fmtMoney: (n: number) => string): string | null {
+function buildInsight(rows: BranchRow[], periodLabel: string, fmtMoney: (n: number) => string, branchWord: string): string | null {
   if (rows.length === 0) return null;
   const losing = rows.filter((r) => r.profit < 0);
   const best = rows[0];
@@ -558,9 +559,9 @@ function buildInsight(rows: BranchRow[], periodLabel: string, fmtMoney: (n: numb
   const lead =
     best.profit > 0
       ? `${best.name} made ${Math.round((best.profit / earned) * 100)}% of the profit earned in ${periodLabel}`
-      : `No branch turned a profit in ${periodLabel}`;
+      : `No ${branchWord} turned a profit in ${periodLabel}`;
 
-  if (losing.length === 0) return `${lead}, and every branch is profitable.`;
+  if (losing.length === 0) return `${lead}, and every ${branchWord} is profitable.`;
   if (losing.length === rows.length) return `${lead}.`;
   return `${lead}; ${losing.map((r) => r.name).join(", ")} ${losing.length === 1 ? "is" : "are"} running at a loss.`;
 }
