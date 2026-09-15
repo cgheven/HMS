@@ -18,10 +18,13 @@ const securityHeaders = [
       "default-src 'self'",
       // https://*.paddle.com: Paddle.js + the hosted checkout overlay for the
       // owner's Pulse subscription. Scoped to Paddle's domains only.
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.paddle.com",
+      // https://www.googletagmanager.com: Google Analytics 4 (gtag.js) loader.
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.paddle.com https://www.googletagmanager.com",
       "style-src 'self' 'unsafe-inline' https://*.paddle.com",
-      "img-src 'self' https://*.supabase.co https://*.paddle.com data: blob:",
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.paddle.com",
+      // GA collect beacon can fall back to an <img> pixel.
+      "img-src 'self' https://*.supabase.co https://*.paddle.com https://*.google-analytics.com https://*.googletagmanager.com data: blob:",
+      // GA4 event delivery: region-scoped collect + analytics endpoints.
+      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.paddle.com https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com",
       "font-src 'self' https://*.paddle.com data:",
       "media-src 'self' blob:",
       // Receipts and invoices are previewed in-app rather than in a new tab.

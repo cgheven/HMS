@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
+import { trackEvent } from "@/lib/analytics";
 import { formatDate, capitalize } from "@/lib/utils";
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
 import QRCode from "qrcode";
@@ -179,7 +180,12 @@ export function ComplaintsClient({ hostelId, complaints: initial, tenants, rooms
     };
     const { error } = await supabase.from("hms_complaints").insert(payload);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); }
-    else { toast({ title: "Complaint logged" }); setDialogOpen(false); setForm(emptyForm); await reload(); }
+    else {
+      toast({ title: "Complaint logged" });
+      // Product event — no complaint text/ids/PII, only the module.
+      trackEvent("complaint_created", { module: "complaints" });
+      setDialogOpen(false); setForm(emptyForm); await reload();
+    }
     setSaving(false);
   }
 

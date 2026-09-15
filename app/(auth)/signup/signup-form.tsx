@@ -4,6 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { Loader2, CheckCircle2 } from "lucide-react";
 import { requestSignup } from "@/app/actions/signup";
+import { trackEvent, marketFromCountry } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -43,6 +44,12 @@ export function SignupForm({ detectedCountryCode }: { detectedCountryCode: strin
       return;
     }
     setLoading(true);
+    // The user has meaningfully begun signup (valid email, submit). No PII —
+    // only the categorical method and coarse market bucket.
+    trackEvent("signup_started", {
+      signup_method: "email",
+      market: marketFromCountry(country),
+    });
     // The server re-validates the chosen country (isSupportedCountry, else IP,
     // else PK) so a spoofed value can't unlock an unsupported market. Response is
     // intentionally uniform (anti-enumeration) — we show the same "check your
@@ -57,6 +64,14 @@ export function SignupForm({ detectedCountryCode }: { detectedCountryCode: strin
         country,
         propertyType: resolvedPropertyType || undefined,
         contactRef2,
+      });
+      // NOTE: the response is uniform (anti-enumeration), so this marks
+      // "verification email requested", not a confirmed account. True account
+      // creation happens server-side on the verify link and is tracked as
+      // trial_started on first authenticated load. No PII sent.
+      trackEvent("signup_completed", {
+        signup_method: "email",
+        market: marketFromCountry(country),
       });
       setSent(true);
     } catch {

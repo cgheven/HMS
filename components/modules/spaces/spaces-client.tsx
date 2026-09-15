@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/hooks/use-toast";
+import { trackEvent, trackOnce } from "@/lib/analytics";
 import { capitalize, sortRooms } from "@/lib/utils";
 import { useMoney, useHostelContext } from "@/contexts/hostel-context";
 import { getCountryConfig } from "@/lib/country-config";
@@ -217,6 +218,21 @@ export function SpacesClient({ hostelId, initialRooms, partnerTier = null, hoste
       const { data: inserted, error } = await supabase.from("hms_rooms").insert(payload).select("id").single();
       if (error || !inserted) { toast({ title: "Error", description: error?.message ?? "Insert failed", variant: "destructive" }); setSaving(false); return; }
       roomId = inserted.id;
+      // Activation milestone — first room for this property. Backend-confirmed
+      // (count === 1 means only the row just inserted). Non-blocking; no PII.
+      void (async () => {
+        try {
+          const { count } = await supabase
+            .from("hms_rooms")
+            .select("id", { count: "exact", head: true })
+            .eq("hostel_id", hostelId);
+          if (count === 1) {
+            trackOnce(`first_room:${hostelId}`, () =>
+              trackEvent("first_room_or_bed_created", { module: "rooms" })
+            );
+          }
+        } catch { /* analytics never blocks */ }
+      })();
     }
 
     // Process each photo slot: upload new files, clear removed slots

@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { formatDate } from "@/lib/utils";
 import { HostelProvider } from "@/contexts/hostel-context";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
+import { TrialStartTracker } from "@/components/analytics/trial-start-tracker";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const ctx = await getAuthContext();
@@ -109,6 +110,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   return (
     <HostelProvider profile={ctx.profile} hostel={ctx.hostel} hostels={ctx.hostels ?? []} partnerTier={ctx.partnerTier}>
+      <TrialStartTracker active={!!trial && !trial.ended} />
       <DashboardShell>
         {accountFrozen ? (
           <Link

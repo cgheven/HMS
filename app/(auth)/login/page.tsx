@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "@/hooks/use-toast";
+import { trackEvent } from "@/lib/analytics";
 import { LegalFooter } from "@/components/legal/legal-footer";
 
 export default function LoginPage() {
@@ -39,6 +40,11 @@ export default function LoginPage() {
       .from("hms_profiles")
       .select("role")
       .single();
+    // Authentication succeeded — categorical method + role only, no PII.
+    trackEvent("login", {
+      auth_method: "email",
+      role: profile?.role === "super_admin" ? "super_admin" : "owner",
+    });
     const home = profile?.role === "super_admin" ? "/super-admin" : "/dashboard";
     router.push(home);
     router.refresh();
@@ -66,6 +72,8 @@ export default function LoginPage() {
       return;
     }
 
+    // Authentication succeeded — categorical method + role only, no PII.
+    trackEvent("login", { auth_method: "email", role: "manager" });
     // Portal layout (server-side) verifies the session is a valid manager.
     // No client-side DB query needed — keeping hms_managers inaccessible from the browser.
     router.push("/portal");

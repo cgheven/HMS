@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Button } from "@/components/ui/button";
 import { createBranch, previewAddProperty, switchActiveHostel } from "@/app/actions/branches";
+import { trackEvent, marketFromCountry } from "@/lib/analytics";
 import { terms as getTerms, getCountryConfig } from "@/lib/country-config";
 import { COUNTRY_NAMES, countryNameOf, countryCodeOfName } from "@/lib/countries";
 import { PROPERTY_TYPES, PROPERTY_TYPE_MAX_LEN, ACCOMMODATION_TYPES } from "@/lib/validation";
@@ -121,6 +122,14 @@ export function AddPropertyDialog({ open, onClose, hostels, defaultCountry }: Pr
       setConfirm(null);
       setError(result.error ?? `Could not create the ${t.branch.toLowerCase()}.`);
       return;
+    }
+    // Activation milestone — backend-confirmed first property (server counted
+    // existing hostels). No property name/id/PII sent, only the market bucket.
+    if (result.firstProperty) {
+      trackEvent("first_property_created", {
+        module: "properties",
+        market: marketFromCountry(country),
+      });
     }
     // Switch to the new property, then a full reload so the new cookie is sent
     // (same reasoning as the switcher's window.location.reload()).

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getPaddleServer } from "@/lib/paddle-server";
 import { asPlan, applyPlanEntitlements } from "@/lib/entitlements";
+import { trackServerEvent } from "@/lib/analytics-server";
 import { pktTodayDateString } from "@/lib/pkt-time";
 
 // Node runtime: the Paddle SDK + signature verification need Node crypto, not edge.
@@ -116,7 +117,16 @@ export async function POST(req: NextRequest) {
         // Entitlements first, plan last (same commit-marker ordering as above).
         await applyPlanEntitlements(admin, ownerId, "basic");
         mustOk(await admin.from("hms_profiles").update({ plan: "basic" }).eq("id", ownerId), "downgrade plan on cancel");
+        // Analytics (server-confirmed cancellation). No-op unless GA4_API_SECRET
+        // is configured; never awaited so it can't affect webhook processing.
+        void trackServerEvent(ownerId, "subscription_cancelled", { to_plan: "basic" });
       }
+    } else if (type === "transaction.payment_failed") {
+      // GA-only branch: a failed charge (dunning). No billing side effect — access
+      // on past_due is deliberately kept (see comment above). No-op unless GA4 is
+      // configured. Isolated from the plan-application paths on purpose.
+      const failOwner = ownerIdOf((event.data as TxnLike).customData);
+      if (failOwner) void trackServerEvent(failOwner, "payment_failed");
     } else if (type === "transaction.completed" || type === "transaction.paid") {
       // A real payment. Record it against the owner's subscription row — this is
       // the signal the referral program will later count toward "3 consecutive

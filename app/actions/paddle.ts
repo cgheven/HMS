@@ -167,7 +167,7 @@ export async function createPlanCheckoutAction(input: {
  */
 export async function reconcileCheckoutAction(input: {
   transactionId?: string;
-}): Promise<{ active: boolean; error?: string }> {
+}): Promise<{ active: boolean; plan?: string; error?: string }> {
   try {
     await requireOwnerOrAbove();
     const ctx = await getAuthContext();
@@ -242,7 +242,9 @@ export async function reconcileCheckoutAction(input: {
       .update({ frozen: false, trial_ends_at: null, ...(plan ? { plan } : {}) })
       .eq("id", ownerId);
 
-    return { active: ["active", "trialing"].includes(sub.status ?? "") };
+    // `plan` is the categorical tier (basic|standard|business|enterprise) —
+    // surfaced for analytics only; carries no PII or amount.
+    return { active: ["active", "trialing"].includes(sub.status ?? ""), plan: plan ?? undefined };
   } catch (err: unknown) {
     console.error("[paddle] reconcileCheckoutAction failed:", err);
     return { active: false, error: "reconcile failed" };

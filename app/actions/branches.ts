@@ -220,7 +220,7 @@ export async function createBranch(data: {
   // Optional: copy the setup (rates, food, form config, amenities…) from one of
   // the owner's existing properties, so a new property is usable immediately.
   copyFromHostelId?: string;
-}): Promise<{ hostel?: Hostel; error?: string; billing?: TierSyncResult }> {
+}): Promise<{ hostel?: Hostel; error?: string; billing?: TierSyncResult; firstProperty?: boolean }> {
   const admin = createAdminClient();
   let ownerId: string | null = null;
   // Fencing token: proves THIS request is the lock holder. Release/re-check are
@@ -441,7 +441,10 @@ export async function createBranch(data: {
       : { status: "noop" };
 
     revalidatePath("/");
-    return { hostel: newHostel as Hostel, billing };
+    // `count` was the owner's hostel count BEFORE this insert. A self-serve
+    // account already has the auto-created starter hostel, so <= 1 means this is
+    // the first property the owner has actively created (analytics: activation).
+    return { hostel: newHostel as Hostel, billing, firstProperty: (count ?? 0) <= 1 };
   } catch (e) {
     unstable_rethrow(e);
     return { error: (e as Error).message };

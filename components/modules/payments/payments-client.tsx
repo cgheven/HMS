@@ -14,6 +14,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
+import { trackEvent, trackOnce } from "@/lib/analytics";
 import { cn, formatDate, formatDateInput, formatDateTime, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { useMoney, useHostelContext } from "@/contexts/hostel-context";
 import { getCountryConfig } from "@/lib/country-config";
@@ -815,6 +816,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     } else {
       const isPartial = result.payment?.status === "partially_paid";
       toast({ title: isPartial ? "Partial payment recorded" : "Payment recorded! 🎉" });
+      // Activation milestone — first collection ever, backend-confirmed by the
+      // server. Once-per-account guard covers repeat installments. No PII.
+      if (result.firstPayment) {
+        trackOnce("first_payment", () =>
+          trackEvent("first_payment_recorded", { module: "billing", method: markForm.method })
+        );
+      }
       setMarkDialog(null);
       setSaving(false);
       await syncMonth(selectedMonth);

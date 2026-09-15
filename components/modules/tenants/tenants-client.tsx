@@ -3,7 +3,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   Plus, Users, BedDouble, Search, Edit2, Trash2,
-  LogOut, Clock, UserCheck, Phone, Mail, CreditCard, Eye,
+  LogOut, Clock, UserCheck, Phone, Mail, CreditCard,
   ClipboardList, CheckCircle2, XCircle, Link2, Loader2, ShieldCheck,
   FileSpreadsheet, FileText, ExternalLink, Banknote, Copy, Check, UtensilsCrossed,
   CalendarClock, CalendarX, Car, Download, Printer, Zap,
@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { createClient } from "@/lib/supabase/client";
+import { trackEvent, trackOnce } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -589,11 +590,6 @@ function TenantRow({ t, showCheckout = false, showActivate = false, showEdit = t
             onClick={() => onPrintForm(t)}
           >
             {printingForm ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Printer className="w-3.5 h-3.5" />}
-          </Button>
-        )}
-        {onView && (
-          <Button variant="ghost" size="icon" className="hidden sm:flex h-8 w-8 text-muted-foreground hover:text-foreground" title="View Tenant" onClick={() => onView(t)}>
-            <Eye className="w-3.5 h-3.5" />
           </Button>
         )}
         {showEdit && (
@@ -1959,6 +1955,24 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       void sendTenantWelcomeMessageAction(newTenantId);
       void sendWelcomeEmailAction(newTenantId);
       void sendAdmissionConfirmationAction(newTenantId);
+      // Activation milestone — first real resident (excludes waiting-list rows).
+      // Backend-confirmed: count active, non-waiting residents for this property;
+      // 1 means only the row just inserted. Non-blocking; no PII.
+      void (async () => {
+        try {
+          const { count } = await supabase
+            .from("hms_tenants")
+            .select("id", { count: "exact", head: true })
+            .eq("hostel_id", payload.hostel_id)
+            .eq("is_active", true)
+            .eq("is_waiting", false);
+          if (count === 1) {
+            trackOnce(`first_resident:${payload.hostel_id}`, () =>
+              trackEvent("first_resident_added", { module: "residents", source: "owner" })
+            );
+          }
+        } catch { /* analytics never blocks */ }
+      })();
     } else if (editing && editing.is_waiting && !form.is_waiting) {
       void sendTenantWelcomeMessageAction(editing.id);
       void sendWelcomeEmailAction(editing.id);
@@ -2891,7 +2905,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-serif font-normal tracking-tight">{words.tenants}</h1>
-          <p className="text-muted-foreground text-sm mt-1">Manage hostel residents</p>
+          <p className="text-muted-foreground text-sm mt-1">Manage residents</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
           {/* Applications are an owner-only surface and the portal never passes

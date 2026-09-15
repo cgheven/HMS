@@ -14,6 +14,7 @@ import {
 } from "@/lib/tier-pricing";
 import type { Plan } from "@/lib/entitlements";
 import { createPlanCheckoutAction, reconcileCheckoutAction } from "@/app/actions/paddle";
+import { trackEvent, trackOnce } from "@/lib/analytics";
 import type { ClientBilling, PlatformInvoice } from "@/types";
 
 const SUPPORT_EMAIL = "hello@yourpulse.io";
@@ -115,6 +116,12 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
       for (let i = 0; i < 5 && !cancelled; i++) {
         const res = await reconcileCheckoutAction({ transactionId: txn });
         if (res.active) {
+          // Backend-confirmed subscription activation (reconcile reads Paddle
+          // directly). Fired here where a live browser session exists; once-per
+          // transaction so a reload can't double-count. Only the categorical plan.
+          trackOnce(`subscription_started:${txn || "unknown"}`, () =>
+            trackEvent("subscription_started", { plan: res.plan })
+          );
           try { sessionStorage.removeItem("pulse_last_txn"); } catch {}
           window.location.reload();
           return;

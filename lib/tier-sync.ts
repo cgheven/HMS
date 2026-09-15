@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { getPaddleServer } from "@/lib/paddle-server";
 import { getPlanPriceId, type BillingCycle } from "@/lib/paddle";
 import { asPlan, applyPlanEntitlements } from "@/lib/entitlements";
+import { trackServerEvent } from "@/lib/analytics-server";
 import { isManualBankBilling } from "@/lib/country-config";
 import { priceFor, tierForPropertyCount, toMinorUnits, type PricingTier } from "@/lib/tier-pricing";
 
@@ -171,6 +172,9 @@ export async function syncSubscriptionTierForOwner(ownerId: string): Promise<Tie
       // harmless.
       await applyPlanEntitlements(admin, ownerId, toTier);
       await admin.from("hms_profiles").update({ plan: toTier }).eq("id", ownerId);
+      // Analytics (server-confirmed upgrade). No-op unless GA4_API_SECRET set;
+      // never awaited so it can't delay this billing operation. Categorical only.
+      void trackServerEvent(ownerId, "subscription_upgraded", { from_plan: fromTier, to_plan: toTier });
       return { status: "charged", from: fromTier, to: toTier };
     }
 
@@ -178,6 +182,7 @@ export async function syncSubscriptionTierForOwner(ownerId: string): Promise<Tie
     // strip plan/entitlements now — that would remove paid features while the owner
     // is still billed the higher tier through end of period. The renewal transaction
     // carries customData.plan = toTier and the webhook applies it then.
+    void trackServerEvent(ownerId, "subscription_downgraded", { from_plan: fromTier, to_plan: toTier });
     return { status: "scheduled", from: fromTier, to: toTier };
   } catch (err: unknown) {
     console.error("[tier-sync] syncSubscriptionTierForOwner failed:", err);
@@ -340,6 +345,9 @@ export async function chargeTierUpgradeForOwner(
       .eq("owner_id", ownerId);
     await applyPlanEntitlements(admin, ownerId, toTier);
     await admin.from("hms_profiles").update({ plan: toTier }).eq("id", ownerId);
+    // Analytics (server-confirmed pay-first upgrade). No-op unless GA4_API_SECRET
+    // is set; never awaited. Categorical tiers only.
+    void trackServerEvent(ownerId, "subscription_upgraded", { from_plan: fromTier, to_plan: toTier });
     return { ok: true, applied: true };
   } catch (err: unknown) {
     // FAIL CLOSED — never let the caller create a property on an unconfirmed upgrade.

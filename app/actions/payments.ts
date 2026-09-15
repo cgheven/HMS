@@ -318,7 +318,7 @@ export interface MarkPaidInput {
 
 export async function markPaymentPaidAction(
   input: MarkPaidInput
-): Promise<{ payment?: Payment; installmentId?: string; error?: string }> {
+): Promise<{ payment?: Payment; installmentId?: string; firstPayment?: boolean; error?: string }> {
   try {
     // Recording collection is day-to-day work. Partners reach this through
     // recordPaymentAsPartner instead, but the guard belongs here regardless —
@@ -693,9 +693,23 @@ export async function markPaymentPaidAction(
       );
     }
 
+    // Activation analytics: is this the account's first-ever collection?
+    // Backend-confirmed by counting bills that carry any collection for this
+    // property; 1 means only the bill just settled. The caller de-dupes with a
+    // once-per-account guard, so a second installment on the same bill is safe.
+    let firstPayment = false;
+    try {
+      const { count } = await supabase
+        .from("hms_payments")
+        .select("id", { count: "exact", head: true })
+        .eq("hostel_id", hostelId)
+        .in("status", ["paid", "partially_paid"]);
+      firstPayment = count === 1;
+    } catch { /* analytics signal only — never fail the collection */ }
+
     // The installment id lets the caller mint a receipt for THIS transaction
     // rather than the whole cumulative bill.
-    return { payment: data as Payment, installmentId: installmentRow?.id as string | undefined };
+    return { payment: data as Payment, installmentId: installmentRow?.id as string | undefined, firstPayment };
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { error: err instanceof Error ? err.message : String(err) };

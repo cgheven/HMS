@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { toast } from "@/hooks/use-toast"
+import { trackEvent } from "@/lib/analytics"
 import {
   createManager,
   updateManagerPermissions,
@@ -117,6 +118,8 @@ function CreateManagerModal({
     if (result.manager) {
       onCreated(result.manager)
       toast({ title: "Manager created" })
+      // Product event — no name/phone/email/ids, only the categorical role.
+      trackEvent("team_member_invited", { role: "manager" })
       handleClose()
     }
   }
