@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { DM_Sans, DM_Serif_Display } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { siteUrl } from "@/lib/site-url";
@@ -45,6 +46,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="font-sans" suppressHydrationWarning>
         {children}
         <Toaster />
+        {/* Google Analytics (gtag.js) */}
+        <Script
+          src="https://www.googletagmanager.com/gtag/js?id=G-KTBY62T8PL"
+          strategy="afterInteractive"
+        />
+        <Script id="gtag-init" strategy="afterInteractive">
+          {`
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+            gtag('config', 'G-KTBY62T8PL');
+          `}
+        </Script>
       </body>
     </html>
   );
