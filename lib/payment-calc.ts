@@ -240,6 +240,61 @@ export function combinedDiscountPercent(standing?: number | null, manual?: numbe
   return Math.min(clamp(standing) + clamp(manual), 100);
 }
 
+// ---------------------------------------------------------------------------
+// The one-off (collection) discount — migration 255. Unlike the standing/referral
+// discounts (which are a percent of rent), the operator's one-off discount is a
+// RUPEE amount off the DISCOUNTABLE SUBTOTAL (rent + electricity + food + AC
+// maintenance, NEVER the deposit or registration fee). This is what lets a
+// discount reach the electricity charge and exceed the rent. The three helpers
+// below mirror hms_recalculate_payment_amount exactly so the Pay-dialog preview
+// and the server settle against the same numbers the trigger will compute.
+// ---------------------------------------------------------------------------
+
+/** The subtotal a one-off discount may reduce. Deposit and registration fee are
+ *  deliberately excluded — they are collections, not charges. */
+export function discountableSubtotal(p: {
+  baseRent: number;
+  food?: number | null;
+  ac?: number | null;
+  acMaintenance?: number | null;
+}): number {
+  return Math.max(0, Number(p.baseRent) || 0)
+    + Math.max(0, Number(p.food ?? 0))
+    + Math.max(0, Number(p.ac ?? 0))
+    + Math.max(0, Number(p.acMaintenance ?? 0));
+}
+
+/** The one-off discount in rupees, clamped to whatever the referral + standing
+ *  discounts have left of the discountable subtotal (so the total never goes
+ *  negative and the deposit/registration are never eaten). */
+export function computeOneOffDiscount(
+  discountable: number,
+  requestedRupees: number,
+  referralDiscount = 0,
+  standingDiscount = 0
+): number {
+  const sub = Number(discountable) || 0;
+  const req = Math.max(0, Number(requestedRupees) || 0);
+  return Math.min(req, Math.max(sub - (Number(referralDiscount) || 0) - (Number(standingDiscount) || 0), 0));
+}
+
+/** Rupees for a percentage of the discountable subtotal (operator typed a %). */
+export function oneOffRupeesForPercent(percent: number, discountable: number): number {
+  const pct = Number(percent) || 0;
+  const sub = Number(discountable) || 0;
+  if (pct <= 0 || sub <= 0) return 0;
+  return Math.round((sub * pct) / 100);
+}
+
+/** The effective % of the discountable subtotal, shown alongside the rupees.
+ *  2dp to match numeric(5,2); clamped to 100. */
+export function oneOffPercentForRupees(rupees: number, discountable: number): number {
+  const amt = Number(rupees) || 0;
+  const sub = Number(discountable) || 0;
+  if (amt <= 0 || sub <= 0) return 0;
+  return Math.min(Math.round((amt / sub) * 10000) / 100, 100);
+}
+
 /** What the tenant actually owes: gross components less the referral discount. */
 export function netFromBaseRent(
   baseRent: number,

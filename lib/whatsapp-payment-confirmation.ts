@@ -30,7 +30,7 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<void> 
     const { data: payment } = await admin
       .from("hms_payments")
       .select(
-        "id, hostel_id, tenant_id, for_month, amount, late_fee, amount_paid, status, discount_amount, discount_percent, tenant:hms_tenants(full_name, phone, email), hostel:hms_hostels(name, whatsapp_enabled, country)"
+        "id, hostel_id, tenant_id, for_month, amount, late_fee, amount_paid, status, discount_amount, discount_percent, manual_discount_amount, tenant:hms_tenants(full_name, phone, email), hostel:hms_hostels(name, whatsapp_enabled, country)"
       )
       .eq("id", paymentId)
       .maybeSingle();
@@ -102,6 +102,7 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<void> 
           remainingBalance: remaining,
           discountAmount: Number(payment.discount_amount ?? 0),
           discountPercent: Number(payment.discount_percent ?? 0),
+          oneOffDiscount: Number(payment.manual_discount_amount ?? 0),
         });
       } catch (err) {
         console.error(`[payment-confirmation] receipt email failed for payment ${paymentId}:`, err);

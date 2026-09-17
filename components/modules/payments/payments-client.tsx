@@ -21,7 +21,7 @@ import { getCountryConfig } from "@/lib/country-config";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier, StaffPermission } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { countBillableNights } from "@/lib/daily-billing";
-import { splitPaymentCharges, computeRentDiscount, combinedDiscountPercent, percentForRupees } from "@/lib/payment-calc";
+import { splitPaymentCharges, computeRentDiscount, discountableSubtotal, computeOneOffDiscount, oneOffRupeesForPercent, oneOffPercentForRupees } from "@/lib/payment-calc";
 import { MeterPhoto } from "@/components/modules/ac/meter-photo";
 import { uploadMonthlyMeterPhoto, deleteMonthlyMeterPhoto } from "@/app/actions/ac-meter-photos";
 import { tenantDueDay, shouldRemindToday, hasCollected, effectivePaymentStatus } from "@/lib/payment-calc";
@@ -213,47 +213,57 @@ const isReservationRow = (p: Payment) => p.is_reservation === true;
 // standing concession from admission, which the operator's one-off stacks on top
 // of. Showing it is the difference between an operator understanding why their
 // 10% took Rs 4,400 off a Rs 22,000 rent and thinking the software is broken.
-function previewDiscount(p: Payment, manualPercentRaw: string) {
+// `oneOffRupeesRaw` is the one-off discount in RUPEES (migration 255) — the
+// operator types a % or Rs and the caller resolves it to rupees against the
+// discountable subtotal (rent + electricity + food + AC maintenance). The
+// tenant's STANDING discount (a percent of rent) stacks underneath it.
+function previewDiscount(p: Payment, oneOffRupeesRaw: string) {
   const charges = splitPaymentCharges(p);
-  // Once money has been collected against a bill the trigger pins the percent it
-  // was collected with, so a percentage typed now would be silently ignored. An
-  // undone payment leaves the row partially_paid at zero collected and is
-  // deliberately included: the bill reopens still discounted.
-  const frozen = p.status === "paid" || p.status === "partially_paid";
-  // Daily bills carry no rent discount — migration 212 enforces it, because the
-  // daily gross-restore cannot tell a discounted amount from a gross one and
-  // re-takes the discount on every later write. Offering the field would be an
-  // input that silently does nothing.
+  // Frozen only while money is genuinely HELD (migration 256). Once a payment is
+  // undone the bill drops to zero collected — the one-off discount is reversed and
+  // the field reopens so the operator can re-collect with a fresh discount. A
+  // partially-paid bill that still holds money stays frozen.
+  const frozen = hasCollected(p);
+  // Daily bills carry no discount — the daily gross-restore cannot tell a
+  // discounted amount from a gross one and re-takes it on every later write.
   const daily = p.tenant?.billing_type === "daily";
-  const typed = parseFloat(manualPercentRaw);
-  const manual = Number.isFinite(typed) ? typed : 0;
-  // The TENANT's live standing discount, not the row's stored copy. A pending
-  // row keeps whatever percent it was last priced at, so raising a member's
-  // concession from 10% to 15% and collecting the same day would quote 10% at
-  // the counter while the trigger settles at 15%. On a frozen row the stored
-  // percent IS the answer — it is pinned, and the tenant's current setting no
-  // longer applies to it.
-  // NULL on the tenant means the concession was REMOVED, not unknown — clearing
-  // the field on the member form stores NULL by design. Falling back to the
-  // row's stale percent quoted the old discounted total, the desk collected it,
-  // and the server booked it as a PART payment while the client toasted success.
-  // Every payment source that reaches this component selects the tenant's
-  // percent, so there is nothing left for the fallback to rescue.
-  const alreadyPercent = frozen
-    ? Number(p.discount_percent ?? 0)
-    : Number(p.tenant?.discount_percent ?? 0);
-  const totalPercent = frozen ? alreadyPercent : combinedDiscountPercent(alreadyPercent, manual);
-  const discount = computeRentDiscount(charges.rent, totalPercent, charges.referralDiscount);
-  // charges.discount is what the stored (net) amount already has taken out of
-  // it; adding it back before subtracting the new one is what stops a second
-  // discount compounding on the first.
-  const total = Math.max(0, Number(p.amount ?? 0) + charges.discount - discount);
+
+  // Standing (per-tenant) discount stays a percent of RENT and is pinned by the
+  // trigger for any paid/partially-paid bill (including an undone one) — so it is
+  // read from the row there, and from the tenant's current setting only on a
+  // still-pending bill. This is separate from `frozen`: only the ONE-OFF field
+  // reopens on a zero-collected bill; the standing part stays as billed.
+  const pricePinned = p.status === "paid" || p.status === "partially_paid";
+  const standingPct = pricePinned ? Number(p.discount_percent ?? 0) : Number(p.tenant?.discount_percent ?? 0);
+  const standingDiscount = computeRentDiscount(charges.rent, standingPct, charges.referralDiscount);
+
+  // The subtotal a one-off may reduce. Deposit + registration are excluded.
+  const discountable = discountableSubtotal({
+    baseRent: charges.rent, food: charges.food, ac: charges.ac, acMaintenance: charges.acMaintenance,
+  });
+  let oneOff: number;
+  if (frozen) {
+    // A settled bill keeps what it was collected with: the one-off is whatever the
+    // stored combined discount is beyond the standing portion.
+    oneOff = Math.max(0, charges.discount - standingDiscount);
+  } else {
+    const typed = parseFloat(oneOffRupeesRaw);
+    const requested = Number.isFinite(typed) ? Math.max(0, typed) : 0;
+    oneOff = computeOneOffDiscount(discountable, requested, charges.referralDiscount, standingDiscount);
+  }
+  const discount = standingDiscount + oneOff;
+  // charges.discount is what the stored (net) amount already has taken out; add
+  // it back before subtracting the new one so a second discount doesn't compound.
+  const total = frozen ? Number(p.amount ?? 0) : Math.max(0, Number(p.amount ?? 0) + charges.discount - discount);
   return {
     frozen,
     daily,
     rent: charges.rent,
-    alreadyPercent,
-    totalPercent,
+    discountable,
+    standingPct,
+    standingDiscount,
+    oneOff,
+    oneOffPct: oneOffPercentForRupees(oneOff, discountable),
     discount,
     total,
     remaining: Math.max(0, total - Number(p.amount_paid ?? 0)),
@@ -387,7 +397,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     receipt_number: "",
     ac_units_consumed: "0",
     amount_received: "",
-    discount_percent: "",
+    discount_amount: "",
     received_account: "",
   });
   const [saving, setSaving] = useState(false);
@@ -574,7 +584,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       receipt_number: genReceipt(tenantName, p.for_month),
       ac_units_consumed: p.ac_units_consumed ? String(p.ac_units_consumed) : "0",
       amount_received: String(remaining),
-      discount_percent: "",
+      discount_amount: "",
       // Prefill from the bill so reopening a partially-paid payment to record the
       // next installment doesn't blank the field and overwrite the account chosen
       // on the first installment with null (received_account is bill-level).
@@ -583,7 +593,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     // Reset the input mode with the dialog — a rupee figure typed for the last
     // member means nothing for this one.
     setDiscountMode("pct");
-    setDiscountRupees("");
+    setDiscountInput("");
   }
 
   // Typing a discount changes what there is to collect, so the amount field has
@@ -592,32 +602,58 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   // haven't overridden it themselves: an amount that no longer matches the
   // default is a partial payment being typed, and overwriting that would be
   // worse than leaving it stale.
-  // Rupees or percent. Only the PERCENT is ever stored — the trigger derives the
-  // rupees from it and has no path to accept an amount — so this is an input
-  // convenience, not a second kind of discount. Held outside markForm so nothing
-  // downstream has to know which way the operator typed it.
+  // The operator types a % or Rs; either way markForm.discount_amount holds the
+  // resolved RUPEE amount (the source of truth sent to the server). `discountInput`
+  // is what they typed, in the current unit, for display. The one-off applies to
+  // the discountable subtotal (rent + electricity + food + AC maintenance).
   const [discountMode, setDiscountMode] = useState<"pct" | "rs">("pct");
-  const [discountRupees, setDiscountRupees] = useState("");
+  const [discountInput, setDiscountInput] = useState("");
 
-  function handleDiscountRupeesChange(raw: string, rent: number) {
-    setDiscountRupees(raw);
-    const typed = parseFloat(raw);
-    handleDiscountChange(
-      raw.trim() === "" || !Number.isFinite(typed) ? "" : String(percentForRupees(typed, rent))
-    );
+  function markDialogDiscountable(): number {
+    if (!markDialog) return 0;
+    const charges = splitPaymentCharges(markDialog);
+    return discountableSubtotal({
+      baseRent: charges.rent, food: charges.food, ac: charges.ac, acMaintenance: charges.acMaintenance,
+    });
   }
 
-  function handleDiscountChange(raw: string) {
+  function handleDiscountInput(raw: string) {
     if (!markDialog) return;
-    const before = previewDiscount(markDialog, markForm.discount_percent).remaining;
-    const after = previewDiscount(markDialog, raw).remaining;
+    setDiscountInput(raw);
+    const v = parseFloat(raw);
+    const discountable = markDialogDiscountable();
+    const resolvedRupees =
+      raw.trim() === "" || !Number.isFinite(v) || v <= 0
+        ? ""
+        : String(discountMode === "rs" ? Math.round(v * 100) / 100 : oneOffRupeesForPercent(v, discountable));
+    const before = previewDiscount(markDialog, markForm.discount_amount).remaining;
+    const after = previewDiscount(markDialog, resolvedRupees).remaining;
     const entered = parseFloat(markForm.amount_received);
     const untouched = Number.isFinite(entered) && Math.abs(entered - before) < 0.01;
+    // A following amount snaps to the new total. A hand-typed partial is kept —
+    // but still clamped DOWN when a bigger discount drops the total below it,
+    // otherwise the operator is left holding a figure the bill can no longer owe
+    // (e.g. a 25,000 discount zeroes a 22,000 bill but 2,000 lingers) and the
+    // server rejects it with a confusing "collect 0 and return 2,000" message.
+    const nextAmount = untouched
+      ? after
+      : Math.min(Number.isFinite(entered) ? entered : after, after);
     setMarkForm({
       ...markForm,
-      discount_percent: raw,
-      amount_received: untouched ? String(after) : markForm.amount_received,
+      discount_amount: resolvedRupees,
+      amount_received: String(nextAmount),
     });
+  }
+
+  function handleDiscountModeToggle(m: "pct" | "rs") {
+    // Keep the resolved rupees constant across a toggle; just restate the input in
+    // the new unit so the operator sees the same discount either way.
+    const rupees = parseFloat(markForm.discount_amount);
+    if (Number.isFinite(rupees) && rupees > 0) {
+      const discountable = markDialogDiscountable();
+      setDiscountInput(m === "rs" ? String(rupees) : String(oneOffPercentForRupees(rupees, discountable)));
+    }
+    setDiscountMode(m);
   }
 
   // The referral reconciler is a background writer: it runs on every payments
@@ -697,15 +733,16 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
     // Blank is "no discount". A collected bill's discount is frozen by the
     // trigger, so nothing typed on one is sent — the input is hidden there too.
-    const preview = previewDiscount(markDialog, markForm.discount_percent);
-    const rawDiscount = markForm.discount_percent.trim();
-    let discountPercent: number | undefined;
+    // discount_amount holds the resolved RUPEE amount (migration 255).
+    const preview = previewDiscount(markDialog, markForm.discount_amount);
+    const rawDiscount = markForm.discount_amount.trim();
+    let discountAmount: number | undefined;
     if (rawDiscount !== "" && !preview.frozen) {
-      discountPercent = parseFloat(rawDiscount);
-      if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
+      discountAmount = parseFloat(rawDiscount);
+      if (!Number.isFinite(discountAmount) || discountAmount < 0) {
         toast({
           title: "Invalid discount",
-          description: "Discount must be a percentage between 0 and 100.",
+          description: "Discount must be a non-negative amount.",
           variant: "destructive",
         });
         return;
@@ -714,9 +751,28 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
     const amountReceived = parseFloat(markForm.amount_received);
     if (!Number.isFinite(amountReceived) || amountReceived <= 0) {
+      // A discount that covers the whole bill leaves nothing to collect. Say
+      // that plainly rather than the generic "must be positive" — the operator
+      // over-discounted and needs to dial it back, not enter a bigger number.
       toast({
-        title: "Invalid amount",
-        description: "Amount received must be a positive number.",
+        title: preview.remaining <= 0.01 && preview.discount > 0 ? "Nothing left to collect" : "Invalid amount",
+        description: preview.remaining <= 0.01 && preview.discount > 0
+          ? "This discount covers the whole bill, so there is nothing to collect. Reduce the discount to record a payment."
+          : "Amount received must be a positive number.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Can't collect more than the bill owes after the discount. Caught here with
+    // a clear message so the operator never reaches the server's "return the
+    // difference" error, which reads as a cash-handling instruction they didn't ask for.
+    if (amountReceived > preview.remaining + 0.01) {
+      toast({
+        title: preview.remaining <= 0.01 ? "Nothing left to collect" : "Amount too high",
+        description: preview.remaining <= 0.01
+          ? "This discount covers the whole bill, so there is nothing to collect. Reduce the discount to record a payment."
+          : `Amount received exceeds the ${money(preview.remaining)} due after discount. Enter ${money(preview.remaining)} or less.`,
         variant: "destructive",
       });
       return;
@@ -740,7 +796,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         parseFloat(markForm.late_fee) || 0,
         markForm.receipt_number,
         markForm.notes,
-        discountPercent,
+        discountAmount,
       );
       if (result.error) {
         setSaving(false);
@@ -773,7 +829,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         markDialog.for_month,
         isAcTier ? parseFloat(markForm.ac_units_consumed) : undefined,
         markForm.notes,
-        discountPercent,
+        discountAmount,
       );
       if (result.error) {
         setSaving(false);
@@ -804,7 +860,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       receiptNumber: markForm.receipt_number,
       acUnitsConsumed: markForm.ac_units_consumed,
       amountReceived: markForm.amount_received,
-      discountPercent: discountPercent === undefined ? undefined : String(discountPercent),
+      discountAmount: discountAmount === undefined ? undefined : String(discountAmount),
       receivedAccount: markForm.received_account || undefined,
     });
 
@@ -1737,12 +1793,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   for the gap. Managers collect on phones. */}
               {charges.discount > 0 && (
                 <p className="text-xs text-emerald-400 whitespace-nowrap">
-                  Discount {Number(p.discount_percent ?? 0)}% −{money(charges.discount)}
+                  Discount −{money(charges.discount)}
                 </p>
               )}
               {Number(p.late_fee) > 0 && <p className="text-xs text-rose-400">+{money(p.late_fee)} late</p>}
               {displayStatus(p) === "partially_paid" && (
-                <p className="text-xs text-blue-400">{money(Number(p.amount_paid ?? 0))} received</p>
+                <>
+                  <p className="text-xs text-blue-400">{money(Number(p.amount_paid ?? 0))} received</p>
+                  <p className="text-xs font-semibold text-amber whitespace-nowrap">{money(Math.max(0, total - Number(p.amount_paid ?? 0)))} due</p>
+                </>
               )}
               <span className={`inline-flex items-center mt-1 px-2 py-0.5 rounded-full text-xs font-medium border ${statusColors[displayStatus(p)]}`}>
                 {cfg.label}
@@ -1848,12 +1907,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 discount has to show or the row does not reconcile. */}
             {charges.discount > 0 && (
               <p className="text-[10px] leading-tight text-emerald-400">
-                Discount {Number(p.discount_percent ?? 0)}% −{money(charges.discount)}
+                Discount −{money(charges.discount)}
               </p>
             )}
             {Number(p.late_fee) > 0 && <p className="text-[10px] leading-tight text-rose-400">+{money(p.late_fee)} late</p>}
             {displayStatus(p) === "partially_paid" && (
-              <p className="text-[10px] leading-tight text-blue-400">{money(Number(p.amount_paid ?? 0))} received</p>
+              <>
+                <p className="text-[10px] leading-tight text-blue-400">{money(Number(p.amount_paid ?? 0))} received</p>
+                <p className="text-[10px] leading-tight font-semibold text-amber">{money(Math.max(0, total - Number(p.amount_paid ?? 0)))} due</p>
+              </>
             )}
           </div>
           <div className="flex justify-center w-28">
@@ -2811,7 +2873,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   acMaintenance: acMaintenanceCharge,
                   referralDiscount,
                 } = splitPaymentCharges(markDialog);
-                const preview = previewDiscount(markDialog, markForm.discount_percent);
+                const preview = previewDiscount(markDialog, markForm.discount_amount);
                 const tenant = tenants.find(t => t.id === markDialog.tenant_id);
                 const deposit = tenant?.security_deposit ?? 0;
                 const mealsLabel = [tenant?.food_breakfast && "Breakfast", tenant?.food_lunch && "Lunch", tenant?.food_dinner && "Dinner"]
@@ -2859,13 +2921,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         <span className="shrink-0 tabular-nums">−{money(referralDiscount)}</span>
                       </div>
                     )}
-                    {/* Live: this is the standing discount plus whatever percentage
-                        is typed below, so the operator sees the bill move before
-                        they confirm it rather than after. */}
+                    {/* Live: the standing discount plus whatever one-off is typed
+                        below, so the operator sees the bill move before confirming. */}
                     {preview.discount > 0 && (
                       <div className="flex justify-between gap-2 text-xs text-emerald-400">
                         <span className="flex items-center gap-1 min-w-0">
-                          <span className="truncate">Discount ({preview.totalPercent}% of rent)</span>
+                          <span className="truncate">Discount</span>
                         </span>
                         <span className="shrink-0 tabular-nums">−{money(preview.discount)}</span>
                       </div>
@@ -2900,34 +2961,33 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               })()}
             </div>
 
-            {/* Discount — a one-off percentage of RENT for this bill only (a
-                tenant away most of the month). It stacks on the tenant's standing
-                discount from admission; the trigger adds the two and clamps to
-                100. Sits above Amount Received because it moves that figure. */}
+            {/* Discount — a one-off concession for THIS bill only. It applies to
+                the whole bill except the deposit/registration (rent + electricity
+                + food + AC maintenance), entered as % or Rs, and stacks on the
+                tenant's standing discount. Sits above Amount Received because it
+                moves that figure. */}
             {markDialog && (() => {
-              const preview = previewDiscount(markDialog, markForm.discount_percent);
+              const preview = previewDiscount(markDialog, markForm.discount_amount);
               // A reservation bills only the deposit and registration fee, and a
-              // rent-only discount on a bill with no rent is a silent no-op.
-              if (preview.rent <= 0) return null;
+              // discount on a bill with nothing discountable is a silent no-op.
+              if (preview.discountable <= 0) return null;
               if (preview.daily) {
                 return (
                   <p className="text-xs text-muted-foreground/70">
-                    Discounts apply to monthly rent, so they cannot be given on a nightly bill. Adjust the nightly
+                    Discounts apply to monthly bills, so they cannot be given on a nightly bill. Adjust the nightly
                     rate on the member instead.
                   </p>
                 );
               }
               if (preview.frozen) {
-                // Always say something. Returning null when the pinned percent is
+                // Always say something. Returning null when the pinned discount is
                 // 0 left an operator staring at a dialog with no discount field
-                // and no reason given — reachable on any undone payment, which
-                // leaves the row partially_paid at zero collected. Their only
-                // lever is then Amount Received, and short-entering it leaves a
-                // phantom balance the reminder cron chases.
-                return preview.alreadyPercent > 0 ? (
+                // and no reason — reachable on any undone payment, which leaves
+                // the row partially_paid at zero collected.
+                return preview.discount > 0 ? (
                   <p className="text-xs text-emerald-400">
-                    {preview.alreadyPercent}% discount ({money(preview.discount)}) is fixed on this bill — money has
-                    already been collected against it, so it keeps the discount it was collected with.
+                    A {money(preview.discount)} discount is fixed on this bill — money has already been collected
+                    against it, so it keeps the discount it was collected with.
                   </p>
                 ) : (
                   <p className="text-xs text-muted-foreground/70">
@@ -2939,74 +2999,42 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               return (
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
-                    <Label>Discount — rent only</Label>
-                    {/* Rupees is an INPUT mode, not a second kind of discount:
-                        whichever way it is typed, a percentage is what gets
-                        stored, because that is the only discount the pricing
-                        trigger accepts. */}
-                    {/* Percent / fixed-amount toggle only for PK. Non-PK is
-                        percentage-only (no currency mode). */}
-                    {isPk && (
+                    <Label>Discount</Label>
+                    {/* % or Rs — both are stored as a rupee amount off the bill,
+                        so either lands exactly on the figure typed. */}
                     <div className="inline-flex rounded-md border border-sidebar-border overflow-hidden text-xs">
                       {(["pct", "rs"] as const).map(m => (
                         <button
                           key={m}
                           type="button"
-                          onClick={() => {
-                            setDiscountMode(m);
-                            // Carry the value across so switching mode never
-                            // silently changes the discount that is applied.
-                            if (m === "rs") setDiscountRupees(preview.discount > 0 ? String(preview.discount) : "");
-                          }}
+                          onClick={() => handleDiscountModeToggle(m)}
                           className={cn(
                             "px-2.5 py-1 transition-colors",
                             discountMode === m ? "bg-amber/15 text-amber" : "text-muted-foreground hover:text-foreground"
                           )}
                         >
-                          {m === "pct" ? "%" : "Rs"}
+                          {m === "pct" ? "%" : curSym}
                         </button>
                       ))}
                     </div>
-                    )}
                   </div>
-                  {(!isPk || discountMode === "pct") ? (
-                    <Input
-                      type="number"
-                      placeholder={isPk ? "0" : "%"}
-                      min="0"
-                      max="100"
-                      step="0.01"
-                      value={markForm.discount_percent}
-                      onChange={(e) => handleDiscountChange(e.target.value)}
-                    />
-                  ) : (
-                    <Input
-                      type="number"
-                      placeholder="0"
-                      min="0"
-                      step="1"
-                      value={discountRupees}
-                      onChange={(e) => handleDiscountRupeesChange(e.target.value, preview.rent)}
-                    />
-                  )}
-                  {preview.alreadyPercent > 0 && (
+                  <Input
+                    type="number"
+                    placeholder="0"
+                    min="0"
+                    max={discountMode === "pct" ? "100" : undefined}
+                    step={discountMode === "pct" ? "0.01" : "1"}
+                    value={discountInput}
+                    onChange={(e) => handleDiscountInput(e.target.value)}
+                  />
+                  {preview.standingDiscount > 0 && (
                     <p className="text-xs text-emerald-400">
-                      {preview.alreadyPercent}% standing discount is already on this bill — anything entered here stacks on top of it.
+                      {preview.standingPct}% standing discount ({money(preview.standingDiscount)}) is already on this bill — anything entered here stacks on top of it.
                     </p>
                   )}
-                  {preview.discount > 0 && (
+                  {preview.oneOff > 0 && (
                     <p className="text-xs text-muted-foreground">
-                      {preview.totalPercent}% of {money(preview.rent)} rent = −{money(preview.discount)} · new total {money(preview.total)}
-                    </p>
-                  )}
-                  {/* Said plainly whenever the stored percentage cannot land on
-                      the exact figure typed. numeric(5,2) is the limit, so
-                      Rs 800 off Rs 22,000 becomes 3.64% and takes Rs 801. The
-                      operator sees it here rather than on the receipt. */}
-                  {discountMode === "rs" && discountRupees.trim() !== "" && preview.discount > 0
-                    && Math.abs(preview.discount - Number(discountRupees)) > 0.004 && (
-                    <p className="text-xs text-amber/80">
-                      Closest available is {money(preview.discount)} — a discount is stored as a percentage, and {markForm.discount_percent}% is the nearest to {money(Number(discountRupees))}.
+                      {preview.oneOffPct}% of {money(preview.discountable)} = −{money(preview.oneOff)} · new total {money(preview.total)}
                     </p>
                   )}
                 </div>
@@ -3017,7 +3045,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 remaining balance (net of the discount above); editing it down
                 records a partial payment instead. */}
             {markDialog && (() => {
-              const remaining = previewDiscount(markDialog, markForm.discount_percent).remaining;
+              const remaining = previewDiscount(markDialog, markForm.discount_amount).remaining;
               const { referralDiscount } = splitPaymentCharges(markDialog);
               return (
                 <div className="space-y-1.5">
@@ -3055,7 +3083,13 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   )}
                   {(() => {
                     const entered = parseFloat(markForm.amount_received);
-                    if (Number.isFinite(entered) && entered > 0 && entered < remaining) {
+                    if (!Number.isFinite(entered)) return null;
+                    if (entered > remaining + 0.01) {
+                      return remaining <= 0.01
+                        ? <p className="text-xs text-red-400">This discount covers the whole bill — nothing is left to collect. Reduce the discount to record a payment.</p>
+                        : <p className="text-xs text-red-400">Exceeds the {money(remaining)} due after discount — enter {money(remaining)} or less.</p>;
+                    }
+                    if (entered > 0 && entered < remaining) {
                       return <p className="text-xs text-amber">Partial payment — {money(remaining - entered)} will remain due after this.</p>;
                     }
                     return null;

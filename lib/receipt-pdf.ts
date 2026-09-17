@@ -330,8 +330,15 @@ export function generateReceiptPDF(
   // public token URL, and the reader does not need to know who they referred.
   function addDiscountLines(): void {
     if (rentDiscount > 0) {
+      // discount_percent is the STANDING (per-tenant) percent only (migration 255).
+      // The combined rupees may also include a one-off (a rupee amount off the whole
+      // bill, whose share is NOT a percent of rent) — so only label the percent when
+      // the discount is purely the standing concession; otherwise show rupees alone,
+      // never a percent that understates the amount.
       const pct = Number(payment.discount_percent ?? 0);
-      addKv(pct > 0 ? `Discount (${fmtPct(pct)}%)` : "Discount", `-${pk(rentDiscount)}`); nl(12);
+      const standingApprox = Math.round((baseRent * pct) / 100);
+      const showPct = pct > 0 && rentDiscount <= standingApprox + 1;
+      addKv(showPct ? `Discount (${fmtPct(pct)}%)` : "Discount", `-${pk(rentDiscount)}`); nl(12);
     }
     if (referralDiscount > 0) {
       const pct = Number(payment.referral_percent ?? 0);

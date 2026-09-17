@@ -22,7 +22,7 @@ import { sendNoticeReceivedToTenant } from "@/lib/whatsapp-notice"
 import { sendWelcomeEmailToTenant } from "@/lib/welcome-email"
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore, round2 } from "@/lib/ac-billing"
 import { carriedTransferCharges } from "@/lib/ac-transfer"
-import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, splitPaymentCharges, grossAmountOf, computeRentDiscount, combinedDiscountPercent } from "@/lib/payment-calc"
+import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, splitPaymentCharges, grossAmountOf, computeRentDiscount, computeOneOffDiscount, discountableSubtotal } from "@/lib/payment-calc"
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
 import { yearMonthInZone } from "@/lib/pkt-time"
@@ -1454,10 +1454,11 @@ export async function recordPaymentAsManager(
   lateFee?: number,
   receiptNumber?: string,
   notes?: string,
-  // A one-off discount on THIS bill, as a percentage of rent. Managers may apply
-  // one — the owner's explicit call — so the field is validated and written here
-  // exactly as markPaymentPaidAction does it rather than dropped on the floor.
-  discountPercent?: number,
+  // A one-off discount on THIS bill, in RUPEES (migration 255) — applies to rent
+  // + electricity + food + AC maintenance, not the deposit/registration. Managers
+  // may apply one (the owner's explicit call), written here exactly as
+  // markPaymentPaidAction does it rather than dropped on the floor.
+  discountAmount?: number,
 ): Promise<{ payment?: Payment; installmentId?: string; error: string | null }> {
   try {
     const ctx = await requireManagerWrite("collect_payments")
@@ -1489,13 +1490,14 @@ export async function recordPaymentAsManager(
     if (newLateFee > 99999999) return { error: "Late fee is too large." }
     const receiptNo = (receiptNumber ?? "").trim().slice(0, 64) || null
 
-    // undefined is "no manual discount", stored as NULL; an explicit 0 is an
-    // operator who deliberately recorded none. numeric(5,2) on the column.
-    const manualDiscountError = validateDiscountPercent(discountPercent ?? null)
-    if (manualDiscountError) return { error: manualDiscountError }
-    const manualDiscountPercent = discountPercent === undefined || discountPercent === null
+    // undefined is "no one-off discount", stored as NULL; an explicit 0 is an
+    // operator who deliberately recorded none.
+    if (discountAmount !== undefined && discountAmount !== null && (!Number.isFinite(discountAmount) || discountAmount < 0)) {
+      return { error: "Discount must be a non-negative amount." }
+    }
+    const manualDiscountAmount = discountAmount === undefined || discountAmount === null
       ? null
-      : Math.round(discountPercent * 100) / 100
+      : Math.round(discountAmount * 100) / 100
 
     // Verify tenant belongs to the active hostel and get their package tier
     const { data: tenant } = await admin
@@ -1507,8 +1509,8 @@ export async function recordPaymentAsManager(
     // Daily bills carry no rent discount — migration 212 enforces it in the
     // database; refused here too so a direct call cannot set what the dialog
     // does not offer.
-    if (manualDiscountPercent != null && tenant?.billing_type !== "monthly") {
-      return { error: "Discounts apply to monthly rent, so they cannot be given on a nightly bill." }
+    if (manualDiscountAmount != null && tenant?.billing_type !== "monthly") {
+      return { error: "Discounts apply to monthly bills, so they cannot be given on a nightly bill." }
     }
 
     if (!tenant || tenant.hostel_id !== hostelId) {
@@ -1522,7 +1524,7 @@ export async function recordPaymentAsManager(
     // have it silently accepted as "paid in full" regardless of the real total.
     const { data: existingPayment } = await admin
       .from("hms_payments")
-      .select("id, amount, amount_paid, late_fee, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, status, referral_percent, referral_discount, discount_percent, discount_amount")
+      .select("id, amount, amount_paid, late_fee, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, status, referral_percent, referral_discount, discount_percent, discount_amount, manual_discount_amount")
       .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
@@ -1580,10 +1582,24 @@ export async function recordPaymentAsManager(
     // percentage typed now is ignored. On an uncollected bill the tenant record
     // is authoritative — it is what the trigger itself reads.
     const wasCollected = existingPayment.status === "paid" || existingPayment.status === "partially_paid"
-    const discountPct = wasCollected
+    // Standing (per-tenant) discount stays a percent of rent; the one-off is
+    // rupees off the discountable subtotal (rent + electricity + food + AC
+    // maintenance). A collected bill keeps both as they were collected.
+    const standingPct = wasCollected
       ? Number(existingPayment.discount_percent ?? 0)
-      : combinedDiscountPercent(tenant.discount_percent, manualDiscountPercent)
-    const rentDiscount = computeRentDiscount(charges.rent, discountPct, charges.referralDiscount)
+      : Number(tenant.discount_percent ?? 0)
+    const standingDiscount = computeRentDiscount(charges.rent, standingPct, charges.referralDiscount)
+    const discountable = discountableSubtotal({
+      baseRent: charges.rent, food: charges.food, ac: newAcCharge, acMaintenance: charges.acMaintenance,
+    })
+    // Freeze the one-off only while money is genuinely held (migration 256) — an
+    // undone bill (0 collected) reopens and takes the operator's fresh one-off.
+    const oneOffFrozen = Number(existingPayment.amount_paid ?? 0) > 0
+    const requestedOneOff = oneOffFrozen
+      ? Number(existingPayment.manual_discount_amount ?? 0)
+      : Number(manualDiscountAmount ?? 0)
+    const oneOffDiscount = computeOneOffDiscount(discountable, requestedOneOff, charges.referralDiscount, standingDiscount)
+    const rentDiscount = standingDiscount + oneOffDiscount
     // The late fee being recorded NOW, not the one already on the row — the
     // owner path does the same, and using the stale value would let a manager
     // add a late fee that never entered the amount due.
@@ -1609,9 +1625,10 @@ export async function recordPaymentAsManager(
     // write, and by the AC delta whenever a fresh meter reading lands here.
     updatePayload.amount = grossTotal
     updatePayload.referral_discount = 0
-    // The only discount column the app writes; discount_percent and
-    // discount_amount belong to the trigger.
-    updatePayload.manual_discount_percent = manualDiscountPercent
+    // The only discount column the app writes (migration 255): the one-off in
+    // RUPEES. discount_percent, discount_amount and manual_discount_percent are
+    // the trigger's.
+    updatePayload.manual_discount_amount = manualDiscountAmount
 
     const { data: updated, error } = await admin
       .from("hms_payments")

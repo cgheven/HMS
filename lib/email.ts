@@ -737,8 +737,12 @@ interface PaymentReceiptEmailData {
    *  amount is already net of it, so this is shown as a concession the tenant
    *  received rather than as part of what they paid. Zero/absent prints nothing. */
   discountAmount?: number;
-  /** Combined standing + one-off percent, for the label only. */
+  /** The STANDING (per-tenant) percent only (migration 255), for the label. */
   discountPercent?: number;
+  /** The one-off portion (rupees) of discountAmount, if any. When present the
+   *  percent label is suppressed — a one-off is not a percent of rent, so the
+   *  standing percent would understate the combined rupees. */
+  oneOffDiscount?: number;
 }
 
 /**
@@ -782,7 +786,7 @@ export async function sendPaymentReceiptEmail(data: PaymentReceiptEmailData): Pr
         : ""}
       ${(data.discountAmount ?? 0) > 0
         ? row(
-            (data.discountPercent ?? 0) > 0
+            (data.discountPercent ?? 0) > 0 && (data.oneOffDiscount ?? 0) === 0
               ? `Discount (${Math.round((data.discountPercent as number) * 100) / 100}%)`
               : "Discount",
             `<span style="color:#4ade80;font-weight:700;">&minus; ${hostelAmount(data.discountAmount as number, data.country)}</span>`

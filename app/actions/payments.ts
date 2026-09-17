@@ -30,9 +30,8 @@ import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
 import {
   VALID_TIERS, calcBaseRentServer, dailySnapshot, computeDepositCharge,
   computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeReferralDiscount,
-  computeRentDiscount, combinedDiscountPercent,
+  computeRentDiscount, computeOneOffDiscount, discountableSubtotal,
 } from "@/lib/payment-calc";
-import { validateDiscountPercent } from "@/lib/tenant-discount";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 import { logActivity } from "@/lib/audit";
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore, round2 } from "@/lib/ac-billing";
@@ -306,10 +305,13 @@ export interface MarkPaidInput {
       records a partial payment (status becomes "partially_paid" until the
       running total collected reaches the full amount). */
   amountReceived?: string;
-  /** One-off discount for THIS bill, as a percentage of rent (string from form
-      input). Omit/blank for none. It STACKS on the tenant's standing discount —
-      the trigger adds the two and clamps the sum to 100. */
-  discountPercent?: string;
+  /** One-off discount for THIS bill, in RUPEES (string from form input). The
+      operator can type a % or Rs in the dialog; either way the client resolves it
+      to rupees against the discountable subtotal (rent + electricity + food + AC
+      maintenance) and sends that here. Omit/blank for none. It applies on top of
+      the tenant's standing discount and the referral discount; the trigger clamps
+      it to whatever those two have left of the subtotal. (migration 255) */
+  discountAmount?: string;
   /** Optional label of the configured account the money was received into
       (owner reconciliation). Free label from the accounts dropdown; stored as-is.
       Omit/blank = not specified. */
@@ -352,22 +354,23 @@ export async function markPaymentPaidAction(
     }
     assertNonNegativeFinite(lateFee, "late_fee");
 
-    // --- Validate the one-off discount percentage ---
-    // Absent or blank is "no manual discount" and is stored as NULL; an explicit
-    // 0 is an operator who deliberately recorded none. numeric(5,2) on the
-    // column, so anything finer than 2dp is a value Postgres would round anyway.
-    let manualDiscountPercent: number | null = null;
-    if (input.discountPercent !== undefined && input.discountPercent.trim() !== "") {
-      const parsedDiscount = parseFloat(input.discountPercent);
-      const discountError = validateDiscountPercent(parsedDiscount);
-      if (discountError) throw new Error(discountError);
-      manualDiscountPercent = Math.round(parsedDiscount * 100) / 100;
+    // --- Validate the one-off discount (rupees off the discountable subtotal) ---
+    // Absent or blank is "no one-off discount" and is stored as NULL; an explicit
+    // 0 is an operator who deliberately recorded none. The trigger clamps it to
+    // whatever the referral + standing discounts have left of the subtotal.
+    let manualDiscountAmount: number | null = null;
+    if (input.discountAmount !== undefined && input.discountAmount.trim() !== "") {
+      const parsed = parseFloat(input.discountAmount);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error("Discount must be a non-negative amount");
+      }
+      manualDiscountAmount = Math.round(parsed * 100) / 100;
     }
 
     // --- Fetch the existing payment row (ownership verified via hostel_id) ---
     const { data: existingPayment, error: fetchErr } = await supabase
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, amount_paid, food_charge, ac_charge, payment_package_tier, hostel_id, status, referral_discount, referral_percent, discount_percent")
+      .select("id, tenant_id, for_month, amount, amount_paid, food_charge, ac_charge, payment_package_tier, hostel_id, status, referral_discount, referral_percent, discount_percent, manual_discount_amount")
       .eq("id", input.paymentId)
       .eq("hostel_id", hostelId) // RLS + explicit owner check
       .single();
@@ -502,13 +505,32 @@ export async function markPaymentPaidAction(
     // gross-restore cannot distinguish a discounted amount from a gross one and
     // re-takes the discount on every later write). Refused here too, so a direct
     // server-action call cannot set what the dialog does not offer.
-    if (manualDiscountPercent != null && tenantData.billing_type !== "monthly") {
-      throw new Error("Discounts apply to monthly rent, so they cannot be given on a nightly bill.");
+    if (manualDiscountAmount != null && tenantData.billing_type !== "monthly") {
+      throw new Error("Discounts apply to monthly bills, so they cannot be given on a nightly bill.");
     }
-    const discountPercent = wasCollected
+    // Standing (per-tenant) discount stays a percent of rent. A collected bill
+    // keeps the percent it was billed at (the trigger pins it); an uncollected
+    // one reads the tenant's current standing discount.
+    const standingPct = wasCollected
       ? Number(existingPayment.discount_percent ?? 0)
-      : combinedDiscountPercent(tenantData.discount_percent, manualDiscountPercent);
-    const rentDiscount = computeRentDiscount(baseRent, discountPercent, referralDiscount);
+      : Number(tenantData.discount_percent ?? 0);
+    const standingDiscount = computeRentDiscount(baseRent, standingPct, referralDiscount);
+    // One-off discount: rupees off the discountable subtotal. A collected bill
+    // keeps the rupees it was collected with (pinned); an uncollected one uses the
+    // amount just entered. Deposit + registration are excluded from the subtotal.
+    const discountable = discountableSubtotal({
+      baseRent, food: foodCharge, ac: newAcCharge, acMaintenance: acMaintenanceCharge,
+    });
+    // Freeze the one-off only while money is genuinely held (migration 256) — an
+    // undone bill (0 collected) reopens and takes the operator's fresh one-off,
+    // matching the trigger. Standing/referral stay status-frozen (above).
+    const oneOffFrozen = Number(existingPayment.amount_paid ?? 0) > 0;
+    const requestedOneOff = oneOffFrozen
+      ? Number(existingPayment.manual_discount_amount ?? 0)
+      : Number(manualDiscountAmount ?? 0);
+    const oneOffDiscount = computeOneOffDiscount(discountable, requestedOneOff, referralDiscount, standingDiscount);
+    // The combined discount off this bill (mirrors the trigger's discount_amount).
+    const rentDiscount = standingDiscount + oneOffDiscount;
 
     // --- Partial payment handling ---
     // amount_paid accumulates across however many installments it takes to settle
@@ -575,11 +597,12 @@ export async function markPaymentPaidAction(
       // the trigger re-derives the discount and stores amount net of it.
       amount: newTotalAmount,
       referral_discount: 0,
-      // The ONLY discount column the app writes. discount_percent and
-      // discount_amount are the trigger's — it adds this to the tenant's
-      // standing discount, clamps, and prices the row. On a collected bill it
-      // keeps the percentage the bill was collected with and ignores this.
-      manual_discount_percent: manualDiscountPercent,
+      // The ONLY discount column the app writes (migration 255): the one-off in
+      // RUPEES. discount_percent, discount_amount and manual_discount_percent are
+      // the trigger's — it clamps this to the discountable subtotal (after the
+      // standing + referral discounts) and derives the display %. On a collected
+      // bill it keeps the rupees the bill was collected with and ignores this.
+      manual_discount_amount: manualDiscountAmount,
       amount_paid: newAmountPaid,
       // Write back canonical food_charge/security_deposit_charge so any
       // previously corrupted row is corrected

@@ -1,7 +1,7 @@
 "use server";
 import { requireOwnerOrPartnerTier } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { effectivePaymentStatus, splitPaymentCharges, computeRentDiscount } from "@/lib/payment-calc";
+import { effectivePaymentStatus, computeRentDiscount } from "@/lib/payment-calc";
 import { createClient } from "@/lib/supabase/server";
 import { capitalize, getMonthRange } from "@/lib/utils";
 import { yearMonthInZone } from "@/lib/pkt-time";
@@ -427,7 +427,7 @@ export async function getReportData(
   ] = await Promise.all([
     admin
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, discount_percent, manual_discount_percent, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, discount_percent, hms_rooms(room_number))")
+      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, discount_percent, manual_discount_percent, manual_discount_amount, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, discount_percent, hms_rooms(room_number))")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
@@ -511,6 +511,7 @@ export async function getReportData(
     discount_amount?: unknown;
     discount_percent?: unknown;
     manual_discount_percent?: unknown;
+    manual_discount_amount?: unknown;
     ac_units_consumed?: unknown;
     payment_package_tier: unknown;
     payment_method: string | null;
@@ -694,44 +695,14 @@ export async function getReportData(
     (p) => Number(p.discount_amount || 0) > 0 && Number(p.amount_paid || 0) > 0
   );
 
-  // The one-off share of a bill's discount. Only the COMBINED rupees are
-  // stored, so the standing part is recomputed the way the trigger computes it
-  // — off the bill's own gross rent and the standing percent pinned on the row
-  // (total minus manual) — and what is left over is the one-off. The two parts
-  // therefore always add back up to discount_amount rather than double-counting
-  // a month where both applied.
+  // The one-off (collection) discount is now stored directly in rupees
+  // (migration 255): manual_discount_amount is the amount given and
+  // manual_discount_percent its effective % of the discountable subtotal. The
+  // standing part is the remainder (discount_amount − one-off), so the two still
+  // sum to discount_amount without any re-derivation.
   const oneOffDiscountRows = discountedBills
-    .filter((p) => Number(p.manual_discount_percent || 0) > 0)
+    .filter((p) => Number(p.manual_discount_amount || 0) > 0)
     .map((p) => {
-      const charges = splitPaymentCharges({
-        amount: Number(p.amount || 0),
-        food_charge: Number(p.food_charge || 0),
-        ac_charge: Number(p.ac_charge || 0),
-        security_deposit_charge: Number(p.security_deposit_charge || 0),
-        registration_fee_charge: Number(p.registration_fee_charge || 0),
-        ac_maintenance_charge: Number(p.ac_maintenance_charge || 0),
-        referral_discount: Number(p.referral_discount || 0),
-        discount_amount: Number(p.discount_amount || 0),
-      });
-      // The row stores the trigger's LEAST(standing + manual, 100) and the manual
-      // percent, but NOT the standing one — so subtracting manual from the total
-      // recovers standing only while the two did not clamp. Stack 60% standing
-      // with 60% one-off and the row holds 100: subtraction calls standing 40 and
-      // hands the other 60 points to the one-off column.
-      //
-      // The member's own concession is the better source, capped at what actually
-      // survived the clamp. It is exact whenever the concession has not been
-      // changed since, which is the ordinary case, and it degrades to the old
-      // subtraction when the member has no standing discount at all. Either way
-      // the two parts still sum to discount_amount — this only decides which
-      // table each rupee is reported under.
-      const totalPct = Number(p.discount_percent || 0);
-      const tenantStandingPct = Number(p.tenant?.discount_percent ?? NaN);
-      const standingPct = Number.isFinite(tenantStandingPct)
-        ? Math.min(tenantStandingPct, totalPct)
-        : Math.max(0, totalPct - Number(p.manual_discount_percent || 0));
-      const manualPct = Math.max(0, totalPct - standingPct);
-      const standingPart = computeRentDiscount(charges.rent, standingPct, charges.referralDiscount);
       const t = p.tenant;
       const roomsRaw = t?.hms_rooms;
       return {
@@ -739,8 +710,8 @@ export async function getReportData(
         tenantName: t?.full_name ?? "Unknown",
         roomNumber: (Array.isArray(roomsRaw) ? roomsRaw[0] : roomsRaw)?.room_number ?? null,
         forMonth: p.for_month,
-        percent: manualPct,
-        amount: Math.max(0, charges.discount - standingPart),
+        percent: Number(p.manual_discount_percent || 0),
+        amount: Number(p.manual_discount_amount || 0),
       };
     })
     .sort((a, b) => (b.forMonth.localeCompare(a.forMonth) || b.amount - a.amount));
