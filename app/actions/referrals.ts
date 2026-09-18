@@ -18,7 +18,7 @@ import {
   REFERRAL_PENDING_TTL_DAYS,
 } from "@/lib/referrals";
 import { linkReferralForNewTenant } from "@/lib/referral-attribution";
-import { ensureAndSendReferralInvite, sendReferralInvite } from "@/lib/whatsapp-referral-invite";
+import { ensureAndSendReferralInvite, sendReferralInviteAnyChannel } from "@/lib/whatsapp-referral-invite";
 import {
   detachReferralRewards,
   grantReferralRewards,
@@ -1083,10 +1083,19 @@ export async function ensureReferralCode(
   try {
     // standard: handing a resident their own link is front-of-house work, not
     // a money decision — no reward is created or moved by it.
-    const { hostelId, admin } = await requireEnabledBranch("standard");
+    const { hostelId, admin, referrerPercent, referredPercent } = await requireEnabledBranch("standard");
     const tenant = await requireBranchTenant(admin, hostelId, tenantId);
     if (!isResident(tenant)) {
       throw new Error("Only tenants who have moved in can have a referral link.");
+    }
+
+    // A referral link is NOT generated until the reward is configured (both
+    // percentages set). Referrals are on for every branch by default, so the
+    // reward — not the flag — is the signal that this branch actually runs
+    // referrals. Without this, an unconfigured branch would hand out live 0%
+    // links that accept submissions but can never pay anybody.
+    if (referrerPercent < 1 || referredPercent < 1) {
+      return { error: "Set your referral reward percentages in Marketing before creating a referral link." };
     }
 
     const { data: existing } = await admin
@@ -1990,14 +1999,11 @@ export async function startReferralCampaign(): Promise<{
       };
     }
 
-    // No whatsapp_enabled check. Marketing is sold as its own entitlement, so a
-    // branch can hold referrals without holding reminders and receipts —
-    // requiring both made the cheaper tier pointless, since a referral
-    // programme whose links reach nobody is not a programme.
-    //
-    // resolveBranch has already established the branch is referral_enabled,
-    // which is the gate that matters, and sendReferralInvite re-checks it per
-    // message.
+    // Per-tenant channel is chosen by sendReferralInviteAnyChannel: WhatsApp where
+    // a Super Admin has granted it (whatsapp_enabled) + a phone is on file,
+    // otherwise the referral EMAIL. So a WhatsApp-off (self-registered) branch
+    // still reaches every tenant who has an email. resolveBranch has established
+    // the branch is referral_enabled (the entitlement gate); each send re-checks it.
 
     await admin
       .from("hms_hostels")
@@ -2032,7 +2038,7 @@ export async function startReferralCampaign(): Promise<{
     // reminders.
     const queue = codes ?? [];
     for (const c of queue) {
-      const res = await sendReferralInvite(admin, c.id as string);
+      const res = await sendReferralInviteAnyChannel(admin, c.id as string);
       if (res.sent) {
         sent += 1;
       } else {

@@ -16,9 +16,9 @@ import type { Hostel } from "@/types";
 // (name/slug), location + contact (address/city/area/phone/whatsapp/email), account-
 // level billing/referral, and per-property branding/wifi are NOT copied — and
 // residents/payments are never touched. Just "how this property runs".
-// NB: whatsapp_enabled is deliberately NOT here — it is a plan/super-admin
-// entitlement, not an owner setting, so a new property must earn it via its own
-// plan, never inherit it from another property.
+// NB: whatsapp_enabled is deliberately NOT here — it is a manual-only Super Admin
+// grant (never plan-driven), not an owner setting, so a new property starts off
+// and must be enabled on exclusive request, never inheriting it from another property.
 const COPYABLE_HOSTEL_FIELDS = [
   "form_config", "amenities", "meal_times", "food_menu_type",
   "food_closed_on_sundays", "payment_methods", "reminder_template",

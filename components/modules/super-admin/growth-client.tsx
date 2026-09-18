@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, BedDouble, Megaphone, TrendingUp, Wallet } from "lucide-react";
+import { AlertCircle, BedDouble, TrendingUp, Wallet } from "lucide-react";
 import { CopyLinkButton } from "@/components/modules/referrals/copy-link-button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { formatCurrency, cn } from "@/lib/utils";
@@ -13,7 +13,7 @@ interface Props {
   loadError: string | null;
 }
 
-type SortKey = "empty" | "submitted" | "commission" | "revenue" | "name";
+type SortKey = "empty" | "submitted" | "revenue" | "name";
 
 
 // Cities arrive however they were typed — "Lahore" on one branch, "LAHORE" on
@@ -38,7 +38,7 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
   // Two entire columns of "—" is not a table, it is furniture. They appear only
   // once some branch has referral activity to put in them.
   const showReferral = useMemo(
-    () => branches.some((b) => b.referralsJoined > 0 || b.referralRevenue > 0 || b.pulseCommission > 0),
+    () => branches.some((b) => b.referralsJoined > 0 || b.referralRevenue > 0),
     [branches]
   );
 
@@ -47,15 +47,13 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
   // so the space now carries the funnel instead: submitted, joined, what it
   // returned, what Pulse earned.
   const cols =
-    "md:grid-cols-[minmax(12rem,1fr)_6.5rem_5rem_7rem_5.5rem_8rem_8rem]";
+    "md:grid-cols-[minmax(12rem,1fr)_6.5rem_5rem_7rem_5.5rem_8rem]";
 
   const sorted = useMemo(() => {
     const list = [...branches];
     switch (sort) {
       case "submitted":
         return list.sort((a, b) => b.referralsSubmitted - a.referralsSubmitted);
-      case "commission":
-        return list.sort((a, b) => b.pulseCommission - a.pulseCommission);
       case "revenue":
         return list.sort((a, b) => b.referralRevenue - a.referralRevenue);
       case "name":
@@ -109,16 +107,6 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
       icon: Wallet,
       t: totals && totals.referralRevenue > 0 ? "text-emerald-400" : "text-muted-foreground/50",
     },
-    {
-      label: "Pulse commission",
-      value: totals ? formatCurrency(totals.pulseCommission) : "—",
-      hint:
-        totals && totals.branchesRunningReferrals > 0
-          ? `${totals.branchesRunningReferrals} branch${totals.branchesRunningReferrals === 1 ? "" : "es"} running it`
-          : "none running yet",
-      icon: Megaphone,
-      t: totals && totals.pulseCommission > 0 ? "text-amber" : "text-muted-foreground/50",
-    },
   ];
 
   return (
@@ -168,7 +156,6 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
           >
             <option value="empty">Most empty seats</option>
             <option value="submitted">Most submissions</option>
-            <option value="commission">Most commission</option>
             <option value="revenue">Most referral revenue</option>
             <option value="name">Name</option>
           </select>
@@ -199,9 +186,6 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
             </span>
             <span className="text-right" title="Everything referred tenants have paid, net of refundable deposits">
               Revenue
-            </span>
-            <span className="text-right" title="What Pulse earned from this branch's referrals">
-              Commission
             </span>
           </div>
 
@@ -262,12 +246,6 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
                     {b.referralEnabled && (
                       <p className="text-[11px] text-muted-foreground">
                         {b.referralsSubmitted} submitted · {b.referralsJoined} joined
-                        {b.pulseCommission > 0 && (
-                          <span className="text-amber">
-                            {" · "}
-                            {formatCurrency(b.pulseCommission)} commission
-                          </span>
-                        )}
                       </p>
                     )}
                   </div>
@@ -319,13 +297,6 @@ export function GrowthClient({ branches, totals, loadError }: Props) {
                     )}
                   </p>
 
-                  <p className="hidden md:block text-right text-xs tabular-nums">
-                    {b.pulseCommission > 0 ? (
-                      <span className="text-amber">{formatCurrency(b.pulseCommission)}</span>
-                    ) : (
-                      <span className="text-muted-foreground/25">—</span>
-                    )}
-                  </p>
                 </div>
               );
             })

@@ -443,7 +443,12 @@ const TIMELINE_TIER_LABELS: Record<string, string> = {
 export interface TimelineEvent {
   id: string;
   type: TimelineEventType;
-  date: string; // ISO string for sorting
+  date: string; // ISO string for sorting + display (payment_date for payments — may be backdated)
+  /** Precise event timestamp for the same-day, same-priority tie-break only. `date`
+   *  is often date-only (a payment's payment_date), so two installments collected on
+   *  one day would otherwise tie and fall back to insertion order — printing them in
+   *  the reverse of the timeline's newest-first direction. Never displayed. */
+  sortAt?: string;
   label: string;
   sub?: string;
   /** A second, denser line under `sub` — labelled fragments, same shape as the
@@ -658,6 +663,10 @@ export async function getTenantTimeline(
             id: `installment-${inst.id}`,
             type: completesPayment ? "payment" : "partially_paid",
             date: inst.payment_date ?? inst.created_at,
+            // Real collection time, so same-day installments order newest-first
+            // (the settling top-up above the earlier partial) instead of by
+            // insertion order.
+            sortAt: inst.created_at,
             // Same reason as the no-installment branch below: "paid" against a
             // month the tenant has not lived in reads as that month's rent
             // being settled.
@@ -715,6 +724,7 @@ export async function getTenantTimeline(
           id: `payment-${p.id}`,
           type: "payment",
           date: eventDate,
+          sortAt: p.created_at,
           // A reservation is money taken to hold a bed, not a month's rent being
           // settled. Unlabelled it reads as "July was paid" on the timeline, which
           // is the same confusion the WhatsApp text was reworded to avoid.
@@ -975,7 +985,15 @@ export async function getTenantTimeline(
       // ran the other way, so a single day read bottom-up inside a list that reads
       // top-down: a move, its payment and the checkout all landing on one day were
       // printed in the exact reverse of the order the reader had just been taught.
-      return SAME_DAY_PRIORITY[b.type] - SAME_DAY_PRIORITY[a.type];
+      const prio = SAME_DAY_PRIORITY[b.type] - SAME_DAY_PRIORITY[a.type];
+      if (prio !== 0) return prio;
+      // Same day AND same priority (e.g. two installments of one bill collected on
+      // one day): order by the precise collection time, newest first — so the
+      // settling top-up sits above the earlier partial. `date` alone is date-only
+      // for payments and would tie here, leaving insertion (oldest-first) order.
+      const tsA = new Date(a.sortAt ?? a.date).getTime();
+      const tsB = new Date(b.sortAt ?? b.date).getTime();
+      return tsB - tsA;
     });
 
     const feedback = (feedbackRes.data as TenantFeedback | null) ?? null;

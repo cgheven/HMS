@@ -134,7 +134,7 @@ export async function getReferralTarget(rawCode: string): Promise<ReferralTarget
   const { data, error } = await admin
     .from("hms_referral_codes")
     .select(
-      "id, is_active, source, tenant:hms_tenants(is_active, is_waiting), hostel:hms_hostels(name, referral_enabled, referral_referred_percent, referral_campaign)"
+      "id, is_active, source, tenant:hms_tenants(is_active, is_waiting), hostel:hms_hostels(name, referral_enabled, referral_referrer_percent, referral_referred_percent, referral_campaign)"
     )
     .eq("code", code)
     .maybeSingle();
@@ -151,8 +151,8 @@ export async function getReferralTarget(rawCode: string): Promise<ReferralTarget
     source: string;
     tenant: { is_active: boolean; is_waiting: boolean } | { is_active: boolean; is_waiting: boolean }[] | null;
     hostel:
-      | { name: string; referral_enabled: boolean; referral_referred_percent: number; referral_campaign: string }
-      | { name: string; referral_enabled: boolean; referral_referred_percent: number; referral_campaign: string }[]
+      | { name: string; referral_enabled: boolean; referral_referrer_percent: number; referral_referred_percent: number; referral_campaign: string }
+      | { name: string; referral_enabled: boolean; referral_referrer_percent: number; referral_referred_percent: number; referral_campaign: string }[]
       | null;
   };
   const row = data as unknown as Row;
@@ -179,15 +179,17 @@ export async function getReferralTarget(rawCode: string): Promise<ReferralTarget
   // value is rendered to the public as a promise the owner must honour.
   const pct = Math.max(0, Math.min(100, Math.trunc(Number(hostel.referral_referred_percent ?? 0))));
 
-  // A Pulse link on a branch discounting 0% is dead, and hms_submit_referral
-  // refuses it identically. There is no referrer to reward and nothing to
-  // promise the visitor, so the page would be advertising nothing — and the
-  // owner would be taking public lead-gen while Pulse earned no commission,
-  // because the fee is gated on the referral having actually paid somebody.
-  //
-  // A TENANT link at 0% is deliberately untouched: it can still pay its
-  // referrer, so it is a real offer to a real person.
-  if (source === "pulse" && pct < 1) return { kind: "dead" };
+  // Not-configured branches have no live link. Referrals are on for EVERY branch
+  // by default, so the reward — not the flag — is the signal that this branch
+  // actually runs referrals. A link is live only once the reward is set:
+  //   * Pulse link: needs referred% >= 1 (no referrer; nothing to promise the
+  //     visitor otherwise), and hms_submit_referral refuses it identically.
+  //   * Tenant link: needs BOTH referrer% and referred% >= 1 — the same "offer
+  //     configured" rule the Marketing page, campaign start and invites use.
+  // Without this, a default-on branch would hand out live 0% links that accept
+  // submissions but can never pay anybody.
+  const referrerPct = Math.max(0, Math.trunc(Number(hostel.referral_referrer_percent ?? 0)));
+  if (source === "pulse" ? pct < 1 : (referrerPct < 1 || pct < 1)) return { kind: "dead" };
 
   // Counted from here on, where the link is known to be real and live.
   // Dead links are not counted at all: a mistyped code is not an open, and

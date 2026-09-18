@@ -12,17 +12,22 @@ export function asPlan(value: string | null | undefined): Plan | null {
 }
 
 /**
- * Standard-only capabilities that a plan grants. These map 1:1 onto existing
- * per-capability flags (hms_profiles.subdomain_enabled, hms_hostels.referral_enabled,
- * hms_hostels.whatsapp_enabled) — the plan is the source of truth and DRIVES those
- * flags, so every existing enforcement point keeps working unchanged. Hotel Eye is
- * a Basic feature on both plans and stays on its own provisioning flag, so it is
- * deliberately NOT touched here.
+ * Standard-only capabilities that a plan grants. Maps onto the branded-subdomain
+ * flag (hms_profiles.subdomain_enabled) — the plan is the source of truth and DRIVES
+ * it. Hotel Eye is a Basic feature on both plans and stays on its own provisioning
+ * flag, so it is deliberately NOT touched here.
+ *
+ * WhatsApp automation (hms_hostels.whatsapp_enabled) is NOT plan-driven — granted
+ * ONLY via the Super Admin toggle (setWhatsappEnabled).
+ *
+ * The REFERRAL programme (hms_hostels.referral_enabled) is also NOT plan-driven any
+ * more: it is a FREE feature, DEFAULT-ON for every branch (DB default true, migration
+ * 258). A plan event never touches it, so a downgrade to Basic can't turn referrals
+ * off; Super Admin can still disable one branch via setReferralEnabled. Referrals are
+ * free — no commission is charged.
  */
 export interface PlanEntitlements {
   brandedSubdomain: boolean;
-  referralEngine: boolean;
-  whatsappAutomation: boolean;
 }
 
 export function entitlementsForPlan(plan: Plan): PlanEntitlements {
@@ -30,7 +35,7 @@ export function entitlementsForPlan(plan: Plan): PlanEntitlements {
   // capabilities; only Basic is the entry tier. Business ⊇ Standard is a higher
   // property cap + price, not a new feature set.
   const paid = plan !== "basic";
-  return { brandedSubdomain: paid, referralEngine: paid, whatsappAutomation: paid };
+  return { brandedSubdomain: paid };
 }
 
 /**
@@ -40,10 +45,10 @@ export function entitlementsForPlan(plan: Plan): PlanEntitlements {
  * - subdomain_enabled (owner-level): set to the plan's entitlement. Turning it
  *   OFF only blocks NEW claims — migration 167 never tears down an already-claimed
  *   subdomain, so a downgrade cannot break a live site.
- * - referral_enabled (per-branch): set on every branch the owner holds.
- * - whatsapp_enabled (per-branch): set on every branch. Standard grants WhatsApp
- *   automation; a downgrade to Basic turns it off (Basic doesn't include it). All
- *   sends already gate on this flag, so nothing else changes.
+ *
+ * referral_enabled and whatsapp_enabled are intentionally NOT touched here (see the
+ * note on PlanEntitlements): referrals are free + default-on for everyone, and
+ * WhatsApp is manual-only. A plan event changes neither.
  *
  * Idempotent: safe to call on every relevant webhook event.
  */
@@ -53,16 +58,11 @@ export async function applyPlanEntitlements(
   plan: Plan
 ): Promise<void> {
   const ent = entitlementsForPlan(plan);
-  const [profRes, hostelRes] = await Promise.all([
+  const [profRes] = await Promise.all([
     admin.from("hms_profiles").update({ subdomain_enabled: ent.brandedSubdomain }).eq("id", ownerId),
-    admin
-      .from("hms_hostels")
-      .update({ referral_enabled: ent.referralEngine, whatsapp_enabled: ent.whatsappAutomation })
-      .eq("owner_id", ownerId),
   ]);
   // supabase-js does NOT throw on a DB error — it returns { error }. Surface it so
   // the caller (the webhook) fails loudly and retries, rather than silently
   // leaving a paid account un-entitled.
   if (profRes.error) throw new Error(`applyPlanEntitlements(subdomain): ${profRes.error.message}`);
-  if (hostelRes.error) throw new Error(`applyPlanEntitlements(referral/whatsapp): ${hostelRes.error.message}`);
 }

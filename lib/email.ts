@@ -1084,6 +1084,57 @@ export async function sendSeatReservedEmail(data: SeatReservedEmailData): Promis
   });
 }
 
+export interface ReferralInviteEmailData {
+  tenantEmail: string;
+  firstName: string;
+  hostelName: string;
+  /** Public referral link, ${SITE_URL}/ref/<code> — the same link the WhatsApp invite carries. */
+  refLink: string;
+  referrerPct: number;
+  referredPct: number;
+  /** Per-tenant status page to track their referrals. */
+  statusUrl: string;
+}
+
+/**
+ * Referral invite to a RESIDENT on admission — the email counterpart of the
+ * WhatsApp referral invitation (template hms_referral_invitation). Sent on
+ * admission where WhatsApp is off (self-registered), so the referral programme
+ * still reaches new residents. Mirrors the WhatsApp copy: their link, both
+ * discount percentages, and a link to track their referrals.
+ */
+export async function sendReferralInviteEmail(data: ReferralInviteEmailData): Promise<void> {
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Refer a friend — you both save</h2>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
+      Assalam o Alaikum ${esc(data.firstName)}, enjoying your stay at
+      <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>? Invite a friend to join and you both get a discount.
+    </p>
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+      ${row("You get", `<span style="color:#4ade80;font-weight:700;">${esc(String(data.referrerPct))}% off</span> your rent`)}
+      ${row("Your friend gets", `<span style="color:#4ade80;font-weight:700;">${esc(String(data.referredPct))}% off</span> their first month`)}
+    </table>
+    <div style="margin:24px 0;text-align:center;">
+      <a href="${esc(data.refLink)}" style="display:inline-block;background:#f59e0b;color:#000;font-weight:700;font-size:14px;text-decoration:none;padding:12px 24px;border-radius:8px;">Share your referral link</a>
+    </div>
+    <p style="margin:0 0 4px;font-size:12px;color:#71717a;">Your link:</p>
+    <p style="margin:0 0 20px;font-size:13px;word-break:break-all;"><a href="${esc(data.refLink)}" style="color:#f59e0b;">${esc(data.refLink)}</a></p>
+    <p style="margin:0;font-size:13px;color:#a1a1aa;">
+      <a href="${esc(data.statusUrl)}" style="color:#f59e0b;">Track your referrals &rarr;</a>
+    </p>
+  `;
+
+  // sendOrThrow, not a bare send: a failed referral email must surface so the
+  // caller does NOT stamp link_sent_at on a message that never left — otherwise
+  // the resident is marked invited and never re-emailed.
+  await sendOrThrow({
+    from: FROM,
+    to: data.tenantEmail,
+    subject: `Refer a friend to ${data.hostelName}`,
+    html: baseHtml("Referral Invite", body),
+  });
+}
+
 export interface WelcomeEmailWifi {
   name: string;
   password?: string | null;
@@ -1103,17 +1154,32 @@ export interface WelcomeEmailData {
   /** Lines like "Breakfast: 7:00 AM - 9:00 AM", already assembled and only for
    *  meals the branch actually serves. */
   mealTimeLines: string[];
+  /** Public complaint form for this branch (/complaint/<code>). Present for every
+   *  branch, so the resident can raise a complaint without asking for a link. */
+  complaintUrl?: string | null;
+  /** Referral offer — folded into this one welcome email instead of a separate
+   *  send. Passed ONLY for WhatsApp-off (self-registered) branches with the
+   *  referral programme active; WhatsApp branches get the referral over WhatsApp. */
+  referral?: {
+    link: string;
+    referrerPct: number;
+    referredPct: number;
+    statusUrl: string;
+  } | null;
 }
 
 /**
  * Welcome email to the RESIDENT on admission — carries the WiFi they can
  * actually use and, where the branch serves food, the menu and meal times.
  *
+ * The ONE consolidated admission email: WiFi, meals/menu, the complaint link, and
+ * (for WhatsApp-off/self-registered branches) the referral offer — so a new
+ * resident gets everything in a single message instead of several.
+ *
  * Sent by email rather than WhatsApp on purpose: WiFi passwords are free-form
  * text, which Meta rejects outside a 24-hour session window a new resident has
  * never opened. Only the networks covering their room are listed (see
- * lib/wifi-coverage.ts). Every section is optional — a branch with no WiFi, no
- * menu and no meal times still sends a clean welcome with none of those blocks.
+ * lib/wifi-coverage.ts). Every section is optional and rendered only when present.
  */
 export async function sendWelcomeEmail(data: WelcomeEmailData): Promise<void> {
   const wifiBlock = data.wifi.length
@@ -1148,15 +1214,45 @@ export async function sendWelcomeEmail(data: WelcomeEmailData): Promise<void> {
     `
     : "";
 
+  const complaintBlock = data.complaintUrl
+    ? `
+      <p style="margin:24px 0 8px;font-size:13px;font-weight:600;color:#e5e5e5;">Have a concern?</p>
+      <p style="margin:0 0 8px;font-size:13px;color:#a1a1aa;">
+        Raise a complaint any time — no need to ask anyone for a link. The hostel team is notified straight away.
+      </p>
+      <p style="margin:0;font-size:13px;">
+        <a href="${esc(data.complaintUrl)}" style="color:#f59e0b;text-decoration:underline;">Submit a complaint</a>
+      </p>
+    `
+    : "";
+
+  const referralBlock = data.referral
+    ? `
+      <div style="margin:24px 0 0;padding:16px;background:#0f0f11;border:1px solid #27272a;border-radius:8px;">
+        <p style="margin:0 0 6px;font-size:14px;font-weight:700;color:#fff;">Refer a friend — you both save</p>
+        <p style="margin:0 0 10px;font-size:13px;color:#a1a1aa;">
+          Invite a friend to join ${esc(data.hostelName)}:
+          <strong style="color:#4ade80;">you get ${esc(String(data.referral.referrerPct))}% off</strong> your rent and
+          <strong style="color:#4ade80;">they get ${esc(String(data.referral.referredPct))}% off</strong> their first month.
+        </p>
+        <p style="margin:0 0 4px;font-size:12px;color:#71717a;">Your referral link:</p>
+        <p style="margin:0 0 10px;font-size:13px;word-break:break-all;"><a href="${esc(data.referral.link)}" style="color:#f59e0b;">${esc(data.referral.link)}</a></p>
+        <p style="margin:0;font-size:13px;"><a href="${esc(data.referral.statusUrl)}" style="color:#f59e0b;">Track your referrals &rarr;</a></p>
+      </div>
+    `
+    : "";
+
   const body = `
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Welcome to ${esc(data.hostelName)}</h2>
     <p style="margin:0 0 20px;font-size:14px;color:#a1a1aa;">
       Assalam o Alaikum ${esc(data.tenantName)}, you have been allotted
       <strong style="color:#f59e0b;">${data.room?.trim() ? `Room ${esc(data.room)}` : "your room"}</strong>.
-      Here are the details for your stay.
+      Here is everything you need for your stay.
     </p>
     ${wifiBlock}
     ${mealBlock}
+    ${complaintBlock}
+    ${referralBlock}
     <p style="margin:24px 0 0;font-size:12px;color:#71717a;">
       For any queries, contact hostel management. We hope you enjoy your stay.
     </p>

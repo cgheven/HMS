@@ -327,11 +327,11 @@ export async function listAllHostels(): Promise<{
 // owner self-grant by a DB trigger (migration 110) since RLS alone can't
 // express a column-level restriction.
 //
-// COEXISTENCE NOTE: whatsapp_enabled is now ALSO plan-driven — applyPlanEntitlements
-// (lib/entitlements.ts) sets it from the account plan (Standard on, Basic off) on
-// every Paddle plan-change / cancel. The plan is the source of truth, so a manual
-// grant here on a BASIC-plan branch will be silently reverted at the owner's next
-// plan-application webhook. To keep WhatsApp on for a client, put them on Standard.
+// MANUAL-ONLY: whatsapp_enabled is NOT plan-driven. applyPlanEntitlements
+// (lib/entitlements.ts) deliberately never writes it, so a paid plan does not
+// auto-grant WhatsApp (a self-registered owner who pays does not start messaging
+// tenants) and a grant made here is never reverted by a later billing event.
+// This Super Admin toggle is the ONLY way WhatsApp is turned on, on exclusive request.
 
 /**
  * Pause or resume a branch for PLATFORM BILLING only (migration 162).

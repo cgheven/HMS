@@ -18,9 +18,11 @@ import { getCountryConfig, isSupportedCountry } from "@/lib/country-config";
  * keeps the token on the server: it goes from here to Meta to the tenant's
  * phone, and never touches the operator's browser.
  *
- * Gated on hms_hostels.whatsapp_enabled like every other automated send, and
- * fire-and-forget: the tenant has already left and their money is already
- * settled by the time this runs. A Meta outage must never fail a checkout.
+ * Channel is WhatsApp when the country supports it AND hms_hostels.whatsapp_enabled
+ * is on; otherwise it falls back to EMAIL (same feedback token), so a
+ * WhatsApp-off / self-registered branch still reaches the departing tenant.
+ * Fire-and-forget: the tenant has already left and their money is already settled
+ * by the time this runs. An outage must never fail a checkout.
  */
 export async function sendCheckoutMessage(
   tenantId: string,
@@ -48,9 +50,10 @@ export async function sendCheckoutMessage(
 
     const receiptUrl = await resolveReceiptUrl(admin, tenantId, tenant.hostel_id as string);
 
-    if (whatsappCountry) {
-      if (!hostel?.whatsapp_enabled) return;
-
+    // Channel: WhatsApp only when the country supports it AND it's granted for this
+    // branch. Otherwise fall through to email — this is what covers a WhatsApp-off
+    // (self-registered) branch, which previously got nothing on either channel.
+    if (whatsappCountry && hostel?.whatsapp_enabled) {
       const digits = (tenant.phone ?? "").replace(/\D/g, "").replace(/^0/, "92");
       if (digits.length < 11) return;
 
@@ -80,9 +83,11 @@ export async function sendCheckoutMessage(
         console.error(`[checkout-whatsapp] Meta rejected checkout message for tenant ${tenantId}:`, result.error);
       }
     } else {
-      // Non-PK path — email. The receipt line is optional here (unlike the WA
-      // template, an email renders fine without it); the feedback token stays
-      // server-side, delivered only to the departing tenant's inbox.
+      // Email path — a registered non-WhatsApp country, OR a WhatsApp country whose
+      // branch has whatsapp_enabled=false (self-registered). The receipt line is
+      // optional here (unlike the WA template, an email renders fine without it);
+      // the feedback token stays server-side, delivered only to the departing
+      // tenant's inbox.
       const email = tenant.email?.trim();
       if (!email) return;
       await sendCheckoutEmail({

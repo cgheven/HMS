@@ -810,27 +810,6 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
   const missingCodes = referrers.filter((r) => !r.code).length;
   const pending = referrals.filter((r) => r.status === "pending").length;
 
-  // The bottom line the owner is being sold on: what the referred tenants paid,
-  // less what the branch gave away in discounts, less Pulse's commission. Amber
-  // when negative — a month where those two costs outran the revenue is worth
-  // looking at, not celebrating.
-  // discountGivenThisMonthBranch, NOT discountGivenThisMonth: revenue and
-  // commission are both branch-scoped, and subtracting the owner-WIDE discount
-  // total from them double-counts across a multi-branch owner's two Marketing
-  // pages — enough to render a profitable branch as an amber loss.
-  // Collected revenue minus the commission on tenants who actually paid.
-  //
-  // The owner's discounts are NOT subtracted here. hms_payments.amount is stored
-  // NET of the referral discount, so amount_paid — which is what revenueInMonth
-  // sums — is already post-discount; taking discountGivenThisMonthBranch off
-  // again charged the owner for the same rupees twice.
-  //
-  // Confirmed commission, not total: the fee accrues at conversion while revenue
-  // is cash, so netting the full fee against collected revenue showed a tenant
-  // who joined this morning as a loss.
-  const earningAfterDiscounts =
-    ov.revenueInMonth - ov.pulseCommissionConfirmedInMonth;
-
   const openRewardCount = rewards.filter(
     (r) => r.status === "scheduled" || r.status === "held"
   ).length;
@@ -1314,22 +1293,15 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
           is the only thing reporting that rewards are still landing on bills.
           "Stop all rewards" moves to the Rewards tab so it stays reachable. */}
 
-      {/* Four tiles, all scoped to the picked month, reading left to right as
-          ONE equation rather than four unrelated facts: paying tenants won,
-          what they paid, what that cost, what is left. The count is PAYING
-          tenants only — somebody who moved in and never settled a bill took a
-          discount and returned nothing, and counting them would flatter the
-          very figure this card set exists to make honest. Two per row on a
-          phone, four on a laptop; four divides both, so no tile is orphaned on
-          a half row. Money sits a size below the count because "Rs 1,240,000"
-          in text-2xl truncates in a half-width tile on a phone. */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      {/* Two tiles, scoped to the picked month: how many PAYING tenants referrals
+          won and what they collected. The count is PAYING tenants only — someone
+          who moved in and never settled a bill took a discount and returned
+          nothing, and counting them would flatter the figure. Referrals are FREE,
+          so there is no commission line and no net-of-fee tile; the owner's
+          discounts are itemised per referral in the list below. Money sits a size
+          below the count because "Rs 1,240,000" in text-2xl truncates on a phone. */}
+      <div className="grid grid-cols-2 gap-4">
         {[
-          // Reads left to right as ONE equation: how many paying tenants
-          // referrals won, what they paid, what Pulse charged, what is left.
-          // The owner's own discounts are inside the final figure rather than
-          // on a card of their own — they are already itemised per referral in
-          // the list below, and a fifth card would break the equation.
           {
             id: "tenants",
             label: "Tenants joined",
@@ -1343,42 +1315,6 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
             label: "Revenue collected",
             value: rs(ov.revenueInMonth),
             color: "text-emerald-400",
-            size: "text-base sm:text-lg lg:text-xl",
-            note: null,
-          },
-          {
-            // The rate lives in the LABEL, not a tooltip. A fee tucked behind a
-            // hover reads as something being kept quiet, and this one is
-            // trivially checkable against the figure above it.
-            id: "commission",
-            // "Pulse commission · 20%" wraps to a second line in a half-width
-            // tile, and this label does not truncate — so that tile alone would
-            // grow taller than the three beside it, which is the exact thing the
-            // reserved note height below exists to prevent. The word "Pulse" is
-            // the droppable half on a phone: the page is already Pulse.
-            label: (
-              <>
-                <span className="sm:hidden">Commission</span>
-                <span className="hidden sm:inline">Pulse commission</span>
-                {ov.pulseCommissionPercent > 0 && <> · {ov.pulseCommissionPercent}%</>}
-              </>
-            ),
-            value: rs(ov.pulseCommissionConfirmedInMonth),
-            color: "text-amber",
-            size: "text-base sm:text-lg lg:text-xl",
-            note:
-              ov.pulseCommissionPendingInMonth > 0
-                ? `${rs(ov.pulseCommissionPendingInMonth)} pending`
-                : null,
-          },
-          {
-            // Collected revenue minus confirmed commission — both sides on the
-            // same cash basis, so this can never go negative on the strength of
-            // a tenant who simply has not paid yet.
-            id: "net",
-            label: "Net earning",
-            value: `${earningAfterDiscounts < 0 ? "−" : ""}${rs(Math.abs(earningAfterDiscounts))}`,
-            color: earningAfterDiscounts < 0 ? "text-amber" : "text-emerald-400",
             size: "text-base sm:text-lg lg:text-xl",
             note: null,
           },
