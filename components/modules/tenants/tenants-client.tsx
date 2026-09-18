@@ -58,6 +58,7 @@ import { attributeReferralForTenant, detachReferralRewardsForTenant, sendReferra
 import { ReferralAdmissionBanner } from "@/components/modules/referrals/referral-admission-banner";
 import { sendTenantWelcomeMessageAction, sendAdmissionConfirmationAction, sendWelcomeEmailAction } from "@/lib/whatsapp-welcome-action";
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
+import type { RowInput } from "jspdf-autotable";
 import QRCode from "qrcode";
 import { computeReferralDiscount, computeRentDiscount, percentForRupees } from "@/lib/payment-calc";
 import { HOTEL_EYE_PROVINCES, HOTEL_EYE_DISTRICTS } from "@/lib/hotel-eye-vocabulary";
@@ -2853,27 +2854,71 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       doc.setTextColor(120, 120, 120);
       doc.text(`Generated ${new Date().toLocaleDateString()}${typeFilter !== "all" ? ` · Type: ${capitalize(typeFilter)}` : ""}${depositFilter ? " · With Deposit" : ""}`, 14, 23);
 
-      const cols = chosenColumns();
-      const rows = getCurrentFilteredList().map((t) => {
-        const room = t.room_id ? roomMap[t.room_id] : null;
-        return cols.map((c) => {
-          const v = c.get(t, room);
-          if (c.key === "rent" || c.key === "deposit") {
-            return Number(v) > 0 ? `${curSym} ${Number(v).toLocaleString()}` : "—";
-          }
-          return v === "" || v == null ? "—" : String(v);
-        });
-      });
+      // Group by room so the PDF reads room-by-room (mirrors the Room Filter),
+      // making it easy to review or hand a manager for per-room manual work. ONE
+      // table: the column header prints once (autoTable repeats it only on page
+      // breaks), and each room is a slim full-width band row inside the body — so
+      // the header is never repeated per room, which wasted space. The Room column
+      // is dropped (the band names it). Tenants with no room go in an "Unassigned"
+      // band, last.
+      const cols = chosenColumns().filter((c) => c.key !== "room");
+      const fmtCell = (t: Tenant, room: Room | null, c: (typeof cols)[number]) => {
+        const v = c.get(t, room);
+        if (c.key === "rent" || c.key === "deposit") {
+          return Number(v) > 0 ? `${curSym} ${Number(v).toLocaleString()}` : "—";
+        }
+        return v === "" || v == null ? "—" : String(v);
+      };
+
+      const groups = new Map<string, Tenant[]>();
+      for (const t of getCurrentFilteredList()) {
+        const k = t.room_id ?? "";
+        (groups.get(k) ?? groups.set(k, []).get(k)!).push(t);
+      }
+      // Same numeric room ordering the Room Filter dropdown uses; unassigned last.
+      const keys = [...groups.keys()].sort((a, b) =>
+        a === "" ? 1 : b === "" ? -1
+          : (roomMap[a]?.room_number ?? "").localeCompare(roomMap[b]?.room_number ?? "", undefined, { numeric: true })
+      );
+
+      const body: RowInput[] = [];
+      for (const k of keys) {
+        const room = k ? roomMap[k] ?? null : null;
+        const ts = groups.get(k)!;
+        const noun = ts.length === 1 ? words.tenant : words.tenants;
+        const heading = room
+          ? `Room ${room.room_number} · ${ts.length} ${noun}${room.capacity ? ` · capacity ${room.capacity}` : ""}`
+          : `Unassigned · ${ts.length} ${noun}`;
+        body.push([{
+          content: heading,
+          colSpan: cols.length,
+          styles: { fontStyle: "bold", fillColor: [255, 237, 213], textColor: [124, 45, 18], halign: "left", fontSize: 9.5, cellPadding: 2 },
+        }]);
+        for (const t of ts) body.push(cols.map((c) => fmtCell(t, room, c)));
+      }
 
       autoTable(doc, {
         startY: 28,
         head: [cols.map((c) => c.label)],
-        body: rows,
+        body,
         theme: "striped",
         headStyles: { fillColor: [245, 158, 11], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 9 },
         bodyStyles: { fontSize: 8.5 },
         alternateRowStyles: { fillColor: [248, 248, 248] },
       });
+
+      // Branded footer on every page. Drawn after all content so "of N" knows the
+      // final page count. Muted grey so it never competes with the data.
+      const pageH = doc.internal.pageSize.getHeight();
+      const pageW = doc.internal.pageSize.getWidth();
+      const pageCount = doc.getNumberOfPages();
+      for (let i = 1; i <= pageCount; i++) {
+        doc.setPage(i);
+        doc.setFontSize(8);
+        doc.setTextColor(150, 150, 150);
+        doc.text("Powered by Pulse · yourpulse.io", 14, pageH - 8);
+        doc.text(`Page ${i} of ${pageCount}`, pageW - 14, pageH - 8, { align: "right" });
+      }
 
       const label = tab === "checkedout" ? "checked-out" : tab;
       doc.save(`tenants-${label}-${new Date().toISOString().split("T")[0]}.pdf`);
