@@ -84,6 +84,9 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/invoice/") ||
     pathname.startsWith("/partner/login") ||
     pathname.startsWith("/pricing") ||
+    // Public "Book a Demo" lead form. Exact match — no future sibling inherits
+    // access. The submit is a rate-limited, honeypot-guarded server action.
+    pathname === "/book-demo" ||
     // Redirect-checkout page: opens Paddle checkout for a ?_ptxn transaction on
     // an approved domain. Public — the buyer may not have an app session here.
     pathname === "/checkout" ||

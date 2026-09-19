@@ -516,6 +516,60 @@ interface OnboardingSubmittedEmailData {
 const ONBOARDING_NOTIFY_TO =
   process.env.ONBOARDING_NOTIFY_EMAIL ?? "musabkhan.queries@gmail.com";
 
+// Where "Book a Demo" lead alerts go — its own env, falling back to the
+// onboarding recipient so it works out of the box.
+const DEMO_NOTIFY_TO = process.env.DEMO_NOTIFY_EMAIL ?? ONBOARDING_NOTIFY_TO;
+
+export interface DemoRequestEmailData {
+  contactName: string;
+  businessName: string;
+  phone: string;
+  email?: string | null;
+  city?: string | null;
+  message?: string | null;
+  country?: string | null;
+  propertyCount?: number | null;
+  availability?: string | null;
+}
+
+// Alert to the sales/admin inbox on a new public demo request. Never throws —
+// the caller fires it without awaiting, so a mail outage can't fail the lead
+// capture (the lead row is already saved).
+export async function sendDemoRequestNotification(data: DemoRequestEmailData): Promise<void> {
+  try {
+    const body = `
+      <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">New Demo Request</h2>
+      <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
+        <strong style="color:#f59e0b;">${esc(data.contactName)}</strong> asked to book a demo from the website.
+      </p>
+      <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
+        ${row("Contact", esc(data.contactName))}
+        ${row("Business", esc(data.businessName))}
+        ${row("Phone", esc(data.phone))}
+        ${row("Email", esc(data.email))}
+        ${row("City", esc(data.city))}
+        ${row("Country", esc(data.country))}
+        ${row("Properties", esc(data.propertyCount != null ? String(data.propertyCount) : null))}
+        ${row("Preferred time", esc(data.availability))}
+      </table>
+      ${data.message ? `
+      <p style="margin:20px 0 4px;font-size:13px;font-weight:600;color:#e5e5e5;">Message</p>
+      <p style="margin:0;font-size:13px;color:#a1a1aa;white-space:pre-wrap;">${esc(data.message)}</p>` : ""}
+      <p style="margin:24px 0 0;">
+        <a href="${SITE_URL}/super-admin/leads" style="display:inline-block;background:#f59e0b;color:#0f0f11;font-size:13px;font-weight:600;padding:10px 18px;border-radius:8px;text-decoration:none;">Open Leads</a>
+      </p>
+    `;
+    await resend.emails.send({
+      from: FROM,
+      to: DEMO_NOTIFY_TO,
+      subject: `New demo request — ${data.contactName} (${data.businessName})`,
+      html: baseHtml("New Demo Request", body),
+    });
+  } catch (err) {
+    console.error("[email] sendDemoRequestNotification failed:", err);
+  }
+}
+
 export async function sendOnboardingSubmittedEmail(
   data: OnboardingSubmittedEmailData
 ): Promise<void> {

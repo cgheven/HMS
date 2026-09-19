@@ -22,7 +22,13 @@ const CRAWLER_PATHS = new Set(["/robots.txt", "/sitemap.xml"]);
  * prefix: /api/whatsapp/test fires real billable sends to any number given to
  * it and must stay session-gated.
  */
-const PUBLIC_WEBHOOKS = new Set(["/api/whatsapp/webhook", "/api/paddle/webhook"]);
+const PUBLIC_WEBHOOKS = new Set([
+  "/api/whatsapp/webhook",
+  "/api/paddle/webhook",
+  // Public "Book a Demo" lead endpoint for the yourpulse.io marketing site — no
+  // session; secured in the handler (honeypot, rate limit, validation, CORS).
+  "/api/book-demo",
+]);
 
 export async function middleware(request: NextRequest) {
   if (CRAWLER_PATHS.has(request.nextUrl.pathname) || PUBLIC_WEBHOOKS.has(request.nextUrl.pathname)) {
