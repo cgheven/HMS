@@ -283,10 +283,11 @@ export async function provisionOnboarding(submissionId: string): Promise<Provisi
     let emailError: string | undefined;
     try {
       const { data: firstHostel } = await admin
-        .from("hms_hostels").select("name").eq("id", hostelIds[0]).maybeSingle();
+        .from("hms_hostels").select("name, country").eq("id", hostelIds[0]).maybeSingle();
       await sendClientCredentialsEmail({
         clientName: ownerName,
         businessName: firstHostel?.name ?? "your hostel",
+        country: firstHostel?.country ?? null,
         email: ownerEmail,
         password: ownerPassword,
       });

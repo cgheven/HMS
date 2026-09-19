@@ -39,7 +39,7 @@ export async function sendWelcomeEmailToTenant(tenantId: string): Promise<void> 
     const { data: tenant } = await admin
       .from("hms_tenants")
       .select(
-        "id, full_name, email, is_active, is_waiting, hostel_id, room:hms_rooms(room_number, floor), hostel:hms_hostels(name, wifi_networks, meal_times, listing_enabled, slug, complaint_code, whatsapp_enabled)"
+        "id, full_name, email, is_active, is_waiting, hostel_id, room:hms_rooms(room_number, floor), hostel:hms_hostels(name, country, wifi_networks, meal_times, listing_enabled, slug, complaint_code, whatsapp_enabled)"
       )
       .eq("id", tenantId)
       .maybeSingle();
@@ -103,6 +103,7 @@ export async function sendWelcomeEmailToTenant(tenantId: string): Promise<void> 
       tenantEmail: email,
       tenantName: tenant.full_name as string,
       hostelName: hostel.name as string,
+      country: (hostel as { country?: string | null }).country ?? null,
       room: (room?.room_number as string) ?? null,
       wifi,
       menuUrl,

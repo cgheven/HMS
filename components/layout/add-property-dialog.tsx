@@ -260,8 +260,8 @@ export function AddPropertyDialog({ open, onClose, hostels, defaultCountry }: Pr
               </Select>
               <p className="text-xs text-muted-foreground">
                 {copyFrom
-                  ? "Rates, food, and form settings are copied. Residents and payments are not."
-                  : "Optional — reuse the rates, food and form settings from an existing property."}
+                  ? "Copies pricing, charges, WiFi, meals, menu, referral rewards and payment methods. Rooms, residents and payments are never copied — those start fresh for this property."
+                  : "Optional — reuse the full setup (pricing, WiFi, meals, menu, referral, payment methods) from an existing property. Rooms, residents and payments always start fresh."}
               </p>
             </div>
           )}

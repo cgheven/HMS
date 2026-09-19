@@ -1,13 +1,16 @@
 "use server";
+import { randomBytes, createHash } from "crypto";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireOwnerWrite, requireNotFrozen } from "@/lib/auth";
+import { requireOwnerWrite, requireOwnerOrAbove, requireNotFrozen } from "@/lib/auth";
 import { isKnownCountry, DEFAULT_COUNTRY, isManualBankBilling } from "@/lib/country-config";
 import { MAX_PROPERTIES, ACCOMMODATION_TYPE_VALUES } from "@/lib/validation";
-import { chargeTierUpgradeForOwner, previewTierUpgradeForOwner, type TierSyncResult } from "@/lib/tier-sync";
+import { chargeTierUpgradeForOwner, previewTierUpgradeForOwner, syncSubscriptionTierForOwner, type TierSyncResult } from "@/lib/tier-sync";
+import { sendBranchDeletionEmail } from "@/lib/email";
+import { siteUrl } from "@/lib/site-url";
 import { tierForPropertyCount, type PricingTier } from "@/lib/tier-pricing";
 import { asPlan } from "@/lib/entitlements";
 import type { Hostel } from "@/types";
@@ -23,7 +26,17 @@ const COPYABLE_HOSTEL_FIELDS = [
   "form_config", "amenities", "meal_times", "food_menu_type",
   "food_closed_on_sundays", "payment_methods", "reminder_template",
   "welcome_message_template", "meter_all_rooms",
+  // WiFi copies straight into the INSERT (plain column, no guard).
+  "wifi_networks",
 ] as const;
+
+// Referral reward %s are copied too (Quick Setup parity), but NOT through the
+// session-client INSERT — the hms_prevent_referral_self_grant trigger forbids a
+// user setting referral percentages directly. They're applied AFTER insert via
+// the admin client (service role bypasses the guard, same as the Marketing page).
+// (Referral campaign is deliberately NOT copied — a new empty branch shouldn't
+// auto-activate invites.)
+const REFERRAL_COPY_FIELDS = ["referral_referrer_percent", "referral_referred_percent"] as const;
 
 // Package-config columns copied to a new property (or seeded to zero). A missing
 // config row makes the payment trigger write NULL and hides tenants on the Monthly
@@ -331,7 +344,7 @@ export async function createBranch(data: {
     if (data.copyFromHostelId) {
       const { data: src } = await supabase
         .from("hms_hostels")
-        .select(COPYABLE_HOSTEL_FIELDS.join(", "))
+        .select([...COPYABLE_HOSTEL_FIELDS, ...REFERRAL_COPY_FIELDS].join(", "))
         .eq("id", data.copyFromHostelId)
         .eq("owner_id", user.id)
         .maybeSingle();
@@ -419,8 +432,11 @@ export async function createBranch(data: {
     if (jErr) console.warn("[createBranch] junction insert failed:", jErr.message);
 
     // Package config: copy the source's rates, else seed a zeroed default.
+    // Gated on `copySource` (not just copyFromHostelId): copySource is only set
+    // when the source hostel was found under `.eq("owner_id", user.id)`, so an
+    // admin-client copy can never pull another owner's config/menu via a crafted id.
     let seeded = false;
-    if (data.copyFromHostelId) {
+    if (data.copyFromHostelId && copySource) {
       const { data: srcCfg } = await admin
         .from("hms_package_configs")
         .select(PACKAGE_CONFIG_COLUMNS)
@@ -435,6 +451,39 @@ export async function createBranch(data: {
       }
     }
     if (!seeded) await seedDefaultPackageConfig(admin, newId);
+
+    // Food menu: copy the source's items (the weekly/monthly plan) so "Copy
+    // setup from" mirrors Quick Setup end to end. New rows, new ids; residents,
+    // payments and per-day kitchen actuals are never copied.
+    if (data.copyFromHostelId && copySource) {
+      // Copy the weekly plan (day_of_week set) unconditionally, but only
+      // current/future dated (monthly) items — never stale past-date entries.
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: srcItems } = await admin
+        .from("hms_food_items")
+        .select("date, day_of_week, meal_type, item_name, quantity, unit_cost, notes, sort_order")
+        .eq("hostel_id", data.copyFromHostelId)
+        .or(`day_of_week.not.is.null,date.gte.${today}`);
+      if (srcItems && srcItems.length > 0) {
+        const rows = (srcItems as Record<string, unknown>[]).map((it) => ({ ...it, hostel_id: newId }));
+        const { error: foodErr } = await admin.from("hms_food_items").insert(rows);
+        if (foodErr) console.warn("[createBranch] food-menu copy failed:", foodErr.message);
+      }
+    }
+
+    // Referral reward %s: applied via the admin client (service role bypasses the
+    // hms_prevent_referral_self_grant trigger that forbids a user setting them
+    // directly). Gated on copySource, so only an owned source is ever read.
+    if (data.copyFromHostelId && copySource) {
+      const refUpdate: Record<string, unknown> = {};
+      for (const f of REFERRAL_COPY_FIELDS) {
+        if (copySource[f] != null) refUpdate[f] = copySource[f];
+      }
+      if (Object.keys(refUpdate).length > 0) {
+        const { error: refErr } = await admin.from("hms_hostels").update(refUpdate).eq("id", newId);
+        if (refErr) console.warn("[createBranch] referral-percent copy failed:", refErr.message);
+      }
+    }
 
     const billing: TierSyncResult = charge.applied
       ? { status: "charged", from: fromTier, to: toTier }
@@ -535,5 +584,190 @@ export async function previewAddProperty(): Promise<{
   } catch (e) {
     unstable_rethrow(e);
     return { ok: false, error: (e as Error).message };
+  }
+}
+
+// ── Self-service branch deletion (emailed confirmation link) ───────────────────
+
+function branchDeleteTokenHash(v: string): string {
+  return createHash("sha256").update(v).digest("hex");
+}
+
+async function ownedBranchGuards(admin: ReturnType<typeof createAdminClient>, ownerId: string, hostelId: string):
+  Promise<{ ok: true; name: string } | { ok: false; error: string }> {
+  const { data: hostels } = await admin.from("hms_hostels").select("id, name").eq("owner_id", ownerId);
+  const owned = (hostels ?? []) as { id: string; name: string }[];
+  const target = owned.find((h) => h.id === hostelId);
+  if (!target) return { ok: false, error: "Branch not found." };
+  // Only hard rule: never the last branch (an account keeps ≥1 property). Active
+  // residents/payments do NOT block — deleting them with the branch is the owner's
+  // informed call, made via the emailed link + the on-screen data-loss warning.
+  if (owned.length < 2) return { ok: false, error: "You can't delete your only branch — an account needs at least one property." };
+  return { ok: true, name: target.name };
+}
+
+async function branchCounts(admin: ReturnType<typeof createAdminClient>, hostelId: string) {
+  const [rooms, residents, payments] = await Promise.all([
+    admin.from("hms_rooms").select("id", { count: "exact", head: true }).eq("hostel_id", hostelId),
+    admin.from("hms_tenants").select("id", { count: "exact", head: true }).eq("hostel_id", hostelId),
+    admin.from("hms_payments").select("id", { count: "exact", head: true }).eq("hostel_id", hostelId).gt("amount_paid", 0),
+  ]);
+  return { roomCount: rooms.count ?? 0, residentCount: residents.count ?? 0, paymentCount: payments.count ?? 0 };
+}
+
+/** Step 1 — owner asks to delete a branch; we email a single-use confirmation link. */
+export async function requestBranchDeletion(hostelId: string): Promise<{ success?: boolean; error?: string }> {
+  try {
+    const profile = await requireOwnerOrAbove();
+    const admin = createAdminClient();
+    const guard = await ownedBranchGuards(admin, profile.id, hostelId);
+    if (!guard.ok) return { error: guard.error };
+
+    const { data: authUser } = await admin.auth.admin.getUserById(profile.id);
+    const email = authUser?.user?.email;
+    if (!email) return { error: "No email is on file to send the confirmation link to." };
+
+    const counts = await branchCounts(admin, hostelId);
+    const rawToken = randomBytes(32).toString("base64url");
+    const tokenHash = branchDeleteTokenHash(rawToken);
+    const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+
+    await admin.from("hms_pending_branch_deletions").delete().eq("hostel_id", hostelId).is("consumed_at", null);
+    const { error: insErr } = await admin.from("hms_pending_branch_deletions").insert({
+      hostel_id: hostelId, owner_id: profile.id, token_hash: tokenHash, expires_at: expiresAt,
+    });
+    if (insErr) return { error: "Couldn't start the deletion. Please try again." };
+
+    await sendBranchDeletionEmail({
+      to: email,
+      ownerName: profile.full_name ?? null,
+      branchName: guard.name,
+      confirmUrl: `${siteUrl()}/branch-delete/${rawToken}`,
+      ...counts,
+      country: profile.country ?? null,
+    });
+    return { success: true };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Something went wrong." };
+  }
+}
+
+/** For the confirm page — resolve a token to the branch it will delete (owner-scoped). */
+export async function getBranchDeletionInfo(token: string): Promise<
+  { branchName: string; roomCount: number; residentCount: number; paymentCount: number } | { error: string }
+> {
+  try {
+    const profile = await requireOwnerOrAbove();
+    const admin = createAdminClient();
+    const { data: pending } = await admin
+      .from("hms_pending_branch_deletions")
+      .select("hostel_id, owner_id, expires_at, consumed_at")
+      .eq("token_hash", branchDeleteTokenHash(token.trim()))
+      .maybeSingle();
+    if (!pending || pending.consumed_at || new Date(pending.expires_at as string).getTime() < Date.now()) {
+      return { error: "This link is invalid or has expired." };
+    }
+    if (pending.owner_id !== profile.id) return { error: "This link isn't for your account." };
+    const hostelId = pending.hostel_id as string;
+    const { data: hostel } = await admin
+      .from("hms_hostels").select("name").eq("id", hostelId).eq("owner_id", profile.id).maybeSingle();
+    if (!hostel) return { error: "This branch no longer exists." };
+    return { branchName: (hostel as { name: string }).name, ...(await branchCounts(admin, hostelId)) };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: "Something went wrong." };
+  }
+}
+
+/** Step 2 — confirm the emailed link (while signed in as the owner) and delete. */
+export async function confirmBranchDeletion(token: string): Promise<{ success?: boolean; error?: string; branchName?: string }> {
+  let lockToken: string | null = null;
+  let ownerId: string | null = null;
+  try {
+    // requireOwnerOrAbove (not requireOwnerWrite): a frozen owner may delete a
+    // mistaken branch — it reduces their bill — and the admin delete below
+    // bypasses the freeze trigger anyway.
+    const profile = await requireOwnerOrAbove();
+    ownerId = profile.id;
+    const admin = createAdminClient();
+
+    const { data: pending } = await admin
+      .from("hms_pending_branch_deletions")
+      .select("id, hostel_id, owner_id, expires_at, consumed_at")
+      .eq("token_hash", branchDeleteTokenHash(token.trim()))
+      .maybeSingle();
+    if (!pending || pending.consumed_at || new Date(pending.expires_at as string).getTime() < Date.now()) {
+      return { error: "This link is invalid or has expired." };
+    }
+    if (pending.owner_id !== profile.id) return { error: "This link isn't for your account." };
+    const hostelId = pending.hostel_id as string;
+
+    // Serialize with add-property and any other concurrent branch delete via the
+    // per-owner billing lock (same CAS + fencing token createBranch uses). Without
+    // it, two simultaneous confirms of DIFFERENT branches could each pass the
+    // "keep ≥1 branch" count guard and delete down to zero, and the tier sync
+    // could race a concurrent add. The lock makes the guard + delete atomic.
+    const fToken = randomBytes(16).toString("hex");
+    const nowMs = Date.now();
+    const { data: lockRow } = await admin
+      .from("hms_profiles")
+      .update({ billing_lock_at: new Date(nowMs).toISOString(), billing_lock_token: fToken })
+      .eq("id", profile.id)
+      .or(`billing_lock_at.is.null,billing_lock_at.lt.${new Date(nowMs - LOCK_STALE_MS).toISOString()}`)
+      .select("id")
+      .maybeSingle();
+    if (!lockRow) return { error: "A property change is already in progress. Please wait a moment and try again." };
+    lockToken = fToken;
+
+    // Re-check guards inside the lock, BEFORE burning the single-use token — a
+    // benign transient failure (e.g. a resident admitted meanwhile) shouldn't
+    // spend the link.
+    const guard = await ownedBranchGuards(admin, profile.id, hostelId);
+    if (!guard.ok) return { error: guard.error };
+
+    // Now claim the token single-use, then delete.
+    const { data: claimed } = await admin
+      .from("hms_pending_branch_deletions").update({ consumed_at: new Date().toISOString() })
+      .eq("id", pending.id).is("consumed_at", null).select("id").maybeSingle();
+    if (!claimed) return { error: "This link has already been used." };
+
+    // Atomic teardown (migration 264): deactivate residents (to satisfy the
+    // room-delete guard trigger), detach CRM leads (a NO ACTION FK), and drop the
+    // junction + hostel — all in ONE transaction, so a failure can't leave the
+    // branch half-deleted with everyone checked out.
+    const { error: delErr } = await admin.rpc("hms_delete_branch_atomic", { p_hostel_id: hostelId });
+    if (delErr) return { error: delErr.message };
+
+    // Reconcile the subscription tier down (applies at renewal; self-gates
+    // PK/manual/grandfathered/no-subscription owners).
+    await syncSubscriptionTierForOwner(profile.id);
+
+    // Only re-point the active-hostel cookie if the deleted branch WAS the active
+    // one — deleting a non-active branch shouldn't silently switch context.
+    try {
+      const active = (await cookies()).get(COOKIE_NAME)?.value;
+      if (active === hostelId) {
+        const { data: remaining } = await admin
+          .from("hms_hostels").select("id").eq("owner_id", profile.id).limit(1).maybeSingle();
+        const remainingId = (remaining as { id?: string } | null)?.id;
+        if (remainingId) await switchActiveHostel(remainingId);
+      }
+    } catch { /* cookie re-point is best-effort */ }
+
+    revalidatePath("/");
+    return { success: true, branchName: guard.name };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: err instanceof Error ? err.message : "Something went wrong." };
+  } finally {
+    // Release the per-owner lock only if we still hold it (fencing token).
+    if (lockToken && ownerId) {
+      await createAdminClient()
+        .from("hms_profiles")
+        .update({ billing_lock_at: null, billing_lock_token: null })
+        .eq("id", ownerId)
+        .eq("billing_lock_token", lockToken);
+    }
   }
 }

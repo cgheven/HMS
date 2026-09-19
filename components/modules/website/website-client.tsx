@@ -15,11 +15,10 @@ import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { HostelType } from "@/types";
-import { requiresGuestRegistration } from "@/lib/national-id";
 import {
   claimMySubdomain, saveWebsiteBranding, saveWebsitePublicTheme, saveWebsiteSocials,
 } from "@/app/actions/website";
-import { SUBDOMAIN_ROOT, normalizeSubdomain, subdomainError, suggestSubdomain, subdomainUrl } from "@/lib/subdomain";
+import { SUBDOMAIN_ROOT, normalizeSubdomain, subdomainError, subdomainUrl } from "@/lib/subdomain";
 import { facebookError, instagramError, normalizeFacebook, normalizeInstagram } from "@/lib/social";
 
 const HOSTEL_TYPES: { value: HostelType; label: string }[] = [
@@ -483,10 +482,10 @@ export function WebsiteClient({
                 <CardTitle className="text-base">Your Own Web Address</CardTitle>
               </div>
               <CardDescription>
-                A branded address for your business — easier to share and remember than a link with a code in it.
+                A branded address that's easier to share than a coded link.
                 {hostels.length > 1
-                  ? ` One address for all ${hostels.length} of your branches, not per branch — set it here or on any other branch, it's the same address.`
-                  : " Covers your whole business, including any branches you add later."}
+                  ? ` One address for all ${hostels.length} branches, not per branch.`
+                  : " Covers your whole business, including branches you add later."}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -518,10 +517,8 @@ export function WebsiteClient({
                     {subdomainEnabled ? (
                       <>
                         <ShieldCheck className="w-3.5 h-3.5 text-amber shrink-0 mt-0.5" />
-                        <span className="text-muted-foreground">
-                          <strong className="text-amber">You can only set this once.</strong> It cannot be changed
-                          or undone afterwards, because you will be printing it on signs and sending it to residents.
-                          Choose the name of your business, and check the spelling carefully.
+                        <span className="text-amber">
+                          Choose carefully — this address can only be set once.
                         </span>
                       </>
                     ) : (
@@ -542,13 +539,7 @@ export function WebsiteClient({
                       <Input
                         value={subdomainInput}
                         onChange={(e) => { setSubdomainInput(e.target.value); setSubdomainConfirm(false); }}
-                        // Suggest from EVERY branch, not the one being viewed —
-                        // this address covers the business, so "Syed Residencies
-                        // Branch UMT" must not steer them to a campus name.
-                        placeholder={
-                          suggestSubdomain(hostels.length > 0 ? hostels.map((h) => h.name) : [hostel?.name ?? ""])
-                          || "yourhostel"
-                        }
+                        placeholder="Choose the name of your business"
                         autoComplete="off"
                         spellCheck={false}
                         className={`rounded-r-none font-mono ${subdomainInvalid ? "border-rose-500/50" : ""}`}
@@ -906,10 +897,7 @@ export function WebsiteClient({
                 <div className="space-y-2">
                   <Label>Hostel Type</Label>
                   <div className="flex flex-wrap gap-2">
-                    {/* Mixed is offered only where guest registration doesn't apply
-                        (non-PK). A guest-registration country files each resident
-                        under one gender (Hotel Eye), which a mixed hostel can't. */}
-                    {HOSTEL_TYPES.filter((t) => t.value !== "mixed" || !requiresGuestRegistration(hostel?.country)).map((t) => (
+                    {HOSTEL_TYPES.map((t) => (
                       <button
                         key={t.value}
                         type="button"

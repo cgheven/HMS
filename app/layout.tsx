@@ -31,8 +31,8 @@ export const metadata: Metadata = {
   // metadataBase from the request origin, which is what serves each client's
   // branding on their own domain.
   metadataBase: new URL(siteUrl()),
-  title: "Pulse - Hostel Management System",
-  description: "Manage your hostel, expenses, kitchen, and bills in one place",
+  title: "Pulse - Accommodation Management Platform",
+  description: "Manage your accommodation, expenses, kitchen, and bills in one place",
 };
 
 export const viewport: Viewport = {

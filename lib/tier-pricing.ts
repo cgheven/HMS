@@ -27,6 +27,16 @@ export type TierBillingCycle = "monthly" | "annual";
 
 export const SELF_SERVE_TIERS: Exclude<PricingTier, "enterprise">[] = ["basic", "standard", "business"];
 
+/**
+ * Pakistan card-rail price: a flat PER-BRANCH USD monthly rate (annual = ×10),
+ * NOT the property-count tier bands above. Stored per-owner in
+ * hms_profiles.custom_unit_amount_usd (the existing per-branch USD mechanism) and
+ * charged as rate × billable branches at checkout. Applies only to owners with
+ * hms_profiles.pk_card_enabled = true (new PK self-reg owners); existing PK clients
+ * stay on manual bank invoicing.
+ */
+export const PK_CARD_MONTHLY_USD = 15;
+
 /** Inclusive upper bound on property count for each self-serve tier. */
 export const TIER_PROPERTY_CAP: Record<Exclude<PricingTier, "enterprise">, number> = {
   basic: 1,

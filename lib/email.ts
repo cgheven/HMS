@@ -12,6 +12,12 @@ function hostelAmount(n: number, country?: string | null): string {
   return `${getCountryConfig(country).currencySymbol} ${n.toLocaleString()}`;
 }
 
+// Greeting: PK keeps the incumbent "Assalam o Alaikum" (byte-identical); every
+// non-PK hostel/client reads "Hi". Falls open to PK when country is absent.
+function greet(country?: string | null): string {
+  return (country ?? "PK").toUpperCase() === "PK" ? "Assalam o Alaikum" : "Hi";
+}
+
 // Resend's constructor THROWS on a falsy key, at MODULE level. This module is
 // now in the import graph of all three payment-recording server actions (via
 // lib/payment-notifications.ts), so a throw here would 500 them before any of
@@ -187,6 +193,8 @@ export async function sendWaitlistEmail(data: WaitlistEmailData): Promise<void> 
 // can dun a customer for money.
 
 interface ClientInvoiceEmailData {
+  /** Hostel/owner ISO country — PK greets "Assalam o Alaikum", others "Hi". */
+  country?: string | null;
   clientEmail: string;
   clientName: string;
   periodLabel: string;
@@ -245,7 +253,7 @@ export async function sendClientInvoiceEmail(
 
   const body = `
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">${esc(heading)}</h2>
-    <p style="margin:0 0 22px;font-size:14px;color:#a1a1aa;">Assalam o Alaikum ${esc(data.clientName)}, ${lead}</p>
+    <p style="margin:0 0 22px;font-size:14px;color:#a1a1aa;">${greet(data.country)} ${esc(data.clientName)}, ${lead}</p>
 
     <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;">
       ${data.lines.map(lineRow).join("")}
@@ -697,6 +705,8 @@ export async function sendGroupedFollowUpDigests(
 // ── Client provisioning credentials ──────────────────────────────────────────
 
 export interface ClientCredentialsEmailData {
+  /** Hostel/owner ISO country — PK greets "Assalam o Alaikum", others "Hi". */
+  country?: string | null;
   clientName: string;
   businessName: string;
   email: string;
@@ -763,7 +773,7 @@ export async function sendPaymentReceiptEmail(data: PaymentReceiptEmailData): Pr
       ${data.paidInFull ? "Payment received" : "Partial payment received"}
     </h2>
     <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
-      Assalam o Alaikum ${esc(data.tenantName)}, we have received your payment for
+      ${greet(data.country)} ${esc(data.tenantName)}, we have received your payment for
       <strong style="color:#f59e0b;">${esc(data.forMonth)}</strong>.${
         data.paidInFull
           ? ""
@@ -1060,7 +1070,7 @@ export async function sendSeatReservedEmail(data: SeatReservedEmailData): Promis
   const body = `
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Your seat is reserved</h2>
     <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
-      Assalam o Alaikum ${esc(data.tenantName)}, we have received your booking deposit for
+      ${greet(data.country)} ${esc(data.tenantName)}, we have received your booking deposit for
       <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>. Your seat is held.
     </p>
     <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
@@ -1085,6 +1095,8 @@ export async function sendSeatReservedEmail(data: SeatReservedEmailData): Promis
 }
 
 export interface ReferralInviteEmailData {
+  /** Hostel/owner ISO country — PK greets "Assalam o Alaikum", others "Hi". */
+  country?: string | null;
   tenantEmail: string;
   firstName: string;
   hostelName: string;
@@ -1107,7 +1119,7 @@ export async function sendReferralInviteEmail(data: ReferralInviteEmailData): Pr
   const body = `
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Refer a friend — you both save</h2>
     <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">
-      Assalam o Alaikum ${esc(data.firstName)}, enjoying your stay at
+      ${greet(data.country)} ${esc(data.firstName)}, enjoying your stay at
       <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>? Invite a friend to join and you both get a discount.
     </p>
     <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
@@ -1141,6 +1153,8 @@ export interface WelcomeEmailWifi {
 }
 
 export interface WelcomeEmailData {
+  /** Hostel/owner ISO country — PK greets "Assalam o Alaikum", others "Hi". */
+  country?: string | null;
   tenantEmail: string;
   tenantName: string;
   hostelName: string;
@@ -1245,7 +1259,7 @@ export async function sendWelcomeEmail(data: WelcomeEmailData): Promise<void> {
   const body = `
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Welcome to ${esc(data.hostelName)}</h2>
     <p style="margin:0 0 20px;font-size:14px;color:#a1a1aa;">
-      Assalam o Alaikum ${esc(data.tenantName)}, you have been allotted
+      ${greet(data.country)} ${esc(data.tenantName)}, you have been allotted
       <strong style="color:#f59e0b;">${data.room?.trim() ? `Room ${esc(data.room)}` : "your room"}</strong>.
       Here is everything you need for your stay.
     </p>
@@ -1268,6 +1282,8 @@ export async function sendWelcomeEmail(data: WelcomeEmailData): Promise<void> {
 }
 
 export interface NoticeEmailData {
+  /** Hostel/owner ISO country — PK greets "Assalam o Alaikum", others "Hi". */
+  country?: string | null;
   tenantEmail: string;
   tenantName: string;
   hostelName: string;
@@ -1300,7 +1316,7 @@ export async function sendNoticeReceivedEmail(data: NoticeEmailData): Promise<vo
   const body = `
     <h2 style="margin:0 0 10px;font-size:21px;font-weight:700;color:#fff;">Your notice is confirmed</h2>
     <p style="margin:0 0 4px;font-size:14px;line-height:1.65;color:#c9cdd6;">
-      Assalam o Alaikum ${esc(data.tenantName)},
+      ${greet(data.country)} ${esc(data.tenantName)},
     </p>
     <p style="margin:0 0 4px;font-size:14px;line-height:1.65;color:#c9cdd6;">
       This confirms we&apos;ve received your notice to leave <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>.
@@ -1325,7 +1341,7 @@ export async function sendLastDayReminderEmail(data: NoticeEmailData): Promise<v
   const body = `
     <h2 style="margin:0 0 10px;font-size:21px;font-weight:700;color:#fff;">Today is your last day</h2>
     <p style="margin:0 0 4px;font-size:14px;line-height:1.65;color:#c9cdd6;">
-      Assalam o Alaikum ${esc(data.tenantName)},
+      ${greet(data.country)} ${esc(data.tenantName)},
     </p>
     <p style="margin:0 0 4px;font-size:14px;line-height:1.65;color:#c9cdd6;">
       A friendly reminder that today is your last day at <strong style="color:#f59e0b;">${esc(data.hostelName)}</strong>.
@@ -1349,7 +1365,7 @@ export async function sendLastDayReminderEmail(data: NoticeEmailData): Promise<v
 export async function sendClientCredentialsEmail(data: ClientCredentialsEmailData): Promise<void> {
   const body = `
     <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Your Pulse account is ready</h2>
-    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">Assalam o Alaikum ${esc(data.clientName)}, your account for <strong style="color:#f59e0b;">${esc(data.businessName)}</strong> has been set up.</p>
+    <p style="margin:0 0 24px;font-size:14px;color:#a1a1aa;">${greet(data.country)} ${esc(data.clientName)}, your account for <strong style="color:#f59e0b;">${esc(data.businessName)}</strong> has been set up.</p>
 
     <table width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #27272a;padding-top:16px;">
       ${row("Email", esc(data.email))}
@@ -1649,4 +1665,43 @@ export async function sendCheckoutEmail(data: CheckoutEmailData): Promise<void> 
     subject: `Checkout confirmation${data.hostelName ? ` — ${data.hostelName}` : ""}`,
     html: baseHtml("Checkout confirmation", body),
   });
+}
+
+export interface BranchDeletionEmailData {
+  to: string;
+  ownerName: string | null;
+  branchName: string;
+  confirmUrl: string;
+  roomCount: number;
+  residentCount: number;
+  paymentCount: number;
+  country?: string | null;
+}
+
+/**
+ * Emailed confirmation link for an owner-requested branch deletion. Single-use,
+ * expires in 30 minutes; clicking it while signed in as the owner permanently
+ * deletes the branch. Throws on send failure so the caller can surface it.
+ */
+export async function sendBranchDeletionEmail(data: BranchDeletionEmailData): Promise<void> {
+  const hasData = data.roomCount > 0 || data.residentCount > 0 || data.paymentCount > 0;
+  const warning = hasData
+    ? `<div style="margin:0 0 20px;padding:12px 14px;background:#2a1215;border:1px solid #7f1d1d;border-radius:8px;font-size:13px;color:#fca5a5;line-height:1.6;">
+        <strong style="color:#fecaca;">This permanently deletes everything in this branch.</strong> It cannot be undone.
+      </div>`
+    : `<p style="margin:0 0 20px;font-size:13px;color:#a1a1aa;">This branch has no data yet.</p>`;
+  const body = `
+    <h2 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#fff;">Confirm deleting &ldquo;${esc(data.branchName)}&rdquo;</h2>
+    <p style="margin:0 0 16px;font-size:14px;color:#a1a1aa;">${greet(data.country)} ${esc(data.ownerName ?? "there")}, you requested to permanently delete this branch. Confirm below to go ahead.</p>
+    ${warning}
+    <table cellpadding="0" cellspacing="0" style="margin:0 0 20px;"><tr><td style="border-radius:8px;background:#dc2626;"><a href="${data.confirmUrl}" style="display:inline-block;padding:12px 24px;font-size:14px;font-weight:600;color:#fff;text-decoration:none;">Delete this branch permanently</a></td></tr></table>
+    <p style="margin:0;font-size:12px;color:#71717a;">This link is single-use and expires in 30 minutes. If you didn&rsquo;t request this, ignore this email — nothing will be deleted.</p>
+  `;
+  const { error } = await resend.emails.send({
+    from: FROM,
+    to: data.to,
+    subject: `Confirm deleting "${data.branchName}"`,
+    html: baseHtml("Confirm branch deletion", body),
+  });
+  if (error) throw new Error(`Resend: ${error.message}`);
 }

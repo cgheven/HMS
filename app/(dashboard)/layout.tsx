@@ -133,14 +133,14 @@ export default async function DashboardLayout({ children }: { children: React.Re
               {trial.ended ? (
                 <>
                   <span className="font-semibold text-amber">Your free trial has ended.</span>{" "}
-                  Subscribe now to keep full access — your account will switch to read-only shortly if you don&apos;t.
+                  <span className="hidden sm:inline">Subscribe now to keep full access — your account will switch to read-only shortly if you don&apos;t.</span>
                 </>
               ) : (
                 <>
                   <span className="font-semibold text-amber">
                     {trial.daysLeft} {trial.daysLeft === 1 ? "day" : "days"} left in your free trial.
                   </span>{" "}
-                  Subscribe any time to keep full access when it ends.
+                  <span className="hidden sm:inline">Subscribe any time to keep full access when it ends.</span>
                 </>
               )}
             </span>

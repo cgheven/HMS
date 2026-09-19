@@ -27,8 +27,8 @@ export const PROPERTY_TYPES = [
 // (canonical values boys/girls/mixed, migration 246); labels are gender-neutral
 // for international markets.
 export const ACCOMMODATION_TYPES = [
-  { value: "boys", label: "Male Only" },
-  { value: "girls", label: "Female Only" },
+  { value: "boys", label: "Male" },
+  { value: "girls", label: "Female" },
   { value: "mixed", label: "Mixed" },
 ] as const;
 

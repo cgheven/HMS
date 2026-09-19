@@ -12,10 +12,15 @@ export function asPlan(value: string | null | undefined): Plan | null {
 }
 
 /**
- * Standard-only capabilities that a plan grants. Maps onto the branded-subdomain
- * flag (hms_profiles.subdomain_enabled) — the plan is the source of truth and DRIVES
- * it. Hotel Eye is a Basic feature on both plans and stays on its own provisioning
- * flag, so it is deliberately NOT touched here.
+ * Capabilities that a plan grants. Maps onto the branded-subdomain flag
+ * (hms_profiles.subdomain_enabled). Hotel Eye is a Basic feature on both plans and
+ * stays on its own provisioning flag, so it is deliberately NOT touched here.
+ *
+ * The branded subdomain is now a FREE feature for every plan (migration 265 makes
+ * subdomain_enabled DEFAULT true and backfills all accounts), so every tier —
+ * including Basic and trials — grants it. A plan sync only ever turns it ON;
+ * migration 167 already never tears down an already-claimed subdomain. Super Admin
+ * can still override one account via setClientSubdomainEnabled.
  *
  * WhatsApp automation (hms_hostels.whatsapp_enabled) is NOT plan-driven — granted
  * ONLY via the Super Admin toggle (setWhatsappEnabled).
@@ -30,12 +35,10 @@ export interface PlanEntitlements {
   brandedSubdomain: boolean;
 }
 
-export function entitlementsForPlan(plan: Plan): PlanEntitlements {
-  // Every paid tier (standard / business / enterprise) grants the same paid
-  // capabilities; only Basic is the entry tier. Business ⊇ Standard is a higher
-  // property cap + price, not a new feature set.
-  const paid = plan !== "basic";
-  return { brandedSubdomain: paid };
+export function entitlementsForPlan(_plan: Plan): PlanEntitlements {
+  // Branded subdomain is free on every tier (see the note above), so a plan sync
+  // never revokes it — it only re-affirms the grant.
+  return { brandedSubdomain: true };
 }
 
 /**

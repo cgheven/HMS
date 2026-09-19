@@ -62,8 +62,14 @@ export interface Profile {
    *  per-capability flags govern. Set by the Paddle webhook / Super Admin only. */
   plan?: "basic" | "standard" | null;
   /** Negotiated per-branch price in USD (migration 228). NULL = standard catalog
-   *  pricing. Set for grandfathered/legacy clients only (Super Admin). */
+   *  pricing. Set for grandfathered/legacy clients only (Super Admin), and for
+   *  new PK self-reg owners on the card rail (= $15/branch, see pk_card_enabled). */
   custom_unit_amount_usd?: number | null;
+  /** PK owner is on Paddle card billing, not manual/bank (migration 266). Set true
+   *  only for new self-registered PK owners; false for every existing account, so
+   *  established PK clients stay on manual invoicing. The sole card-rail signal for
+   *  a manual-bank-country owner. */
+  pk_card_enabled?: boolean | null;
   /** Account suspended for unpaid dues (migration 229). true = read-only: the
    *  owner can log in and view but every write is blocked until dues clear. */
   frozen?: boolean | null;
@@ -71,6 +77,11 @@ export interface Profile {
    *  account. On expiry the daily cron freezes the account unless subscribed;
    *  paying (Paddle webhook) clears it. Super-admin-guarded. */
   trial_ends_at?: string | null;
+  /** First-login setup welcome (migration 262). NULL = never finished/skipped
+   *  the welcome checklist → the dashboard sends a new owner to /welcome once.
+   *  Stamped when they Skip or Finish; existing accounts were backfilled so only
+   *  post-migration sign-ups ever see it. */
+  onboarding_dismissed_at?: string | null;
   primary_hostel_id: string | null;
   is_active: boolean;
   created_at: string;

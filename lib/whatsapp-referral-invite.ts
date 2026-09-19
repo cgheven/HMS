@@ -45,7 +45,7 @@ export async function sendReferralInvite(
       .select(
         "id, code, tenant_id, hostel_id, is_active, link_sent_at, status_token_hash, invite_attempts, " +
           "tenant:hms_tenants(full_name, phone, is_active, is_waiting), " +
-          "hostel:hms_hostels(name, whatsapp_enabled, referral_enabled, referral_campaign, " +
+          "hostel:hms_hostels(name, country, whatsapp_enabled, referral_enabled, referral_campaign, " +
           "referral_referrer_percent, referral_referred_percent)"
       )
       .eq("id", codeRowId)
@@ -60,7 +60,7 @@ export async function sendReferralInvite(
       is_active: boolean; link_sent_at: string | null; status_token_hash: string | null;
       invite_attempts: number | null;
       tenant: Emb<{ full_name: string; phone: string | null; is_active: boolean; is_waiting: boolean }>;
-      hostel: Emb<{ name: string; whatsapp_enabled: boolean; referral_enabled: boolean;
+      hostel: Emb<{ name: string; country: string | null; whatsapp_enabled: boolean; referral_enabled: boolean;
                     referral_campaign: string; referral_referrer_percent: number;
                     referral_referred_percent: number }>;
     };
@@ -190,7 +190,7 @@ async function sendReferralInviteEmailForCode(
       .select(
         "id, code, tenant_id, hostel_id, is_active, link_sent_at, status_token_hash, " +
           "tenant:hms_tenants(full_name, email, is_active, is_waiting), " +
-          "hostel:hms_hostels(name, referral_enabled, referral_campaign, " +
+          "hostel:hms_hostels(name, country, referral_enabled, referral_campaign, " +
           "referral_referrer_percent, referral_referred_percent)"
       )
       .eq("id", codeRowId)
@@ -201,7 +201,7 @@ async function sendReferralInviteEmailForCode(
       id: string; code: string; tenant_id: string; hostel_id: string;
       is_active: boolean; link_sent_at: string | null; status_token_hash: string | null;
       tenant: Emb<{ full_name: string; email: string | null; is_active: boolean; is_waiting: boolean }>;
-      hostel: Emb<{ name: string; referral_enabled: boolean; referral_campaign: string;
+      hostel: Emb<{ name: string; country: string | null; referral_enabled: boolean; referral_campaign: string;
                     referral_referrer_percent: number; referral_referred_percent: number }>;
     };
     if (!r.is_active) return { sent: false, reason: "no_code" };
@@ -248,6 +248,7 @@ async function sendReferralInviteEmailForCode(
       tenantEmail: email,
       firstName,
       hostelName: hostel.name ?? "your hostel",
+      country: hostel.country ?? null,
       refLink: `${SITE_URL}/ref/${r.code}`,
       referrerPct,
       referredPct,

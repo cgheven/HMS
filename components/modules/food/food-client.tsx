@@ -1,6 +1,6 @@
 "use client";
 import { useState, useMemo, useRef } from "react";
-import { Plus, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { Plus, ChevronLeft, ChevronRight } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,11 +21,6 @@ const mealHeaderColor: Record<MealType, string> = {
   breakfast: "text-amber",
   lunch:     "text-emerald-400",
   dinner:    "text-blue-400",
-};
-const mealInputFocus: Record<MealType, string> = {
-  breakfast: "focus:border-amber/50",
-  lunch:     "focus:border-emerald-400/50",
-  dinner:    "focus:border-blue-400/50",
 };
 
 // ISO 8601 numbering (1=Monday...7=Sunday) — matches the day_of_week column
@@ -95,10 +90,7 @@ export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuTy
   const [items, setItems] = useState<FoodItem[]>(initialItems);
   const [monthFilter, setMonthFilter] = useState(initialMonth);
   const [loadingItems, setLoadingItems] = useState(false);
-  const [addingMeal, setAddingMeal] = useState<{ row: string; meal: MealType } | null>(null);
-  const [addingText, setAddingText] = useState("");
-  const [editingItemId, setEditingItemId] = useState<string | null>(null);
-  const [editingText, setEditingText] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   // Suggestions for the dish inputs — distinct dish names already in this menu, so
   // recurring dishes are one keystroke and spelling stays consistent (fewer dupes
@@ -113,7 +105,6 @@ export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuTy
   const [editing, setEditing] = useState<FoodItem | null>(null);
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
-  const addInputRef = useRef<HTMLInputElement>(null);
 
   const today = formatDateInput(new Date());
   const todayDow = isoDow(new Date());
@@ -192,52 +183,47 @@ export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuTy
     setSwitchingMenu(false);
   }
 
-  async function quickAdd(row: string, meal: MealType) {
-    const text = addingText.trim();
-    if (!text || !hostelId) return;
-    const siblings = items.filter((i) =>
-      (isWeekly ? i.day_of_week === Number(row) : i.date === row) && i.meal_type === meal
-    );
-    const maxOrder = siblings.length ? Math.max(...siblings.map((i) => i.sort_order ?? 0)) : -1;
-    const payload = isWeekly
-      ? { hostel_id: hostelId, date: null, day_of_week: Number(row), meal_type: meal, item_name: text, sort_order: maxOrder + 1 }
-      : { hostel_id: hostelId, date: row, day_of_week: null, meal_type: meal, item_name: text, sort_order: maxOrder + 1 };
+  async function saveCell(row: string, meal: MealType, existing: FoodItem[]) {
+    if (!hostelId) return;
+    const key = `${row}|${meal}`;
+    const draft = drafts[key];
+    setDrafts((prev) => { const n = { ...prev }; delete n[key]; return n; });
+    if (draft === undefined) return;
+    const lines = draft.split("\n").map((s) => s.trim()).filter(Boolean);
+    const current = [...existing]
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.created_at.localeCompare(b.created_at))
+      .map((i) => i.item_name);
+    if (lines.length === current.length && lines.every((l, i) => l === current[i])) return;
+    // Preserve any per-dish quantity/cost/notes by name across the rewrite, so
+    // the Add-Item dialog's kitchen-cost data isn't lost when a cell is edited.
+    const meta = new Map<string, { quantity: string | null; unit_cost: number | null; notes: string | null }>();
+    for (const e of existing) if (!meta.has(e.item_name)) meta.set(e.item_name, { quantity: e.quantity ?? null, unit_cost: e.unit_cost ?? null, notes: e.notes ?? null });
     const supabase = createClient();
-    const { data, error } = await supabase
-      .from("hms_food_items")
-      .insert(payload)
-      .select().single();
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    setItems((prev) => [...prev, data as FoodItem]);
-    if (isWeekly) invalidateWeeklyCache(); else invalidateMonthCache();
-    setAddingText("");
-    setTimeout(() => addInputRef.current?.focus(), 50);
-  }
-
-  async function saveInlineEdit(item: FoodItem) {
-    const text = editingText.trim();
-    setEditingItemId(null);
-    if (!text || text === item.item_name) return;
-    const supabase = createClient();
-    const { data, error } = await supabase.from("hms_food_items").update({ item_name: text }).eq("id", item.id).select("id");
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    if (!data || data.length === 0) {
-      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
-      return;
+    // Insert the new rows FIRST, delete the old ones only after that succeeds. A
+    // failed insert then leaves the cell's original dishes (and their kitchen-cost
+    // data) untouched; a failed delete leaves recoverable duplicates, never data loss.
+    let inserted: FoodItem[] = [];
+    if (lines.length > 0) {
+      const payloads = lines.map((item_name, idx) => ({
+        hostel_id: hostelId,
+        date: isWeekly ? null : row,
+        day_of_week: isWeekly ? Number(row) : null,
+        meal_type: meal,
+        item_name,
+        sort_order: idx,
+        quantity: meta.get(item_name)?.quantity ?? null,
+        unit_cost: meta.get(item_name)?.unit_cost ?? null,
+        notes: meta.get(item_name)?.notes ?? null,
+      }));
+      const { data, error } = await supabase.from("hms_food_items").insert(payloads).select();
+      if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
+      inserted = (data as FoodItem[]) ?? [];
     }
-    setItems((prev) => prev.map((i) => i.id === item.id ? { ...i, item_name: text } : i));
-    if (isWeekly) invalidateWeeklyCache(); else invalidateMonthCache();
-  }
-
-  async function deleteItem(id: string) {
-    const supabase = createClient();
-    const { data, error } = await supabase.from("hms_food_items").delete().eq("id", id).select("id");
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    if (!data || data.length === 0) {
-      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
-      return;
+    if (existing.length > 0) {
+      const { error } = await supabase.from("hms_food_items").delete().in("id", existing.map((e) => e.id));
+      if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     }
-    setItems((prev) => prev.filter((i) => i.id !== id));
+    setItems((prev) => [...prev.filter((i) => !existing.some((e) => e.id === i.id)), ...inserted]);
     if (isWeekly) invalidateWeeklyCache(); else invalidateMonthCache();
   }
 
@@ -410,85 +396,25 @@ export function FoodClient({ hostelId, initialItems, initialMonth, initialMenuTy
                       </div>
                     </td>
 
-                    {/* Meal cells */}
+                    {/* Meal cells — a plain text field: one dish per line */}
                     {mealTypes.map((meal) => {
                       const cellItems = [...(dayData[meal] ?? [])].sort(
                         (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.created_at.localeCompare(b.created_at)
                       );
-                      const isAddingHere = addingMeal?.row === row && addingMeal.meal === meal;
-
+                      const key = `${row}|${meal}`;
+                      const saved = cellItems.map((i) => i.item_name).join("\n");
+                      const value = drafts[key] ?? saved;
                       return (
-                        <td
-                          key={meal}
-                          className={`px-3 py-2 align-top group/cell ${canStandardTier ? "cursor-pointer" : ""}`}
-                          onClick={() => {
-                            if (canStandardTier && !isAddingHere && !editingItemId) {
-                              setAddingMeal({ row, meal });
-                              setAddingText("");
-                              setTimeout(() => addInputRef.current?.focus(), 40);
-                            }
-                          }}
-                        >
-                          <div className="space-y-0.5 min-h-[22px]">
-                            {cellItems.map((item) => (
-                              <div key={item.id} className="flex items-center gap-1 group/item" onClick={(e) => e.stopPropagation()}>
-                                {editingItemId === item.id ? (
-                                  <input
-                                    autoFocus
-                                    value={editingText}
-                                    onChange={(e) => setEditingText(e.target.value)}
-                                    onBlur={() => saveInlineEdit(item)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") saveInlineEdit(item);
-                                      if (e.key === "Escape") setEditingItemId(null);
-                                    }}
-                                    list="dish-suggestions"
-                                    className="flex-1 text-xs bg-white/5 border border-amber/40 rounded px-1.5 py-0.5 outline-none text-foreground w-full"
-                                  />
-                                ) : (
-                                  <span
-                                    className={`flex-1 text-xs text-foreground/80 leading-relaxed ${canStandardTier ? "hover:text-foreground cursor-text" : ""}`}
-                                    onClick={() => { if (canStandardTier) { setEditingItemId(item.id); setEditingText(item.item_name); } }}
-                                    title={item.item_name}
-                                  >
-                                    {item.item_name}
-                                  </span>
-                                )}
-                                {canStandardTier && (
-                                  <button
-                                    onClick={(e) => { e.stopPropagation(); deleteItem(item.id); }}
-                                    className="opacity-0 group-hover/item:opacity-100 shrink-0 p-0.5 rounded hover:bg-rose-500/10 text-muted-foreground/30 hover:text-rose-400 transition-all"
-                                  >
-                                    <X className="w-2.5 h-2.5" />
-                                  </button>
-                                )}
-                              </div>
-                            ))}
-
-                            {isAddingHere ? (
-                              <div className="flex items-center" onClick={(e) => e.stopPropagation()}>
-                                <input
-                                  ref={addInputRef}
-                                  value={addingText}
-                                  onChange={(e) => setAddingText(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") quickAdd(row, meal);
-                                    if (e.key === "Escape") setAddingMeal(null);
-                                  }}
-                                  onBlur={() => { if (!addingText.trim()) setAddingMeal(null); }}
-                                  placeholder="Type & press Enter…"
-                                  list="dish-suggestions"
-                                  className={`w-full text-xs bg-white/5 border border-sidebar-border rounded px-2 py-1 outline-none text-foreground placeholder:text-muted-foreground/25 transition-colors ${mealInputFocus[meal]}`}
-                                />
-                              </div>
-                            ) : (
-                              canStandardTier && cellItems.length === 0 && (
-                                <span className="text-[10px] text-transparent group-hover/cell:text-muted-foreground/30 transition-colors select-none pointer-events-none">
-                                  + add
-                                </span>
-                              )
-                            )}
-                          </div>
+                        <td key={meal} className="px-2 py-1.5 align-top">
+                          <textarea
+                            value={value}
+                            onChange={(e) => setDrafts((prev) => ({ ...prev, [key]: e.target.value }))}
+                            onBlur={() => saveCell(row, meal, cellItems)}
+                            disabled={!canStandardTier}
+                            placeholder="Add dishes…"
+                            rows={Math.max(1, value ? value.split("\n").length : 1)}
+                            className="w-full resize-none overflow-hidden bg-transparent text-sm leading-relaxed text-foreground/90 placeholder:text-muted-foreground/35 outline-none rounded-md px-2 py-1 focus:bg-white/[0.04] focus:ring-1 focus:ring-amber/30 transition-colors disabled:cursor-default"
+                          />
                         </td>
                       );
                     })}

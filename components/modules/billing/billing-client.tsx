@@ -319,7 +319,7 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div>
               <p className="text-sm font-semibold">Pay by card</p>
-              <p className="text-xs text-muted-foreground">Your negotiated rate — renews automatically, no manual transfers.</p>
+              <p className="text-xs text-muted-foreground">Renews automatically — no manual bank transfers.</p>
             </div>
             <div className="inline-flex rounded-lg border border-sidebar-border p-0.5 text-xs">
               <button onClick={() => setCycle("monthly")} className={cn("px-3 py-1.5 rounded-md font-medium", cycle === "monthly" ? "bg-white/10 text-foreground" : "text-muted-foreground")}>Monthly</button>

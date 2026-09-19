@@ -41,7 +41,12 @@ export async function createPlanCheckoutAction(input: {
     // the billing UI, this gate, and tier-sync always agree (a null-country legacy
     // owner resolves to PK/manual — never accidentally card-charged).
     const country = ctx.profile?.country ?? null;
-    if (isManualBankBilling(country)) {
+    // A manual-bank country (PK) owner may only card-checkout when explicitly opted
+    // in (pk_card_enabled — new PK self-reg owners, priced per-branch via their
+    // custom_unit_amount_usd below). Existing PK clients stay invoice-billed. Mirrors
+    // the rail test in getOwnerBilling so the UI and this gate never disagree.
+    const pkCardEnabled = ctx.profile?.pk_card_enabled === true;
+    if (isManualBankBilling(country) && !pkCardEnabled) {
       return { error: "Your account is billed by invoice, not card checkout." };
     }
 
@@ -174,7 +179,12 @@ export async function reconcileCheckoutAction(input: {
     if (!ctx?.user) return { active: false };
     const ownerId = ctx.user.id;
     const email = ctx.user.email ?? null;
-    if (isManualBankBilling(ctx.profile?.country ?? null)) return { active: false };
+    // Mirror the createPlanCheckoutAction gate: a PK card owner (pk_card_enabled)
+    // is on the card rail, so they MUST be able to self-activate here. Gating on
+    // country alone would leave the new PK cohort dependent on the inbound webhook —
+    // the exact delay/unreachability this reconcile exists to work around.
+    const pkCardEnabled = ctx.profile?.pk_card_enabled === true;
+    if (isManualBankBilling(ctx.profile?.country ?? null) && !pkCardEnabled) return { active: false };
 
     const paddle = getPaddleServer();
 

@@ -50,7 +50,7 @@ export async function sendInvoiceMail(
   }
 
   const [{ data: profile }, { data: authUser }] = await Promise.all([
-    admin.from("hms_profiles").select("full_name, phone").eq("id", invoice.owner_id).maybeSingle(),
+    admin.from("hms_profiles").select("full_name, phone, country").eq("id", invoice.owner_id).maybeSingle(),
     admin.auth.admin.getUserById(invoice.owner_id),
   ]);
 
@@ -126,6 +126,7 @@ export async function sendInvoiceMail(
   const { redirectedTo } = await sendClientInvoiceEmail({
     clientEmail,
     clientName,
+    country: (profile as { country?: string | null } | null)?.country ?? null,
     periodLabel: invoice.period_label,
     amount: Number(invoice.amount),
     dueDate: invoice.due_date,

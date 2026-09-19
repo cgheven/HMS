@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, useTransition } from "react";
-import { Building2, User, Save, Loader2, Globe, Clock, Phone, RefreshCw, Utensils, GitBranch, Plus, Check, ArrowRightLeft, Handshake, Eye, EyeOff, Trash2, X, Pencil, FormInput, MessageCircle, ShieldCheck, ChefHat } from "lucide-react";
+import { Building2, User, Save, Loader2, Globe, Clock, Phone, RefreshCw, Plus, Check, Handshake, Eye, EyeOff, Trash2, X, MessageCircle, ShieldCheck, ChefHat, ChevronDown, Utensils } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -13,13 +13,13 @@ import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
-import { getOwnedHostels, switchActiveHostel, renameBranch } from "@/app/actions/branches";
+import { requestBranchDeletion } from "@/app/actions/branches";
 import { listPartners, createPartner, removePartner, updatePartnerTier, getExistingPartnersForOwner, addPartnerToHostel } from "@/app/actions/partners";
 import type { PartnerRow, ExistingPartnerOption } from "@/app/actions/partners";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PARTNER_TIER_LABELS } from "@/lib/partner-tier-labels";
-import type { Hostel, FormConfig, FormFieldConfig, PaymentMethodAccount, PackageTier, PartnerTier, WifiNetwork, MealTimes } from "@/types";
-import { DEFAULT_FORM_CONFIG } from "@/types";
+import type { Hostel, PaymentMethodAccount, PackageTier, PartnerTier, WifiNetwork, MealTimes } from "@/types";
+import { MealTimesFields } from "@/components/modules/settings/meal-times-fields";
 import { savePaymentRecoverySettings, saveWelcomeSettings } from "@/app/actions/settings";
 import { requestEmailChange } from "@/app/actions/account";
 import { DEFAULT_REMINDER_TEMPLATE, formatAccounts, buildReminderMessage } from "@/lib/whatsapp-reminder";
@@ -27,28 +27,30 @@ import { DEFAULT_WELCOME_TEMPLATE, buildWelcomeMessage } from "@/lib/whatsapp-we
 import { floorToken, roomToken } from "@/lib/wifi-coverage";
 import { SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
 
-type PkgPriceEntry = { no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string };
-type PkgPriceForm = Record<PackageTier, PkgPriceEntry>;
+import { PackagePricingForm } from "@/components/modules/settings/package-pricing-form";
+import { PaymentMethodsForm } from "@/components/modules/settings/payment-methods-form";
+import { HostelInfoForm } from "@/components/modules/settings/hostel-info-form";
 
-const PACKAGE_TIER_CONFIGS: { tier: PackageTier; label: string; desc: string; hasAcVariant: boolean }[] = [
-  { tier: "space_only",          label: "Space Only",                  desc: "No meals",                  hasAcVariant: true  },
-  { tier: "space_food",          label: "Space + Breakfast & Dinner",  desc: "2 meals / day",             hasAcVariant: true  },
-  { tier: "space_3meals",        label: "Space + 3 Meals",             desc: "Breakfast, lunch & dinner", hasAcVariant: true  },
-  { tier: "space_meals_cooler",  label: "Space + Meals + Cooler",      desc: "Meals + cooler",            hasAcVariant: false },
-];
-
-function emptyPriceForm(): PkgPriceForm {
-  return {
-    space_only:         { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" },
-    space_food:         { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" },
-    space_3meals:       { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" },
-    space_food_ac:      { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" }, // kept for DB compatibility; not shown in UI
-    space_meals_cooler: { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" },
-  };
+function Section({ title, icon: Icon, description, danger = false, defaultOpen = false, children }: {
+  title: string; icon: typeof Building2; description?: string; danger?: boolean; defaultOpen?: boolean; children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <Card className={danger ? "border-rose-500/20" : undefined}>
+      <button type="button" onClick={() => setOpen((o) => !o)} className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left">
+        <div className="flex items-center gap-2 min-w-0">
+          <Icon className={`w-4 h-4 shrink-0 ${danger ? "text-rose-400" : "text-muted-foreground"}`} />
+          <span className={`text-base font-semibold ${danger ? "text-rose-300" : ""}`}>{title}</span>
+        </div>
+        <ChevronDown className={`w-4 h-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && <div className="px-5 pb-5 space-y-4">{description && <p className="text-sm text-muted-foreground -mt-1">{description}</p>}{children}</div>}
+    </Card>
+  );
 }
 
 export function SettingsClient() {
-  const { profile, hostel, partnerTier } = useHostelContext();
+  const { profile, hostel, hostels, partnerTier } = useHostelContext();
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const hostelId = hostel?.id ?? null;
@@ -79,19 +81,19 @@ export function SettingsClient() {
   );
 
   // Branches state
-  type OwnedHostel = Hostel & { is_primary: boolean };
-  const [branches, setBranches] = useState<OwnedHostel[]>([]);
-  const [loadingBranches, setLoadingBranches] = useState(false);
+  const [requestingDelete, setRequestingDelete] = useState(false);
+  async function requestDeleteBranch() {
+    if (!hostelId) return;
+    setRequestingDelete(true);
+    const res = await requestBranchDeletion(hostelId);
+    setRequestingDelete(false);
+    if (res.success) toast({ title: "Check your email", description: `We've emailed a link to confirm deleting "${hostel?.name}". It expires in 30 minutes.` });
+    else toast({ title: "Couldn't start deletion", description: res.error, variant: "destructive" });
+  }
   /** Which branch cooks for this one. "" means self-catered — the value every
    *  branch has until an owner points it somewhere. */
   const [kitchenGroupId, setKitchenGroupId] = useState<string>("");
   const [savingKitchen, setSavingKitchen] = useState(false);
-  const [switchingBranch, setSwitchingBranch] = useState<string | null>(null);
-  const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editCity, setEditCity] = useState("");
-  const [editAddress, setEditAddress] = useState("");
-  const [savingRename, setSavingRename] = useState(false);
 
   // Partners state
   const [partners, setPartners] = useState<PartnerRow[]>([]);
@@ -111,74 +113,16 @@ export function SettingsClient() {
   // lastCreatedPartner holds credentials for WhatsApp share — cleared on dialog close
   const [lastCreatedPartner, setLastCreatedPartner] = useState<{ name: string; email: string; phone: string; password: string } | null>(null);
 
-  const [hostelForm, setHostelForm] = useState({
-    name: "", address: "", city: "", area: "", phone: "", whatsapp: "", email: "", total_capacity: "",
-  });
   const [profileForm, setProfileForm] = useState({ full_name: "" });
-  const [savingHostel, setSavingHostel] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [editingEmail, setEditingEmail] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [sendingEmailChange, setSendingEmailChange] = useState(false);
 
-  /** Lives on hms_hostels, not hms_package_configs, but belongs beside the
-   *  receipt label in the UI — both answer "how does this branch bill
-   *  electricity?". Saved by savePackageConfig in the same click. */
-  const [meterAllRooms, setMeterAllRooms] = useState(false);
-  const [packageForm, setPackageForm] = useState<{ ac_charge_label: string; ac_per_unit_rate: string; security_deposit: string; registration_fee: string; ac_maintenance_rate: string; notice_period_days: string; washroom_premium: string; prices: PkgPriceForm }>({
-    ac_charge_label: "", ac_per_unit_rate: "", security_deposit: "", registration_fee: "", ac_maintenance_rate: "", notice_period_days: "30", washroom_premium: "", prices: emptyPriceForm(),
-  });
-  const [foodAddonForm, setFoodAddonForm] = useState<{ breakfast: string; lunch: string; dinner: string; allMeals: string }>({
-    breakfast: "", lunch: "", dinner: "", allMeals: "",
-  });
-  const [seaterForm, setSeaterForm] = useState<Record<string, { no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string }>>(
-    Object.fromEntries(SEATER_CAPACITIES.map((c) => [c, { no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "" }]))
-  );
-  const [customRows, setCustomRows] = useState<Array<{ id: string; name: string; no_ac: string; ac: string; deposit_no_ac: string; deposit_ac: string; includes_food: boolean }>>([]);
-  const [savingPackage, setSavingPackage] = useState(false);
-  const [packageLoaded, setPackageLoaded] = useState(false);
 
-  const [formConfig, setFormConfig] = useState<Required<FormConfig>>({ ...DEFAULT_FORM_CONFIG });
-  const [savingFormConfig, setSavingFormConfig] = useState(false);
 
   // Payment Recovery state
   function uid() { return Math.random().toString(36).slice(2, 10); }
-  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodAccount[]>(
-    () => (hostel?.payment_methods ?? []).map((m) => ({ ...m, id: m.id || uid() }))
-  );
-  const [reminderTemplate, setReminderTemplate] = useState(
-    hostel?.reminder_template ?? DEFAULT_REMINDER_TEMPLATE
-  );
-  const [savingRecovery, setSavingRecovery] = useState(false);
-
-  function addPaymentMethod() {
-    setPaymentMethods((prev) => [...prev, { id: uid(), label: "", account_number: "" }]);
-  }
-  function updatePaymentMethod(id: string, patch: Partial<PaymentMethodAccount>) {
-    setPaymentMethods((prev) => prev.map((m) => m.id === id ? { ...m, ...patch } : m));
-  }
-  function removePaymentMethod(id: string) {
-    setPaymentMethods((prev) => prev.filter((m) => m.id !== id));
-  }
-
-  async function saveRecoverySettings() {
-    setSavingRecovery(true);
-    const result = await savePaymentRecoverySettings({
-      payment_methods: paymentMethods.filter((m) => m.label.trim()),
-      reminder_template: reminderTemplate,
-    });
-    setSavingRecovery(false);
-    if (result.success) toast({ title: "Payment recovery settings saved" });
-    else toast({ title: "Error", description: result.error, variant: "destructive" });
-  }
-  const recoveryPreview = buildReminderMessage({
-    template: reminderTemplate,
-    tenantName: "Ali Raza",
-    amount: 15000,
-    month: new Date().toLocaleDateString("en-PK", { month: "long", year: "numeric" }),
-    hostelName: hostel?.name ?? "Your Hostel",
-    accounts: paymentMethods,
-  });
 
   // Tenant Welcome / WiFi state
   const [wifiNetworks, setWifiNetworks] = useState<WifiNetwork[]>(
@@ -265,93 +209,6 @@ export function SettingsClient() {
     mealTimes,
   });
 
-  type WaitlistEntry = { id: string; name: string; phone: string; created_at: string };
-  const [waitlist, setWaitlist]           = useState<WaitlistEntry[]>([]);
-  const [loadingWaitlist, setLoadingWaitlist] = useState(false);
-
-  async function fetchWaitlist(id: string) {
-    setLoadingWaitlist(true);
-    const supabase = createClient();
-    const { data } = await supabase
-      .from("hms_waitlist")
-      .select("id, name, phone, created_at")
-      .eq("hostel_id", id)
-      .order("created_at", { ascending: false });
-    setWaitlist((data ?? []) as WaitlistEntry[]);
-    setLoadingWaitlist(false);
-  }
-
-  async function fetchPackageConfig(id: string) {
-    const supabase = createClient();
-    const { data } = await supabase
-      .from("hms_package_configs")
-      .select("ac_charge_label, ac_per_unit_rate, security_deposit, registration_fee, ac_maintenance_rate, notice_period_days, package_prices, food_breakfast_rate, food_lunch_rate, food_dinner_rate, food_all_meals_rate, seater_prices, washroom_premium")
-      .eq("hostel_id", id)
-      .maybeSingle();
-    if (data) {
-      const raw = (data.package_prices ?? {}) as Record<string, unknown>;
-      const prices = emptyPriceForm();
-      for (const cfg of PACKAGE_TIER_CONFIGS) {
-        const s = raw[cfg.tier] as { no_ac: number; ac: number; deposit_no_ac?: number; deposit_ac?: number } | undefined;
-        if (s) {
-          prices[cfg.tier] = {
-            no_ac:         s.no_ac > 0               ? String(s.no_ac)         : "",
-            ac:            s.ac    > 0               ? String(s.ac)            : "",
-            deposit_no_ac: (s.deposit_no_ac ?? 0) > 0 ? String(s.deposit_no_ac) : "",
-            deposit_ac:    (s.deposit_ac    ?? 0) > 0 ? String(s.deposit_ac)    : "",
-          };
-        }
-      }
-      setPackageForm({
-        ac_charge_label: data.ac_charge_label ?? "",
-        ac_per_unit_rate: data.ac_per_unit_rate?.toString() ?? "0",
-        security_deposit: data.security_deposit > 0 ? String(data.security_deposit) : "",
-        registration_fee: (data.registration_fee ?? 0) > 0 ? String(data.registration_fee) : "",
-        ac_maintenance_rate: (data.ac_maintenance_rate ?? 0) > 0 ? String(data.ac_maintenance_rate) : "",
-        notice_period_days: data.notice_period_days != null ? String(data.notice_period_days) : "30",
-        washroom_premium: (data.washroom_premium ?? 0) > 0 ? String(data.washroom_premium) : "",
-        prices,
-      });
-      const customData = (raw._custom ?? []) as Array<{
-        id: string; name: string; no_ac: number; ac: number;
-        deposit_no_ac?: number; deposit_ac?: number; includes_food?: boolean;
-      }>;
-      setCustomRows(customData.map((c) => ({
-        id: c.id || crypto.randomUUID(),
-        name: c.name ?? "",
-        no_ac: c.no_ac > 0 ? String(c.no_ac) : "",
-        ac: c.ac > 0 ? String(c.ac) : "",
-        deposit_no_ac: (c.deposit_no_ac ?? 0) > 0 ? String(c.deposit_no_ac) : "",
-        deposit_ac: (c.deposit_ac ?? 0) > 0 ? String(c.deposit_ac) : "",
-        includes_food: c.includes_food === true,
-      })));
-      setFoodAddonForm({
-        breakfast: data.food_breakfast_rate > 0 ? String(data.food_breakfast_rate) : "",
-        lunch: data.food_lunch_rate > 0 ? String(data.food_lunch_rate) : "",
-        dinner: data.food_dinner_rate > 0 ? String(data.food_dinner_rate) : "",
-        allMeals: data.food_all_meals_rate > 0 ? String(data.food_all_meals_rate) : "",
-      });
-      const rawSeater = (data.seater_prices ?? {}) as Record<string, { no_ac?: number; ac?: number; deposit_no_ac?: number; deposit_ac?: number }>;
-      setSeaterForm(Object.fromEntries(SEATER_CAPACITIES.map((c) => [
-        c,
-        {
-          no_ac: (rawSeater[c]?.no_ac ?? 0) > 0 ? String(rawSeater[c]!.no_ac) : "",
-          ac: (rawSeater[c]?.ac ?? 0) > 0 ? String(rawSeater[c]!.ac) : "",
-          deposit_no_ac: (rawSeater[c]?.deposit_no_ac ?? 0) > 0 ? String(rawSeater[c]!.deposit_no_ac) : "",
-          deposit_ac: (rawSeater[c]?.deposit_ac ?? 0) > 0 ? String(rawSeater[c]!.deposit_ac) : "",
-        },
-      ])));
-    }
-    setPackageLoaded(true);
-  }
-
-  async function fetchBranches() {
-    setLoadingBranches(true);
-    const { hostels: list } = await getOwnedHostels();
-    setBranches(list);
-    setKitchenGroupId(list.find((b) => b.id === hostelId)?.kitchen_group_id ?? "");
-    setLoadingBranches(false);
-  }
 
   async function saveKitchenGroup(nextValue: string) {
     if (!hostelId) return;
@@ -474,96 +331,21 @@ export function SettingsClient() {
       : `https://api.whatsapp.com/send?text=${encoded}`;
   }
 
-  async function handleSwitchBranch(branchId: string) {
-    if (branchId === hostelId) return;
-    setSwitchingBranch(branchId);
-    const result = await switchActiveHostel(branchId);
-    setSwitchingBranch(null);
-    if (result.error) {
-      toast({ title: `Could not switch ${words.branch.toLowerCase()}`, description: result.error, variant: "destructive" });
-      return;
-    }
-    startTransition(() => { router.refresh(); });
-  }
 
-  function startEditBranch(b: OwnedHostel) {
-    setEditingBranchId(b.id);
-    setEditName(b.name);
-    setEditCity(b.city ?? "");
-    setEditAddress(b.address ?? "");
-  }
-
-  async function handleRenameBranch(hostelId: string) {
-    if (!editName.trim()) return;
-    setSavingRename(true);
-    const result = await renameBranch({ hostelId, name: editName, city: editCity, address: editAddress });
-    setSavingRename(false);
-    if (result.error) {
-      toast({ title: "Failed to rename", description: result.error, variant: "destructive" });
-      return;
-    }
-    toast({ title: `${words.branch} renamed`, description: `"${editName}" saved.` });
-    setEditingBranchId(null);
-    await fetchBranches();
-  }
-
-  useEffect(() => {
-    // Branches/Partners cards are owner-only, and both actions are guarded
-    // owner-only server-side — fetching them as a partner is a wasted round
-    // trip that can only come back as an error.
-    if (!isPartner) fetchBranches();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPartner]);
 
   useEffect(() => {
     if (hostel) {
-      setMeterAllRooms(!!(hostel as { meter_all_rooms?: boolean }).meter_all_rooms);
-      setHostelForm({
-        name: hostel.name ?? "",
-        address: hostel.address ?? "",
-        city: hostel.city ?? "",
-        area: hostel.area ?? "",
-        phone: hostel.phone ?? "",
-        whatsapp: hostel.whatsapp ?? "",
-        email: hostel.email ?? "",
-        total_capacity: hostel.total_capacity?.toString() ?? "",
-      });
-      fetchWaitlist(hostel.id);
-      fetchPackageConfig(hostel.id);
+      // Kitchen group comes straight from the already-loaded context hostels (no
+      // async fetch → no late pop-in / re-order of the accordion on refresh).
+      setKitchenGroupId((hostels.find((h) => h.id === hostel.id) as { kitchen_group_id?: string | null } | undefined)?.kitchen_group_id ?? "");
       if (!isPartner) fetchPartners(hostel.id);
-      if (hostel.form_config) {
-        setFormConfig({ ...DEFAULT_FORM_CONFIG, ...(hostel.form_config as FormConfig) });
-      }
     }
-  }, [hostel]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostel, hostels]);
 
   useEffect(() => {
     if (profile) setProfileForm({ full_name: profile.full_name ?? "" });
   }, [profile]);
-
-  async function saveHostel(e: React.FormEvent) {
-    e.preventDefault();
-    if (!hostelId) return;
-    setSavingHostel(true);
-    const supabase = createClient();
-    const { data, error } = await supabase.from("hms_hostels").update({
-      name: hostelForm.name,
-      address: hostelForm.address || null,
-      city: hostelForm.city || null,
-      area: hostelForm.area || null,
-      phone: hostelForm.phone || null,
-      whatsapp: hostelForm.whatsapp || null,
-      email: hostelForm.email || null,
-      total_capacity: parseInt(hostelForm.total_capacity) || 0,
-    }).eq("id", hostelId).select("id");
-    setSavingHostel(false);
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    if (!data || data.length === 0) {
-      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
-      return;
-    }
-    toast({ title: "Hostel settings saved" });
-  }
 
   async function submitEmailChange() {
     const target = newEmail.trim();
@@ -601,107 +383,6 @@ export function SettingsClient() {
     toast({ title: "Profile updated" });
   }
 
-  async function savePackageConfig(e: React.FormEvent) {
-    e.preventDefault();
-    if (!hostelId) return;
-    setSavingPackage(true);
-    const supabase = createClient();
-    const dbPayload: Record<string, unknown> = {};
-    for (const cfg of PACKAGE_TIER_CONFIGS) {
-      const p = packageForm.prices[cfg.tier];
-      dbPayload[cfg.tier] = {
-        no_ac:         parseFloat(p.no_ac)         || 0,
-        ac:            parseFloat(p.ac)            || 0,
-        deposit_no_ac: parseFloat(p.deposit_no_ac) || 0,
-        deposit_ac:    parseFloat(p.deposit_ac)    || 0,
-      };
-    }
-    const validCustom = customRows.filter((c) => c.name.trim());
-    if (validCustom.length > 0) {
-      dbPayload._custom = validCustom.map((c) => ({
-        id: c.id,
-        name: c.name.trim(),
-        no_ac: parseFloat(c.no_ac) || 0,
-        ac: parseFloat(c.ac) || 0,
-        deposit_no_ac: parseFloat(c.deposit_no_ac) || 0,
-        deposit_ac: parseFloat(c.deposit_ac) || 0,
-        includes_food: c.includes_food,
-      }));
-    }
-    const seaterPayload: Record<string, { no_ac: number; ac: number; deposit_no_ac: number; deposit_ac: number }> = {};
-    for (const c of SEATER_CAPACITIES) {
-      const no_ac = parseFloat(seaterForm[c]?.no_ac) || 0;
-      const ac = parseFloat(seaterForm[c]?.ac) || 0;
-      const deposit_no_ac = parseFloat(seaterForm[c]?.deposit_no_ac) || 0;
-      const deposit_ac = parseFloat(seaterForm[c]?.deposit_ac) || 0;
-      if (no_ac > 0 || ac > 0 || deposit_no_ac > 0 || deposit_ac > 0) {
-        seaterPayload[c] = { no_ac, ac, deposit_no_ac, deposit_ac };
-      }
-    }
-
-    // Written first and separately: it is a hms_hostels column, not part of the
-    // package config. Failing here must not silently save the rest, so its error
-    // aborts before the upsert rather than after.
-    const { error: meterErr } = await supabase
-      .from("hms_hostels")
-      .update({ meter_all_rooms: meterAllRooms })
-      .eq("id", hostelId);
-    if (meterErr) {
-      setSavingPackage(false);
-      toast({ title: "Error", description: meterErr.message, variant: "destructive" });
-      return;
-    }
-
-    const { data, error } = await supabase
-      .from("hms_package_configs")
-      .upsert(
-        {
-          hostel_id:            hostelId,
-          ac_charge_label:      packageForm.ac_charge_label.trim() || null,
-          ac_per_unit_rate:     parseFloat(packageForm.ac_per_unit_rate) || 0,
-          security_deposit:     parseFloat(packageForm.security_deposit) || 0,
-          registration_fee:     parseFloat(packageForm.registration_fee) || 0,
-          ac_maintenance_rate:  parseFloat(packageForm.ac_maintenance_rate) || 0,
-          notice_period_days:   parseInt(packageForm.notice_period_days, 10) || 30,
-          washroom_premium:     parseFloat(packageForm.washroom_premium) || 0,
-          package_prices:       dbPayload,
-          food_breakfast_rate:  parseFloat(foodAddonForm.breakfast) || 0,
-          food_lunch_rate:      parseFloat(foodAddonForm.lunch) || 0,
-          food_dinner_rate:     parseFloat(foodAddonForm.dinner) || 0,
-          food_all_meals_rate:  parseFloat(foodAddonForm.allMeals) || 0,
-          seater_prices:        seaterPayload,
-          updated_at:           new Date().toISOString(),
-        },
-        { onConflict: "hostel_id" }
-      )
-      .select("hostel_id");
-    setSavingPackage(false);
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    if (!data || data.length === 0) {
-      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
-      return;
-    }
-    toast({ title: "Package pricing saved" });
-  }
-
-  async function saveFormConfig(e: React.FormEvent) {
-    e.preventDefault();
-    if (!hostelId) return;
-    setSavingFormConfig(true);
-    const supabase = createClient();
-    const { data, error } = await supabase
-      .from("hms_hostels")
-      .update({ form_config: formConfig })
-      .eq("id", hostelId)
-      .select("id");
-    setSavingFormConfig(false);
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    if (!data || data.length === 0) {
-      toast({ title: "Not permitted", description: "Your access level does not allow this change.", variant: "destructive" });
-      return;
-    }
-    toast({ title: "Form fields saved" });
-  }
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -711,927 +392,23 @@ export function SettingsClient() {
       </div>
 
       {/* Hostel Info */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2"><Building2 className="w-4 h-4 text-muted-foreground" /><CardTitle className="text-base">Hostel Information</CardTitle></div>
-          <CardDescription>Update your hostel details</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={saveHostel} className="space-y-4">
-            <fieldset disabled={!canFullTier} className="space-y-4 min-w-0">
-            <div className="space-y-1.5">
-              <Label>Hostel Name *</Label>
-              <Input placeholder="My Hostel" value={hostelForm.name} onChange={(e) => setHostelForm({ ...hostelForm, name: e.target.value })} required />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Address</Label>
-              <Input placeholder="Street address" value={hostelForm.address} onChange={(e) => setHostelForm({ ...hostelForm, address: e.target.value })} />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label>City</Label>
-                <Input placeholder="Karachi" value={hostelForm.city} onChange={(e) => setHostelForm({ ...hostelForm, city: e.target.value })} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Area / Neighbourhood</Label>
-                <Input placeholder="Gulshan-e-Iqbal" value={hostelForm.area} onChange={(e) => setHostelForm({ ...hostelForm, area: e.target.value })} />
-              </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className={isPk ? "space-y-1.5" : "space-y-1.5 sm:col-span-2"}>
-                <Label>Phone</Label>
-                <Input placeholder="+92 300 0000000" value={hostelForm.phone} onChange={(e) => setHostelForm({ ...hostelForm, phone: e.target.value })} />
-              </div>
-              {/* WhatsApp powers PK-only tenant messaging; hidden for non-PK where
-                  it's an unused second number. */}
-              {isPk && (
-                <div className="space-y-1.5">
-                  <Label>WhatsApp</Label>
-                  <Input placeholder="+92 300 0000000" value={hostelForm.whatsapp} onChange={(e) => setHostelForm({ ...hostelForm, whatsapp: e.target.value })} />
-                </div>
-              )}
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label>Email</Label>
-                <Input type="email" placeholder="hostel@example.com" value={hostelForm.email} onChange={(e) => setHostelForm({ ...hostelForm, email: e.target.value })} />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Total Capacity</Label>
-                <Input type="number" placeholder="0" min="0" value={hostelForm.total_capacity} onChange={(e) => setHostelForm({ ...hostelForm, total_capacity: e.target.value })} />
-              </div>
-            </div>
-            </fieldset>
-            {canFullTier ? (
-              <Button type="submit" disabled={savingHostel} className="gap-2">
-                {savingHostel ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save Hostel
-              </Button>
-            ) : readOnlyNote}
-          </form>
-        </CardContent>
-      </Card>
-
-      <Separator />
-
-      {/* Where the public-site controls went. Deliberately sits exactly where
-          they used to, so nobody who bookmarked this page is stranded. Ungated:
-          partners had the Public Listing card here too. */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Globe className="w-4 h-4 text-muted-foreground" />
-            <CardTitle className="text-base">Your public website</CardTitle>
-          </div>
-          {/* Role-neutral on purpose: the web address, appearance and social
-              links cards on /website are owner-only, so naming them here would
-              promise a partner four things and show them two. */}
-          <CardDescription>Your public listing and branding now have their own page.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button asChild variant="outline"><Link href="/website">Open Website settings</Link></Button>
-        </CardContent>
-      </Card>
-
-      <Separator />
-
-      {/* Form Builder */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <FormInput className="w-4 h-4 text-muted-foreground" />
-            <CardTitle className="text-base">Application Form Fields</CardTitle>
-          </div>
-          <CardDescription>
-            Choose which fields appear on your public tenant application form. Full Name and WhatsApp are always required.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={saveFormConfig} className="space-y-4">
-            <fieldset disabled={!canFullTier} className="space-y-4 min-w-0">
-            {(
-              [
-                { key: "email",              label: "Email Address",        description: "Tenant's email for correspondence" },
-                { key: "cnic",               label: "CNIC",                 description: "National ID number (42101-XXXXXXX-X) — always required when shown" },
-                { key: "type",               label: "Type",                 description: "Student / Professional / General — always required when shown" },
-                { key: "room_preference",    label: "Room Selection",       description: "Lets applicants pick a specific available room" },
-                { key: "move_in_date",       label: "Preferred Move-in Date", description: "Requested check-in date" },
-                { key: "emergency_contact",  label: "Emergency Contact",    description: "Contact name, phone, and relationship" },
-                { key: "permanent_address",  label: "Permanent Address",    description: "Tenant's home address — where they return to, separate from the hostel" },
-                { key: "father_name",        label: "Father Name",          description: "Standard admission-register field" },
-                { key: "purpose_of_visit",   label: words.purposeOfVisit,   description: "Why they're in the city — Education, Job, Exam, Medical, and so on. Separate from Type, which is what they are" },
-                { key: "notes",              label: "Message / Questions",  description: "Free text for special requests" },
-                { key: "institute_name",     label: "Institute Name",       description: "Shown only when Type is Student — college, university, or training institute" },
-                { key: "student_category",   label: "Student Category",     description: "Shown only when Type is Student — University/College, Exam Prep, Professional Course, or Skills Training" },
-                { key: "organization",       label: "Organization",         description: "Shown only when Type is Professional — employer name + Private/Government" },
-                { key: "department",         label: "Department / Field",   description: "Shown when Type is Student or Professional" },
-              ] as { key: keyof FormConfig; label: string; description: string }[]
-            ).map(({ key, label, description }) => {
-              const field: FormFieldConfig = formConfig[key] ?? { enabled: true, required: false };
-              return (
-                <div key={key} className={`rounded-xl border p-4 transition-colors ${field.enabled ? "border-sidebar-border bg-white/[0.02]" : "border-sidebar-border/40 bg-transparent opacity-60"}`}>
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground">{label}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
-                      {/* Type and CNIC are always required whenever shown — Type
-                          drives Student Category/Institute/Specialization/
-                          Organization data, and CNIC is required for identity
-                          verification, so an "Optional" toggle for either would
-                          be misleading. */}
-                      {field.enabled && key !== "type" && key !== "cnic" && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setFormConfig((c) => ({ ...c, [key]: { ...field, required: !field.required } }))
-                          }
-                          className={`mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
-                            field.required
-                              ? "bg-rose-500/10 text-rose-400 border-rose-500/20 hover:bg-rose-500/20"
-                              : "bg-white/5 text-muted-foreground border-white/10 hover:text-foreground hover:border-white/20"
-                          }`}
-                        >
-                          {field.required ? "Required" : "Optional"}
-                        </button>
-                      )}
-                    </div>
-                    {/* Enable/disable toggle */}
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setFormConfig((c) => ({
-                          ...c,
-                          [key]: { ...field, enabled: !field.enabled, required: !field.enabled ? false : field.required },
-                        }))
-                      }
-                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus-visible:outline-none mt-0.5 ${
-                        field.enabled ? "bg-amber" : "bg-muted"
-                      }`}
-                    >
-                      <span
-                        className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform ${
-                          field.enabled ? "translate-x-5" : "translate-x-0"
-                        }`}
-                      />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-
-            <p className="text-xs text-muted-foreground">
-              Disabled fields won&apos;t appear on the form. Required fields must be filled before submission.
-            </p>
-
-            </fieldset>
-            {canFullTier ? (
-              <Button type="submit" disabled={savingFormConfig} className="gap-2">
-                {savingFormConfig ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                Save Form Fields
-              </Button>
-            ) : readOnlyNote}
-          </form>
-        </CardContent>
-      </Card>
-
-      <Separator />
-
-      {/* Waitlist */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-muted-foreground" />
-              <CardTitle className="text-base">Waitlist</CardTitle>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => hostelId && fetchWaitlist(hostelId)}
-              disabled={loadingWaitlist}
-              className="gap-1.5 h-8 text-xs"
-            >
-              <RefreshCw className={`w-3 h-3 ${loadingWaitlist ? "animate-spin" : ""}`} />
-              Refresh
-            </Button>
-          </div>
-          <CardDescription>
-            People waiting for a bed at this hostel — {waitlist.length} {waitlist.length === 1 ? "person" : "people"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {waitlist.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground">
-              <Clock className="w-8 h-8 opacity-20" />
-              <p className="text-sm">No one on the waitlist yet</p>
-            </div>
-          ) : (
-            <div className="rounded-xl border border-sidebar-border overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-sidebar-border bg-white/[0.02]">
-                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-2.5">Name</th>
-                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-2.5">Phone / WhatsApp</th>
-                    <th className="text-left text-xs font-medium text-muted-foreground px-4 py-2.5">Joined</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-sidebar-border">
-                  {waitlist.map((entry) => (
-                    <tr key={entry.id} className="hover:bg-white/[0.02] transition-colors">
-                      <td className="px-4 py-3 font-medium text-foreground text-sm">{entry.name}</td>
-                      <td className="px-4 py-3">
-                        <a
-                          href={`https://wa.me/${entry.phone.replace(/\D/g, "").replace(/^0/, "92")}?text=${encodeURIComponent(`Hi ${entry.name}! A bed has opened up at our hostel. Are you still interested?`)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 text-xs text-[#25D366] hover:underline"
-                        >
-                          <Phone className="w-3 h-3" />
-                          {entry.phone}
-                        </a>
-                      </td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
-                        {new Date(entry.created_at).toLocaleDateString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Separator />
+      <Section title="Hostel Information" icon={Building2}>
+        <HostelInfoForm bare hostelId={hostelId ?? ""} country={hostel?.country} readOnly={!canFullTier} readOnlyNote={readOnlyNote} />
+      </Section>
 
       {/* Package Pricing */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Utensils className="w-4 h-4 text-muted-foreground" />
-            <CardTitle className="text-base">Package Pricing</CardTitle>
-          </div>
-          <CardDescription>
-            Set the monthly rent for each package. Selecting a package when adding a tenant will auto-fill the rent. Food charges are added on top automatically.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={savePackageConfig} className="space-y-6">
-            <fieldset disabled={!canFullTier} className="space-y-6 min-w-0">
-
-            {/* Per-package price table */}
-            <div className="rounded-lg border border-border overflow-hidden">
-              {/* Header row */}
-              {/* Header row — two column groups: Monthly Rent | Security Deposit */}
-              <div className="grid grid-cols-[1fr_90px_90px_90px_90px_64px_32px] gap-px bg-border">
-                <div className="bg-card px-3 py-2">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Package</span>
-                </div>
-                <div className="bg-card px-2 py-2 text-center">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Rent (Std)</span>
-                </div>
-                <div className="bg-card px-2 py-2 text-center">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Rent (AC)</span>
-                </div>
-                <div className="bg-card px-2 py-2 text-center">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (Std)</span>
-                </div>
-                <div className="bg-card px-2 py-2 text-center">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (AC)</span>
-                </div>
-                <div className="bg-card px-2 py-2 text-center">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Meals</span>
-                </div>
-                <div className="bg-card" />
-              </div>
-              {/* Predefined package rows */}
-              {PACKAGE_TIER_CONFIGS.map((cfg) => (
-                <div key={cfg.tier} className="grid grid-cols-[1fr_90px_90px_90px_90px_64px_32px] gap-px bg-border">
-                  <div className="bg-card px-3 py-2.5">
-                    <p className="text-sm font-medium leading-tight">{cfg.label}</p>
-                    <p className="text-xs text-muted-foreground">{cfg.desc}</p>
-                  </div>
-                  <div className="bg-card px-2 py-2 flex items-center">
-                    <Input
-                      type="number" min="0" step="1" placeholder="0"
-                      value={packageForm.prices[cfg.tier].no_ac}
-                      onChange={(e) => setPackageForm({
-                        ...packageForm,
-                        prices: { ...packageForm.prices, [cfg.tier]: { ...packageForm.prices[cfg.tier], no_ac: e.target.value } },
-                      })}
-                      disabled={!packageLoaded}
-                      className="h-7 text-xs text-center px-1"
-                    />
-                  </div>
-                  <div className="bg-card px-2 py-2 flex items-center">
-                    {cfg.hasAcVariant ? (
-                      <Input
-                        type="number" min="0" step="1" placeholder="0"
-                        value={packageForm.prices[cfg.tier].ac}
-                        onChange={(e) => setPackageForm({
-                          ...packageForm,
-                          prices: { ...packageForm.prices, [cfg.tier]: { ...packageForm.prices[cfg.tier], ac: e.target.value } },
-                        })}
-                        disabled={!packageLoaded}
-                        className="h-7 text-xs text-center px-1"
-                      />
-                    ) : (
-                      <span className="text-xs text-muted-foreground w-full text-center">metered</span>
-                    )}
-                  </div>
-                  <div className="bg-card px-2 py-2 flex items-center">
-                    <Input
-                      type="number" min="0" step="1" placeholder="—"
-                      value={packageForm.prices[cfg.tier].deposit_no_ac}
-                      onChange={(e) => setPackageForm({
-                        ...packageForm,
-                        prices: { ...packageForm.prices, [cfg.tier]: { ...packageForm.prices[cfg.tier], deposit_no_ac: e.target.value } },
-                      })}
-                      disabled={!packageLoaded}
-                      className="h-7 text-xs text-center px-1"
-                    />
-                  </div>
-                  <div className="bg-card px-2 py-2 flex items-center">
-                    {cfg.hasAcVariant ? (
-                      <Input
-                        type="number" min="0" step="1" placeholder="—"
-                        value={packageForm.prices[cfg.tier].deposit_ac}
-                        onChange={(e) => setPackageForm({
-                          ...packageForm,
-                          prices: { ...packageForm.prices, [cfg.tier]: { ...packageForm.prices[cfg.tier], deposit_ac: e.target.value } },
-                        })}
-                        disabled={!packageLoaded}
-                        className="h-7 text-xs text-center px-1"
-                      />
-                    ) : (
-                      <span className="text-xs text-muted-foreground w-full text-center">—</span>
-                    )}
-                  </div>
-                  <div className="bg-card px-2 py-2 flex items-center justify-center">
-                    <span className={`text-xs ${cfg.tier === "space_only" ? "text-muted-foreground" : "text-emerald-400"}`}>
-                      {cfg.tier === "space_only" ? "—" : "✓"}
-                    </span>
-                  </div>
-                  <div className="bg-card" />
-                </div>
-              ))}
-              {/* Custom package rows */}
-              {customRows.map((row) => (
-                <div key={row.id} className="grid grid-cols-[1fr_90px_90px_90px_90px_64px_32px] gap-px bg-border">
-                  <div className="bg-card px-2 py-2 flex items-center">
-                    <Input
-                      placeholder="Package name"
-                      value={row.name}
-                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, name: e.target.value } : r))}
-                      className="h-7 text-xs px-2"
-                    />
-                  </div>
-                  <div className="bg-card px-2 py-2 flex items-center">
-                    <Input
-                      type="number" min="0" step="1" placeholder="0"
-                      value={row.no_ac}
-                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, no_ac: e.target.value } : r))}
-                      className="h-7 text-xs text-center px-1"
-                    />
-                  </div>
-                  <div className="bg-card px-2 py-2 flex items-center">
-                    <Input
-                      type="number" min="0" step="1" placeholder="0"
-                      value={row.ac}
-                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, ac: e.target.value } : r))}
-                      className="h-7 text-xs text-center px-1"
-                    />
-                  </div>
-                  <div className="bg-card px-2 py-2 flex items-center">
-                    <Input
-                      type="number" min="0" step="1" placeholder="—"
-                      value={row.deposit_no_ac}
-                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, deposit_no_ac: e.target.value } : r))}
-                      className="h-7 text-xs text-center px-1"
-                    />
-                  </div>
-                  <div className="bg-card px-2 py-2 flex items-center">
-                    <Input
-                      type="number" min="0" step="1" placeholder="—"
-                      value={row.deposit_ac}
-                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, deposit_ac: e.target.value } : r))}
-                      className="h-7 text-xs text-center px-1"
-                    />
-                  </div>
-                  <div className="bg-card px-2 py-2 flex items-center justify-center">
-                    <input
-                      type="checkbox"
-                      checked={row.includes_food}
-                      onChange={(e) => setCustomRows((prev) => prev.map((r) => r.id === row.id ? { ...r, includes_food: e.target.checked } : r))}
-                      className="w-4 h-4 accent-emerald-500 cursor-pointer"
-                      title="This package includes meals"
-                    />
-                  </div>
-                  <div className="bg-card flex items-center justify-center">
-                    <button
-                      type="button"
-                      onClick={() => setCustomRows((prev) => prev.filter((r) => r.id !== row.id))}
-                      className="text-muted-foreground hover:text-rose-400 transition-colors p-1"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-              {/* Add Package button */}
-              <div className="bg-card border-t border-border">
-                <button
-                  type="button"
-                  onClick={() => setCustomRows((prev) => [...prev, { id: crypto.randomUUID(), name: "", no_ac: "", ac: "", deposit_no_ac: "", deposit_ac: "", includes_food: false }])}
-                  disabled={!packageLoaded}
-                  className="flex items-center gap-1.5 w-full px-3 py-2 text-xs text-muted-foreground hover:text-foreground hover:bg-white/[0.02] transition-colors disabled:opacity-40"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Add Package
-                </button>
-              </div>
-            </div>
-
-            {/* AC rate + Security Deposit */}
-            <div className="flex flex-wrap gap-6">
-              <div className="space-y-1.5">
-                {isPk ? <>
-                <Label className="text-xs">AC Per Unit Rate (Rs. / unit consumed)</Label>
-                <Input
-                  type="number" min="0" step="0.01" placeholder="e.g. 80"
-                  value={packageForm.ac_per_unit_rate}
-                  onChange={(e) => setPackageForm({ ...packageForm, ac_per_unit_rate: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[180px]"
-                /></> : <>
-                <Label className="text-xs">AC Per Unit Rate (per unit consumed)</Label>
-                <MoneyInput symbol={curSym}
-                  type="number" min="0" step="0.01" placeholder="e.g. 80"
-                  value={packageForm.ac_per_unit_rate}
-                  onChange={(e) => setPackageForm({ ...packageForm, ac_per_unit_rate: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[180px]"
-                /></>}
-                <p className="text-xs text-muted-foreground">Billed on top of the monthly rate for AC rooms.</p>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Receipt Label for AC Charges</Label>
-                <Input
-                  type="text" maxLength={24} placeholder="AC Charges"
-                  value={packageForm.ac_charge_label}
-                  onChange={(e) => setPackageForm({ ...packageForm, ac_charge_label: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[220px]"
-                />
-                <p className="text-xs text-muted-foreground">
-                  Wording only — billing is unchanged. Leave blank to print &quot;AC Charges&quot;. Set it to
-                  &quot;Electricity Charges&quot; if this branch bills one electricity charge covering the AC.
-                </p>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Bill electricity to every room</Label>
-                <label className="flex items-start gap-2.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={meterAllRooms}
-                    onChange={(e) => setMeterAllRooms(e.target.checked)}
-                    disabled={!packageLoaded}
-                    className="mt-0.5 h-4 w-4 shrink-0 accent-amber cursor-pointer"
-                  />
-                  <span className="text-xs text-muted-foreground">
-                    Lets you record meter readings and units for <strong className="text-foreground">every</strong> room,
-                    not only rooms marked as having AC. Turn this on if the whole building is metered for
-                    electricity. Which rooms show &quot;AC&quot; on your public listing is unaffected.
-                  </span>
-                </label>
-              </div>
-              <div className="space-y-1.5">
-                {isPk ? <>
-                <Label className="text-xs">Attached Washroom Premium (Rs. / month)</Label>
-                <Input
-                  type="number" min="0" step="1" placeholder="e.g. 3000"
-                  value={packageForm.washroom_premium}
-                  onChange={(e) => setPackageForm({ ...packageForm, washroom_premium: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[180px]"
-                /></> : <>
-                <Label className="text-xs">Attached Washroom Premium (per month)</Label>
-                <MoneyInput symbol={curSym}
-                  type="number" min="0" step="1" placeholder="e.g. 3000"
-                  value={packageForm.washroom_premium}
-                  onChange={(e) => setPackageForm({ ...packageForm, washroom_premium: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[180px]"
-                /></>}
-                <p className="text-xs text-muted-foreground">Added on top of the seater rate for rooms with an attached washroom.</p>
-              </div>
-              <div className="space-y-1.5">
-                {isPk ? <>
-                <Label className="text-xs">Default Security Deposit (Rs.)</Label>
-                <Input
-                  type="number" min="0" step="1" placeholder="e.g. 10000"
-                  value={packageForm.security_deposit}
-                  onChange={(e) => setPackageForm({ ...packageForm, security_deposit: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[180px]"
-                /></> : <>
-                <Label className="text-xs">Default Security Deposit</Label>
-                <MoneyInput symbol={curSym}
-                  type="number" min="0" step="1" placeholder="e.g. 10000"
-                  value={packageForm.security_deposit}
-                  onChange={(e) => setPackageForm({ ...packageForm, security_deposit: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[180px]"
-                /></>}
-                <p className="text-xs text-muted-foreground">Fallback when no per-package deposit is set above. Shown on the public hostel page.</p>
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Required Notice Period (days)</Label>
-                <Input
-                  type="number" min="0" step="1" placeholder="e.g. 30"
-                  value={packageForm.notice_period_days}
-                  onChange={(e) => setPackageForm({ ...packageForm, notice_period_days: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[180px]"
-                />
-                <p className="text-xs text-muted-foreground">Minimum notice a tenant should give before checking out.</p>
-              </div>
-              <div className="space-y-1.5">
-                {isPk ? <>
-                <Label className="text-xs">Default Registration Fee (Rs.)</Label>
-                <Input
-                  type="number" min="0" step="1" placeholder="e.g. 2000"
-                  value={packageForm.registration_fee}
-                  onChange={(e) => setPackageForm({ ...packageForm, registration_fee: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[180px]"
-                /></> : <>
-                <Label className="text-xs">Default Registration Fee</Label>
-                <MoneyInput symbol={curSym}
-                  type="number" min="0" step="1" placeholder="e.g. 2000"
-                  value={packageForm.registration_fee}
-                  onChange={(e) => setPackageForm({ ...packageForm, registration_fee: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[180px]"
-                /></>}
-                <p className="text-xs text-muted-foreground">One-time, non-refundable, billed only in the tenant&apos;s first month. Hidden on the Tenants page unless set here.</p>
-              </div>
-              <div className="space-y-1.5">
-                {isPk ? <>
-                <Label className="text-xs">AC Maintenance Rate (Rs. / month)</Label>
-                <Input
-                  type="number" min="0" step="1" placeholder="e.g. 500"
-                  value={packageForm.ac_maintenance_rate}
-                  onChange={(e) => setPackageForm({ ...packageForm, ac_maintenance_rate: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[180px]"
-                /></> : <>
-                <Label className="text-xs">AC Maintenance Rate (per month)</Label>
-                <MoneyInput symbol={curSym}
-                  type="number" min="0" step="1" placeholder="e.g. 500"
-                  value={packageForm.ac_maintenance_rate}
-                  onChange={(e) => setPackageForm({ ...packageForm, ac_maintenance_rate: e.target.value })}
-                  disabled={!packageLoaded}
-                  className="max-w-[180px]"
-                /></>}
-                <p className="text-xs text-muted-foreground">Flat monthly charge automatically applied to every tenant in an AC room, regardless of package.</p>
-              </div>
-            </div>
-
-            {/* Food Add-on Pricing — independent of package tiers */}
-            <div className="space-y-3 pt-2 border-t border-sidebar-border">
-              <div>
-                <Label className="text-xs font-semibold">Food Add-on Pricing <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Let tenants add specific meals on top of any room package, priced independently — separate from the bundled packages above. Leave blank if you don&apos;t offer this.
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-6">
-                <div className="space-y-1.5">
-                  {isPk ? <>
-                  <Label className="text-xs">Breakfast (Rs. / month)</Label>
-                  <Input
-                    type="number" min="0" step="1" placeholder="e.g. 5000"
-                    value={foodAddonForm.breakfast}
-                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, breakfast: e.target.value })}
-                    disabled={!packageLoaded}
-                    className="max-w-[160px]"
-                  /></> : <>
-                  <Label className="text-xs">Breakfast (per month)</Label>
-                  <MoneyInput symbol={curSym}
-                    type="number" min="0" step="1" placeholder="e.g. 5000"
-                    value={foodAddonForm.breakfast}
-                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, breakfast: e.target.value })}
-                    disabled={!packageLoaded}
-                    className="max-w-[160px]"
-                  /></>}
-                </div>
-                <div className="space-y-1.5">
-                  {isPk ? <>
-                  <Label className="text-xs">Lunch (Rs. / month)</Label>
-                  <Input
-                    type="number" min="0" step="1" placeholder="e.g. 5000"
-                    value={foodAddonForm.lunch}
-                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, lunch: e.target.value })}
-                    disabled={!packageLoaded}
-                    className="max-w-[160px]"
-                  /></> : <>
-                  <Label className="text-xs">Lunch (per month)</Label>
-                  <MoneyInput symbol={curSym}
-                    type="number" min="0" step="1" placeholder="e.g. 5000"
-                    value={foodAddonForm.lunch}
-                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, lunch: e.target.value })}
-                    disabled={!packageLoaded}
-                    className="max-w-[160px]"
-                  /></>}
-                </div>
-                <div className="space-y-1.5">
-                  {isPk ? <>
-                  <Label className="text-xs">Dinner (Rs. / month)</Label>
-                  <Input
-                    type="number" min="0" step="1" placeholder="e.g. 5000"
-                    value={foodAddonForm.dinner}
-                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, dinner: e.target.value })}
-                    disabled={!packageLoaded}
-                    className="max-w-[160px]"
-                  /></> : <>
-                  <Label className="text-xs">Dinner (per month)</Label>
-                  <MoneyInput symbol={curSym}
-                    type="number" min="0" step="1" placeholder="e.g. 5000"
-                    value={foodAddonForm.dinner}
-                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, dinner: e.target.value })}
-                    disabled={!packageLoaded}
-                    className="max-w-[160px]"
-                  /></>}
-                </div>
-                <div className="space-y-1.5">
-                  {isPk ? <>
-                  <Label className="text-xs">All 3 Meals Bundle (Rs. / month)</Label>
-                  <Input
-                    type="number" min="0" step="1" placeholder="e.g. 15000"
-                    value={foodAddonForm.allMeals}
-                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, allMeals: e.target.value })}
-                    disabled={!packageLoaded}
-                    className="max-w-[160px]"
-                  /></> : <>
-                  <Label className="text-xs">All 3 Meals Bundle (per month)</Label>
-                  <MoneyInput symbol={curSym}
-                    type="number" min="0" step="1" placeholder="e.g. 15000"
-                    value={foodAddonForm.allMeals}
-                    onChange={(e) => setFoodAddonForm({ ...foodAddonForm, allMeals: e.target.value })}
-                    disabled={!packageLoaded}
-                    className="max-w-[160px]"
-                  /></>}
-                  <p className="text-xs text-muted-foreground">Used automatically when cheaper than the sum of all 3.</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Seater Pricing — automatic per-room pricing by capacity */}
-            <div className="space-y-3 pt-2 border-t border-sidebar-border">
-              <div>
-                <Label className="text-xs font-semibold">Seater Pricing <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Set a rent and deposit by seat count and every room on your public page prices itself automatically, based on its own capacity — no need to price each room by hand. Leave blank to keep using the pricing above.
-                </p>
-              </div>
-              <div className="rounded-lg border border-border overflow-hidden overflow-x-auto">
-                <div className="grid grid-cols-[1fr_90px_90px_90px_90px] gap-px bg-border min-w-[560px]">
-                  <div className="bg-card px-3 py-2">
-                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Seater</span>
-                  </div>
-                  <div className="bg-card px-2 py-2 text-center">
-                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Rent (Non-AC)</span>
-                  </div>
-                  <div className="bg-card px-2 py-2 text-center">
-                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Rent (AC)</span>
-                  </div>
-                  <div className="bg-card px-2 py-2 text-center">
-                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (Non-AC)</span>
-                  </div>
-                  <div className="bg-card px-2 py-2 text-center">
-                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Dep (AC)</span>
-                  </div>
-                </div>
-                {SEATER_CAPACITIES.map((c) => (
-                  <div key={c} className="grid grid-cols-[1fr_90px_90px_90px_90px] gap-px bg-border min-w-[560px]">
-                    <div className="bg-card px-3 py-2.5 flex items-center">
-                      <p className="text-sm font-medium">{SEATER_LABELS[c]}</p>
-                    </div>
-                    <div className="bg-card px-2 py-2 flex items-center">
-                      <Input
-                        type="number" min="0" step="1" placeholder="0"
-                        value={seaterForm[c]?.no_ac ?? ""}
-                        onChange={(e) => setSeaterForm({ ...seaterForm, [c]: { ...seaterForm[c], no_ac: e.target.value } })}
-                        disabled={!packageLoaded}
-                        className="h-7 text-xs text-center px-1"
-                      />
-                    </div>
-                    <div className="bg-card px-2 py-2 flex items-center">
-                      <Input
-                        type="number" min="0" step="1" placeholder="0"
-                        value={seaterForm[c]?.ac ?? ""}
-                        onChange={(e) => setSeaterForm({ ...seaterForm, [c]: { ...seaterForm[c], ac: e.target.value } })}
-                        disabled={!packageLoaded}
-                        className="h-7 text-xs text-center px-1"
-                      />
-                    </div>
-                    <div className="bg-card px-2 py-2 flex items-center">
-                      <Input
-                        type="number" min="0" step="1" placeholder="—"
-                        value={seaterForm[c]?.deposit_no_ac ?? ""}
-                        onChange={(e) => setSeaterForm({ ...seaterForm, [c]: { ...seaterForm[c], deposit_no_ac: e.target.value } })}
-                        disabled={!packageLoaded}
-                        className="h-7 text-xs text-center px-1"
-                      />
-                    </div>
-                    <div className="bg-card px-2 py-2 flex items-center">
-                      <Input
-                        type="number" min="0" step="1" placeholder="—"
-                        value={seaterForm[c]?.deposit_ac ?? ""}
-                        onChange={(e) => setSeaterForm({ ...seaterForm, [c]: { ...seaterForm[c], deposit_ac: e.target.value } })}
-                        disabled={!packageLoaded}
-                        className="h-7 text-xs text-center px-1"
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <p className="text-xs text-muted-foreground">Leave a deposit blank to fall back to the Default Security Deposit below.</p>
-            </div>
-
-            </fieldset>
-            {canFullTier ? (
-              <Button type="submit" disabled={savingPackage || !packageLoaded} className="gap-2">
-                {savingPackage ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                Save Package Pricing
-              </Button>
-            ) : readOnlyNote}
-          </form>
-        </CardContent>
-      </Card>
+      <Section title="Package Pricing" icon={Utensils}>
+        <PackagePricingForm bare hostelId={hostelId ?? ""} country={hostel?.country} readOnly={!canFullTier} readOnlyNote={readOnlyNote} />
+      </Section>
 
       {/* Branches + Partners — account-level, owner-only. A partner manages
           their branch, not the account's branch list or partner roster. */}
       {!isPartner && (<>
-      <Separator />
-
-      {/* Branches */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <GitBranch className="w-4 h-4 text-muted-foreground" />
-              <CardTitle className="text-base">{words.branches}</CardTitle>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={fetchBranches}
-              disabled={loadingBranches || isPending}
-              className="gap-1.5 h-8 text-xs"
-            >
-              <RefreshCw className={`w-3 h-3 ${loadingBranches ? "animate-spin" : ""}`} />
-              Refresh
-            </Button>
-          </div>
-          <CardDescription>
-            Manage all your hostel branches — {branches.length} {branches.length === 1 ? "branch" : "branches"} registered
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Branch list */}
-          {loadingBranches ? (
-            <div className="flex items-center justify-center py-8 text-muted-foreground gap-2">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span className="text-sm">Loading branches…</span>
-            </div>
-          ) : branches.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground">
-              <GitBranch className="w-8 h-8 opacity-20" />
-              <p className="text-sm">No {words.branches.toLowerCase()} yet</p>
-            </div>
-          ) : (
-            <div className="rounded-xl border border-sidebar-border overflow-hidden">
-              {branches.map((b, idx) => {
-                const isActive = b.id === hostelId;
-                const isSwitching = switchingBranch === b.id;
-                const isEditing = editingBranchId === b.id;
-                return (
-                  <div
-                    key={b.id}
-                    className={`transition-colors ${idx > 0 ? "border-t border-sidebar-border" : ""} ${isActive ? "bg-amber/[0.04]" : "hover:bg-white/[0.02]"}`}
-                  >
-                    {isEditing ? (
-                      <div className="px-4 py-3 space-y-3">
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">{words.branch} Name *</Label>
-                          <Input
-                            autoFocus
-                            value={editName}
-                            onChange={(e) => setEditName(e.target.value)}
-                            onKeyDown={(e) => { if (e.key === "Enter") handleRenameBranch(b.id); if (e.key === "Escape") setEditingBranchId(null); }}
-                          />
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="space-y-1.5">
-                            <Label className="text-xs">City</Label>
-                            <Input placeholder="Lahore" value={editCity} onChange={(e) => setEditCity(e.target.value)} />
-                          </div>
-                          <div className="space-y-1.5">
-                            <Label className="text-xs">Address</Label>
-                            <Input placeholder="Street, area" value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <Button variant="outline" size="sm" onClick={() => setEditingBranchId(null)}>Cancel</Button>
-                          <Button
-                            size="sm"
-                            onClick={() => handleRenameBranch(b.id)}
-                            disabled={savingRename || !editName.trim()}
-                            className="gap-1.5 bg-amber text-background hover:bg-amber/90 font-semibold"
-                          >
-                            {savingRename ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                            Save
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-3 px-4 py-3">
-                        <div className={`flex items-center justify-center w-8 h-8 rounded-lg shrink-0 ${
-                          isActive ? "bg-amber/15 border border-amber/25" : "bg-white/5 border border-white/10"
-                        }`}>
-                          <Building2 className={`w-4 h-4 ${isActive ? "text-amber" : "text-muted-foreground"}`} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <p className={`text-sm font-medium truncate ${isActive ? "text-amber" : "text-foreground"}`}>
-                              {b.name}
-                            </p>
-                            {b.is_primary && (
-                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber/15 text-amber border border-amber/25">
-                                Primary
-                              </span>
-                            )}
-                            {isActive && (
-                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
-                                <Check className="w-2.5 h-2.5" /> Active
-                              </span>
-                            )}
-                          </div>
-                          {(b.city || b.address) && (
-                            <p className="text-xs text-muted-foreground truncate mt-0.5">
-                              {[b.city, b.address].filter(Boolean).join(" · ")}
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => startEditBranch(b)}
-                            className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
-                            title="Rename branch"
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                          </Button>
-                          {!isActive && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleSwitchBranch(b.id)}
-                              disabled={isSwitching || isPending}
-                              className="h-7 text-xs gap-1.5"
-                            >
-                              {isSwitching ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowRightLeft className="w-3 h-3" />}
-                              Switch
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
 
       {/* Shared Kitchen — only meaningful with more than one branch, so a
           single-branch owner never sees a control they cannot use. */}
-      {branches.length > 1 && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <ChefHat className="w-4 h-4 text-muted-foreground" />
-              <CardTitle className="text-base">Shared Kitchen</CardTitle>
-            </div>
-            <CardDescription>
-              If this branch&apos;s meals are cooked at another branch, say which one. The kitchen&apos;s
-              groceries and cook salaries are then split across every branch it feeds, in proportion
-              to how many people ate at each one.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
+      {hostels.length > 1 && (
+        <Section title="Shared Kitchen" icon={ChefHat} description="If this branch's meals are cooked at another branch, say which one. The kitchen's groceries and cook salaries are then split across every branch it feeds, in proportion to how many people ate at each one.">
             <Select
               value={kitchenGroupId === "" ? "__self__" : kitchenGroupId}
               onValueChange={(v) => saveKitchenGroup(v === "__self__" ? "" : v)}
@@ -1642,7 +419,7 @@ export function SettingsClient() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__self__">Self-catered — cooks its own food</SelectItem>
-                {branches.map((b) => (
+                {hostels.map((b) => (
                   <SelectItem key={b.id} value={b.id}>
                     {b.id === hostelId ? `${b.name} (this branch cooks for others)` : b.name}
                   </SelectItem>
@@ -1655,21 +432,12 @@ export function SettingsClient() {
               the food leaving the kitchen, so how many people ate is the fairest driver available.
               See Reports → Unit Cost.
             </p>
-          </CardContent>
-        </Card>
+        </Section>
       )}
 
-      <Separator />
-
       {/* Partners */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Handshake className="w-4 h-4 text-muted-foreground" />
-              <CardTitle className="text-base">Partners</CardTitle>
-            </div>
-            <div className="flex items-center gap-2">
+      <Section title="Partners" icon={Handshake} description={`Grant partners branch-scoped access — from read-only up to full owner-equal rights — ${partners.length} ${partners.length === 1 ? "partner" : "partners"} active`}>
+          <div className="flex items-center justify-end gap-2">
               <Button
                 variant="outline"
                 size="sm"
@@ -1688,13 +456,7 @@ export function SettingsClient() {
                 <Plus className="w-3 h-3" />
                 Add Partner
               </Button>
-            </div>
           </div>
-          <CardDescription>
-            Grant partners branch-scoped access — from read-only up to full owner-equal rights — {partners.length} {partners.length === 1 ? "partner" : "partners"} active
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
 
           {/* Last-created credential share banner */}
           {lastCreatedPartner && (
@@ -1996,176 +758,24 @@ export function SettingsClient() {
               ))}
             </div>
           ) : null}
-        </CardContent>
-      </Card>
+        </Section>
       </>)}
 
-      <Separator />
-
       {/* Payment Recovery */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <MessageCircle className="w-4 h-4 text-muted-foreground" />
-            <CardTitle className="text-base">Payment Recovery</CardTitle>
-          </div>
-          <CardDescription>
-            Bank accounts &amp; WhatsApp reminder template sent to tenants with unpaid rent.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <fieldset disabled={!canFullTier} className="space-y-6 min-w-0">
-
-          {/* Payment Methods */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <Label className="text-sm font-semibold">Payment Methods</Label>
-                <p className="text-xs text-muted-foreground mt-0.5">Bank accounts, JazzCash, EasyPaisa etc. shown in reminders.</p>
-              </div>
-              <Button size="sm" variant="outline" onClick={addPaymentMethod} className="gap-1.5 h-8 shrink-0">
-                <Plus className="w-3.5 h-3.5" /> Add Method
-              </Button>
-            </div>
-            {paymentMethods.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-sidebar-border p-4 text-center">
-                <ShieldCheck className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-                <p className="text-xs text-muted-foreground">No payment methods added yet.</p>
-                <p className="text-xs text-muted-foreground">Add bank account, JazzCash, or EasyPaisa details.</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {paymentMethods.map((m) => (
-                  <div key={m.id} className="rounded-xl border border-sidebar-border bg-card/50 p-3">
-                    {/* Row 1: Bank label + Account title */}
-                    <div className="grid grid-cols-2 gap-2 mb-2">
-                      <div className="space-y-1">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Bank / Method</p>
-                        <Input
-                          placeholder="e.g. HBL, JazzCash"
-                          value={m.label}
-                          onChange={(e) => updatePaymentMethod(m.id, { label: e.target.value })}
-                          className="h-9 text-sm"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Account Title</p>
-                        <Input
-                          placeholder="Account holder name"
-                          value={m.account_title ?? ""}
-                          onChange={(e) => updatePaymentMethod(m.id, { account_title: e.target.value })}
-                          className="h-9 text-sm"
-                        />
-                      </div>
-                    </div>
-                    {/* Row 2: Account number + IBAN + Delete */}
-                    <div className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
-                      <div className="space-y-1">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Account Number</p>
-                        <Input
-                          placeholder="Account / phone number"
-                          value={m.account_number ?? ""}
-                          onChange={(e) => updatePaymentMethod(m.id, { account_number: e.target.value })}
-                          className="h-9 text-sm"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">IBAN <span className="normal-case">(optional)</span></p>
-                        <Input
-                          placeholder="PK00XXXX..."
-                          value={m.iban ?? ""}
-                          onChange={(e) => updatePaymentMethod(m.id, { iban: e.target.value })}
-                          className="h-9 text-sm"
-                        />
-                      </div>
-                      <Button
-                        variant="ghost" size="icon"
-                        onClick={() => removePaymentMethod(m.id)}
-                        className="h-9 w-9 text-muted-foreground hover:text-rose-400 shrink-0"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Message Template */}
-          <div className="space-y-2">
-            <Label className="text-sm font-semibold">WhatsApp Reminder Template</Label>
-            <textarea
-              value={reminderTemplate}
-              onChange={(e) => setReminderTemplate(e.target.value)}
-              rows={9}
-              className="w-full rounded-xl border border-sidebar-border bg-card p-3 text-sm font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/50 resize-y"
-            />
-            <p className="text-[11px] text-muted-foreground">
-              Placeholders:&nbsp;
-              {["{name}", "{amount}", "{month}", "{hostel}", "{accounts}", "{ac_maintenance}", "{registration_fee}"].map((p) => (
-                <code key={p} className="text-foreground mx-0.5 px-1 py-0.5 rounded bg-white/5">{p}</code>
-              ))}
-            </p>
-          </div>
-
-          {/* Auto Reminders status — a curated feature Super Admin grants per branch;
-              fully automatic once granted, nothing here for the owner to configure. */}
-          {hostel?.whatsapp_enabled && (
-          <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/[0.03] p-3">
-            <p className="text-xs font-semibold text-emerald-400">Auto WhatsApp Reminders — Active</p>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              Each tenant is automatically reminded, using the template above, on the day-of-month they checked in —
-              only while still pending, overdue, or partially paid for the current month, and only while still active.
-              Checked-out tenants are never reminded. Separate from the manual &quot;Send Reminder&quot; button on the
-              Payments page, which is unaffected.
-            </p>
-          </div>
-          )}
-
-          {/* Live Preview */}
-          <div className="space-y-2">
-            <Label className="text-sm font-semibold">Live Preview</Label>
-            <div className="rounded-xl border border-[#25D366]/15 bg-[#25D366]/[0.03] p-4 max-w-md">
-              <p className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5">
-                <svg className="w-3 h-3 text-[#25D366]" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
-                </svg>
-                WhatsApp message preview
-              </p>
-              <pre className="whitespace-pre-wrap text-sm font-sans text-foreground leading-relaxed">{recoveryPreview}</pre>
-            </div>
-            {paymentMethods.length === 0 && reminderTemplate.includes("{accounts}") && (
-              <p className="text-[11px] text-amber flex items-center gap-1">
-                ⚠ Template includes <code className="px-1 bg-white/5 rounded">{"{accounts}"}</code> but no payment methods added — it will be blank in messages.
-              </p>
-            )}
-          </div>
-
-          </fieldset>
-          {canFullTier ? (
-            <Button onClick={saveRecoverySettings} disabled={savingRecovery} className="gap-2">
-              {savingRecovery ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-              Save Recovery Settings
-            </Button>
-          ) : readOnlyNote}
-        </CardContent>
-      </Card>
-
-      <Separator />
+      <Section title="Payment Recovery" icon={MessageCircle}>
+        <PaymentMethodsForm
+          bare
+          initialPaymentMethods={hostel?.payment_methods ?? []}
+          initialReminderTemplate={hostel?.reminder_template}
+          hostelName={hostel?.name ?? "Your Hostel"}
+          whatsappEnabled={hostel?.whatsapp_enabled}
+          readOnly={!canFullTier}
+          readOnlyNote={readOnlyNote}
+        />
+      </Section>
 
       {/* Tenant Welcome & WiFi */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <MessageCircle className="w-4 h-4 text-muted-foreground" />
-            <CardTitle className="text-base">{words.tenant} Welcome &amp; WiFi</CardTitle>
-          </div>
-          <CardDescription>
-            Automatic WhatsApp message sent the moment a tenant becomes active — room, WiFi, and the monthly menu link.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
+      <Section title={`${words.tenant} Welcome & WiFi`} icon={MessageCircle} description="Automatic WhatsApp message sent the moment a tenant becomes active — room, WiFi, and the monthly menu link.">
           <fieldset disabled={!canFullTier} className="space-y-6 min-w-0">
 
           {/* WiFi Networks */}
@@ -2272,29 +882,7 @@ export function SettingsClient() {
           <div className="space-y-2">
             <Label className="text-sm font-semibold">Meal Times</Label>
             <p className="text-xs text-muted-foreground -mt-1">Shown in the welcome message via {"{meal_times}"} — leave a meal&apos;s From/To blank to leave it out (not every hostel serves lunch).</p>
-            <div className="space-y-2">
-              {([
-                { key: "breakfast" as const, label: "Breakfast" },
-                { key: "lunch" as const, label: "Lunch" },
-                { key: "dinner" as const, label: "Dinner" },
-              ]).map(({ key, label }) => (
-                <div key={key} className="grid grid-cols-[80px_1fr_1fr] gap-2 items-center">
-                  <Label className="text-xs text-muted-foreground">{label}</Label>
-                  <Input
-                    placeholder="From, e.g. 7:00 AM"
-                    value={mealTimes[key]?.from ?? ""}
-                    onChange={(e) => updateMealTime(key, "from", e.target.value)}
-                    className="h-9 text-sm"
-                  />
-                  <Input
-                    placeholder="To, e.g. 9:00 AM"
-                    value={mealTimes[key]?.to ?? ""}
-                    onChange={(e) => updateMealTime(key, "to", e.target.value)}
-                    className="h-9 text-sm"
-                  />
-                </div>
-              ))}
-            </div>
+            <MealTimesFields value={mealTimes} onChange={updateMealTime} />
           </div>
 
           {/* Welcome Message Template */}
@@ -2351,18 +939,10 @@ export function SettingsClient() {
               Save Welcome Settings
             </Button>
           ) : readOnlyNote}
-        </CardContent>
-      </Card>
-
-      <Separator />
+      </Section>
 
       {/* Profile */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2"><User className="w-4 h-4 text-muted-foreground" /><CardTitle className="text-base">Your Profile</CardTitle></div>
-          <CardDescription>Update your personal information</CardDescription>
-        </CardHeader>
-        <CardContent>
+      <Section title="Your Profile" icon={User} description="Update your personal information">
           <form onSubmit={saveProfile} className="space-y-4">
             <div className="space-y-1.5">
               <Label>Email</Label>
@@ -2402,8 +982,21 @@ export function SettingsClient() {
               {savingProfile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save Profile
             </Button>
           </form>
-        </CardContent>
-      </Card>
+      </Section>
+
+      {/* Danger zone — delete this branch. Owner-only, and never the last branch
+          (an account keeps at least one). Deletion is confirmed by an emailed link. */}
+      {!isPartner && hostels.length > 1 && (
+        <Section title={`Delete this ${words.branch.toLowerCase()}`} icon={Trash2} danger description={`Permanently delete "${hostel?.name}" and everything in it. We'll email you a confirmation link — nothing is deleted until you click it.`}>
+              <Button variant="destructive" onClick={requestDeleteBranch} disabled={requestingDelete} className="gap-2">
+                {requestingDelete ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                Delete this {words.branch.toLowerCase()}…
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                This permanently deletes the {words.branch.toLowerCase()} and all its rooms, {words.tenants.toLowerCase()} and payment records. Your last {words.branch.toLowerCase()} can&apos;t be deleted.
+              </p>
+        </Section>
+      )}
     </div>
   );
 }

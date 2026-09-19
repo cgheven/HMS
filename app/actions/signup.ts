@@ -7,7 +7,8 @@ import { normalizeEmail, isDisposableEmailDomain } from "@/lib/email-normalize";
 import { EMAIL_RE, PROPERTY_TYPES, PROPERTY_TYPE_MAX_LEN } from "@/lib/validation";
 import { siteUrl } from "@/lib/site-url";
 import { sendSignupVerificationEmail } from "@/lib/email";
-import { isSupportedCountry, DEFAULT_COUNTRY } from "@/lib/country-config";
+import { isSupportedCountry, DEFAULT_COUNTRY, isManualBankBilling } from "@/lib/country-config";
+import { PK_CARD_MONTHLY_USD } from "@/lib/tier-pricing";
 
 /**
  * Public self-registration — request step (unauthenticated).
@@ -125,9 +126,13 @@ export async function requestSignup(input: {
     const { error: insErr } = await admin.from("hms_pending_signups").insert({
       email,
       normalized_email: normalized,
-      business_name: input.businessName?.trim() || null,
-      owner_name: input.ownerName?.trim() || null,
-      phone: input.phone?.trim() || null,
+      // Length-capped (parity with property_type): business_name becomes the
+      // starter hostel's public-listing name, so an over-long/garbage value
+      // must not reach the directory. Owner name / phone capped for the same
+      // abuse-hardening reason.
+      business_name: input.businessName?.trim().slice(0, 120) || null,
+      owner_name: input.ownerName?.trim().slice(0, 120) || null,
+      phone: input.phone?.trim().slice(0, 32) || null,
       country,
       property_type: propertyType,
       token_hash: tokenHash,
@@ -231,16 +236,28 @@ export async function verifySignupAndProvision(
     // these accounts are trial-gated; the daily cron freezes them (read-only) at
     // expiry unless they subscribe, which clears this (Paddle webhook).
     const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+    // A new self-reg owner in a manual-bank country (PK) is put on the Paddle card
+    // rail at a per-branch USD rate — the ONLY cohort that gets pk_card_enabled.
+    // Existing PK clients keep pk_card_enabled=false (migration 266 default) and
+    // stay on manual invoicing. custom_unit_amount_usd carries the per-branch price
+    // the checkout math already uses.
+    const pkCard = isManualBankBilling(pending.country);
     const [{ error: profErr }, { data: hostData, error: hostErr }] = await Promise.all([
       admin.from("hms_profiles")
-        .update({ country: pending.country, full_name: pending.owner_name || null, phone: pending.phone || null, trial_ends_at: trialEndsAt })
+        .update({
+          country: pending.country,
+          full_name: pending.owner_name || null,
+          phone: pending.phone || null,
+          trial_ends_at: trialEndsAt,
+          ...(pkCard ? { pk_card_enabled: true, custom_unit_amount_usd: PK_CARD_MONTHLY_USD } : {}),
+        })
         .eq("id", ownerId),
       admin.from("hms_hostels")
         // Public listing ON by default so the owner's /join admission form works
         // immediately (product decision). Trade-off: the branch appears in the
         // public directory before it's set up — the onboarding wizard is where a
         // "go live" gate belongs if we later want listing separate from /join.
-        .update({ country: pending.country, listing_enabled: true, property_type: pending.property_type ?? null })
+        .update({ name: pending.business_name?.trim() || "My Hostel", country: pending.country, listing_enabled: true, property_type: pending.property_type ?? null })
         .eq("owner_id", ownerId)
         .select("id"),
     ]);

@@ -10,7 +10,7 @@ import {
   ChefHat, UtensilsCrossed, FileText, Settings, X, Shield, Home,
   MessageSquareWarning, Megaphone, BarChart3, UserCog, Building2,
   ClipboardList, ShieldCheck, Search, Wallet, Flag, MessageSquareHeart,
-  LayoutTemplate, Layers, Share2, FileCheck2,
+  LayoutTemplate, Layers, Share2, FileCheck2, Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIsAdmin } from "@/hooks/use-is-admin";
@@ -113,20 +113,24 @@ const navGroups: { label: string; items: NavItem[] }[] = [
   },
 ];
 
-interface NavLinkProps { href: string; label: string; icon: typeof LayoutDashboard; pathname: string; onClose: () => void; newTab?: boolean }
+interface NavLinkProps { href: string; label: string; icon: typeof LayoutDashboard; pathname: string; onClose: () => void; newTab?: boolean; highlight?: boolean }
 
-const NavLink = memo(function NavLink({ href, label, icon: Icon, pathname, onClose, newTab }: NavLinkProps) {
+const NavLink = memo(function NavLink({ href, label, icon: Icon, pathname, onClose, newTab, highlight }: NavLinkProps) {
   const active = pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
   const className = cn(
     "relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 group",
-    active ? "bg-amber/10 text-amber" : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+    active
+      ? "bg-amber/10 text-amber"
+      : highlight
+        ? "text-amber/90 bg-amber/[0.06] hover:bg-amber/10"
+        : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
   );
   const content = (
     <>
       {active && (
         <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-amber" />
       )}
-      <Icon className={cn("w-4 h-4 shrink-0 transition-colors", active ? "text-amber" : "text-muted-foreground group-hover:text-foreground")} />
+      <Icon className={cn("w-4 h-4 shrink-0 transition-colors", active || highlight ? "text-amber" : "text-muted-foreground group-hover:text-foreground")} />
       <span>{label}</span>
     </>
   );
@@ -215,6 +219,14 @@ export function Sidebar({ open, onClose }: SidebarProps) {
 
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto overscroll-contain py-3 px-2.5 space-y-3">
+          {/* Quick Setup — a permanent shortcut to the guided /welcome hub for
+              editing pricing, WiFi, meals, menu, referral & payment methods in one
+              place. Owners only (partners manage a branch, not account setup). */}
+          {!isPartner && (
+            <div className="space-y-0.5">
+              <NavLink href="/welcome" label="Quick Setup" icon={Sparkles} highlight pathname={pathname} onClose={onClose} />
+            </div>
+          )}
           {visibleGroups.map((group) => (
             <div key={group.label}>
               <p className="text-[10px] font-bold text-muted-foreground/70 uppercase tracking-widest px-3 mb-1 mt-1">{group.label}</p>

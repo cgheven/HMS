@@ -147,3 +147,16 @@
     animation: fade-in 0.3s ease-out both;
   }
 }
+
+/* Mobile input zoom fix — SCOPED to the Quick Setup page for now.
+   iOS Safari auto-zooms the page when focusing an input whose font is < 16px,
+   and our fields are 14px (Tailwind text-sm). Bump them to 16px on small
+   screens only; desktop is unchanged. Unlayered so it beats @layer utilities
+   (text-sm/text-xs) regardless of specificity — no !important needed. */
+@media (max-width: 640px) {
+  .quick-setup input:not([type="checkbox"]):not([type="radio"]),
+  .quick-setup textarea,
+  .quick-setup select {
+    font-size: 16px;
+  }
+}

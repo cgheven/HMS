@@ -13,14 +13,14 @@ interface NoticeTenant {
   is_active: boolean;
   intended_checkout_date: string | null;
   hostel_id: string;
-  hostel: { name?: string; whatsapp_enabled?: boolean } | { name?: string; whatsapp_enabled?: boolean }[] | null;
+  hostel: { name?: string; country?: string | null; whatsapp_enabled?: boolean } | { name?: string; country?: string | null; whatsapp_enabled?: boolean }[] | null;
 }
 
 async function loadNoticeTenant(tenantId: string): Promise<NoticeTenant | null> {
   const admin = createAdminClient();
   const { data } = await admin
     .from("hms_tenants")
-    .select("id, full_name, phone, email, is_active, intended_checkout_date, hostel_id, hostel:hms_hostels(name, whatsapp_enabled)")
+    .select("id, full_name, phone, email, is_active, intended_checkout_date, hostel_id, hostel:hms_hostels(name, country, whatsapp_enabled)")
     .eq("id", tenantId)
     .maybeSingle();
   return (data as NoticeTenant | null) ?? null;
@@ -46,7 +46,7 @@ export async function sendNoticeReceivedToTenant(tenantId: string): Promise<void
     const email = (t.email ?? "").trim();
     if (email) {
       try {
-        await sendNoticeReceivedEmail({ tenantEmail: email, tenantName: t.full_name, hostelName: hostel?.name ?? "your hostel", lastDay });
+        await sendNoticeReceivedEmail({ tenantEmail: email, tenantName: t.full_name, hostelName: hostel?.name ?? "your hostel", country: hostel?.country ?? null, lastDay });
       } catch (err) { console.error(`[notice] email failed for tenant ${tenantId}:`, err); }
     }
 
@@ -80,7 +80,7 @@ export async function sendLastDayReminderToTenant(tenantId: string): Promise<voi
     const email = (t.email ?? "").trim();
     if (email) {
       try {
-        await sendLastDayReminderEmail({ tenantEmail: email, tenantName: t.full_name, hostelName: hostel?.name ?? "your hostel", lastDay });
+        await sendLastDayReminderEmail({ tenantEmail: email, tenantName: t.full_name, hostelName: hostel?.name ?? "your hostel", country: hostel?.country ?? null, lastDay });
       } catch (err) { console.error(`[last-day] email failed for tenant ${tenantId}:`, err); }
     }
 

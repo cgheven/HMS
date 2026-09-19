@@ -404,10 +404,13 @@ export async function getOwnerBilling() {
   // Billing rail resolves via the OWNER's PROFILE country (billing/legal contract).
   // PK keeps the manual/bank rail; every other country is Paddle-only (card).
   const ownerCountry = ctx.profile?.country;
-  // ONE shared test across the billing UI, checkout action, and tier-sync so they
-  // can never disagree about who is on cards vs. hand-invoicing (a null-country
-  // legacy owner resolves to PK/manual — never accidentally shown card checkout).
-  const manualBankBilling = isManualBankBilling(ownerCountry);
+  // A manual-bank country (PK) owner is on the CARD rail only when explicitly
+  // opted in (pk_card_enabled — new PK self-reg owners). Existing PK clients keep
+  // pk_card_enabled=false and stay on manual/bank invoicing. Mirrors the gate in
+  // createPlanCheckoutAction so the UI and the checkout action always agree (a
+  // null-country legacy owner resolves to PK/manual — never accidental card checkout).
+  const pkCardEnabled = ctx.profile?.pk_card_enabled === true;
+  const manualBankBilling = isManualBankBilling(ownerCountry) && !pkCardEnabled;
 
   const [{ data: billing }, { data: invoices }, { count: branchCount }, { data: subscription }, { data: paddlePayments }] = await Promise.all([
     supabase.from("hms_client_billing").select("*").eq("owner_id", user.id).maybeSingle(),
