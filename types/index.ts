@@ -243,6 +243,9 @@ export interface Hostel {
   hostel_type: HostelType | null;
   amenities: string[];
   listing_enabled: boolean;
+  /** One-click sample/demo branch (migration 267). Kept out of billing/listing via
+   *  billing_active=false + listing_enabled=false; this is only the marker. */
+  is_demo?: boolean | null;
   slug: string | null;
   complaint_code: string | null;
   form_config: FormConfig | null;

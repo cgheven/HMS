@@ -17,6 +17,7 @@ import { getCountryConfig } from "@/lib/country-config";
 import { saveWelcomeSettings } from "@/app/actions/settings";
 import { updateReferralPercentages, startReferralCampaign } from "@/app/actions/referrals";
 import { dismissWelcome, type WelcomeStatus, type WelcomeStep } from "@/app/actions/onboarding-welcome";
+import { loadSampleData } from "@/app/actions/demo-data";
 import { PackagePricingForm } from "@/components/modules/settings/package-pricing-form";
 import { PaymentMethodsForm } from "@/components/modules/settings/payment-methods-form";
 import { HostelInfoForm } from "@/components/modules/settings/hostel-info-form";
@@ -57,6 +58,21 @@ export function WelcomeClient({
   );
   const [open, setOpen] = useState<StepKey | null>(null);
   const [leaving, startLeaving] = useTransition();
+  const [seeding, setSeeding] = useState(false);
+
+  async function exploreDemo() {
+    setSeeding(true);
+    const res = await loadSampleData();
+    if (res.success) {
+      // Full navigation (not router.refresh) so the new active-branch cookie the
+      // seeder set is committed before the dashboard renders — same reason branch
+      // switching uses window.location.
+      window.location.href = "/dashboard";
+    } else {
+      toast({ title: res.error ?? "Could not load sample data", variant: "destructive" });
+      setSeeding(false);
+    }
+  }
 
   // Shared state — WiFi and meals persist through one action (saveWelcomeSettings
   // writes both together, so each save must resend the other untouched).
@@ -197,6 +213,19 @@ export function WelcomeClient({
             </Card>
           );
         })}
+      </div>
+
+      <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="flex-1 min-w-0">
+          <p className="font-medium leading-tight">Want to see Pulse in action first?</p>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Load a fully-populated sample branch — rooms, {t.tenants.toLowerCase()}, payments, expenses and more. Remove it anytime in one click.
+          </p>
+        </div>
+        <Button variant="outline" onClick={exploreDemo} disabled={seeding} className="shrink-0">
+          {seeding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+          {seeding ? "Loading…" : "Explore with sample data"}
+        </Button>
       </div>
 
       <div className="flex items-center justify-between pt-2">

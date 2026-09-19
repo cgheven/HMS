@@ -6,6 +6,7 @@ import { formatDate } from "@/lib/utils";
 import { HostelProvider } from "@/contexts/hostel-context";
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { TrialStartTracker } from "@/components/analytics/trial-start-tracker";
+import { DemoBanner } from "@/components/modules/demo/demo-banner";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const ctx = await getAuthContext();
@@ -168,6 +169,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
             </span>
             <span className="whitespace-nowrap font-semibold text-amber">Pay now →</span>
           </Link>
+        ) : null}
+        {(ctx.hostel as { is_demo?: boolean } | null)?.is_demo ? (
+          <div className="mb-4">
+            <DemoBanner />
+          </div>
         ) : null}
         {children}
       </DashboardShell>
