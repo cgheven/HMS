@@ -19,7 +19,6 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
-import { MoneyInput } from "@/components/ui/money-input";
 import { organizationPresetsFor } from "@/lib/organization-presets";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
@@ -31,14 +30,16 @@ import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDe
 import { countBillableNights, daysInMonth, parseLocalDate, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling } from "@/lib/ac-billing";
 import { formatNationalId, isValidNationalId, normalizeNationalId, nationalIdLabel, requiresGuestRegistration } from "@/lib/national-id";
-import { getCountryConfig, DEFAULT_COUNTRY, terms } from "@/lib/country-config";
+import { getCountryConfig, DEFAULT_COUNTRY, terms, paymentMethodsForCountry } from "@/lib/country-config";
+import { waDigits } from "@/lib/pk-whatsapp";
 import { COUNTRY_NAMES, countryNameOf, countryCodeOfName, addressRegionLabel, looksLikeUkPostcode, validateDocumentNumber, looksLikePhone } from "@/lib/countries";
 import { discountedRent } from "@/lib/tenant-discount";
 import { VISIT_PURPOSE_OPTIONS, VISIT_PURPOSE_LABELS, visitPurposeLabel } from "@/lib/visit-purpose";
-import { RELATIONSHIP_OPTIONS } from "@/types";
+import { RELATIONSHIP_OPTIONS, PAYMENT_METHOD_LABELS } from "@/types";
 import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, PaymentStatus, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory, VisitPurpose, MealTimes } from "@/types";
 import { PhotoPicker } from "./photo-picker";
-import { DocumentManager } from "./document-manager";
+import { DocumentManager, type StagedDoc } from "./document-manager";
+import { uploadTenantDocument } from "@/app/actions/tenants";
 import { updateApplicationStatus, convertToTenant, type ConvertFormData } from "@/app/actions/applications";
 import { backfillTenantPaymentsAction, checkoutTenantAction, createInvoiceLink, getACCheckoutContextAction, getCheckoutPendingPaymentAction, getTenantRecordedMoneyAction, logTenantEvent, giveTenantNoticeAction, cancelTenantNoticeAction, deleteTenantAction, anonymiseTenantResidentAction, hardDeleteTenantResidentAction, recordReservationDepositAction, resendTenantWelcomeMessageAction, getRoomTransferPreviewAction, transferTenantRoomAction, getRoomTransferCorrectionAction, correctRoomTransferAction, getBranchTransferRoomsAction, getBranchTransferPreviewAction, branchTransferTenantAction, type RoomTransferPreview, type BranchTransferTarget, type BranchTransferRoom } from "@/app/actions/tenants";
 // Straight from the module that declares it. Re-exporting it through the
@@ -1016,6 +1017,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   });
   const [approveSaving, setApproveSaving] = useState(false);
   const [editingDocs, setEditingDocs] = useState<TenantDocument[]>([]);
+  // Documents chosen during admission (new resident), uploaded after create.
+  const [stagedDocs, setStagedDocs] = useState<StagedDoc[]>([]);
   const [typeFilter, setTypeFilter] = useState<"all" | "student" | "professional" | "general">("all");
   const [depositFilter, setDepositFilter] = useState(false);
   const [noticeFilter, setNoticeFilter] = useState(false);
@@ -1461,6 +1464,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       registration_fee: configRegistrationFee > 0 ? String(configRegistrationFee) : "",
     });
     setEditingDocs([]);
+    setStagedDocs([]);
     setCustomSpecialization(false);
     setCustomInstitute(false);
     setCustomDepartment(false);
@@ -1491,6 +1495,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       .catch(() => {/* the panel simply does not appear */});
     setJoiningPhotoFile(null);
     setEditingDocs(t.documents ?? []);
+    setStagedDocs([]);
     setForm({
       full_name: t.full_name,
       phone: t.phone ?? "",
@@ -1802,6 +1807,22 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       setJoiningPhotoFile(null);
     };
 
+    // Documents staged during admission (new resident) — uploaded to the just-
+    // created tenant. Mirrors uploadStagedJoiningPhoto: a doc failing to upload
+    // never rolls back the resident (they're already saved), just warns.
+    const uploadStagedDocuments = async (tenantId: string | null | undefined) => {
+      if (!tenantId || stagedDocs.length === 0) return;
+      for (const d of stagedDocs) {
+        const fd = new FormData();
+        fd.append("file", d.file);
+        const res = await uploadTenantDocument(tenantId, d.type, fd);
+        if (res.error) {
+          toast({ title: `${words.tenant} saved, a document failed to upload`, description: `${d.name}: ${res.error}`, variant: "destructive" });
+        }
+      }
+      setStagedDocs([]);
+    };
+
     // ── Room transfer, BEFORE the tier branches ─────────────────────────
     // handleSave returns early for managers and for partners, so anything below
     // those branches never runs for them. The meter panel has no role gate and
@@ -1905,6 +1926,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           : form.is_waiting ? "Added to waiting list" : `${words.tenant} added`,
       });
       await uploadStagedJoiningPhoto(editing ? editing.id : (result as { tenantId?: string }).tenantId);
+      await uploadStagedDocuments(editing ? undefined : (result as { tenantId?: string }).tenantId);
       announceTransfer();
       setDialogOpen(false);
       await reload();
@@ -2030,6 +2052,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       }
       setJoiningPhotoFile(null);
     }
+
+    // Documents staged during admission — upload now that the tenant exists.
+    // Only for a new resident; editing uses the immediate uploader (stagedDocs empty).
+    await uploadStagedDocuments(editing ? undefined : newTenantId);
 
     if (ledgerTenantId) {
       // Skipped for a metered transfer: transferTenantRoomAction already wrote a
@@ -3440,7 +3466,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                               <div className="flex flex-wrap gap-x-2 gap-y-0.5 mt-0.5">
                                 {app.phone && (
                                   <a
-                                    href={`https://wa.me/${app.phone.replace(/\D/g, "").replace(/^0/, "92")}`}
+                                    href={`https://wa.me/${waDigits(app.phone, country)}`}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="text-xs text-[#25D366] hover:underline flex items-center gap-1"
@@ -3941,8 +3967,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               {/* Rent + Deposit */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  {isPk ? <>
-                  <Label>{approveForm.billing_type === "monthly" ? "Monthly Rent (PKR)" : "Daily Rate (PKR)"}</Label>
+                  <Label>{approveForm.billing_type === "monthly" ? `Monthly Rent (${curCode})` : `Daily Rate (${curCode})`}</Label>
                   <Input
                     type="number"
                     placeholder="0"
@@ -3953,20 +3978,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         ? { ...approveForm, monthly_rent: val }
                         : { ...approveForm, daily_rate: val });
                     }}
-                  /></> : <>
-                  <Label>{approveForm.billing_type === "monthly" ? "Monthly Rent" : "Daily Rate"}</Label>
-                  <MoneyInput
-                    symbol={curSym}
-                    type="number"
-                    placeholder="0"
-                    value={approveForm.billing_type === "monthly" ? approveForm.monthly_rent || "" : approveForm.daily_rate || ""}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value) || 0;
-                      setApproveForm(approveForm.billing_type === "monthly"
-                        ? { ...approveForm, monthly_rent: val }
-                        : { ...approveForm, daily_rate: val });
-                    }}
-                  /></>}
+                  />
                   {approveForm.billing_type === "monthly" && (approveForm.food_breakfast || approveForm.food_lunch || approveForm.food_dinner) && (() => {
                     const foodCharge = calcFoodAddonCharge(approveFormFoodFlags(approveForm), foodAddonRates);
                     return (
@@ -4005,41 +4017,23 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  {isPk ? <>
-                  <Label>Security Deposit (PKR)</Label>
+                  <Label>Security Deposit ({curCode})</Label>
                   <Input
                     type="number"
                     placeholder="0"
                     value={approveForm.security_deposit || ""}
                     onChange={(e) => setApproveForm({ ...approveForm, security_deposit: parseFloat(e.target.value) || 0 })}
-                  /></> : <>
-                  <Label>Security Deposit</Label>
-                  <MoneyInput
-                    symbol={curSym}
-                    type="number"
-                    placeholder="0"
-                    value={approveForm.security_deposit || ""}
-                    onChange={(e) => setApproveForm({ ...approveForm, security_deposit: parseFloat(e.target.value) || 0 })}
-                  /></>}
+                  />
                 </div>
                 {configAcMaintenance > 0 && (
                   <div className="space-y-1.5">
-                    {isPk ? <>
-                    <Label>AC Maintenance (PKR / month)</Label>
+                    <Label>AC Maintenance ({curCode} / month)</Label>
                     <Input
                       type="number" min="0"
                       placeholder={`Default ${configAcMaintenance}`}
                       value={approveForm.ac_maintenance ?? ""}
                       onChange={(e) => setApproveForm({ ...approveForm, ac_maintenance: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })}
-                    /></> : <>
-                    <Label>AC Maintenance / month</Label>
-                    <MoneyInput
-                      symbol={curSym}
-                      type="number" min="0"
-                      placeholder={`Default ${configAcMaintenance}`}
-                      value={approveForm.ac_maintenance ?? ""}
-                      onChange={(e) => setApproveForm({ ...approveForm, ac_maintenance: e.target.value === "" ? null : (parseFloat(e.target.value) || 0) })}
-                    /></>}
+                    />
                     <p className="text-xs text-muted-foreground">
                       Enter 0 to waive it for this tenant.
                     </p>
@@ -5218,9 +5212,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {form.billing_type === "monthly" ? (
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  {isPk
-                    ? <><Label>Monthly Rent (PKR)</Label><Input type="number" placeholder="0" value={form.monthly_rent} onChange={(e) => setForm({ ...form, monthly_rent: e.target.value })} /></>
-                    : <><Label>Monthly Rent</Label><MoneyInput symbol={curSym} type="number" placeholder="0" value={form.monthly_rent} onChange={(e) => setForm({ ...form, monthly_rent: e.target.value })} /></>}
+                  <Label>Monthly Rent ({curCode})</Label>
+                  <Input type="number" placeholder="0" value={form.monthly_rent} onChange={(e) => setForm({ ...form, monthly_rent: e.target.value })} />
                   {(form.food_breakfast || form.food_lunch || form.food_dinner) && (() => {
                     const foodCharge = calcFoodAddonCharge(form, foodAddonRates);
                     const rent = parseFloat(form.monthly_rent) || 0;
@@ -5310,26 +5303,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   );
                 })()}
                 {isPk
-                  ? <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
-                  : <div className="space-y-1.5"><Label>Security Deposit</Label><MoneyInput symbol={curSym} type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>}
+                  ? <div className="space-y-1.5"><Label>Security Deposit ({curCode})</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
+                  : <div className="space-y-1.5"><Label>Security Deposit ({curCode})</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>}
                 {configAcMaintenance > 0 && (
                   <div className="space-y-1.5">
-                    {isPk ? <>
-                    <Label>AC Maintenance (PKR / month)</Label>
+                    <Label>AC Maintenance ({curCode} / month)</Label>
                     <Input
                       type="number" min="0"
                       placeholder={`Default ${configAcMaintenance}`}
                       value={form.ac_maintenance}
                       onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
-                    /></> : <>
-                    <Label>AC Maintenance / month</Label>
-                    <MoneyInput
-                      symbol={curSym}
-                      type="number" min="0"
-                      placeholder={`Default ${configAcMaintenance}`}
-                      value={form.ac_maintenance}
-                      onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
-                    /></>}
+                    />
                     <p className="text-xs text-muted-foreground">
                       Enter 0 to waive it for this tenant.
                     </p>
@@ -5338,9 +5322,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 {configRegistrationFee > 0 && (
                   <div className="space-y-1.5">
                     <Label>Registration Fee</Label>
-                    {isPk
-                      ? <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
-                      : <MoneyInput symbol={curSym} type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />}
+                    <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
                     <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
                   </div>
                 )}
@@ -5388,30 +5370,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               <>
                 <div className="grid grid-cols-2 gap-4">
                   {isPk
-                    ? <div className="space-y-1.5"><Label>Daily Rate (PKR)</Label><Input type="number" placeholder="0" value={form.daily_rate} onChange={(e) => setForm({ ...form, daily_rate: e.target.value })} /></div>
-                    : <div className="space-y-1.5"><Label>Daily Rate</Label><MoneyInput symbol={curSym} type="number" placeholder="0" value={form.daily_rate} onChange={(e) => setForm({ ...form, daily_rate: e.target.value })} /></div>}
+                    ? <div className="space-y-1.5"><Label>Daily Rate ({curCode})</Label><Input type="number" placeholder="0" value={form.daily_rate} onChange={(e) => setForm({ ...form, daily_rate: e.target.value })} /></div>
+                    : <div className="space-y-1.5"><Label>Daily Rate ({curCode})</Label><Input type="number" placeholder="0" value={form.daily_rate} onChange={(e) => setForm({ ...form, daily_rate: e.target.value })} /></div>}
                   {isPk
-                  ? <div className="space-y-1.5"><Label>Security Deposit (PKR)</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
-                  : <div className="space-y-1.5"><Label>Security Deposit</Label><MoneyInput symbol={curSym} type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>}
+                  ? <div className="space-y-1.5"><Label>Security Deposit ({curCode})</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
+                  : <div className="space-y-1.5"><Label>Security Deposit ({curCode})</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>}
                 </div>
                 {configAcMaintenance > 0 && (
                   <div className="space-y-1.5">
-                    {isPk ? <>
-                    <Label>AC Maintenance (PKR / month)</Label>
+                    <Label>AC Maintenance ({curCode} / month)</Label>
                     <Input
                       type="number" min="0"
                       placeholder={`Default ${configAcMaintenance}`}
                       value={form.ac_maintenance}
                       onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
-                    /></> : <>
-                    <Label>AC Maintenance / month</Label>
-                    <MoneyInput
-                      symbol={curSym}
-                      type="number" min="0"
-                      placeholder={`Default ${configAcMaintenance}`}
-                      value={form.ac_maintenance}
-                      onChange={(e) => setForm({ ...form, ac_maintenance: e.target.value })}
-                    /></>}
+                    />
                     <p className="text-xs text-muted-foreground">
                       Enter 0 to waive it for this tenant.
                     </p>
@@ -5421,9 +5394,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
                     <Label>Registration Fee</Label>
-                    {isPk
-                      ? <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
-                      : <MoneyInput symbol={curSym} type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />}
+                    <Input type="number" placeholder="0" value={form.registration_fee} onChange={(e) => setForm({ ...form, registration_fee: e.target.value })} />
                     <p className="text-xs text-muted-foreground">One-time, non-refundable.</p>
                   </div>
                   </div>
@@ -5603,18 +5574,21 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           </div>
           </fieldset>
 
-          {/* Documents — only shown when editing an existing tenant, and hidden
-              in view-only mode since DocumentManager's upload/delete controls
-              have no read-only variant. Hidden for managers, whose document
-              actions are owner/partner-gated. */}
-          {editing && !isManager && !viewOnly && (
+          {/* Documents — shown when editing (immediate upload) AND when adding a
+              new resident (staged: files are held and uploaded after create, so
+              they can be attached during admission). Hidden in view-only mode
+              since the upload/delete controls have no read-only variant, and for
+              managers, whose document actions are owner/partner-gated. */}
+          {!isManager && !viewOnly && (
             <div className="pt-2 border-t border-sidebar-border">
               <DocumentManager
-                tenantId={editing.id}
-                tenantName={editing.full_name}
-                documents={editingDocs}
+                tenantId={editing ? editing.id : ""}
+                tenantName={editing ? editing.full_name : form.full_name}
+                documents={editing ? editingDocs : []}
                 onChange={setEditingDocs}
                 isPk={isPk}
+                stagedDocs={editing ? undefined : stagedDocs}
+                onStageChange={editing ? undefined : setStagedDocs}
               />
             </div>
           )}
@@ -5969,12 +5943,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                                 <SelectValue placeholder="Select method" />
                               </SelectTrigger>
                               <SelectContent>
-                                <SelectItem value="cash">Cash</SelectItem>
-                                <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
-                                <SelectItem value="jazzcash">JazzCash</SelectItem>
-                                <SelectItem value="easypaisa">EasyPaisa</SelectItem>
-                                <SelectItem value="sadapay">SadaPay</SelectItem>
-                                <SelectItem value="other">Other</SelectItem>
+                                {paymentMethodsForCountry(country).map((k) => <SelectItem key={k} value={k}>{PAYMENT_METHOD_LABELS[k]}</SelectItem>)}
                               </SelectContent>
                             </Select>
                           </div>
@@ -6206,35 +6175,22 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           <div className={cn("space-y-4 py-1", depositSubmitting && "pointer-events-none opacity-50")}>
             <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-2">
-                <Label htmlFor="deposit-amount">{isPk ? "Amount received (PKR)" : "Amount received"}</Label>
+                <Label htmlFor="deposit-amount">Amount received ({curCode})</Label>
                 {!!depositDialogTenant && depositDialogTenant.security_deposit > 0 && (
                   <span className="text-xs text-muted-foreground">
                     Deposit on file: {fmtMoney(depositDialogTenant.security_deposit)}
                   </span>
                 )}
               </div>
-              {isPk ? (
-                <Input
-                  id="deposit-amount"
-                  type="number"
-                  min={0}
-                  max={depositDialogTenant?.security_deposit || undefined}
-                  placeholder="0"
-                  value={depositForm.amount}
-                  onChange={(e) => setDepositForm({ ...depositForm, amount: e.target.value })}
-                />
-              ) : (
-                <MoneyInput
-                  symbol={curSym}
-                  id="deposit-amount"
-                  type="number"
-                  min={0}
-                  max={depositDialogTenant?.security_deposit || undefined}
-                  placeholder="0"
-                  value={depositForm.amount}
-                  onChange={(e) => setDepositForm({ ...depositForm, amount: e.target.value })}
-                />
-              )}
+              <Input
+                id="deposit-amount"
+                type="number"
+                min={0}
+                max={depositDialogTenant?.security_deposit || undefined}
+                placeholder="0"
+                value={depositForm.amount}
+                onChange={(e) => setDepositForm({ ...depositForm, amount: e.target.value })}
+              />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -6253,12 +6209,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 <Select value={depositForm.method} onValueChange={(v) => setDepositForm({ ...depositForm, method: v as PaymentMethod })}>
                   <SelectTrigger><SelectValue placeholder="Select method" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="cash">Cash</SelectItem>
-                    <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
-                    <SelectItem value="jazzcash">JazzCash</SelectItem>
-                    <SelectItem value="easypaisa">EasyPaisa</SelectItem>
-                    <SelectItem value="sadapay">SadaPay</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
+                    {paymentMethodsForCountry(country).map((k) => <SelectItem key={k} value={k}>{PAYMENT_METHOD_LABELS[k]}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
@@ -6516,7 +6467,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
 
           {shareReceipt && (() => {
             const receiptUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/r/${shareReceipt.token}`;
-            const waPhone = shareReceipt.phone?.replace(/\D/g, "");
+            const waPhone = waDigits(shareReceipt.phone, country);
             const waMsg = encodeURIComponent(`Dear ${shareReceipt.name}, your payment receipt is ready. Please find it here: ${receiptUrl}`);
             return (
               <div className="flex flex-col gap-2 pt-1">
@@ -6569,7 +6520,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           </DialogHeader>
           {(() => {
             const formUrl = hostelSlug ? `${typeof window !== "undefined" ? window.location.origin : ""}/join/${hostelSlug}` : "";
-            const normPhone = shareLinkPhone.replace(/\D/g, "").replace(/^0/, "92");
+            const normPhone = waDigits(shareLinkPhone, country);
             const waMsg = encodeURIComponent(`Hi! Please fill out this application form to apply for a room at ${hostelName ?? "our hostel"}:\n${formUrl}`);
             const waUrl = normPhone.length >= 10
               ? `https://wa.me/${normPhone}?text=${waMsg}`

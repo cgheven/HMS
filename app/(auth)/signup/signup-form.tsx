@@ -7,9 +7,12 @@ import { requestSignup } from "@/app/actions/signup";
 import { trackEvent, marketFromCountry } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { SUPPORTED_COUNTRIES } from "@/lib/country-config";
+import { SearchableSelect } from "@/components/ui/searchable-select";
+import { isValidLocalPhone } from "@/lib/phone";
+import { COUNTRY_NAMES, countryNameOf, countryCodeOfName } from "@/lib/countries";
 import { PROPERTY_TYPES } from "@/lib/validation";
 import { LegalFooter } from "@/components/legal/legal-footer";
 
@@ -32,7 +35,6 @@ export function SignupForm({ detectedCountryCode }: { detectedCountryCode: strin
   const [sent, setSent] = useState(false);
   const [error, setError] = useState("");
 
-  const dialCode = SUPPORTED_COUNTRIES.find((c) => c.code === country)?.dialCode ?? "";
   const resolvedPropertyType =
     propertyType === "Other" ? propertyTypeOther.trim() : propertyType;
 
@@ -41,6 +43,11 @@ export function SignupForm({ detectedCountryCode }: { detectedCountryCode: strin
     setError("");
     if (!EMAIL_RE.test(email.trim())) {
       setError("Enter a valid email address.");
+      return;
+    }
+    // Phone is optional, but if provided it must be a valid number for the country.
+    if (phone.trim() && !isValidLocalPhone(phone, country)) {
+      setError("Enter a valid mobile number for the selected country, or leave it blank.");
       return;
     }
     setLoading(true);
@@ -121,12 +128,12 @@ export function SignupForm({ detectedCountryCode }: { detectedCountryCode: strin
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="business" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Business name</Label>
-                  <Input id="business" value={businessName} onChange={(e) => setBusinessName(e.target.value)} placeholder="e.g. Al Noor Hostels" disabled={loading}
+                  <Input id="business" value={businessName} onChange={(e) => setBusinessName(e.target.value)} placeholder="e.g. Sunrise Residency" disabled={loading}
                     className="h-10 bg-background/50 border-sidebar-border focus-visible:ring-amber/40 focus-visible:border-amber/50" />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="owner" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Your name</Label>
-                  <Input id="owner" value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="e.g. Ali Hassan" disabled={loading}
+                  <Input id="owner" value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="Your full name" disabled={loading}
                     className="h-10 bg-background/50 border-sidebar-border focus-visible:ring-amber/40 focus-visible:border-amber/50" />
                 </div>
                 <div className="space-y-1.5">
@@ -135,8 +142,19 @@ export function SignupForm({ detectedCountryCode }: { detectedCountryCode: strin
                     className="h-10 bg-background/50 border-sidebar-border focus-visible:ring-amber/40 focus-visible:border-amber/50" />
                 </div>
                 <div className="space-y-1.5">
+                  <Label htmlFor="country" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Country</Label>
+                  <SearchableSelect
+                    value={countryNameOf(country)}
+                    onValueChange={(v) => setCountry((countryCodeOfName(v) || country).toUpperCase())}
+                    options={COUNTRY_NAMES}
+                    placeholder="Select country"
+                    searchPlaceholder="Search countries…"
+                  />
+                  <p className="text-[11px] text-muted-foreground">Sets your currency, timezone, billing region and phone code.</p>
+                </div>
+                <div className="space-y-1.5">
                   <Label htmlFor="phone" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Mobile number</Label>
-                  <Input id="phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder={`+${dialCode} …`} autoComplete="tel" disabled={loading}
+                  <PhoneInput id="phone" country={country} value={phone} onChange={setPhone} placeholder="Mobile number" autoComplete="tel" disabled={loading}
                     className="h-10 bg-background/50 border-sidebar-border focus-visible:ring-amber/40 focus-visible:border-amber/50" />
                 </div>
 
@@ -145,21 +163,6 @@ export function SignupForm({ detectedCountryCode }: { detectedCountryCode: strin
                 <div aria-hidden className="absolute -left-[9999px] top-0 h-0 w-0 overflow-hidden">
                   <label htmlFor="contactRef2">Leave this field empty</label>
                   <input id="contactRef2" name="contactRef2" tabIndex={-1} autoComplete="off" value={contactRef2} onChange={(e) => setContactRef2(e.target.value)} />
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label htmlFor="country" className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Country</Label>
-                  <Select value={country} onValueChange={setCountry} disabled={loading}>
-                    <SelectTrigger id="country" className="h-10 bg-background/50 border-sidebar-border focus:ring-amber/40 focus:border-amber/50">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SUPPORTED_COUNTRIES.map((c) => (
-                        <SelectItem key={c.code} value={c.code}>{c.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[11px] text-muted-foreground">Sets your currency, timezone and billing region.</p>
                 </div>
 
                 <div className="space-y-1.5">

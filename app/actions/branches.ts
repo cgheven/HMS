@@ -13,7 +13,15 @@ import { sendBranchDeletionEmail } from "@/lib/email";
 import { siteUrl } from "@/lib/site-url";
 import { tierForPropertyCount, type PricingTier } from "@/lib/tier-pricing";
 import { asPlan } from "@/lib/entitlements";
+import { isValidLocalPhone } from "@/lib/phone";
 import type { Hostel } from "@/types";
+
+// Server backstop mirroring signup: keep a branch phone only if it's a valid
+// number for the branch country (else null). The client PhoneInput validates too.
+function validPhoneOrNull(raw: string | null | undefined, country: string): string | null {
+  const d = (raw ?? "").replace(/\D/g, "").slice(0, 20);
+  return d && isValidLocalPhone(d, country) ? d : null;
+}
 
 // Setup/config fields copied when "copy from existing property" is chosen. Identity
 // (name/slug), location + contact (address/city/area/phone/whatsapp/email), account-
@@ -357,8 +365,8 @@ export async function createBranch(data: {
       address: data.address?.trim() || null,
       city: data.city?.trim() || null,
       area: data.area?.trim() || null,
-      phone: data.phone?.trim() || null,
-      whatsapp: data.whatsapp?.trim() || null,
+      phone: validPhoneOrNull(data.phone, country),
+      whatsapp: validPhoneOrNull(data.whatsapp, country),
       email: data.email?.trim() || null,
       total_capacity: data.total_capacity ?? 0,
       country,

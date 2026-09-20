@@ -11,6 +11,9 @@
 // country code, no "+". Display formatting is deliberately a separate function:
 // a canonical value is for comparison, never for showing to a person.
 
+import { isValidPhoneNumber, getExampleNumber, getCountryCallingCode, type CountryCode } from "libphonenumber-js";
+import examples from "libphonenumber-js/mobile/examples";
+
 const PK_CC = "92";
 
 /** announcements.ts:80 already treats anything under 10 digits as unusable. */
@@ -65,4 +68,50 @@ export function formatPhoneDisplay(input: string | null | undefined): string {
     return `+92 ${d.slice(2, 5)} ${d.slice(5)}`;
   }
   return `+${d}`;
+}
+
+// ── Per-country validation + examples (libphonenumber-js) ─────────────────────
+// Used by the country-code PhoneInput and the signup/add-property forms + server
+// backstop. `local` is the NATIONAL number without the trunk 0 — exactly what the
+// PhoneInput stores (the +code prefix is separate). Distinct from the PK-canonical
+// helpers above, which are for cross-hostel matching/display of PK numbers.
+
+/** True when libphonenumber has metadata for this country (so it CAN validate it).
+ *  ISO code must be uppercase for libphonenumber — callers upper-case first. */
+function phoneMetaKnown(country: string): boolean {
+  try {
+    getCountryCallingCode(country as CountryCode);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** True if `local` is a valid phone number for `country` (ISO alpha-2). Empty → false.
+ *  Country code is upper-cased (libphonenumber rejects lowercase). FAILS OPEN — if the
+ *  country has no libphonenumber metadata, or libphonenumber can't run, returns true:
+ *  validation is a UX aid, never a hard blocker, so a valid number is NEVER rejected
+ *  just because its country lacks metadata or arrives mis-cased. */
+export function isValidLocalPhone(local: string | null | undefined, country: string): boolean {
+  const v = (local ?? "").replace(/\D/g, "");
+  if (!v) return false;
+  const c = (country ?? "").trim().toUpperCase();
+  if (!phoneMetaKnown(c)) return true;
+  try {
+    return isValidPhoneNumber(v, c as CountryCode);
+  } catch {
+    return true;
+  }
+}
+
+/** A country-specific example national number with the trunk 0 stripped, to match
+ *  the +code-prefixed local field (e.g. PK → "301 2345678"). "" if unavailable. */
+export function phoneExample(country: string): string {
+  const c = (country ?? "").trim().toUpperCase();
+  try {
+    const ex = getExampleNumber(c as CountryCode, examples);
+    return ex ? ex.formatNational().replace(/^0/, "").trim() : "";
+  } catch {
+    return "";
+  }
 }

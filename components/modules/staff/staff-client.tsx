@@ -20,7 +20,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
 import { cn, formatDate, formatDateInput } from "@/lib/utils";
 import { useMoney, useHostelContext } from "@/contexts/hostel-context";
-import { getCountryConfig } from "@/lib/country-config";
+import { getCountryConfig, paymentMethodsForCountry } from "@/lib/country-config";
 import type { Employee, EmployeeRole, EmployeeStatus, SalaryPayment, SalaryAdvance, PaymentMethod, PartnerTier } from "@/types";
 
 const ROLES: { value: EmployeeRole; label: string; icon: string }[] = [
@@ -848,7 +848,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
               <Select value={advanceForm.method} onValueChange={(v) => setAdvanceForm({ ...advanceForm, method: v as PaymentMethod })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {Object.entries(methodLabels).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+                  {paymentMethodsForCountry(activeCountry).map((v) => <SelectItem key={v} value={v}>{methodLabels[v]}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -928,7 +928,7 @@ export function StaffClient({ hostelId, employees: initialEmployees, salaryPayme
               <Select value={payForm.method} onValueChange={(v) => setPayForm({ ...payForm, method: v as PaymentMethod })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {Object.entries(methodLabels).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+                  {paymentMethodsForCountry(activeCountry).map((v) => <SelectItem key={v} value={v}>{methodLabels[v]}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>

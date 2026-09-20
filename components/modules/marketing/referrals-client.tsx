@@ -12,7 +12,7 @@ import {
   updateReferralPercentages,
 } from "@/app/actions/referrals";
 import { CopyLinkButton } from "@/components/modules/referrals/copy-link-button";
-import { useHostelContext } from "@/contexts/hostel-context";
+import { useHostelContext, useMoney } from "@/contexts/hostel-context";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
@@ -151,9 +151,6 @@ const REWARD_ROLE_LABEL: Record<ReferralRewardRole, string> = {
 
 /** Matches the server's own rendering ("Applied Rs 1,500 · Aug"), which lands on
  *  the same screen — formatCurrency's "PKR 1,500" beside it reads as two systems. */
-function rs(amount: number): string {
-  return `Rs ${Math.round(amount).toLocaleString("en-PK")}`;
-}
 
 function StatusBadge({ status }: { status: ReferralStatus }) {
   const cfg = REFERRAL_STATUS_CONFIG[status];
@@ -303,6 +300,7 @@ function PercentageSettings({
   openRewardCount: number;
   openRewardValue: number;
 }) {
+  const rs = useMoney();
   const [referrer, setReferrer] = useState(String(referrerPercent));
   const [referred, setReferred] = useState(String(referredPercent));
   const [saving, setSaving] = useState(false);
@@ -420,6 +418,7 @@ function OpenRewardsCard({
   canStopAll: boolean;
   onStopAll: () => void;
 }) {
+  const rs = useMoney();
   const alarming = !enabled && count > 0;
   return (
     <div
@@ -475,6 +474,7 @@ function RewardsPanel({
   canRevoke: boolean;
   onRevoke: (reward: ReferralRewardRow) => void;
 }) {
+  const rs = useMoney();
   const [filter, setFilter] = useState<RewardFilter>("all");
 
   const counts = useMemo(
@@ -685,6 +685,7 @@ export function ReferralsClient({ overview }: { overview: ReferralOverview }) {
    * offering buttons that can only fail.
    */
   const { partnerTier } = useHostelContext();
+  const rs = useMoney();
   const isAccountOwner = !partnerTier;
   /** Matches the tier the money-moving actions already demanded server-side
    *  before this page let partners in at all. */

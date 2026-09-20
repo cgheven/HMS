@@ -18,6 +18,7 @@
  */
 
 import { COUNTRY_CURRENCY, COUNTRY_TIMEZONE, COUNTRY_DIAL_CODE } from "./country-reference";
+import type { PaymentMethod } from "@/types";
 
 export type CountryCode = string; // ISO 3166-1 alpha-2, uppercase (e.g. "PK", "BD")
 
@@ -241,6 +242,19 @@ export function getCountryConfig(code: string | null | undefined): CountryConfig
     return synthesizeCountryConfig(key);
   }
   return COUNTRY_CONFIG[DEFAULT_COUNTRY];
+}
+
+/**
+ * The rent/deposit collection methods offered in the UI for a country, in menu
+ * order. PK keeps its local wallets (JazzCash / Easypaisa / SadaPay); every other
+ * country gets only the universal set — a UAE hostel should never see JazzCash.
+ * FORMATTING, never a gate: fails open to PK, so PK / null / garbage is unchanged.
+ */
+export function paymentMethodsForCountry(code: string | null | undefined): PaymentMethod[] {
+  const isPk = getCountryConfig(code).currency === "PKR";
+  return isPk
+    ? ["cash", "bank_transfer", "jazzcash", "easypaisa", "sadapay", "other"]
+    : ["cash", "bank_transfer", "other"];
 }
 
 /**

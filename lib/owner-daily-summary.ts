@@ -1,4 +1,5 @@
 import "server-only";
+import { pkWhatsAppDigits } from "@/lib/pk-whatsapp";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { TEMPLATES, ownerDailySummaryParams } from "@/lib/whatsapp-templates";
@@ -179,7 +180,7 @@ export async function sendOwnerDailySummaries(
     // both branches and never received a summary, while the invoice reminders
     // to the same client went through fine.
     const raw = b.ownerPhone || b.branchWhatsapp || b.branchPhone || "";
-    const digits = raw.replace(/\D/g, "").replace(/^0/, "92");
+    const digits = pkWhatsAppDigits(raw);
     if (digits.length < 11) {
       skip("no phone on the owner profile or the branch");
       continue;

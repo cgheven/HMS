@@ -7,8 +7,9 @@ import { normalizeEmail, isDisposableEmailDomain } from "@/lib/email-normalize";
 import { EMAIL_RE, PROPERTY_TYPES, PROPERTY_TYPE_MAX_LEN } from "@/lib/validation";
 import { siteUrl } from "@/lib/site-url";
 import { sendSignupVerificationEmail } from "@/lib/email";
-import { isSupportedCountry, DEFAULT_COUNTRY, isManualBankBilling } from "@/lib/country-config";
+import { isKnownCountry, DEFAULT_COUNTRY, isManualBankBilling } from "@/lib/country-config";
 import { PK_CARD_MONTHLY_USD } from "@/lib/tier-pricing";
+import { isValidLocalPhone } from "@/lib/phone";
 
 /**
  * Public self-registration — request step (unauthenticated).
@@ -43,7 +44,9 @@ async function requestContext(): Promise<{ ip: string; country: string }> {
     // Vercel sets the requester's country from IP geolocation — a DEFAULT only;
     // the owner confirms/edits it in onboarding, and it's re-validated there.
     const geo = (h.get("x-vercel-ip-country") || "").toUpperCase();
-    const country = isSupportedCountry(geo) ? geo : DEFAULT_COUNTRY;
+    // Accept any REAL country (isKnownCountry) — currency/timezone/terms are
+    // synthesized from the config keystone; only null/garbage falls back to PK.
+    const country = isKnownCountry(geo) ? geo : DEFAULT_COUNTRY;
     return { ip, country };
   } catch {
     return { ip: "unknown", country: DEFAULT_COUNTRY };
@@ -79,7 +82,10 @@ export async function requestSignup(input: {
     const admin = createAdminClient();
     const { ip, country: ipCountry } = await requestContext();
     const clientCountry = (input.country || "").toUpperCase();
-    const country = isSupportedCountry(clientCountry) ? clientCountry : ipCountry;
+    // The dropdown value is authoritative if it's a real country; else the
+    // IP-derived one. isManualBankBilling(country) below still fails open to PK,
+    // so a non-PK signup correctly lands on the Paddle card rail.
+    const country = isKnownCountry(clientCountry) ? clientCountry : ipCountry;
 
     // IP ceiling first, unconditionally — fails closed.
     const { data: ipOk, error: ipErr } = await admin.rpc("hms_auth_rate_hit", {
@@ -132,7 +138,12 @@ export async function requestSignup(input: {
       // abuse-hardening reason.
       business_name: input.businessName?.trim().slice(0, 120) || null,
       owner_name: input.ownerName?.trim().slice(0, 120) || null,
-      phone: input.phone?.trim().slice(0, 32) || null,
+      // Digits only, and only kept if it's a valid number for the country
+      // (backstop — the client validates too). The code is implied by `country`.
+      phone: (() => {
+        const d = (input.phone ?? "").replace(/\D/g, "").slice(0, 20);
+        return d && isValidLocalPhone(d, country) ? d : null;
+      })(),
       country,
       property_type: propertyType,
       token_hash: tokenHash,

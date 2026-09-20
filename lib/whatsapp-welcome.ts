@@ -10,6 +10,14 @@ For any queries contact hostel management.
 
 We hope you enjoy your stay.`;
 
+// PK keeps the incumbent "Assalam o Alaikum" greeting (returns the exact same
+// constant, byte-identical); every other country greets "Hi".
+export function defaultWelcomeTemplate(country?: string | null): string {
+  return (country ?? "PK").toUpperCase() === "PK"
+    ? DEFAULT_WELCOME_TEMPLATE
+    : DEFAULT_WELCOME_TEMPLATE.replace(/^Assalam o Alaikum /, "Hi ");
+}
+
 function formatMealTimesBlock(mealTimes?: MealTimes | null): string {
   const rows: [string, MealTimes["breakfast"]][] = [
     ["Breakfast", mealTimes?.breakfast],
@@ -42,10 +50,11 @@ interface BuildWelcomeArgs {
   wifiNetworks: WifiNetwork[];
   menuUrl?: string | null;
   mealTimes?: MealTimes | null;
+  country?: string | null;
 }
 
 export function buildWelcomeMessage(args: BuildWelcomeArgs): string {
-  const tpl = args.template?.trim() || DEFAULT_WELCOME_TEMPLATE;
+  const tpl = args.template?.trim() || defaultWelcomeTemplate(args.country);
   const firstName = args.tenantName.split(" ")[0];
   return tpl
     .replace(/\{name\}/g,       firstName)

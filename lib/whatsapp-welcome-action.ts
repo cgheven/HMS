@@ -66,7 +66,7 @@ async function buildWelcomeTextFromTenant(tenant: WelcomeTenantRow): Promise<{ o
   const [{ data: hostel }, { data: room }, siteOrigin] = await Promise.all([
     admin
       .from("hms_hostels")
-      .select("name, whatsapp_enabled, welcome_message_template, wifi_networks, listing_enabled, slug, meal_times")
+      .select("name, whatsapp_enabled, welcome_message_template, wifi_networks, listing_enabled, slug, meal_times, country")
       .eq("id", tenant.hostel_id)
       .single(),
     tenant.room_id
@@ -90,6 +90,7 @@ async function buildWelcomeTextFromTenant(tenant: WelcomeTenantRow): Promise<{ o
 
   const message = buildWelcomeMessage({
     template: hostel.welcome_message_template,
+    country: (hostel as { country?: string | null }).country,
     tenantName: tenant.full_name,
     hostelName: hostel.name,
     room: room?.room_number ?? null,

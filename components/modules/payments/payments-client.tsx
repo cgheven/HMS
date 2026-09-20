@@ -3,12 +3,11 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   CreditCard, CheckCircle2, Clock, AlertTriangle, Wallet,
-  Banknote, Zap, Loader2, FileText, ChevronLeft, ChevronRight, Search, Gift, Undo2, Send, Bell,
+  Banknote, Zap, Loader2, FileText, ChevronLeft, ChevronRight, Search, Gift, Undo2, Send, Bell, Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { RowMenu, type RowMenuItem } from "@/components/ui/row-menu";
 import { Input } from "@/components/ui/input";
-import { MoneyInput } from "@/components/ui/money-input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -17,7 +16,8 @@ import { toast } from "@/hooks/use-toast";
 import { trackEvent, trackOnce } from "@/lib/analytics";
 import { cn, formatDate, formatDateInput, formatDateTime, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { useMoney, useHostelContext } from "@/contexts/hostel-context";
-import { getCountryConfig } from "@/lib/country-config";
+import { getCountryConfig, paymentMethodsForCountry } from "@/lib/country-config";
+import { waDigits } from "@/lib/pk-whatsapp";
 import type { Payment, PaymentMethod, PaymentStatus, PackageTier, PackageConfig, PaymentMethodAccount, PartnerTier, StaffPermission } from "@/types";
 import { buildReminderMessage } from "@/lib/whatsapp-reminder";
 import { countBillableNights } from "@/lib/daily-billing";
@@ -365,8 +365,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const activeCountry = useHostelContext().hostel?.country;
   const activeCountryCfg = getCountryConfig(activeCountry);
   const curSym = activeCountryCfg.currencySymbol;
-  // PK renders the exact incumbent money labels (with the (PKR) caption + a plain
-  // <Input>); non-PK renders the inline-symbol MoneyInput. Formatting gate only.
+  // ISO code (PKR / AED / GBP) shown as a "(CODE)" caption on money-input labels,
+  // so every country reads like PK's "Amount Received (PKR)" instead of hugging a
+  // symbol inside the box.
+  const curCode = activeCountryCfg.currency;
+  // PK keeps its incumbent Record-Payment flow byte-for-byte (full method list +
+  // separate "Received in account"); non-PK gets the merged Cash-or-account list.
   const isPk = (activeCountry ?? "PK").toUpperCase() === "PK";
   // Country terminology: PK renders AC Billing / AC Units; non-PK renders
   // Electricity Billing / Electricity Units. Fails open to PK (byte-identical).
@@ -577,7 +581,12 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     const remaining = previewDiscount(p, "").remaining;
     setMarkDialog(p);
     setMarkForm({
-      method: "cash",
+      // Keep method consistent with a prefilled received_account so the non-PK
+      // merged dropdown (Cash + accounts) reopens showing the right account
+      // instead of defaulting to "Cash" while the account is still stored — which
+      // would write a contradictory method=cash + received_account=<bank>. PK is
+      // unchanged: its method dropdown is separate, so it keeps defaulting to cash.
+      method: (!isPk && p.received_account?.trim()) ? "bank_transfer" : "cash",
       date: formatDateInput(new Date()),
       late_fee: "0",
       notes: "",
@@ -1038,17 +1047,21 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       const origin = window.location.origin;
       const receiptUrl = `${origin}/r/${token}`;
 
-      // Normalise Pakistan phone: 03XX... -> 923XX...
+      // Recipient digits from the tenant phone, using the hostel country's dial
+      // code (PK 92, UAE 971, …). PK byte-identical.
       const rawPhone = p.tenant?.phone ?? "";
-      const normPhone = rawPhone.replace(/\D/g, "").replace(/^0/, "92");
+      const normPhone = waDigits(rawPhone, activeCountry);
 
       const firstName = p.tenant?.full_name?.split(" ")[0] ?? "there";
       const total = Number(p.amount) + Number(p.late_fee ?? 0);
       const isPartial = p.status === "partially_paid";
       const amountPaidVal = Number(p.amount_paid ?? total);
       const remaining = Math.max(0, total - amountPaidVal);
-      const amountFormatted = `Rs. ${amountPaidVal.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
-      const remainingFormatted = `Rs. ${remaining.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+      // PK keeps its exact incumbent wording ("Rs. 15,000"); non-PK uses the
+      // hostel-country currency formatter ("AED 15,000" / "£15,000").
+      const amountFormatted = isPk ? `Rs. ${amountPaidVal.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}` : money(amountPaidVal);
+      const remainingFormatted = isPk ? `Rs. ${remaining.toLocaleString("en-PK", { minimumFractionDigits: 0, maximumFractionDigits: 2 })}` : money(remaining);
+      const greet = isPk ? "Assalam o Alaikum" : "Hi";
 
       // Only on the tenant's very first month — the reading never changes, so
       // repeating it in every month's WhatsApp text afterward would just be noise.
@@ -1067,18 +1080,18 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       // starting on the joining date.
       const joinDate = isReservationRow(p) && p.tenant?.check_in ? formatDayLong(p.tenant.check_in) : null;
       const message = isReservationRow(p)
-        ? `Assalam o Alaikum ${firstName},\n\n` +
+        ? `${greet} ${firstName},\n\n` +
           `We've received *${amountFormatted}* as your security deposit to reserve your bed. ` +
           `This is not a rent payment${joinDate ? ` — your rent begins when you move in on *${joinDate}*` : " — your rent begins when you move in"}.\n\n` +
           `Download your receipt: ${receiptUrl}\n\n` +
           `Thank you - ${hostelName}`
         : isPartial
-        ? `Assalam o Alaikum ${firstName},\n\n` +
+        ? `${greet} ${firstName},\n\n` +
           `We've received *${amountFormatted}* for ${monthLabel}. *${remainingFormatted}* remains due.\n\n` +
           readingLine +
           `Download your receipt: ${receiptUrl}\n\n` +
           `Thank you - ${hostelName}`
-        : `Assalam o Alaikum ${firstName},\n\n` +
+        : `${greet} ${firstName},\n\n` +
           `Your payment of *${amountFormatted}* for ${monthLabel} has been received.\n\n` +
           readingLine +
           `Download your receipt: ${receiptUrl}\n\n` +
@@ -1103,7 +1116,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       toast({ title: "No phone number", description: "This tenant has no phone on file.", variant: "destructive" });
       return;
     }
-    const digits = rawPhone.replace(/\D/g, "").replace(/^0/, "92");
+    const digits = waDigits(rawPhone, activeCountry);
     if (!digits) {
       toast({ title: "Invalid phone", variant: "destructive" });
       return;
@@ -1115,6 +1128,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     const tenantDeposit = tenants.find(t => t.id === p.tenant_id)?.security_deposit ?? 0;
     const message = buildReminderMessage({
       template: reminderTemplate,
+      country: activeCountry,
       tenantName: p.tenant?.full_name ?? "Tenant",
       amount: total,
       month: p.for_month,
@@ -3057,30 +3071,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       {money(referralDiscount)} referral discount already applied.
                     </p>
                   )}
-                  {isPk ? (
-                    <>
-                      <Label>Amount Received (PKR)</Label>
-                      <Input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={markForm.amount_received}
-                        onChange={(e) => setMarkForm({ ...markForm, amount_received: e.target.value })}
-                      />
-                    </>
-                  ) : (
-                    <>
-                      <Label>Amount Received</Label>
-                      <MoneyInput
-                        symbol={curSym}
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={markForm.amount_received}
-                        onChange={(e) => setMarkForm({ ...markForm, amount_received: e.target.value })}
-                      />
-                    </>
-                  )}
+                  <Label>Amount Received ({curCode})</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={markForm.amount_received}
+                    onChange={(e) => setMarkForm({ ...markForm, amount_received: e.target.value })}
+                  />
                   {(() => {
                     const entered = parseFloat(markForm.amount_received);
                     if (!Number.isFinite(entered)) return null;
@@ -3122,17 +3120,46 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             )}
 
             <div className="space-y-1.5"><Label>Payment Method</Label>
-              <Select value={markForm.method} onValueChange={(v) => setMarkForm({ ...markForm, method: v as PaymentMethod })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {Object.entries(methodLabels).map(([k, label]) => <SelectItem key={k} value={k}>{label}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              {isPk ? (
+                // PK: unchanged incumbent list (Cash / Bank Transfer / JazzCash / …).
+                <Select value={markForm.method} onValueChange={(v) => setMarkForm({ ...markForm, method: v as PaymentMethod })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {paymentMethodsForCountry(activeCountry).map((k) => <SelectItem key={k} value={k}>{methodLabels[k]}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              ) : (
+                // Non-PK: Cash + the owner's configured accounts, in one list. An
+                // account stores as a bank payment (method=bank_transfer) + its label
+                // in received_account, so receipts and the reconciliation breakdown
+                // keep working. No accounts yet → Cash only + a link to add one.
+                <>
+                  <Select
+                    value={markForm.method === "cash" ? "__cash__" : (markForm.received_account || "__cash__")}
+                    onValueChange={(v) => v === "__cash__"
+                      ? setMarkForm({ ...markForm, method: "cash", received_account: "" })
+                      : setMarkForm({ ...markForm, method: "bank_transfer", received_account: v })}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Select method" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__cash__">Cash</SelectItem>
+                      {paymentMethods.map((m) => {
+                        const label = `${m.label}${m.account_number ? ` (${m.account_number})` : ""}`;
+                        return <SelectItem key={m.id} value={label}>{label}</SelectItem>;
+                      })}
+                    </SelectContent>
+                  </Select>
+                  {!isManager && !isPartner && paymentMethods.length === 0 && (
+                    <a href="/settings#payment-methods" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-xs text-amber hover:text-amber/80 font-medium mt-1">
+                      <Plus className="w-3 h-3" /> Add a payment method
+                    </a>
+                  )}
+                </>
+              )}
             </div>
-            {/* Which configured account received the money — owner reconciliation.
-                Only shown to owners with accounts set up (managers/partners don't
-                get the accounts list). Optional; "__none__" maps to blank. */}
-            {!isManager && !isPartner && paymentMethods.length > 0 && (
+            {/* PK: which configured account received the money (owner reconciliation).
+                Non-PK folds this into the Payment Method list above. */}
+            {isPk && !isManager && !isPartner && paymentMethods.length > 0 && (
               <div className="space-y-1.5"><Label>Received in account <span className="text-muted-foreground/60 font-normal text-xs">optional</span></Label>
                 <Select
                   value={markForm.received_account || "__none__"}
@@ -3158,9 +3185,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5"><Label>Payment Date</Label><Input type="date" value={markForm.date} onChange={(e) => setMarkForm({ ...markForm, date: e.target.value })} /></div>
                   {/* F-005: min="0" prevents negative late fees in the UI */}
-                  {isPk
-                    ? <div className="space-y-1.5"><Label>Late Fee (PKR)</Label><Input type="number" placeholder="0" min="0" step="0.01" value={markForm.late_fee} onChange={(e) => setMarkForm({ ...markForm, late_fee: e.target.value })} /></div>
-                    : <div className="space-y-1.5"><Label>Late Fee</Label><MoneyInput symbol={curSym} type="number" placeholder="0" min="0" step="0.01" value={markForm.late_fee} onChange={(e) => setMarkForm({ ...markForm, late_fee: e.target.value })} /></div>}
+                  <div className="space-y-1.5"><Label>Late Fee ({curCode})</Label><Input type="number" placeholder="0" min="0" step="0.01" value={markForm.late_fee} onChange={(e) => setMarkForm({ ...markForm, late_fee: e.target.value })} /></div>
                 </div>
                 <div className="space-y-1.5"><Label>Receipt No.</Label><Input value={markForm.receipt_number} onChange={(e) => setMarkForm({ ...markForm, receipt_number: e.target.value })} /></div>
               </>

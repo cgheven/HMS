@@ -13,7 +13,7 @@ import { unstable_rethrow } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { EMAIL_RE, PHONE_RE } from "@/lib/validation";
 import { normalizeEmail, isDisposableEmailDomain } from "@/lib/email-normalize";
-import { isSupportedCountry, DEFAULT_COUNTRY } from "@/lib/country-config";
+import { isKnownCountry, DEFAULT_COUNTRY } from "@/lib/country-config";
 import { DEMO_LEAD_SOURCE } from "@/lib/lead-sources";
 import { sendDemoRequestNotification } from "@/lib/email";
 
@@ -52,7 +52,7 @@ async function requestContext(): Promise<{ ip: string; country: string }> {
       h.get("x-forwarded-for")?.split(",").at(-1)?.trim() ||
       "unknown";
     const geo = (h.get("x-vercel-ip-country") || "").toUpperCase();
-    const country = isSupportedCountry(geo) ? geo : DEFAULT_COUNTRY;
+    const country = isKnownCountry(geo) ? geo : DEFAULT_COUNTRY;
     return { ip, country };
   } catch {
     return { ip: "unknown", country: DEFAULT_COUNTRY };

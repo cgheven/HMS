@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/dialog"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { toast } from "@/hooks/use-toast"
+import { useHostelContext } from "@/contexts/hostel-context"
+import { waDigits } from "@/lib/pk-whatsapp"
 import { trackEvent } from "@/lib/analytics"
 import {
   createManager,
@@ -366,6 +368,8 @@ function LoginModal({
   onOpenChange: (o: boolean) => void
   onLoginCreated: (updated: Manager) => void
 }) {
+  // Dial code for the invite's wa.me link follows the owner's active hostel country.
+  const activeCountry = useHostelContext().hostel?.country ?? null
   // A manager created WITH an email self-serves via an emailed link (no password
   // to show); a legacy phone-only manager gets a generated password to relay.
   type IssuedCredentials =
@@ -434,13 +438,13 @@ function LoginModal({
 
   // wa.me REQUIRES the number in the path — "wa.me/?text=" is not a supported
   // format and silently fails to open a compose window on most platforms, which
-  // is why this button appeared to do nothing. Pakistani numbers are stored as
-  // 03xx…, so strip formatting and swap the leading 0 for the 92 country code.
+  // is why this button appeared to do nothing. waDigits strips formatting and
+  // applies the owner country's dial code (PK 92, UAE 971, …) to the local number.
   // api.whatsapp.com/send is the documented phone-less fallback.
   const getWhatsAppUrl = () => {
     const text = encodeURIComponent(getWhatsAppMessage())
     const phoneForWa = credentials?.kind === "password" ? credentials.phone : manager.phone
-    const digits = (phoneForWa ?? "").replace(/\D/g, "").replace(/^0/, "92")
+    const digits = waDigits(phoneForWa, activeCountry)
     return digits ? `https://wa.me/${digits}?text=${text}` : `https://api.whatsapp.com/send?text=${text}`
   }
 

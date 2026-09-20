@@ -1,4 +1,5 @@
 import "server-only";
+import { pkWhatsAppDigits } from "@/lib/pk-whatsapp";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { TEMPLATES, clientBillingDueParams, clientFirstInvoiceParams, clientPaymentReceivedParams } from "@/lib/whatsapp-templates";
@@ -53,7 +54,7 @@ export async function sendInvoiceWhatsApp(
     branches.find((h) => h.whatsapp)?.whatsapp ||
     branches.find((h) => h.phone)?.phone ||
     "";
-  const digits = raw.replace(/\D/g, "").replace(/^0/, "92");
+  const digits = pkWhatsAppDigits(raw);
   if (digits.length < 11) return { sent: false, reason: "No phone number on file for this client" };
 
   // The first invoice carries a one-time onboarding fee, so a single "Amount"
@@ -187,7 +188,7 @@ export async function sendPaymentReceivedWhatsApp(
     branches.find((h) => h.whatsapp)?.whatsapp ||
     branches.find((h) => h.phone)?.phone ||
     "";
-  const digits = raw.replace(/\D/g, "").replace(/^0/, "92");
+  const digits = pkWhatsAppDigits(raw);
   if (digits.length < 11) return { sent: false, reason: "No phone number on file for this client" };
 
   const result = await sendWhatsAppTemplateMessage(

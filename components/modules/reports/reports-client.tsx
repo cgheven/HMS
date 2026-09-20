@@ -297,7 +297,6 @@ export function ReportsClient(props: Props) {
             <TabsTrigger value="overview"><BarChart3 className="w-3.5 h-3.5" /> Overview</TabsTrigger>
             <TabsTrigger value="revenue"><TrendingUp className="w-3.5 h-3.5" /> Revenue</TabsTrigger>
             <TabsTrigger value="reconciliation"><CreditCard className="w-3.5 h-3.5" /> Reconciliation</TabsTrigger>
-            <TabsTrigger value="occupancy"><BedDouble className="w-3.5 h-3.5" /> Occupancy</TabsTrigger>
             <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> AC Analytics</TabsTrigger>
             <TabsTrigger value="discounts"><Percent className="w-3.5 h-3.5" /> Discounts</TabsTrigger>
             <TabsTrigger value="expenses"><Receipt className="w-3.5 h-3.5" /> Expenses</TabsTrigger>
@@ -592,61 +591,6 @@ export function ReportsClient(props: Props) {
           </TabsContent>
 
           {/* ── OCCUPANCY TAB ────────────────────────────────────────────── */}
-          <TabsContent value="occupancy" className="space-y-6 mt-4">
-            {/* Summary cards by type */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {d.occupancyByType.map((o) => (
-                <div key={o.type} className="rounded-2xl border border-sidebar-border bg-card p-5">
-                  <div className="flex items-center justify-between mb-3">
-                    <p className="text-sm font-semibold capitalize">{o.type} Rooms</p>
-                    <span className="text-xs text-muted-foreground">{o.occupied}/{o.total} beds</span>
-                  </div>
-                  <div className="h-2 bg-white/5 rounded-full overflow-hidden mb-2">
-                    <div className="h-full bg-amber rounded-full transition-all" style={{ width: `${o.rate}%` }} />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-2xl font-bold text-foreground">{o.rate}%</span>
-                    <span className="text-xs text-muted-foreground">{o.total - o.occupied} vacant</span>
-                  </div>
-                </div>
-              ))}
-
-              {/* Total */}
-              <div className="rounded-2xl border border-amber/20 bg-amber/[0.05] p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <p className="text-sm font-semibold text-amber">All Rooms</p>
-                  <span className="text-xs text-muted-foreground">{d.totalOccupied}/{d.totalCapacity} beds</span>
-                </div>
-                <div className="h-2 bg-white/5 rounded-full overflow-hidden mb-2">
-                  <div className="h-full bg-amber rounded-full" style={{ width: `${d.occupancyRate}%` }} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-2xl font-bold text-amber">{d.occupancyRate}%</span>
-                  <span className="text-xs text-muted-foreground">{d.totalCapacity - d.totalOccupied} vacant</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Occupancy bar chart */}
-            {d.monthlyExpenses.length > 0 && (
-              <div className="rounded-2xl border border-sidebar-border bg-card p-6">
-                <h2 className="text-sm font-semibold mb-1">Monthly Revenue vs Expenses</h2>
-                <p className="text-xs text-muted-foreground mb-4">Financial trend over selected period</p>
-                <div className="h-[240px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={d.monthlyExpenses}>
-                      <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#888" }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fontSize: 10, fill: "#888" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-                      <Tooltip content={makeCurrencyTooltip(money) as never} />
-                      <Bar dataKey="collected" name="Revenue" fill="#10b981" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="expenses" name="Expenses" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            )}
-          </TabsContent>
-
           {/* ── AC ANALYTICS TAB ─────────────────────────────────────────── */}
           <TabsContent value="ac" className="space-y-6 mt-4">
             <AcAnalyticsTab data={d} />
@@ -919,8 +863,15 @@ const METHOD_COLORS: Record<string, string> = {
   online: "#ef4444",
 };
 
+// Non-PK reconciliation buckets by named account (e.g. "Emirates NBD"), which
+// isn't in METHOD_COLORS — give each a stable colour from a palette so the cards
+// and dots stay distinguishable instead of all rendering the same grey.
+const ACCOUNT_PALETTE = ["#3b82f6", "#a855f7", "#06b6d4", "#f5a623", "#10b981", "#ef4444", "#ec4899", "#14b8a6"];
 function methodColor(method: string) {
-  return METHOD_COLORS[method] ?? "#888";
+  if (METHOD_COLORS[method]) return METHOD_COLORS[method];
+  let h = 0;
+  for (let i = 0; i < method.length; i++) h = (h * 31 + method.charCodeAt(i)) >>> 0;
+  return ACCOUNT_PALETTE[h % ACCOUNT_PALETTE.length];
 }
 
 // ── Reconciliation tab ────────────────────────────────────────────────────────

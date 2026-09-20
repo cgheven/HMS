@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useHostelContext } from "@/contexts/hostel-context";
 import { getCountryConfig } from "@/lib/country-config";
+import { waDigits } from "@/lib/pk-whatsapp";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,8 +23,7 @@ import type { Hostel, PaymentMethodAccount, PackageTier, PartnerTier, WifiNetwor
 import { MealTimesFields } from "@/components/modules/settings/meal-times-fields";
 import { savePaymentRecoverySettings, saveWelcomeSettings } from "@/app/actions/settings";
 import { requestEmailChange } from "@/app/actions/account";
-import { DEFAULT_REMINDER_TEMPLATE, formatAccounts, buildReminderMessage } from "@/lib/whatsapp-reminder";
-import { DEFAULT_WELCOME_TEMPLATE, buildWelcomeMessage } from "@/lib/whatsapp-welcome";
+import { defaultWelcomeTemplate, buildWelcomeMessage } from "@/lib/whatsapp-welcome";
 import { floorToken, roomToken } from "@/lib/wifi-coverage";
 import { SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
 
@@ -31,12 +31,15 @@ import { PackagePricingForm } from "@/components/modules/settings/package-pricin
 import { PaymentMethodsForm } from "@/components/modules/settings/payment-methods-form";
 import { HostelInfoForm } from "@/components/modules/settings/hostel-info-form";
 
-function Section({ title, icon: Icon, description, danger = false, defaultOpen = false, children }: {
-  title: string; icon: typeof Building2; description?: string; danger?: boolean; defaultOpen?: boolean; children: React.ReactNode;
+function Section({ title, icon: Icon, description, danger = false, defaultOpen = false, forceOpen = false, id, children }: {
+  title: string; icon: typeof Building2; description?: string; danger?: boolean; defaultOpen?: boolean;
+  // When a deep-link asks for this section, open it even though it starts collapsed.
+  forceOpen?: boolean; id?: string; children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => { if (forceOpen) setOpen(true); }, [forceOpen]);
   return (
-    <Card className={danger ? "border-rose-500/20" : undefined}>
+    <Card id={id} className={danger ? "border-rose-500/20" : undefined}>
       <button type="button" onClick={() => setOpen((o) => !o)} className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left">
         <div className="flex items-center gap-2 min-w-0">
           <Icon className={`w-4 h-4 shrink-0 ${danger ? "text-rose-400" : "text-muted-foreground"}`} />
@@ -54,6 +57,16 @@ export function SettingsClient() {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const hostelId = hostel?.id ?? null;
+  // Deep-link: "/settings#payment-methods" (e.g. the Record-Payment dialog's "Add a
+  // payment method" link) opens the collapsed Payment Recovery section and scrolls
+  // to it. Read after mount so SSR/first render stays consistent (no hydration jump).
+  const [openPaymentMethods, setOpenPaymentMethods] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || window.location.hash !== "#payment-methods") return;
+    setOpenPaymentMethods(true);
+    const t = setTimeout(() => document.getElementById("payment-methods")?.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
+    return () => clearTimeout(t);
+  }, []);
   // Currency indicator for these config-field captions. PK keeps "Rs." (period,
   // byte-identical); other countries use their symbol (e.g. "£").
   const curCfg = getCountryConfig(hostel?.country);
@@ -129,7 +142,7 @@ export function SettingsClient() {
     () => (hostel?.wifi_networks ?? []).map((w) => ({ ...w, id: w.id || uid() }))
   );
   const [welcomeTemplate, setWelcomeTemplate] = useState(
-    hostel?.welcome_message_template ?? DEFAULT_WELCOME_TEMPLATE
+    hostel?.welcome_message_template ?? defaultWelcomeTemplate(hostel?.country)
   );
   const [mealTimes, setMealTimes] = useState<MealTimes>(() => ({
     breakfast: { from: hostel?.meal_times?.breakfast?.from ?? "", to: hostel?.meal_times?.breakfast?.to ?? "" },
@@ -201,6 +214,7 @@ export function SettingsClient() {
   }
   const welcomePreview = buildWelcomeMessage({
     template: welcomeTemplate,
+    country: hostel?.country,
     tenantName: "Ali Raza",
     hostelName: hostel?.name ?? "Your Hostel",
     room: "5",
@@ -321,7 +335,7 @@ export function SettingsClient() {
     const msg = `Assalam o Alaikum ${partner.name},\n\nYour partner access for *${hostel?.name ?? "the hostel"}* has been set up.\n\nLogin URL: ${origin}/login\n${credentialsLine}\n\nWelcome aboard!`;
     const encoded = encodeURIComponent(msg);
     const normalizedPhone = partner.phone?.trim()
-      ? partner.phone.replace(/\D/g, "").replace(/^0/, "92")
+      ? waDigits(partner.phone, hostel?.country)
       : "";
     // wa.me requires a phone number in the path — without one it fails to open
     // a compose window on most platforms. api.whatsapp.com/send is the
@@ -762,12 +776,13 @@ export function SettingsClient() {
       </>)}
 
       {/* Payment Recovery */}
-      <Section title="Payment Recovery" icon={MessageCircle}>
+      <Section title="Payment Recovery" icon={MessageCircle} id="payment-methods" forceOpen={openPaymentMethods}>
         <PaymentMethodsForm
           bare
           initialPaymentMethods={hostel?.payment_methods ?? []}
           initialReminderTemplate={hostel?.reminder_template}
           hostelName={hostel?.name ?? "Your Hostel"}
+          country={hostel?.country}
           whatsappEnabled={hostel?.whatsapp_enabled}
           readOnly={!canFullTier}
           readOnlyNote={readOnlyNote}

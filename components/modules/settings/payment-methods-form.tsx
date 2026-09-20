@@ -8,18 +8,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "@/hooks/use-toast";
 import { savePaymentRecoverySettings } from "@/app/actions/settings";
-import { DEFAULT_REMINDER_TEMPLATE, buildReminderMessage } from "@/lib/whatsapp-reminder";
+import { defaultReminderTemplate, buildReminderMessage } from "@/lib/whatsapp-reminder";
 import type { PaymentMethodAccount } from "@/types";
 
 function uid() { return Math.random().toString(36).slice(2, 10); }
 
 export function PaymentMethodsForm({
-  initialPaymentMethods, initialReminderTemplate, hostelName,
+  initialPaymentMethods, initialReminderTemplate, hostelName, country,
   whatsappEnabled = false, readOnly = false, readOnlyNote, onSaved, bare = false,
 }: {
   initialPaymentMethods: PaymentMethodAccount[];
   initialReminderTemplate?: string | null;
   hostelName: string;
+  /** Hostel ISO country — drives the default reminder greeting (PK "Assalam o Alaikum", else "Hi"). */
+  country?: string | null;
   whatsappEnabled?: boolean;
   readOnly?: boolean;
   readOnlyNote?: ReactNode;
@@ -30,7 +32,7 @@ export function PaymentMethodsForm({
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodAccount[]>(
     () => (initialPaymentMethods ?? []).map((m) => ({ ...m, id: m.id || uid() }))
   );
-  const [reminderTemplate, setReminderTemplate] = useState(initialReminderTemplate ?? DEFAULT_REMINDER_TEMPLATE);
+  const [reminderTemplate, setReminderTemplate] = useState(initialReminderTemplate ?? defaultReminderTemplate(country));
   const [savingRecovery, setSavingRecovery] = useState(false);
 
   function addPaymentMethod() {
@@ -56,6 +58,7 @@ export function PaymentMethodsForm({
 
   const recoveryPreview = buildReminderMessage({
     template: reminderTemplate,
+    country,
     tenantName: "Ali Raza",
     amount: 15000,
     month: new Date().toLocaleDateString("en-PK", { month: "long", year: "numeric" }),

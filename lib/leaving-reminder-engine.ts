@@ -1,4 +1,5 @@
 import "server-only";
+import { pkWhatsAppDigits } from "@/lib/pk-whatsapp";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { pktTodayDateString } from "@/lib/pkt-time";
 import { buildLeavingReminderMessage } from "@/lib/whatsapp-leaving-reminder";
@@ -14,7 +15,7 @@ export interface LeavingReminderPassRow {
   full_name: string;
   room_id: string | null;
   intended_checkout_date: string | null;
-  hostel: { name: string; whatsapp: string | null; phone: string | null; whatsapp_enabled: boolean } | null;
+  hostel: { name: string; whatsapp: string | null; phone: string | null; whatsapp_enabled: boolean; country: string | null } | null;
 }
 
 export interface LeavingReminderSummary {
@@ -37,7 +38,7 @@ export async function runLeavingReminderPass(admin: SupabaseClient, hostelId: st
     .from("hms_tenants")
     .select(
       "id, full_name, room_id, intended_checkout_date, " +
-      "hostel:hms_hostels(name, whatsapp, phone, whatsapp_enabled)"
+      "hostel:hms_hostels(name, whatsapp, phone, whatsapp_enabled, country)"
     )
     .eq("hostel_id", hostelId)
     .eq("is_active", true)
@@ -86,12 +87,13 @@ export async function runLeavingReminderPass(admin: SupabaseClient, hostelId: st
       ? await admin.from("hms_rooms").select("room_number").eq("id", t.room_id).maybeSingle()
       : { data: null };
 
-    const digits = ((t.hostel?.whatsapp ?? t.hostel?.phone) ?? "").replace(/\D/g, "").replace(/^0/, "92");
+    const digits = pkWhatsAppDigits(t.hostel?.whatsapp ?? t.hostel?.phone);
     const message = buildLeavingReminderMessage({
       tenantName: t.full_name,
       room: room?.room_number ?? null,
       checkoutDate: t.intended_checkout_date!,
       hostelName: t.hostel?.name ?? "",
+      country: t.hostel?.country ?? null,
     });
 
     const result = await sendWhatsAppMessage(digits, message, { hostelId, tenantId: t.id, messageType: "leaving_reminder" });

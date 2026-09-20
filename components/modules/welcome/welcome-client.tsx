@@ -188,6 +188,7 @@ export function WelcomeClient({
                       initialPaymentMethods={initialPaymentMethods}
                       initialReminderTemplate={initialReminderTemplate}
                       hostelName={branchName}
+                      country={country}
                       whatsappEnabled={whatsappEnabled}
                       onSaved={() => setDoneKeys((prev) => new Set(prev).add("paymethods"))}
                     />

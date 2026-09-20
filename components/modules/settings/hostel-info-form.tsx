@@ -104,7 +104,7 @@ export function HostelInfoForm({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label>City</Label>
-                <Input placeholder="Karachi" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
+                <Input placeholder="Your city" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
               </div>
               <div className="space-y-1.5">
                 <Label>Area / Neighbourhood</Label>

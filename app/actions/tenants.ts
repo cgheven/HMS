@@ -571,8 +571,11 @@ export async function getTenantTimeline(
     // there are two helpers, `m` and `mBare`, each preserving its own PK form.
     const tlCfg = getCountryConfig((hostelRes.data as { country?: string | null } | null)?.country);
     const tlIsPk = tlCfg.currency === "PKR";
-    const m = (n: number) => (tlIsPk ? `Rs. ${n.toLocaleString()}` : `${tlCfg.currencySymbol}${n.toLocaleString()}`);
-    const mBare = (n: number) => (tlIsPk ? `Rs ${n.toLocaleString()}` : `${tlCfg.currencySymbol}${n.toLocaleString()}`);
+    // An alphabetic code (AED, BDT, …) needs a space so it reads "AED 7,000"; a
+    // glyph symbol ($, £, €, ₹) hugs the number.
+    const tlSep = /[A-Za-z]$/.test(tlCfg.currencySymbol) ? " " : "";
+    const m = (n: number) => (tlIsPk ? `Rs. ${n.toLocaleString()}` : `${tlCfg.currencySymbol}${tlSep}${n.toLocaleString()}`);
+    const mBare = (n: number) => (tlIsPk ? `Rs ${n.toLocaleString()}` : `${tlCfg.currencySymbol}${tlSep}${n.toLocaleString()}`);
     const acPerUnitRate = Number(acRateRes.data?.ac_per_unit_rate ?? 0);
     const tenantEvents = tenantEventsRes.data ?? [];
     const checkoutReading = checkoutReadingRes.data;

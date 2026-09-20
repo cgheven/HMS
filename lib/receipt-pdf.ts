@@ -106,6 +106,11 @@ function sanitizeForPdf(str: string): string {
     // Keep printable Latin-1 (0xA0–0xFF) — the base Helvetica fonts render it via
     // WinAnsiEncoding, so currency symbols like "£" (0xA3) print correctly. Only
     // characters outside Latin-1 (Urdu names, ₹, €, …) fall back to "?".
+    // Drop emoji / pictographs so a decorative "🎬 Sample Data" name reads
+    // "Sample Data", not "?? Sample Data". Scoped to astral + symbol/dingbat ranges
+    // ONLY — NOT all of \p{Extended_Pictographic}, which also matches Latin-1
+    // © / ® that the base fonts render; stripping those would change PK receipts.
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\uFE00-\uFE0F\u200D]+\s*/gu, "")
     .replace(/[^\x20-\x7E\u00A0-\u00FF]/g, "?");
 }
 
@@ -141,7 +146,11 @@ function makeReceiptFormatters(country: string | null | undefined) {
   const cfg = getCountryConfig(country);
   const pk = (amount: number): string => {
     const n = amount.toLocaleString(cfg.locale, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-    return cfg.currency === "PKR" ? `Rs. ${n}` : `${cfg.currencySymbol}${n}`;
+    if (cfg.currency === "PKR") return `Rs. ${n}`;
+    // A glyph symbol ($, £, €, ₹) hugs the number; an alphabetic code (AED, BDT,
+    // …) needs a space so it reads "AED 29,000", not "AED29,000".
+    const sep = /[A-Za-z]$/.test(cfg.currencySymbol) ? " " : "";
+    return `${cfg.currencySymbol}${sep}${n}`;
   };
   const fmtDate = (dateStr: string | null | undefined): string => {
     if (!dateStr) return "-";

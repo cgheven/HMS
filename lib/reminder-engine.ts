@@ -7,7 +7,7 @@ import { sendWhatsAppTemplateMessage } from "@/lib/whatsapp";
 import { sendPaymentReminderEmail } from "@/lib/email";
 import { tenantDueDay, shouldRemindToday } from "@/lib/payment-calc";
 import { processInBatches } from "@/lib/batch";
-import { getCountryConfig, isSupportedCountry } from "@/lib/country-config";
+import { getCountryConfig, isSupportedCountry, isKnownCountry } from "@/lib/country-config";
 import type { PaymentMethodAccount } from "@/types";
 
 // Format an amount in the hostel country's currency (£ for GB, Rs. for PK, …) and
@@ -118,14 +118,13 @@ export async function runReminderPass(
 
   for (const p of payments ?? []) {
     // Channel per country: WhatsApp where the country has it AND Super Admin
-    // granted it (Pakistan today — unchanged); email for a REGISTERED non-WhatsApp
-    // country (its only channel). A hostel whose country isn't in the registry yet
-    // is skipped entirely — we can't format its currency and don't fully serve it.
+    // granted it (Pakistan today — unchanged); email for any other REAL country
+    // (its only channel — currency now formats for any known country via the
+    // config keystone). Only a null/garbage country is skipped entirely.
     // A WhatsApp-country hostel without the grant is skipped exactly as before —
     // email is NOT a backfill for ungranted PK.
-    const supported = isSupportedCountry(p.hostel?.country);
-    const whatsappCountry = supported && getCountryConfig(p.hostel?.country).whatsapp;
-    const emailCountry = supported && !whatsappCountry;
+    const whatsappCountry = isSupportedCountry(p.hostel?.country) && getCountryConfig(p.hostel?.country).whatsapp;
+    const emailCountry = isKnownCountry(p.hostel?.country) && !whatsappCountry;
     if (whatsappCountry) {
       if (!p.hostel?.whatsapp_enabled) { skipped++; continue; }
     } else if (!emailCountry) {

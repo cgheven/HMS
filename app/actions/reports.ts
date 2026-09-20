@@ -427,7 +427,7 @@ export async function getReportData(
   ] = await Promise.all([
     admin
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, discount_percent, manual_discount_percent, manual_discount_amount, payment_package_tier, payment_method, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, discount_percent, hms_rooms(room_number))")
+      .select("id, tenant_id, for_month, amount, amount_paid, status, late_fee, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, discount_percent, manual_discount_percent, manual_discount_amount, payment_package_tier, payment_method, received_account, payment_date, receipt_number, tenant:hms_tenants(full_name, phone, room_id, discount_percent, hms_rooms(room_number))")
       .eq("hostel_id", hostelId)
       .gte("for_month", from)
       .lte("for_month", to),
@@ -515,6 +515,7 @@ export async function getReportData(
     ac_units_consumed?: unknown;
     payment_package_tier: unknown;
     payment_method: string | null;
+    received_account: string | null;
     payment_date: string | null;
     receipt_number: string | null;
     tenant: { full_name: string; phone: string | null; room_id: string | null; discount_percent?: number | null; hms_rooms: { room_number: string } | { room_number: string }[] | null } | null;
@@ -737,7 +738,21 @@ export async function getReportData(
     online: "Online",
   };
 
-  const methodMap: Record<string, { count: number; amount: number }> = {};
+  // Non-PK accounts (bank transfers via the merged dropdown) carry the specific
+  // receiving account in received_account — reconcile by that named account
+  // ("Emirates NBD") instead of the generic "Bank Transfer". PK is unchanged:
+  // it keeps grouping by payment_method, so existing accountant exports match.
+  const reconIsPk = getCountryConfig((hostelRow as { country?: string | null }).country).currency === "PKR";
+  // Effective reconciliation bucket for a payment: the named account for non-PK
+  // when one is set, else the payment method. Returns { key, label }.
+  const reconBucket = (p: { payment_method: string | null; received_account: string | null }) => {
+    const acct = !reconIsPk ? (p.received_account?.trim() || "") : "";
+    if (acct) return { key: acct, label: acct };
+    const m = p.payment_method ?? "cash";
+    return { key: m, label: METHOD_LABELS[m] ?? m };
+  };
+
+  const methodMap: Record<string, { label: string; count: number; amount: number }> = {};
   collectedPayments.forEach((p) => {
     // Skip rows holding no money. A REVERSED payment stays at partially_paid
     // with amount_paid = 0 and its payment_method cleared, so it survived into
@@ -745,15 +760,15 @@ export async function getReportData(
     // into Cash by the `?? "cash"` default below, and exported to the
     // accountant as a Rs 0 cash line.
     if (Number(p.amount_paid ?? 0) <= 0.009) return;
-    const m = p.payment_method ?? "cash";
-    if (!methodMap[m]) methodMap[m] = { count: 0, amount: 0 };
-    methodMap[m].count += 1;
-    methodMap[m].amount += Number(p.amount_paid ?? p.amount);
+    const { key, label } = reconBucket(p);
+    if (!methodMap[key]) methodMap[key] = { label, count: 0, amount: 0 };
+    methodMap[key].count += 1;
+    methodMap[key].amount += Number(p.amount_paid ?? p.amount);
   });
   const paymentMethodBreakdown = Object.entries(methodMap)
-    .map(([method, { count, amount }]) => ({
+    .map(([method, { label, count, amount }]) => ({
       method,
-      label: METHOD_LABELS[method] ?? method,
+      label,
       count,
       amount,
     }))
@@ -778,7 +793,7 @@ export async function getReportData(
         forMonth: p.for_month,
         amount: Number(p.amount_paid ?? p.amount),
         lateFee: Number(p.late_fee || 0),
-        method: p.payment_method ?? "cash",
+        method: reconBucket(p).key,
         paymentDate: p.payment_date,
         receiptNumber: p.receipt_number,
         isPartial,

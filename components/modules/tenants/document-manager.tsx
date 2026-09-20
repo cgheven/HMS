@@ -17,6 +17,16 @@ import {
 import type { TenantDocument, DocumentType } from "@/types";
 import { DOCUMENT_TYPE_LABELS, DOCUMENT_TYPE_LABELS_INTL, PK_DOCUMENT_TYPES, INTL_DOCUMENT_TYPES } from "@/types";
 
+// A document chosen during ADMISSION, before the tenant exists — held in the
+// browser and uploaded by the parent after create (mirrors the joining-photo
+// staging). Distinct from an uploaded TenantDocument.
+export interface StagedDoc {
+  id: string;
+  file: File;
+  type: DocumentType;
+  name: string;
+}
+
 interface Props {
   tenantId: string;
   tenantName: string;
@@ -25,6 +35,12 @@ interface Props {
   // PK keeps its CNIC/police list + labels; non-PK gets the international set.
   // Defaults to PK so any caller that doesn't pass it stays byte-identical.
   isPk?: boolean;
+  // STAGED (pre-create) mode: when onStageChange is provided the component holds
+  // chosen files instead of uploading them (there's no tenantId yet), and the
+  // parent uploads them after the tenant is created. When it's absent the
+  // component behaves EXACTLY as before (immediate upload to tenantId).
+  stagedDocs?: StagedDoc[];
+  onStageChange?: (docs: StagedDoc[]) => void;
 }
 
 function docIcon(type: DocumentType) {
@@ -37,7 +53,11 @@ function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-PK", { day: "numeric", month: "short", year: "numeric" });
 }
 
-export function DocumentManager({ tenantId, tenantName, documents, onChange, isPk = true }: Props) {
+export function DocumentManager({ tenantId, tenantName, documents, onChange, isPk = true, stagedDocs, onStageChange }: Props) {
+  // Staged (pre-create) mode when the parent gives us a stage handler.
+  const staging = !!onStageChange;
+  const staged = stagedDocs ?? [];
+  const count = staging ? staged.length : documents.length;
   const labels = isPk ? DOCUMENT_TYPE_LABELS : DOCUMENT_TYPE_LABELS_INTL;
   const docTypeOptions = (isPk ? PK_DOCUMENT_TYPES : INTL_DOCUMENT_TYPES).map(
     (t) => [t, labels[t]] as [DocumentType, string]
@@ -56,6 +76,14 @@ export function DocumentManager({ tenantId, tenantName, documents, onChange, isP
 
     if (file.size > 10 * 1024 * 1024) {
       toast({ title: "File too large", description: "Maximum size is 10 MB. Please compress the file and try again.", variant: "destructive" });
+      return;
+    }
+
+    // Pre-create: stage the file; the parent uploads it after the resident is saved.
+    if (staging) {
+      onStageChange!([...staged, { id: crypto.randomUUID(), file, type: docType, name: file.name }]);
+      setAdding(false);
+      toast({ title: "Document added", description: `${labels[docType]} will be uploaded when you save ${tenantName || "the resident"}.` });
       return;
     }
 
@@ -105,6 +133,11 @@ export function DocumentManager({ tenantId, tenantName, documents, onChange, isP
     }
   }
 
+  // Staged mode: just drop it from the browser list (nothing uploaded yet).
+  function removeStaged(id: string) {
+    onStageChange!(staged.filter((d) => d.id !== id));
+  }
+
   return (
     <div className="space-y-3">
       {/* Section header */}
@@ -112,9 +145,9 @@ export function DocumentManager({ tenantId, tenantName, documents, onChange, isP
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-muted-foreground" />
           <span className="text-sm font-medium text-foreground">Verification Documents</span>
-          {documents.length > 0 && (
+          {count > 0 && (
             <span className="inline-flex items-center justify-center h-5 min-w-5 px-1.5 rounded-full bg-amber/10 border border-amber/20 text-amber text-[10px] font-bold">
-              {documents.length}
+              {count}
             </span>
           )}
         </div>
@@ -175,11 +208,34 @@ export function DocumentManager({ tenantId, tenantName, documents, onChange, isP
       )}
 
       {/* Document list */}
-      {documents.length === 0 && !adding ? (
+      {count === 0 && !adding ? (
         <div className="rounded-xl border border-dashed border-sidebar-border py-6 flex flex-col items-center gap-2 text-center">
           <ShieldCheck className="w-8 h-8 text-muted-foreground/30" />
           <p className="text-xs text-muted-foreground">No documents yet</p>
           <p className="text-xs text-muted-foreground/60">{isPk ? "Upload CNIC, police verification, or lease agreement" : "Upload an identification document, passport, or tenancy agreement"}</p>
+        </div>
+      ) : staging ? (
+        <div className="space-y-2">
+          {staged.map((d) => (
+            <div
+              key={d.id}
+              className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-sidebar-border bg-white/[0.02]"
+            >
+              {docIcon(d.type)}
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-foreground truncate">{d.name}</p>
+                <p className="text-xs text-muted-foreground">{labels[d.type]} · Uploads when you save</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => removeStaged(d.id)}
+                className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0"
+                title="Remove"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
         </div>
       ) : (
         <div className="space-y-2">

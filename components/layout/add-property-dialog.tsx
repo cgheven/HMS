@@ -3,6 +3,8 @@ import { useState } from "react";
 import { Loader2, Building2, Copy } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { PhoneInput } from "@/components/ui/phone-input";
+import { isValidLocalPhone } from "@/lib/phone";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
@@ -22,7 +24,6 @@ interface Props {
   defaultCountry: string | null | undefined;
 }
 
-const onlyPhoneChars = (v: string) => v.replace(/[^\d+\-()\s]/g, "");
 
 const TIER_LABEL: Record<string, string> = {
   basic: "Basic", standard: "Standard", business: "Business", enterprise: "Enterprise",
@@ -75,6 +76,8 @@ export function AddPropertyDialog({ open, onClose, hostels, defaultCountry }: Pr
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.name.trim()) { setError(`${t.branch} name is required.`); return; }
+    if (form.phone.trim() && !isValidLocalPhone(form.phone, country)) { setError("Enter a valid phone number, or leave it blank."); return; }
+    if (form.whatsapp.trim() && !isValidLocalPhone(form.whatsapp, country)) { setError(`Enter a valid ${t.mobileNumber.toLowerCase()}, or leave it blank.`); return; }
     setChecking(true);
     setError(null);
     const preview = await previewAddProperty();
@@ -240,9 +243,9 @@ export function AddPropertyDialog({ open, onClose, hostels, defaultCountry }: Pr
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5"><Label>City</Label><Input value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Area / Neighbourhood</Label><Input value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} /></div>
-            <div className="space-y-1.5"><Label>Phone</Label><Input inputMode="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: onlyPhoneChars(e.target.value) })} /></div>
+            <div className="space-y-1.5"><Label>Phone</Label><PhoneInput country={country} value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} placeholder="Phone number" /></div>
             {showWhatsapp && (
-              <div className="space-y-1.5"><Label>{t.mobileNumber}</Label><Input inputMode="tel" value={form.whatsapp} onChange={(e) => setForm({ ...form, whatsapp: onlyPhoneChars(e.target.value) })} /></div>
+              <div className="space-y-1.5"><Label>{t.mobileNumber}</Label><PhoneInput country={country} value={form.whatsapp} onChange={(v) => setForm({ ...form, whatsapp: v })} placeholder={t.mobileNumber} /></div>
             )}
             <div className="space-y-1.5"><Label>Email</Label><Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} /></div>
             <div className={`space-y-1.5${!showWhatsapp ? " sm:col-span-2" : ""}`}><Label>Total Capacity</Label><Input type="number" min="0" placeholder="0" value={form.total_capacity} onChange={(e) => setForm({ ...form, total_capacity: e.target.value })} /></div>

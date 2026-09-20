@@ -11,6 +11,15 @@ export type ExpenseCategory = "furniture" | "repairs" | "cleaning" | "security" 
 export type MealType = "breakfast" | "lunch" | "dinner";
 export type PaymentStatus = "paid" | "pending" | "overdue" | "waived" | "partially_paid";
 export type PaymentMethod = "cash" | "bank_transfer" | "jazzcash" | "easypaisa" | "sadapay" | "other";
+// Display labels for every method (used to render whatever set a country offers).
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  cash: "Cash", bank_transfer: "Bank Transfer",
+  jazzcash: "JazzCash", easypaisa: "EasyPaisa", sadapay: "SadaPay", other: "Other",
+};
+// jazzcash / easypaisa / sadapay are Pakistan-only wallets — offered only to PK
+// hostels. Everyone else gets the universal set; their own bank account is chosen
+// separately via the configured "Received in account" list.
+export const PK_WALLET_METHODS: PaymentMethod[] = ["jazzcash", "easypaisa", "sadapay"];
 export type ComplaintCategory = "kitchen" | "staff" | "cleanliness" | "maintenance" | "security" | "other";
 export type ComplaintPriority = "low" | "medium" | "high";
 export type ComplaintStatus = "open" | "in_progress" | "resolved";

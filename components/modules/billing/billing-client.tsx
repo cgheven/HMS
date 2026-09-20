@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Wallet, CheckCircle2, Clock, Download, CreditCard, Loader2, Check, Building2 } from "lucide-react";
-import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { formatDate, cn } from "@/lib/utils";
 import { clientDiscountPct } from "@/lib/pricing";
 import {
   SELF_SERVE_TIERS,
@@ -37,6 +37,14 @@ function formatMoney(amount: number | null, currency: string | null): string {
   } catch {
     return `${currency ?? ""} ${amount.toFixed(2)}`.trim();
   }
+}
+
+// Pulse's OWN SaaS billing on the manual/bank rail is ALWAYS PKR, and that rail
+// is PK-only (this section is manualBankBilling-gated). Explicit PKR formatter —
+// byte-identical to the old formatCurrency() PK output — so a non-PK figure can
+// never fall through the hostel-currency formatter and get mislabeled.
+function formatPkrSaas(amount: number): string {
+  return new Intl.NumberFormat("en-PK", { style: "currency", currency: "PKR", minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(amount);
 }
 
 interface Props {
@@ -274,13 +282,13 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
               <div>
                 <p className="text-sm text-muted-foreground">Current Plan</p>
                 <p className="text-lg font-bold">
-                  {formatCurrency(cycleTotal)}
+                  {formatPkrSaas(cycleTotal)}
                   <span className="text-sm font-normal text-muted-foreground"> / {billing.billing_cycle === "monthly" ? "month" : "year"}</span>
                   {currentDiscountPct > 0 && <span className="ml-2 text-xs font-semibold text-emerald-400">{currentDiscountPct.toFixed(0)}% off</span>}
                 </p>
                 {branchCount > 1 && (
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    {formatCurrency(billing.monthly_rate! * (billing.billing_cycle === "annual" ? 12 : 1))}/{billing.billing_cycle === "monthly" ? "mo" : "yr"} per branch × {branchCount} branches
+                    {formatPkrSaas(billing.monthly_rate! * (billing.billing_cycle === "annual" ? 12 : 1))}/{billing.billing_cycle === "monthly" ? "mo" : "yr"} per branch × {branchCount} branches
                   </p>
                 )}
               </div>
@@ -290,7 +298,7 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
                 <div className="sm:text-right"><p className="text-xs text-muted-foreground">Next Billing Date</p><p className="text-sm font-semibold">{formatDate(billing.next_invoice_date)}</p></div>
               )}
               {outstanding > 0 && (
-                <div className="sm:text-right"><p className="text-xs text-muted-foreground">Outstanding</p><p className="text-lg font-bold text-amber">{formatCurrency(outstanding)}</p></div>
+                <div className="sm:text-right"><p className="text-xs text-muted-foreground">Outstanding</p><p className="text-lg font-bold text-amber">{formatPkrSaas(outstanding)}</p></div>
               )}
             </div>
           </div>
@@ -431,10 +439,23 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
             </div>
           </div>
           <div className="rounded-xl border border-sidebar-border bg-background/40 p-5">
-            <p className="text-sm font-semibold mb-1.5">Everything included</p>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Residents • Rooms &amp; Beds • Rent &amp; Payments • Deposits • Electricity Units • Expenses • Complaints • Announcements • Staff &amp; Permissions • Reports • Admission Forms • Website • Feedback • Multi-Property Management
-            </p>
+            <div className="flex items-center gap-2 mb-3">
+              <p className="text-sm font-semibold">Everything included</p>
+              <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wide bg-emerald-500/10 border border-emerald-500/20 rounded-full px-2 py-0.5">All plans</span>
+            </div>
+            <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
+              {[
+                "Residents", "Rooms & Beds", "Rent & Payments", "Deposits",
+                "Electricity Units", "Expenses", "Complaints", "Announcements",
+                "Staff & Permissions", "Reports", "Admission Forms", "Website",
+                "Feedback", "Multi-Property Management",
+              ].map((f) => (
+                <li key={f} className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span>{f}</span>
+                </li>
+              ))}
+            </ul>
           </div>
           {contactUs && (
             <p className="text-xs text-muted-foreground">
@@ -491,14 +512,14 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
                     <p className="text-xs text-muted-foreground">Due {formatDate(inv.due_date)}</p>
                     {showBreakdown && (
                       <p className="text-xs text-muted-foreground">
-                        {inv.branch_count > 1 && <>{formatCurrency(perBranchAmount)}/{cycleUnit} per branch</>}
+                        {inv.branch_count > 1 && <>{formatPkrSaas(perBranchAmount)}/{cycleUnit} per branch</>}
                         {inv.discount_pct > 0 && <span className="text-emerald-400">{inv.branch_count > 1 ? " · " : ""}{Number(inv.discount_pct).toFixed(0)}% discount applied</span>}
                         {inv.is_first_invoice && inv.onboarding_fee_charged > 0 && <span>{(inv.branch_count > 1 || inv.discount_pct > 0) ? " · " : ""}includes one-time onboarding fee</span>}
                       </p>
                     )}
                   </div>
                   <div className="flex flex-col items-end gap-1.5 shrink-0">
-                    <span className="text-sm font-semibold">{formatCurrency(inv.amount)}</span>
+                    <span className="text-sm font-semibold">{formatPkrSaas(inv.amount)}</span>
                     <div className="flex items-center gap-2">
                       <span className={cn("inline-flex items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded-full text-xs font-medium border", badge.cls)}>
                         <Icon className="w-3 h-3" /> {badge.label}

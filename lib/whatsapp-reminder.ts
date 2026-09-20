@@ -1,4 +1,21 @@
 import type { PaymentMethodAccount } from "@/types";
+import { getCountryConfig } from "@/lib/country-config";
+
+// Currency prefix for the reminder text. PK stays "Rs " (space, no period) exactly
+// as before; a glyph currency ($, £, €, ₹) hugs the number, an alphabetic code
+// (AED, BDT, …) gets a trailing space so it reads "AED 15,000".
+function curPrefix(country?: string | null): string {
+  const cfg = getCountryConfig(country);
+  if (cfg.currency === "PKR") return "Rs ";
+  return /[A-Za-z]$/.test(cfg.currencySymbol) ? `${cfg.currencySymbol} ` : cfg.currencySymbol;
+}
+
+// A rounded, grouped amount with its currency prefix, e.g. "Rs 15,000" / "AED 15,000".
+// PK uses en-PK grouping (byte-identical to the previous hardcoded formatter).
+function money(amount: number, country?: string | null): string {
+  const cfg = getCountryConfig(country);
+  return `${curPrefix(country)}${new Intl.NumberFormat(cfg.locale).format(Math.round(amount))}`;
+}
 
 export const DEFAULT_REMINDER_TEMPLATE = `Assalam o Alaikum {name},
 
@@ -9,6 +26,14 @@ Friendly reminder - your rent of {amount} for {month} is still pending.{ac}{ac_m
 Please pay at your earliest convenience.
 
 - {hostel}`;
+
+// PK keeps the incumbent "Assalam o Alaikum" greeting (returns the exact same
+// constant, byte-identical); every other country greets "Hi".
+export function defaultReminderTemplate(country?: string | null): string {
+  return (country ?? "PK").toUpperCase() === "PK"
+    ? DEFAULT_REMINDER_TEMPLATE
+    : DEFAULT_REMINDER_TEMPLATE.replace(/^Assalam o Alaikum /, "Hi ");
+}
 
 export function formatAccounts(methods: PaymentMethodAccount[]): string {
   if (!methods || methods.length === 0) return "";
@@ -24,29 +49,29 @@ export function formatAccounts(methods: PaymentMethodAccount[]): string {
   return blocks.join("\n\n");
 }
 
-function formatACLine(units?: number, charge?: number, rate?: number): string {
+function formatACLine(units?: number, charge?: number, rate?: number, country?: string | null): string {
   if (!charge || charge <= 0) return "";
   const parts: string[] = [];
-  if (units && rate) parts.push(`${units} units x Rs ${rate}/unit`);
-  parts.push(`*Rs ${new Intl.NumberFormat("en-PK").format(Math.round(charge))}*`);
+  if (units && rate) parts.push(`${units} units x ${curPrefix(country)}${rate}/unit`);
+  parts.push(`*${money(charge, country)}*`);
   return "⚡ AC: " + parts.join(" = ");
 }
 
-function formatAcMaintenanceLine(charge?: number): string {
+function formatAcMaintenanceLine(charge?: number, country?: string | null): string {
   if (!charge || charge <= 0) return "";
-  return `🔧 AC Maintenance: *Rs ${new Intl.NumberFormat("en-PK").format(Math.round(charge))}*`;
+  return `🔧 AC Maintenance: *${money(charge, country)}*`;
 }
 
 // Shown so a tenant whose bill dropped can see WHY. Deliberately does not name
 // the person who referred them — this message can be forwarded to anyone.
-function formatReferralDiscountLine(charge?: number): string {
+function formatReferralDiscountLine(charge?: number, country?: string | null): string {
   if (!charge || charge <= 0) return "";
-  return `\u{1F381} Referral Discount: *-Rs ${new Intl.NumberFormat("en-PK").format(Math.round(charge))}* (already applied)`;
+  return `\u{1F381} Referral Discount: *-${money(charge, country)}* (already applied)`;
 }
 
-function formatRegistrationFeeLine(charge?: number): string {
+function formatRegistrationFeeLine(charge?: number, country?: string | null): string {
   if (!charge || charge <= 0) return "";
-  return `📝 Registration Fee: *Rs ${new Intl.NumberFormat("en-PK").format(Math.round(charge))}* (one-time)`;
+  return `📝 Registration Fee: *${money(charge, country)}* (one-time)`;
 }
 
 interface BuildArgs {
@@ -63,23 +88,24 @@ interface BuildArgs {
   ac_maintenance_charge?: number;
   registration_fee_charge?: number;
   referral_discount?: number;
+  country?: string | null;
 }
 
 export function buildReminderMessage(args: BuildArgs): string {
-  const tpl = args.template?.trim() || DEFAULT_REMINDER_TEMPLATE;
+  const tpl = args.template?.trim() || defaultReminderTemplate(args.country);
   const firstName = args.tenantName.split(" ")[0];
-  const amountStr = `*Rs ${new Intl.NumberFormat("en-PK").format(Math.round(args.amount))}*`;
+  const amountStr = `*${money(args.amount, args.country)}*`;
   const accountsBlock = formatAccounts(args.accounts);
-  const acLine = formatACLine(args.ac_units, args.ac_charge, args.ac_rate);
+  const acLine = formatACLine(args.ac_units, args.ac_charge, args.ac_rate, args.country);
   const acBlock = acLine ? "\n" + acLine : "";
-  const acMaintenanceLine = formatAcMaintenanceLine(args.ac_maintenance_charge);
+  const acMaintenanceLine = formatAcMaintenanceLine(args.ac_maintenance_charge, args.country);
   const acMaintenanceBlock = acMaintenanceLine ? "\n" + acMaintenanceLine : "";
-  const registrationFeeLine = formatRegistrationFeeLine(args.registration_fee_charge);
+  const registrationFeeLine = formatRegistrationFeeLine(args.registration_fee_charge, args.country);
   const registrationFeeBlock = registrationFeeLine ? "\n" + registrationFeeLine : "";
-  const referralDiscountLine = formatReferralDiscountLine(args.referral_discount);
+  const referralDiscountLine = formatReferralDiscountLine(args.referral_discount, args.country);
   const referralDiscountBlock = referralDiscountLine ? "\n" + referralDiscountLine : "";
   const depositBlock = (args.security_deposit && args.security_deposit > 0)
-    ? `\n🔒 Security Deposit: *Rs ${new Intl.NumberFormat("en-PK").format(Math.round(args.security_deposit))}* (held)`
+    ? `\n🔒 Security Deposit: *${money(args.security_deposit, args.country)}* (held)`
     : "";
   return tpl
     .replace(/\{name\}/g,     firstName)
