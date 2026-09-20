@@ -32,6 +32,7 @@ import { computeACSegmentBilling } from "@/lib/ac-billing";
 import { formatNationalId, isValidNationalId, normalizeNationalId, nationalIdLabel, requiresGuestRegistration } from "@/lib/national-id";
 import { getCountryConfig, DEFAULT_COUNTRY, terms, paymentMethodsForCountry } from "@/lib/country-config";
 import { waDigits } from "@/lib/pk-whatsapp";
+import { IntlPhoneInput } from "@/components/ui/phone-input";
 import { COUNTRY_NAMES, countryNameOf, countryCodeOfName, addressRegionLabel, looksLikeUkPostcode, validateDocumentNumber, looksLikePhone } from "@/lib/countries";
 import { discountedRent } from "@/lib/tenant-discount";
 import { VISIT_PURPOSE_OPTIONS, VISIT_PURPOSE_LABELS, visitPurposeLabel } from "@/lib/visit-purpose";
@@ -4161,7 +4162,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <Label>Emergency Contact</Label>
                   <Input
@@ -4172,11 +4173,10 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </div>
                 <div className="space-y-1.5">
                   <Label>Emergency Phone</Label>
-                  <Input
-                    placeholder="+92 300 0000000"
-                    inputMode="tel"
+                  <IntlPhoneInput
+                    defaultCountry={country}
                     value={approveForm.emergency_phone ?? ""}
-                    onChange={(e) => setApproveForm({ ...approveForm, emergency_phone: e.target.value.replace(/[^\d+\-()\s]/g, "") })}
+                    onChange={(v) => setApproveForm({ ...approveForm, emergency_phone: v })}
                   />
                 </div>
               </div>
@@ -4449,10 +4449,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               <div className="space-y-1.5 sm:col-span-2"><Label>Full Name *</Label><Input placeholder="Ahmed Khan" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} /></div>
               <div className="space-y-1.5">
                 <Label>Phone *</Label>
-                <Input placeholder="+92 300 0000000" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-                {form.phone.trim() && !looksLikePhone(form.phone) && (
-                  <p className="text-xs text-amber">This doesn&apos;t look like a valid phone number. Please check it.</p>
-                )}
+                <IntlPhoneInput defaultCountry={country} value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} />
               </div>
               {needsGuestRegistration ? (
                 <div className="space-y-1.5">
@@ -5530,12 +5527,13 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               <div className="space-y-1.5"><Label>Father Name{editing ? "" : " *"}</Label><Input placeholder="Muhammad Khan" value={form.father_name} onChange={(e) => setForm({ ...form, father_name: e.target.value })} /></div>
             )}
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {/* Same add-vs-edit rule as Father Name: 467 of the 671 existing
                   tenants have no emergency contact on record, so gating Save on
-                  edit would lock them out of unrelated changes. */}
+                  edit would lock them out of unrelated changes. Responsive (stacks
+                  on narrow) so the phone field's code picker never cramps. */}
               <div className="space-y-1.5"><Label>Emergency Contact{editing ? "" : " *"}</Label><Input placeholder="Name" value={form.emergency_contact} onChange={(e) => setForm({ ...form, emergency_contact: e.target.value })} /></div>
-              <div className="space-y-1.5"><Label>Emergency Phone{editing ? "" : " *"}</Label><Input placeholder="+92 300 0000000" inputMode="tel" value={form.emergency_phone} onChange={(e) => setForm({ ...form, emergency_phone: e.target.value.replace(/[^\d+\-()\s]/g, "") })} /></div>
+              <div className="space-y-1.5"><Label>Emergency Phone{editing ? "" : " *"}</Label><IntlPhoneInput defaultCountry={country} value={form.emergency_phone} onChange={(v) => setForm({ ...form, emergency_phone: v })} /></div>
             </div>
             <div className="space-y-1.5">
               <Label>Emergency Relationship</Label>

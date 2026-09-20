@@ -25,9 +25,16 @@ export function pkWhatsAppDigits(raw: string | null | undefined): string {
 // "92300…", an already-international "92…" stays put. Tolerant of the bare-
 // national PhoneInput form too (strips trunk zeros, then prepends the dial code).
 export function waDigits(raw: string | null | undefined, country: string | null | undefined): string {
-  const dial = getCountryConfig(country).dialCode || "";
-  const d = (raw ?? "").replace(/\D/g, "");
+  const s = (raw ?? "").trim();
+  const d = s.replace(/\D/g, "");
   if (!d) return "";
+  // A number stored with its own country code (the international phone field
+  // stores "+<code><national>") is authoritative — use it as-is, NEVER re-apply
+  // the branch dial code. This is what lets a Pakistani tenant on a UAE branch
+  // keep +92 instead of getting +971 prepended.
+  if (s.startsWith("+")) return d;
+  const dial = getCountryConfig(country).dialCode || "";
   if (dial && d.startsWith(dial)) return d;
+  // Legacy bare/local number with no code: fall back to the branch dial code.
   return dial + d.replace(/^0+/, "");
 }

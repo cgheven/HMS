@@ -8,6 +8,7 @@ import { getCountryConfig, terms } from "@/lib/country-config";
 import { COUNTRY_NAMES, countryNameOf, countryCodeOfName, addressRegionLabel, looksLikeUkPostcode, validateDocumentNumber, looksLikePhone } from "@/lib/countries";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { IntlPhoneInput } from "@/components/ui/phone-input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
@@ -554,16 +555,11 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                   <Phone className="w-3.5 h-3.5 text-muted-foreground" />
                   {words.mobileNumber} <span className="text-destructive">*</span>
                 </Label>
-                <Input
-                  placeholder="0300 0000000"
+                <IntlPhoneInput
+                  defaultCountry={country}
                   value={form.phone}
-                  onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                  required
+                  onChange={(v) => setForm({ ...form, phone: v })}
                 />
-                <p className="text-xs text-muted-foreground">{needsGuestRegistration ? "Pakistan format: 03XX XXXXXXX" : "Include your country dialling code if outside the country."}</p>
-                {form.phone.trim() && !looksLikePhone(form.phone) && (
-                  <p className="text-xs text-amber">This doesn&apos;t look like a valid phone number. Please check it.</p>
-                )}
               </div>
 
               {show("email") && (
@@ -1204,12 +1200,10 @@ export function JoinFormClient({ hostel, preselectedRoomNumber, logoUrl = null, 
                 </div>
                 <div className="space-y-1.5">
                   <Label>Contact Phone {req("emergency_contact") && <span className="text-destructive">*</span>}</Label>
-                  <Input
-                    placeholder="0300 0000000"
-                    inputMode="tel"
+                  <IntlPhoneInput
+                    defaultCountry={country}
                     value={form.emergency_phone}
-                    onChange={(e) => setForm({ ...form, emergency_phone: e.target.value.replace(/[^\d+\-()\s]/g, "") })}
-                    required={req("emergency_contact")}
+                    onChange={(v) => setForm({ ...form, emergency_phone: v })}
                   />
                 </div>
               </div>
