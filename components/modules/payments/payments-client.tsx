@@ -3194,7 +3194,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
               </>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1.5"><Label>Transaction ID (TID) <span className="text-muted-foreground/60 font-normal text-xs">optional</span></Label><Input placeholder="Bank / wallet reference" value={markForm.transaction_id} onChange={(e) => setMarkForm({ ...markForm, transaction_id: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label className="whitespace-nowrap">Transaction ID (TID)</Label><Input placeholder="Bank / wallet reference" value={markForm.transaction_id} onChange={(e) => setMarkForm({ ...markForm, transaction_id: e.target.value })} /></div>
               <div className="space-y-1.5"><Label>Notes</Label><Input placeholder="Optional" value={markForm.notes} onChange={(e) => setMarkForm({ ...markForm, notes: e.target.value })} /></div>
             </div>
           </div>

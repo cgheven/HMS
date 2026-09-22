@@ -4,6 +4,7 @@ import { unstable_rethrow } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendComplaintEmail } from "@/lib/email";
+import { normalizePhoneDigits } from "@/lib/phone";
 import type { ComplaintCategory } from "@/types";
 
 // Kept in sync with the hms_complaints CHECK constraint (migration
@@ -20,10 +21,6 @@ const VALID_CATEGORIES = new Set<ComplaintCategory>([
 ]);
 
 const DESCRIPTION_MAX_LENGTH = 2000;
-
-function normalizePhone(phone: string): string {
-  return phone.replace(/\D/g, "");
-}
 
 /**
  * Public, no-login complaint submission — reached by scanning a QR code
@@ -75,14 +72,18 @@ export async function submitComplaintAction(
     // than one active tenant happens to share a phone (e.g. a shared family
     // number), the first match is used — low-stakes for a complaint record,
     // unlike a payment or identity-sensitive action.
-    const normalizedInputPhone = normalizePhone(cleanPhone);
+    // Canonical PK-digit form (0300… / +92300… / 300… all → 92300…) on BOTH
+    // sides, so a tenant entering their number in any shape still matches what
+    // admission stored (now "+92…"). The old digits-only strip broke this: the
+    // stored "+92300…" and a typed "0300…" normalised to different strings.
+    const normalizedInputPhone = normalizePhoneDigits(cleanPhone);
     const { data: tenants } = await admin
       .from("hms_tenants")
       .select("id, full_name, phone, room_id, room:hms_rooms(room_number)")
       .eq("hostel_id", hostel.id)
       .eq("is_active", true);
-    const tenant = (tenants ?? []).find(
-      (t) => normalizePhone(t.phone ?? "") === normalizedInputPhone
+    const tenant = normalizedInputPhone == null ? undefined : (tenants ?? []).find(
+      (t) => normalizePhoneDigits(t.phone ?? "") === normalizedInputPhone
     );
     if (!tenant) {
       return {
