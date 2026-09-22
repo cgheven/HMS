@@ -398,6 +398,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     date: formatDateInput(new Date()),
     late_fee: "0",
     notes: "",
+    transaction_id: "",
     receipt_number: "",
     ac_units_consumed: "0",
     amount_received: "",
@@ -590,6 +591,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       date: formatDateInput(new Date()),
       late_fee: "0",
       notes: "",
+      transaction_id: "",
       receipt_number: genReceipt(tenantName, p.for_month),
       ac_units_consumed: p.ac_units_consumed ? String(p.ac_units_consumed) : "0",
       amount_received: String(remaining),
@@ -866,6 +868,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       date: markForm.date,
       lateFee: markForm.late_fee,
       notes: markForm.notes,
+      transactionId: markForm.transaction_id,
       receiptNumber: markForm.receipt_number,
       acUnitsConsumed: markForm.ac_units_consumed,
       amountReceived: markForm.amount_received,
@@ -3190,7 +3193,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 <div className="space-y-1.5"><Label>Receipt No.</Label><Input value={markForm.receipt_number} onChange={(e) => setMarkForm({ ...markForm, receipt_number: e.target.value })} /></div>
               </>
             )}
-            <div className="space-y-1.5"><Label>Notes</Label><Input placeholder="Optional" value={markForm.notes} onChange={(e) => setMarkForm({ ...markForm, notes: e.target.value })} /></div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1.5"><Label>Transaction ID (TID) <span className="text-muted-foreground/60 font-normal text-xs">optional</span></Label><Input placeholder="Bank / wallet reference" value={markForm.transaction_id} onChange={(e) => setMarkForm({ ...markForm, transaction_id: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Notes</Label><Input placeholder="Optional" value={markForm.notes} onChange={(e) => setMarkForm({ ...markForm, notes: e.target.value })} /></div>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setMarkDialog(null)}>Cancel</Button>

@@ -298,6 +298,9 @@ export interface MarkPaidInput {
   date: string;
   lateFee: string;
   notes: string;
+  /** Optional external transaction reference (bank/wallet TID). Stored as-is,
+      shown in the member Payment Ledger's TID column. */
+  transactionId?: string;
   receiptNumber: string;
   acUnitsConsumed: string; // string from form input
   /** Amount actually received this time (string from form input). Omit/equal to
@@ -588,6 +591,7 @@ export async function markPaymentPaidAction(
       recorded_by: ctx?.user?.id ?? null,
       late_fee: lateFee,
       notes: input.notes || null,
+      transaction_id: input.transactionId?.trim() ? input.transactionId.trim().slice(0, 120) : null,
       // Reconciliation label only (which configured account received the money).
       // Capped defensively; a directly-called RPC can't stash unbounded text here.
       received_account: input.receivedAccount?.trim() ? input.receivedAccount.trim().slice(0, 120) : null,
@@ -665,6 +669,7 @@ export async function markPaymentPaidAction(
       payment_method: input.method,
       payment_date: input.date,
       notes: input.notes || null,
+      transaction_id: input.transactionId?.trim() ? input.transactionId.trim().slice(0, 120) : null,
       receipt_number: input.receiptNumber,
       // The durable attribution. hms_payments.recorded_by is overwritten by
       // whoever collects the next installment against the same bill.

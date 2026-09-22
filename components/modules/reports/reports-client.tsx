@@ -20,7 +20,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { getReportData, getLedgerTenants, type ReportData, type LedgerTenantRow } from "@/app/actions/reports";
-import { getTenantTimeline, createInvoiceLink, createInstallmentReceiptLink, type TimelineEvent } from "@/app/actions/tenants";
+import { getTenantTimeline, getMemberPaymentLedger, createInvoiceLink, createInstallmentReceiptLink, type TimelineEvent } from "@/app/actions/tenants";
 import { EventIcon, eventDotColor, TimelineEventBody } from "@/components/modules/tenants/tenant-timeline";
 import { DailyExpensesSection } from "./daily-expenses-section";
 import { UnitCostTab } from "./unit-cost-tab";
@@ -1380,6 +1380,27 @@ function MemberLedgerTab({
   const [drillInEvents, setDrillInEvents] = useState<TimelineEvent[] | null>(null);
   const [drillInLoading, setDrillInLoading] = useState(false);
   const [generatingReceipt, setGeneratingReceipt] = useState<string | null>(null);
+  const [exportingStatement, setExportingStatement] = useState<"pdf" | "xlsx" | null>(null);
+
+  async function handleExportStatement(kind: "pdf" | "xlsx") {
+    if (!drillIn) return;
+    setExportingStatement(kind);
+    try {
+      const ledger = await getMemberPaymentLedger(drillIn.id);
+      if (ledger.error || !ledger.data) {
+        toast({ title: "Export failed", description: ledger.error ?? "No data", variant: "destructive" });
+        return;
+      }
+      const mod = await import("@/lib/report-export");
+      if (kind === "pdf") await mod.exportMemberLedgerPDF(ledger.data, hostelName, country);
+      else await mod.exportMemberLedgerExcel(ledger.data, hostelName, country);
+      toast({ title: kind === "pdf" ? "Payment Ledger PDF downloaded" : "Payment Ledger Excel downloaded" });
+    } catch (err) {
+      toast({ title: "Export failed", description: String(err), variant: "destructive" });
+    } finally {
+      setExportingStatement(null);
+    }
+  }
 
   const fetchRows = useCallback(async (signal?: { cancelled: boolean }) => {
     setLoading(true);
@@ -1736,6 +1757,18 @@ function MemberLedgerTab({
                 <Badge variant={drillIn.status === "active" ? "default" : "secondary"} className="text-xs capitalize">
                   {LEDGER_STATUS_LABELS[drillIn.status]}
                 </Badge>
+              </div>
+
+              {/* Itemised, client-shareable payment ledger — every charge, line by line per month. */}
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => handleExportStatement("pdf")} disabled={!!exportingStatement} className="gap-1.5 h-8 text-xs">
+                  {exportingStatement === "pdf" ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                  Payment Ledger PDF
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleExportStatement("xlsx")} disabled={!!exportingStatement} className="gap-1.5 h-8 text-xs">
+                  {exportingStatement === "xlsx" ? <RefreshCw className="w-3 h-3 animate-spin" /> : <FileSpreadsheet className="w-3 h-3" />}
+                  Payment Ledger Excel
+                </Button>
               </div>
 
               <div className="rounded-xl bg-sidebar-accent/30 px-3 py-2.5 grid grid-cols-3 gap-2 text-center">

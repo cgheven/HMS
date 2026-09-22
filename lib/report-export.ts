@@ -1,4 +1,6 @@
 import type { ReportData, LedgerTenantRow } from "@/app/actions/reports";
+import type { MemberLedgerData, MemberLedgerBill } from "@/app/actions/tenants";
+import { splitPaymentCharges } from "@/lib/payment-calc";
 import { getCountryConfig } from "@/lib/country-config";
 
 // Currency formatter bound to the hostel's country. PKR stays byte-identical
@@ -771,4 +773,172 @@ export async function exportLedgerExcel(
   XLSX.utils.book_append_sheet(wb, ws, "Member Ledger");
 
   XLSX.writeFile(wb, `member-ledger-${period}.xlsx`);
+}
+
+// ---------------------------------------------------------------------------
+// Single-member Payment Ledger — the itemised, client-facing record: every
+// charge, line by line per month, with expected / received / balance and the
+// running totals. Decomposes each bill with the same splitPaymentCharges() the
+// receipts use, so the line items reconcile to the receipts exactly.
+// ---------------------------------------------------------------------------
+
+function nameSlug(name: string): string {
+  return name.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "member";
+}
+
+function fmtMonth(ym: string): string {
+  const [y, m] = (ym || "").split("-").map(Number);
+  if (!y || !m) return ym || "—";
+  return new Date(y, m - 1, 1).toLocaleDateString("en-US", { month: "short", year: "numeric" });
+}
+
+// A bill's charge lines (expected amounts), in the order a payment is applied:
+// essentials first so any shortfall lands on the last line (AC), matching how
+// hostels collect. Rent is shown NET of any discount (what was actually owed).
+function billChargeLines(b: MemberLedgerBill): { desc: string; amount: number }[] {
+  const c = splitPaymentCharges({
+    amount: b.amount, food_charge: b.foodCharge, ac_charge: b.acCharge,
+    security_deposit_charge: b.securityDepositCharge, registration_fee_charge: b.registrationFeeCharge,
+    ac_maintenance_charge: b.acMaintenanceCharge, referral_discount: b.referralDiscount, discount_amount: b.discountAmount,
+  });
+  const rentNet = Math.max(0, c.rent - c.referralDiscount - c.discount);
+  const lines: { desc: string; amount: number }[] = [];
+  if (c.deposit > 0) lines.push({ desc: "Security Deposit", amount: c.deposit });
+  if (c.registrationFee > 0) lines.push({ desc: "Admission Fee", amount: c.registrationFee });
+  if (rentNet > 0) lines.push({ desc: b.isReservation ? "Bed Reservation" : "Monthly Rent", amount: rentNet });
+  if (c.food > 0) lines.push({ desc: "Food", amount: c.food });
+  if (c.ac > 0) lines.push({ desc: "AC (Electricity)", amount: c.ac });
+  if (c.acMaintenance > 0) lines.push({ desc: "AC Service", amount: c.acMaintenance });
+  if (b.lateFee > 0) lines.push({ desc: "Late Fee", amount: b.lateFee });
+  return lines;
+}
+
+interface LedgerRow {
+  room: string; month: string; desc: string; expected: number; received: number; balance: number;
+  method: string; date: string | null; tid: string | null; notes: string | null;
+}
+
+function buildLedgerRows(bills: MemberLedgerBill[]): { rows: LedgerRow[]; totalExpected: number; totalReceived: number } {
+  const rows: LedgerRow[] = [];
+  let totalExpected = 0, totalReceived = 0;
+  const methodLabel = (m: string | null) => (m ? m.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "—");
+  for (const b of bills) {
+    const lines = billChargeLines(b);
+    let rem = b.amountPaid;
+    for (const l of lines) {
+      const rec = Math.max(0, Math.min(rem, l.amount));
+      rem -= rec;
+      totalExpected += l.amount;
+      totalReceived += rec;
+      rows.push({
+        room: b.roomNumber ? `Rm ${b.roomNumber}` : "—",
+        month: fmtMonth(b.forMonth),
+        desc: l.desc,
+        expected: l.amount,
+        received: rec,
+        balance: l.amount - rec,
+        method: methodLabel(b.method),
+        date: b.paymentDate,
+        tid: b.transactionId,
+        notes: b.notes,
+      });
+    }
+  }
+  return { rows, totalExpected, totalReceived };
+}
+
+export async function exportMemberLedgerPDF(
+  data: MemberLedgerData,
+  hostelName: string,
+  country?: string | null,
+): Promise<void> {
+  const { default: jsPDF } = await import("jspdf");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { default: autoTable } = await import("jspdf-autotable") as any;
+  const pk = makePk(country);
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  const MARGIN = 14;
+  const RIGHT = 297 - MARGIN; // A4 landscape width
+  const finalY = () => (doc as unknown as { lastAutoTable: { finalY: number } }).lastAutoTable.finalY;
+
+  let y = drawPulseReportHeader(doc, MARGIN, RIGHT, hostelName, "Payment Ledger");
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.setTextColor(0, 0, 0);
+  doc.text(data.member.fullName, MARGIN, y);
+  y += 5;
+
+  autoTable(doc, {
+    startY: y,
+    body: [
+      ["Room", data.member.roomNumber ? `Rm ${data.member.roomNumber}` : "—", "Phone", data.member.phone ?? "—", "Check-in", data.member.checkIn ? fmtDate(data.member.checkIn) : "—"],
+      ["CNIC", data.member.cnic ?? "—", "Guardian", data.member.guardianPhone ?? "—", "Generated", new Date().toLocaleDateString()],
+    ],
+    theme: "plain",
+    styles: { fontSize: 8, cellPadding: 1 },
+    columnStyles: { 0: { fontStyle: "bold", textColor: [120, 120, 120] }, 2: { fontStyle: "bold", textColor: [120, 120, 120] }, 4: { fontStyle: "bold", textColor: [120, 120, 120] } },
+    margin: { left: MARGIN, right: MARGIN },
+  });
+  y = finalY() + 4;
+
+  const { rows, totalExpected, totalReceived } = buildLedgerRows(data.bills);
+  const totalBalance = totalExpected - totalReceived;
+
+  autoTable(doc, {
+    startY: y,
+    head: [["Total Expected", "Total Received", "Total Balance"]],
+    body: [[pk(totalExpected), pk(totalReceived), pk(totalBalance)]],
+    headStyles: { fillColor: [30, 30, 30], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 9, halign: "center" },
+    bodyStyles: { fontSize: 12, halign: "center", fontStyle: "bold" },
+    columnStyles: { 2: { textColor: totalBalance > 0 ? [200, 30, 30] : [30, 150, 30] } },
+    tableWidth: 150,
+    margin: { left: MARGIN, right: MARGIN },
+  });
+  y = finalY() + 6;
+
+  autoTable(doc, {
+    startY: y,
+    head: [["Room", "Month", "Description", "Amount", "Received", "Balance", "Mode", "Paid On", "TID", "Notes"]],
+    body: rows.map((r) => [r.room, r.month, r.desc, pk(r.expected), pk(r.received), r.balance > 0 ? pk(r.balance) : "—", r.method, fmtDate(r.date), r.tid ?? "—", r.notes ?? "—"]),
+    foot: [["", "", "Total", pk(totalExpected), pk(totalReceived), totalBalance > 0 ? pk(totalBalance) : "—", "", "", "", ""]],
+    headStyles: { fillColor: [30, 30, 30], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
+    footStyles: { fillColor: [245, 166, 35], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 8 },
+    bodyStyles: { fontSize: 7.5 },
+    alternateRowStyles: { fillColor: [248, 248, 248] },
+    margin: { left: MARGIN, right: MARGIN },
+    columnStyles: { 3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "right" } },
+  });
+
+  doc.save(`payment-ledger-${nameSlug(data.member.fullName)}.pdf`);
+}
+
+export async function exportMemberLedgerExcel(
+  data: MemberLedgerData,
+  hostelName: string,
+  country?: string | null,
+): Promise<void> {
+  const XLSX = await import("xlsx");
+  const unit = unitLabel(country);
+  const { rows, totalExpected, totalReceived } = buildLedgerRows(data.bills);
+  const totalBalance = totalExpected - totalReceived;
+
+  const sheet: (string | number)[][] = [
+    [`Payment Ledger — ${hostelName}`],
+    [data.member.fullName],
+    ["Room", data.member.roomNumber ? `Rm ${data.member.roomNumber}` : "", "Phone", data.member.phone ?? "", "CNIC", data.member.cnic ?? ""],
+    ["Check-in", data.member.checkIn ? fmtDate(data.member.checkIn) : "", "Guardian", data.member.guardianPhone ?? ""],
+    [],
+    [`Total Expected (${unit})`, totalExpected, `Total Received (${unit})`, totalReceived, `Total Balance (${unit})`, totalBalance],
+    [],
+    ["Room", "Month", "Description", `Amount (${unit})`, `Received (${unit})`, `Balance (${unit})`, "Mode", "Paid On", "TID", "Notes"],
+    ...rows.map((r) => [r.room, r.month, r.desc, r.expected, r.received, r.balance, r.method, fmtDate(r.date), r.tid ?? "", r.notes ?? ""] as (string | number)[]),
+    [],
+    ["", "", "Total", totalExpected, totalReceived, totalBalance, "", "", "", ""],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(sheet);
+  ws["!cols"] = [{ wch: 8 }, { wch: 12 }, { wch: 20 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 24 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Payment Ledger");
+  XLSX.writeFile(wb, `payment-ledger-${nameSlug(data.member.fullName)}.xlsx`);
 }

@@ -471,6 +471,120 @@ export interface TimelineEvent {
   installmentId?: string;
 }
 
+// One member's raw payment rows + identity, for the itemised Payment Ledger
+// export. Deliberately returns the stored component columns untouched so the
+// export can decompose each bill with the same splitPaymentCharges() the receipt
+// uses — the ledger's line items then sum to exactly what the receipts show.
+export interface MemberLedgerBill {
+  forMonth: string;
+  roomNumber: string | null;
+  paymentDate: string | null;
+  method: string | null;
+  receiptNumber: string | null;
+  status: string;
+  isReservation: boolean;
+  notes: string | null;
+  transactionId: string | null;
+  amount: number;
+  amountPaid: number;
+  lateFee: number;
+  foodCharge: number;
+  acCharge: number;
+  securityDepositCharge: number;
+  registrationFeeCharge: number;
+  acMaintenanceCharge: number;
+  referralDiscount: number;
+  discountAmount: number;
+}
+export interface MemberLedgerData {
+  member: {
+    fullName: string;
+    phone: string | null;
+    cnic: string | null;
+    roomNumber: string | null;
+    checkIn: string | null;
+    guardianPhone: string | null;
+  };
+  bills: MemberLedgerBill[];
+}
+
+export async function getMemberPaymentLedger(
+  tenantId: string
+): Promise<{ data?: MemberLedgerData; error?: string }> {
+  try {
+    const hostelId = await resolveHostelId();
+    const supabase = await createClient();
+
+    const [tenantRes, paymentsRes] = await Promise.all([
+      supabase
+        .from("hms_tenants")
+        .select("full_name, phone, cnic, check_in, emergency_phone, room:hms_rooms(room_number)")
+        .eq("id", tenantId)
+        .eq("hostel_id", hostelId)
+        .single(),
+      supabase
+        // Room is NOT on hms_payments (room_id lives on hms_tenants) — the bill's
+        // room is the member's current room, read from the tenant embed below.
+        .from("hms_payments")
+        .select(
+          "for_month, amount, amount_paid, late_fee, payment_method, payment_date, receipt_number, status, is_reservation, notes, transaction_id, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount"
+        )
+        .eq("tenant_id", tenantId)
+        .eq("hostel_id", hostelId)
+        .order("for_month", { ascending: true })
+        .order("payment_date", { ascending: true }),
+    ]);
+
+    if (tenantRes.error || !tenantRes.data) return { error: tenantRes.error?.message ?? "Member not found" };
+    if (paymentsRes.error) return { error: paymentsRes.error.message };
+    const t = tenantRes.data as Record<string, unknown>;
+    const tRoom = t.room as { room_number?: string } | { room_number?: string }[] | null;
+    const roomOf = (r: unknown): string | null => {
+      const rr = Array.isArray(r) ? r[0] : r;
+      return (rr as { room_number?: string } | null)?.room_number ?? null;
+    };
+    const memberRoom = roomOf(tRoom);
+
+    const bills: MemberLedgerBill[] = ((paymentsRes.data ?? []) as Record<string, unknown>[]).map((p) => ({
+      forMonth: (p.for_month as string) ?? "",
+      roomNumber: memberRoom,
+      paymentDate: (p.payment_date as string | null) ?? null,
+      method: (p.payment_method as string | null) ?? null,
+      receiptNumber: (p.receipt_number as string | null) ?? null,
+      status: (p.status as string) ?? "pending",
+      isReservation: !!p.is_reservation,
+      notes: (p.notes as string | null) ?? null,
+      transactionId: (p.transaction_id as string | null) ?? null,
+      amount: Number(p.amount ?? 0),
+      amountPaid: Number(p.amount_paid ?? 0),
+      lateFee: Number(p.late_fee ?? 0),
+      foodCharge: Number(p.food_charge ?? 0),
+      acCharge: Number(p.ac_charge ?? 0),
+      securityDepositCharge: Number(p.security_deposit_charge ?? 0),
+      registrationFeeCharge: Number(p.registration_fee_charge ?? 0),
+      acMaintenanceCharge: Number(p.ac_maintenance_charge ?? 0),
+      referralDiscount: Number(p.referral_discount ?? 0),
+      discountAmount: Number(p.discount_amount ?? 0),
+    }));
+
+    return {
+      data: {
+        member: {
+          fullName: (t.full_name as string) ?? "",
+          phone: (t.phone as string | null) ?? null,
+          cnic: (t.cnic as string | null) ?? null,
+          roomNumber: roomOf(tRoom),
+          checkIn: (t.check_in as string | null) ?? null,
+          guardianPhone: (t.emergency_phone as string | null) ?? null,
+        },
+        bills,
+      },
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed to load payment ledger" };
+  }
+}
+
 export async function getTenantTimeline(
   tenantId: string
 ): Promise<{
