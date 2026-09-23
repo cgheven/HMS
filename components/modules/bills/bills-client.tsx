@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
-import { formatDate, formatDateInput, capitalize } from "@/lib/utils";
+import { formatDate, formatDateInput, formatMonthLong, capitalize } from "@/lib/utils";
 import { useMoney, useHostelContext } from "@/contexts/hostel-context";
 import { getCountryConfig } from "@/lib/country-config";
 import type { Bill, BillCategory, BillStatus, PartnerTier } from "@/types";
@@ -42,25 +42,42 @@ interface Props { hostelId: string | null; initialBills: Bill[]; partnerTier?: P
 
 export function BillsClient({ hostelId, initialBills, partnerTier = null }: Props) {
   const money = useMoney();
+  const country = useHostelContext().hostel?.country;
   // ISO code for the parenthetical field caption ("Amount (PKR)"): PK stays
   // "PKR" byte-identical, GB reads "GBP". Symbols are only for inline amounts.
-  const curCode = getCountryConfig(useHostelContext().hostel?.country).currency;
+  const curCode = getCountryConfig(country).currency;
   const canStandardTier = !partnerTier || partnerTier !== "read_only";
   const [bills, setBills] = useState<Bill[]>(initialBills);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [monthFilter, setMonthFilter] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Bill | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
+  // Months that actually have bills (by due date), newest first — the filter
+  // only ever offers real options, never an empty month.
+  const availableMonths = useMemo(() => {
+    const set = new Set<string>();
+    for (const b of bills) if (b.due_date) set.add(b.due_date.slice(0, 7));
+    return [...set].sort().reverse();
+  }, [bills]);
+
+  // Bills for the chosen month (by due date). The summary cards read from this,
+  // so "Pending / Paid / Overdue" become that month's figures when one is picked.
+  const monthBills = useMemo(
+    () => (monthFilter === "all" ? bills : bills.filter((b) => (b.due_date ?? "").slice(0, 7) === monthFilter)),
+    [bills, monthFilter]
+  );
+
   const filtered = useMemo(() => {
-    let list = bills;
+    let list = monthBills;
     if (search) list = list.filter((b) => b.title.toLowerCase().includes(search.toLowerCase()) || b.category.includes(search.toLowerCase()));
     if (statusFilter !== "all") list = list.filter((b) => b.status === statusFilter);
     return list;
-  }, [search, statusFilter, bills]);
+  }, [search, statusFilter, monthBills]);
 
   async function reload() {
     if (!hostelId) return;
@@ -124,10 +141,10 @@ export function BillsClient({ hostelId, initialBills, partnerTier = null }: Prop
   }
 
   const totals = useMemo(() => ({
-    unpaid: bills.filter((b) => b.status !== "paid").reduce((s, b) => s + Number(b.amount), 0),
-    paid: bills.filter((b) => b.status === "paid").reduce((s, b) => s + Number(b.amount), 0),
-    overdue: bills.filter((b) => b.status === "overdue").length,
-  }), [bills]);
+    unpaid: monthBills.filter((b) => b.status !== "paid").reduce((s, b) => s + Number(b.amount), 0),
+    paid: monthBills.filter((b) => b.status === "paid").reduce((s, b) => s + Number(b.amount), 0),
+    overdue: monthBills.filter((b) => b.status === "overdue").length,
+  }), [monthBills]);
 
   return (
     <div className="space-y-6">
@@ -178,6 +195,13 @@ export function BillsClient({ hostelId, initialBills, partnerTier = null }: Prop
 
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1 max-w-sm"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input placeholder="Search bills..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" /></div>
+        <Select value={monthFilter} onValueChange={setMonthFilter}>
+          <SelectTrigger className="w-full sm:w-48"><SelectValue placeholder="Month" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Months</SelectItem>
+            {availableMonths.map((m) => <SelectItem key={m} value={m}>{formatMonthLong(m, country)}</SelectItem>)}
+          </SelectContent>
+        </Select>
         <Select value={statusFilter} onValueChange={setStatusFilter}><SelectTrigger className="w-full sm:w-40"><SelectValue placeholder="Status" /></SelectTrigger><SelectContent><SelectItem value="all">All Status</SelectItem><SelectItem value="unpaid">Unpaid</SelectItem><SelectItem value="paid">Paid</SelectItem><SelectItem value="overdue">Overdue</SelectItem></SelectContent></Select>
       </div>
 
