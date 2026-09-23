@@ -9,7 +9,7 @@ import type { CurrencyCode } from "@paddle/paddle-node-sdk";
 import { getPlanPriceId, ONBOARDING_FEE_USD, type BillingCycle } from "@/lib/paddle";
 import { asPlan, applyPlanEntitlements, type Plan } from "@/lib/entitlements";
 import { isManualBankBilling } from "@/lib/country-config";
-import { priceFor, tierForPropertyCount, toMinorUnits, type PricingTier } from "@/lib/tier-pricing";
+import { priceFor, tierForPropertyCount, toMinorUnits, pkCardMonthlyUsd, type PricingTier } from "@/lib/tier-pricing";
 
 /**
  * Create a Paddle transaction for the owner's tier, then hand its id to the
@@ -79,6 +79,11 @@ export async function createPlanCheckoutAction(input: {
     // grandfathered custom-rate clients (they keep their fixed rate at any count).
     if (!useCustom && tier === "enterprise") return { contactUs: true };
 
+    // pk_card (new PK self-reg) owners are charged on the USD VOLUME schedule, not
+    // a flat per-branch rate. 21+ branches is custom-quoted → contact us.
+    const pkCardVolumeUsd = pkCardEnabled ? pkCardMonthlyUsd(branchCount) : null;
+    if (pkCardEnabled && pkCardVolumeUsd == null) return { contactUs: true };
+
     const serverPlan = asPlan(ctx.profile?.plan);
     const stampedPlan: Plan | null = useCustom ? serverPlan : tier;
 
@@ -104,7 +109,11 @@ export async function createPlanCheckoutAction(input: {
     // quantity to 1, so the branch multiple must be folded into the amount here,
     // otherwise a multi-branch legacy client would be charged for a single branch.
     // This equals the per-branch × branches total the billing UI displays.
-    const customAmount = useCustom
+    // pk_card owners: USD volume TOTAL (already folds in branch count). Legacy
+    // grandfathered custom-rate owners: their flat per-branch rate × branch count.
+    const customAmount = pkCardVolumeUsd != null
+      ? String(Math.round(pkCardVolumeUsd * (cycle === "annual" ? 10 : 1) * 100))
+      : useCustom
       ? String(Math.round(Number(customMonthly) * (cycle === "annual" ? 10 : 1) * branchCount * 100))
       : null;
 

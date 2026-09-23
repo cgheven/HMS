@@ -37,6 +37,73 @@ export const SELF_SERVE_TIERS: Exclude<PricingTier, "enterprise">[] = ["basic", 
  */
 export const PK_CARD_MONTHLY_USD = 15;
 
+/**
+ * PK card-rail VOLUME pricing (new PK self-reg owners, pk_card_enabled). Charged
+ * in USD via Paddle (Paddle cannot settle PKR); the PKR figure is a display-only
+ * approximate reference. Per-branch rate drops as branch count grows; the total
+ * is the flat band rate × branch count. 21+ branches is custom-quoted. This is
+ * the self-serve schedule ONLY — manually-onboarded clients keep their negotiated
+ * flat custom_unit_amount_usd and never touch these bands.
+ */
+export interface PkCardBand {
+  /** Inclusive upper bound of branch count; null = the 21+ custom band. */
+  maxBranches: number | null;
+  /** Monthly USD per branch (the actual charge), or null when custom-quoted. */
+  perBranchUsd: number | null;
+  /** Approximate PKR reference for display only, or null when custom. */
+  refPkr: number | null;
+}
+
+export const PK_CARD_BANDS: readonly PkCardBand[] = [
+  { maxBranches: 1, perBranchUsd: 20, refPkr: 6000 },
+  { maxBranches: 4, perBranchUsd: 18, refPkr: 5500 },
+  { maxBranches: 8, perBranchUsd: 17, refPkr: 5000 },
+  { maxBranches: 15, perBranchUsd: 15, refPkr: 4500 },
+  { maxBranches: 20, perBranchUsd: 13, refPkr: 4000 },
+  { maxBranches: null, perBranchUsd: null, refPkr: null }, // 21+ — custom
+];
+
+/** Monthly USD rate per branch for a branch count; null = custom-quote (21+). */
+export function pkCardPerBranchUsd(branchCount: number): number | null {
+  const n = Math.max(1, Math.round(branchCount) || 1);
+  for (const b of PK_CARD_BANDS) {
+    if (b.maxBranches === null || n <= b.maxBranches) return b.perBranchUsd;
+  }
+  return null;
+}
+
+/**
+ * Total monthly USD for a PK card-rail owner's branch count, clamped to a running
+ * max so the total never DECREASES as branches grow (a cheaper band must never
+ * undercut what a smaller setup already pays). null = custom-quote (21+).
+ */
+export function pkCardMonthlyUsd(branchCount: number): number | null {
+  const n = Math.max(1, Math.round(branchCount) || 1);
+  if (pkCardPerBranchUsd(n) === null) return null;
+  let total = 0;
+  for (let k = 1; k <= n; k++) {
+    const rate = pkCardPerBranchUsd(k);
+    if (rate !== null) total = Math.max(total, k * rate);
+  }
+  return total;
+}
+
+/**
+ * Monthly USD total to charge a per-branch (custom-rate) owner: the PK card VOLUME
+ * schedule when pkCard is true, else the legacy FLAT rate × branch count. null
+ * means a pk_card owner has hit the 21+ custom band (no self-serve amount).
+ */
+export function customRateMonthlyUsd(
+  pkCard: boolean,
+  customMonthlyUsd: number | null | undefined,
+  branchCount: number
+): number | null {
+  const n = Math.max(1, Math.round(branchCount) || 1);
+  if (pkCard) return pkCardMonthlyUsd(n);
+  const flat = Number(customMonthlyUsd);
+  return flat > 0 ? flat * n : null;
+}
+
 /** Inclusive upper bound on property count for each self-serve tier. */
 export const TIER_PROPERTY_CAP: Record<Exclude<PricingTier, "enterprise">, number> = {
   basic: 1,

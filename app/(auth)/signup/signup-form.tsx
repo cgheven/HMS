@@ -15,8 +15,94 @@ import { isValidLocalPhone } from "@/lib/phone";
 import { COUNTRY_NAMES, countryNameOf, countryCodeOfName } from "@/lib/countries";
 import { PROPERTY_TYPES } from "@/lib/validation";
 import { LegalFooter } from "@/components/legal/legal-footer";
+import { PK_CARD_BANDS, type PkCardBand } from "@/lib/tier-pricing";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function bandLabel(b: PkCardBand): string {
+  if (b.maxBranches === null) return "20+ branches";
+  if (b.maxBranches === 1) return "1 branch";
+  return `Up to ${b.maxBranches} branches`;
+}
+
+// PK-only pricing panel shown beside the signup form. Display only — signup is a
+// free trial, nothing is charged here. Numbers come from PK_CARD_BANDS so the card
+// and the Paddle charge never drift. Billed in USD (Paddle can't settle PKR); the
+// PKR figure is an approximate reference. No WhatsApp add-on (manual-only).
+function SignupPricingCard() {
+  const [period, setPeriod] = useState<"monthly" | "annual">("monthly");
+  const mult = period === "annual" ? 10 : 1;
+  const unit = period === "monthly" ? "month" : "year";
+  const usd = (n: number) => `$${(n * mult).toLocaleString("en-US")}`;
+  const pkr = (n: number) => `≈ PKR ${(n * mult).toLocaleString("en-PK")}`;
+
+  return (
+    <div className="w-full lg:max-w-md rounded-2xl border border-amber/30 bg-card shadow-2xl overflow-hidden">
+      <div className="p-5 pb-3 border-b border-sidebar-border">
+        <div className="flex items-center gap-1 p-1 rounded-xl border border-sidebar-border bg-background/50 max-w-[16rem] mx-auto">
+          {(["monthly", "annual"] as const).map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setPeriod(p)}
+              className={`flex-1 px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                period === p ? "bg-amber text-background shadow-sm" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {p === "monthly" ? "Monthly" : "Annual"}
+            </button>
+          ))}
+        </div>
+        <p className="text-center text-xs text-muted-foreground mt-2">Annual billing: pay 10 months, get 12.</p>
+      </div>
+
+      <div className="px-5 pt-4">
+        <h3 className="text-base font-bold text-amber">Per branch, lower as you grow</h3>
+        <p className="text-xs text-muted-foreground mt-1">
+          Pay for the branches you run. The more branches, the lower the rate per branch.
+        </p>
+      </div>
+
+      <div className="mt-4">
+        <div className="grid grid-cols-[1fr_auto_auto] gap-x-4 px-5 py-2 border-y border-sidebar-border text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <span>Branches</span>
+          <span className="text-right">Per branch / {unit}</span>
+          <span className="text-right">Total / {unit}</span>
+        </div>
+        <div className="divide-y divide-sidebar-border/60">
+          {PK_CARD_BANDS.map((b) => {
+            const custom = b.perBranchUsd === null || b.maxBranches === null;
+            const totalUsd = custom ? null : b.perBranchUsd! * b.maxBranches!;
+            const showUpTo = !custom && b.maxBranches! > 1;
+            return (
+              <div key={String(b.maxBranches)} className="grid grid-cols-[1fr_auto_auto] gap-x-4 px-5 py-2.5 text-sm">
+                <span className="text-foreground self-center">{bandLabel(b)}</span>
+                <span className="text-right tabular-nums">
+                  {custom ? (
+                    <span className="text-muted-foreground">Custom</span>
+                  ) : (
+                    <>
+                      <span className="text-foreground">{usd(b.perBranchUsd!)}</span>
+                      <span className="block text-[10px] text-muted-foreground/70">{pkr(b.refPkr!)}</span>
+                    </>
+                  )}
+                </span>
+                <span className="text-right tabular-nums text-foreground self-center">
+                  {custom ? "Custom" : `${showUpTo ? "Up to " : ""}${usd(totalUsd!)}`}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="px-5 py-4 space-y-1">
+        <p className="text-xs text-emerald-400">14-day free trial — no card required. Cancel anytime.</p>
+        <p className="text-[10px] text-muted-foreground/70">Billed in USD · PKR shown for reference.</p>
+      </div>
+    </div>
+  );
+}
 
 export function SignupForm({ detectedCountryCode }: { detectedCountryCode: string }) {
   const [businessName, setBusinessName] = useState("");
@@ -37,6 +123,10 @@ export function SignupForm({ detectedCountryCode }: { detectedCountryCode: strin
 
   const resolvedPropertyType =
     propertyType === "Other" ? propertyTypeOther.trim() : propertyType;
+
+  // PK owners see the PKR volume pricing beside the form. Non-PK pricing is
+  // handled by their own market and left untouched here.
+  const showPricing = country === "PK" && !sent;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -94,7 +184,7 @@ export function SignupForm({ detectedCountryCode }: { detectedCountryCode: strin
         <div className="absolute -top-40 left-1/2 -translate-x-1/2 w-[600px] h-[400px] rounded-full bg-amber/5 blur-3xl" />
       </div>
 
-      <div className="w-full max-w-sm relative">
+      <div className={`w-full relative ${showPricing ? "max-w-4xl" : "max-w-sm"}`}>
         <div className="flex items-center justify-center gap-3 mb-8">
           <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-amber/10 border border-amber/20 overflow-hidden shrink-0">
             <Image src="/logo-mark.jpg" alt="Pulse" width={48} height={48} priority className="w-full h-full object-cover" />
@@ -105,6 +195,9 @@ export function SignupForm({ detectedCountryCode }: { detectedCountryCode: strin
           </div>
         </div>
 
+        <div className={showPricing ? "flex flex-col-reverse lg:flex-row gap-6 justify-center lg:items-start" : ""}>
+          {showPricing && <SignupPricingCard />}
+          <div className="w-full max-w-sm mx-auto lg:mx-0">
         <div className="rounded-2xl border border-sidebar-border bg-card p-8 shadow-2xl">
           {sent ? (
             <div className="text-center py-4 space-y-4">
@@ -203,6 +296,8 @@ export function SignupForm({ detectedCountryCode }: { detectedCountryCode: strin
           )}
         </div>
         <div className="mt-6"><LegalFooter /></div>
+          </div>
+        </div>
       </div>
     </div>
   );

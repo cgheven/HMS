@@ -9,6 +9,8 @@ import {
   TIER_LABEL,
   TIER_PROPERTIES_LABEL,
   priceFor,
+  pkCardPerBranchUsd,
+  pkCardMonthlyUsd,
   type PricingTier,
   type TierBillingCycle,
 } from "@/lib/tier-pricing";
@@ -84,6 +86,7 @@ interface Props {
   /** A grandfathered per-branch USD rate. When set, this owner pays their
    *  negotiated rate on their fixed plan — no plan picker. */
   customUnitAmountUsd: number | null;
+  pkCardEnabled: boolean;
   /** True when the owner just came back from a completed Paddle checkout. */
   checkoutSuccess: boolean;
   /** Whether the manual/bank billing rail applies (PK). When false the owner is
@@ -100,7 +103,7 @@ function statusBadge(status: PlatformInvoice["status"]) {
   return { label: "Unpaid", cls: "text-amber bg-amber/10 border-amber/20", icon: Clock };
 }
 
-export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEmail, paddle, subscription, paddlePayments, plan, customUnitAmountUsd, checkoutSuccess, manualBankBilling, country, tier, trialEndsAt }: Props) {
+export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEmail, paddle, subscription, paddlePayments, plan, customUnitAmountUsd, pkCardEnabled, checkoutSuccess, manualBankBilling, country, tier, trialEndsAt }: Props) {
   const outstanding = invoices.filter((i) => i.status === "unpaid").reduce((s, i) => s + Number(i.amount), 0);
   const qty = Math.max(1, branchCount);
 
@@ -235,8 +238,17 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
   // away from grandfathered manual (PK) clients.
   const isLegacy = paddleEnabled && !manualBankBilling && customUnitAmountUsd != null && customUnitAmountUsd > 0;
   const legacyPlanLabel = plan === "standard" ? "standard" : "basic";
-  const legacyPerBranch = (customUnitAmountUsd ?? 0) * (cycle === "annual" ? 10 : 1);
-  const legacyTotal = legacyPerBranch * qty;
+  // pk_card (new PK self-reg) owners price on the USD VOLUME schedule (rate drops
+  // as branches grow); legacy grandfathered owners keep their flat negotiated rate.
+  const cycleMult = cycle === "annual" ? 10 : 1;
+  const pkCardMonthly = pkCardEnabled ? pkCardMonthlyUsd(qty) : null; // null = 21+ custom
+  const pkCardCustom = pkCardEnabled && pkCardMonthly == null;
+  const legacyPerBranch = pkCardEnabled
+    ? (pkCardPerBranchUsd(qty) ?? 0) * cycleMult
+    : (customUnitAmountUsd ?? 0) * cycleMult;
+  const legacyTotal = pkCardEnabled
+    ? (pkCardMonthly ?? 0) * cycleMult
+    : legacyPerBranch * qty;
 
   // Trial pay-after messaging: non-PK owner, no active subscription, and a
   // future trial-end date. The freeze itself is enforced by the daily cron.
@@ -337,11 +349,20 @@ export function BillingClient({ billing, invoices, branchCount, ownerId, ownerEm
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-5 flex items-end justify-between gap-4 flex-wrap">
             <div>
               <p className="text-sm font-bold capitalize">{legacyPlanLabel} <span className="ml-1 text-[10px] font-semibold text-amber uppercase tracking-wide align-middle">Your rate</span></p>
-              <p className="mt-1 text-2xl font-bold">
-                {formatMoney(legacyTotal, "USD")}
-                <span className="text-xs font-normal text-muted-foreground"> / {cycle === "monthly" ? "month" : "year"}</span>
-              </p>
-              <p className="text-[11px] text-muted-foreground">{formatMoney(legacyPerBranch, "USD")}/{cycle === "monthly" ? "mo" : "yr"} per branch · {qty} {qty > 1 ? "branches" : "branch"}</p>
+              {pkCardCustom ? (
+                <>
+                  <p className="mt-1 text-2xl font-bold">Custom</p>
+                  <p className="text-[11px] text-muted-foreground">20+ branches — contact us for a quote.</p>
+                </>
+              ) : (
+                <>
+                  <p className="mt-1 text-2xl font-bold">
+                    {formatMoney(legacyTotal, "USD")}
+                    <span className="text-xs font-normal text-muted-foreground"> / {cycle === "monthly" ? "month" : "year"}</span>
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">{formatMoney(legacyPerBranch, "USD")}/{cycle === "monthly" ? "mo" : "yr"} per branch · {qty} {qty > 1 ? "branches" : "branch"}</p>
+                </>
+              )}
             </div>
             <button
               onClick={() => choose(tier)}

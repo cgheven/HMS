@@ -8,7 +8,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnerWrite, requireOwnerOrAbove, requireNotFrozen } from "@/lib/auth";
 import { isKnownCountry, DEFAULT_COUNTRY, isManualBankBilling } from "@/lib/country-config";
 import { MAX_PROPERTIES, ACCOMMODATION_TYPE_VALUES } from "@/lib/validation";
-import { chargeTierUpgradeForOwner, previewTierUpgradeForOwner, syncSubscriptionTierForOwner, type TierSyncResult } from "@/lib/tier-sync";
+import { chargeTierUpgradeForOwner, chargeCustomRateForBranchCount, previewTierUpgradeForOwner, previewCustomRateBranchAdd, syncSubscriptionTierForOwner, type TierSyncResult } from "@/lib/tier-sync";
 import { sendBranchDeletionEmail } from "@/lib/email";
 import { siteUrl } from "@/lib/site-url";
 import { tierForPropertyCount, type PricingTier } from "@/lib/tier-pricing";
@@ -383,13 +383,18 @@ export async function createBranch(data: {
       }
     }
 
-    // PAY FIRST. Charge the prorated tier difference and CONFIRM it succeeded before
-    // creating anything. chargeTierUpgradeForOwner fails closed: if Paddle can't take
-    // the payment (or the change didn't apply), it returns ok:false and we return the
-    // error WITHOUT creating the property — so a property never exists on an unpaid
-    // upgrade. When no charge is due (within-tier add, manual/PK, grandfathered, or
-    // trial/no live subscription) it returns ok:true, applied:false and we proceed.
-    const charge = await chargeTierUpgradeForOwner(user.id, toTier);
+    // PAY FIRST. Charge and CONFIRM before creating anything — both paths fail
+    // closed, so a property never exists on an unpaid add.
+    //  - Custom-rate / pk_card owners bill per branch (a flat amount = rate ×
+    //    branch count). The tier path exempts them, so they get their own charge
+    //    that re-syncs the subscription amount to the NEW branch count. Without
+    //    this they could add billing-active branches for free (revenue leak).
+    //  - Everyone else on the tier system pays the prorated tier difference.
+    // When no charge is due (within-tier add, manual/PK, trial/no live sub) both
+    // return ok:true, applied:false and we proceed.
+    const charge = hasCustomRate
+      ? await chargeCustomRateForBranchCount(user.id, (billableCount ?? 0) + 1)
+      : await chargeTierUpgradeForOwner(user.id, toTier);
     if (!charge.ok) {
       return {
         error:
@@ -580,7 +585,12 @@ export async function previewAddProperty(): Promise<{
       };
     }
 
-    const preview = await previewTierUpgradeForOwner(user.id, toTier);
+    // Custom-rate / pk_card owners bill per branch, so preview their per-branch
+    // charge (matches chargeCustomRateForBranchCount); everyone else previews the
+    // tier upgrade.
+    const preview = hasCustomRate
+      ? await previewCustomRateBranchAdd(user.id, (billableCount ?? 0) + 1)
+      : await previewTierUpgradeForOwner(user.id, toTier);
     return {
       ok: true,
       willCharge: preview.willCharge,

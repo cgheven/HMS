@@ -6,7 +6,7 @@ import { getPlanPriceId, type BillingCycle } from "@/lib/paddle";
 import { asPlan, applyPlanEntitlements } from "@/lib/entitlements";
 import { trackServerEvent } from "@/lib/analytics-server";
 import { isManualBankBilling } from "@/lib/country-config";
-import { priceFor, tierForPropertyCount, toMinorUnits, type PricingTier } from "@/lib/tier-pricing";
+import { priceFor, tierForPropertyCount, toMinorUnits, customRateMonthlyUsd, type PricingTier } from "@/lib/tier-pricing";
 
 const TIER_RANK: Record<PricingTier, number> = { basic: 0, standard: 1, business: 2, enterprise: 3 };
 
@@ -72,22 +72,96 @@ export type TierSyncResult =
  * - Same tier → noop. Enterprise (10+) → contactUs (leave on business, no self-serve).
  * - Skipped for PK/manual, grandfathered custom-rate, or no live subscription.
  */
+// Custom-rate (per-branch) counterpart to the tier reconcile below: re-sync the
+// FLAT subscription amount to per-branch × current billable count after a branch
+// is removed, paused, or reactivated. An INCREASE (reactivate/add) charges the
+// proration immediately; a DECREASE (remove/pause) applies at the next renewal
+// (no mid-cycle refund). No plan/entitlement change — the owner keeps their
+// contracted plan; only the amount scales with branch count.
+async function syncCustomRateSubscriptionForOwner(
+  admin: ReturnType<typeof createAdminClient>,
+  ownerId: string,
+  customMonthly: number,
+  pkCard: boolean,
+  fromPlan: PricingTier
+): Promise<TierSyncResult> {
+  const { data: subRow } = await admin
+    .from("hms_paddle_subscriptions")
+    .select("paddle_subscription_id, status")
+    .eq("owner_id", ownerId)
+    .maybeSingle();
+  const sub = subRow as { paddle_subscription_id?: string | null; status?: string | null } | null;
+  const subId = sub?.paddle_subscription_id ?? null;
+  if (!subId || !sub?.status || sub.status === "canceled") return { status: "skipped", reason: "no-subscription" };
+
+  const { count } = await admin
+    .from("hms_hostels")
+    .select("id", { count: "exact", head: true })
+    .eq("owner_id", ownerId)
+    .eq("billing_active", true);
+  const branchCount = Math.max(1, count ?? 1);
+
+  // pk_card owners at 21+ branches are custom-quoted — leave the subscription as
+  // it is rather than auto-repricing to a bogus amount.
+  const monthlyTotal = customRateMonthlyUsd(pkCard, customMonthly, branchCount);
+  if (monthlyTotal == null) return { status: "skipped", reason: "custom-quote" };
+
+  const paddle = getPaddleServer();
+  const live = await paddle.subscriptions.get(subId);
+  const cycle: BillingCycle = live.billingCycle?.interval === "year" ? "annual" : "monthly";
+  const { inlinePrice, targetMinor } = await buildCustomRateInlinePrice(paddle, monthlyTotal, cycle);
+
+  const mirror = async (s: typeof live) => {
+    const it = s.items?.[0];
+    const u = it?.price?.unitPrice?.amount;
+    await admin.from("hms_paddle_subscriptions").update({
+      status: s.status ?? undefined,
+      quantity: it?.quantity ?? 1,
+      unit_amount: u != null ? Number(u) / 100 : undefined,
+      currency_code: s.currencyCode ?? it?.price?.unitPrice?.currencyCode ?? undefined,
+      current_period_end: s.currentBillingPeriod?.endsAt ?? undefined,
+      updated_at: new Date().toISOString(),
+    }).eq("owner_id", ownerId);
+  };
+
+  const currentMinor = live.items?.[0]?.price?.unitPrice?.amount != null ? Number(live.items[0].price!.unitPrice!.amount) : null;
+  if (currentMinor === targetMinor) { await mirror(live); return { status: "noop" }; }
+
+  const goingUp = currentMinor == null || targetMinor > currentMinor;
+  const updated = await paddle.subscriptions.update(subId, {
+    items: [{ price: inlinePrice, quantity: 1 } as UpdateItem],
+    prorationBillingMode: goingUp ? "prorated_immediately" : "prorated_next_billing_period",
+    customData: { owner_id: ownerId, cycle, per_branch: true, branches: branchCount },
+  });
+  await mirror(updated);
+  return goingUp
+    ? { status: "charged", from: fromPlan, to: fromPlan }
+    : { status: "scheduled", from: fromPlan, to: fromPlan };
+}
+
 export async function syncSubscriptionTierForOwner(ownerId: string): Promise<TierSyncResult> {
   try {
     const admin = createAdminClient();
 
     const { data: profile } = await admin
       .from("hms_profiles")
-      .select("country, custom_unit_amount_usd, plan")
+      .select("country, custom_unit_amount_usd, pk_card_enabled, plan")
       .eq("id", ownerId)
       .maybeSingle();
-    const prof = profile as { country?: string | null; custom_unit_amount_usd?: number | null; plan?: string | null } | null;
+    const prof = profile as { country?: string | null; custom_unit_amount_usd?: number | null; pk_card_enabled?: boolean | null; plan?: string | null } | null;
     const country = prof?.country ?? null;
 
-    if (isManualBankBilling(country)) return { status: "skipped", reason: "manual" };
+    // Per-branch (custom-rate / pk_card) owners re-sync the amount to the current
+    // branch count — this closes the leak on the remove / pause / reactivate paths
+    // (createBranch handles the add). pk_card owners reprice on the volume schedule;
+    // legacy custom-rate owners on their flat rate × count. MUST precede the
+    // manual-bank skip: a PK legacy client on a $18/branch Paddle contract is on the
+    // Paddle rail even though isManualBankBilling("PK") is true — checking manual
+    // first would wrongly exempt exactly the owners this fix targets.
     if (prof?.custom_unit_amount_usd != null && Number(prof.custom_unit_amount_usd) > 0) {
-      return { status: "skipped", reason: "custom-rate" };
+      return await syncCustomRateSubscriptionForOwner(admin, ownerId, Number(prof.custom_unit_amount_usd), prof?.pk_card_enabled === true, asPlan(prof?.plan) ?? "basic");
     }
+    if (isManualBankBilling(country)) return { status: "skipped", reason: "manual" };
 
     const { data: subRow } = await admin
       .from("hms_paddle_subscriptions")
@@ -356,6 +430,126 @@ export async function chargeTierUpgradeForOwner(
   }
 }
 
+// Inline Paddle price for a custom-rate (per-branch) owner: a FLAT USD amount for
+// the whole subscription = the monthly USD TOTAL (already folds in the branch
+// count — flat rate × count for legacy owners, the volume schedule for pk_card
+// owners) × cycle multiple (annual ×10), quantity 1. Identical shape to the
+// initial checkout (app/actions/paddle.ts). Returns the target minor amount so the
+// caller can verify the charge applied.
+async function buildCustomRateInlinePrice(
+  paddle: ReturnType<typeof getPaddleServer>,
+  monthlyTotalUsd: number,
+  cycle: BillingCycle
+) {
+  const scaffold = await paddle.prices.get(getPlanPriceId("basic", cycle), { include: ["product"] });
+  const amountMinor = Math.round(monthlyTotalUsd * (cycle === "annual" ? 10 : 1) * 100);
+  const inlinePrice = {
+    productId: scaffold.productId,
+    description: scaffold.description,
+    taxMode: scaffold.taxMode,
+    billingCycle: scaffold.billingCycle
+      ? { interval: scaffold.billingCycle.interval, frequency: scaffold.billingCycle.frequency }
+      : null,
+    unitPrice: { amount: String(amountMinor), currencyCode: "USD" as CurrencyCode },
+    unitPriceOverrides: [],
+    quantity: { minimum: 1, maximum: 1 },
+  };
+  return { inlinePrice, targetMinor: amountMinor };
+}
+
+/**
+ * Pay-first charge for a CUSTOM-RATE / pk_card (per-branch) owner adding a branch.
+ * The tier path (chargeTierUpgradeForOwner) deliberately exempts these owners, so
+ * without this their per-branch flat amount was NEVER re-synced on a branch add —
+ * they could create billing-active branches for free (revenue leak). This updates
+ * their live Paddle subscription to per-branch × `billableCount` (the NEW total,
+ * i.e. existing + the one about to be added), charges the proration immediately,
+ * and CONFIRMS the new amount applied before returning ok — fail closed, exactly
+ * like the tier path, so createBranch never creates on an unconfirmed charge.
+ *
+ * INTERNAL server helper (service-role), not a `use server` action.
+ */
+export async function chargeCustomRateForBranchCount(
+  ownerId: string,
+  billableCount: number
+): Promise<{ ok: boolean; applied: boolean; reason?: string; error?: string }> {
+  try {
+    const admin = createAdminClient();
+    const { data: profile } = await admin
+      .from("hms_profiles")
+      .select("custom_unit_amount_usd, pk_card_enabled")
+      .eq("id", ownerId)
+      .maybeSingle();
+    const prof = profile as { custom_unit_amount_usd?: number | null; pk_card_enabled?: boolean | null } | null;
+    const customMonthly = prof?.custom_unit_amount_usd;
+    const pkCard = prof?.pk_card_enabled === true;
+    // Only per-branch (custom-rate) owners belong here; anyone else is charged via
+    // the tier path. Safe to proceed with creation for a non-custom owner.
+    if (customMonthly == null || Number(customMonthly) <= 0) return { ok: true, applied: false, reason: "not-custom-rate" };
+
+    // pk_card owners at 21+ branches are custom-quoted — block the self-serve add.
+    const monthlyTotal = customRateMonthlyUsd(pkCard, Number(customMonthly), billableCount);
+    if (monthlyTotal == null) {
+      return { ok: false, applied: false, reason: "custom-quote", error: "20+ branches is custom-priced — please contact us to add more branches." };
+    }
+
+    const { data: subRow } = await admin
+      .from("hms_paddle_subscriptions")
+      .select("paddle_subscription_id, status")
+      .eq("owner_id", ownerId)
+      .maybeSingle();
+    const sub = subRow as { paddle_subscription_id?: string | null; status?: string | null } | null;
+    const subId = sub?.paddle_subscription_id ?? null;
+    // No live subscription (trial / not yet subscribed): the full amount is billed
+    // when they subscribe/convert, so nothing to charge now. Safe to create.
+    if (!subId || !sub?.status || sub.status === "canceled") return { ok: true, applied: false, reason: "no-subscription" };
+
+    const paddle = getPaddleServer();
+    const live = await paddle.subscriptions.get(subId);
+    const cycle: BillingCycle = live.billingCycle?.interval === "year" ? "annual" : "monthly";
+    const { inlinePrice, targetMinor } = await buildCustomRateInlinePrice(paddle, monthlyTotal, cycle);
+
+    let updated: Awaited<ReturnType<typeof paddle.subscriptions.update>>;
+    try {
+      updated = await paddle.subscriptions.update(subId, {
+        items: [{ price: inlinePrice, quantity: 1 } as UpdateItem],
+        prorationBillingMode: "prorated_immediately",
+        onPaymentFailure: "prevent_change",
+        customData: { owner_id: ownerId, cycle, per_branch: true, branches: billableCount },
+      });
+    } catch (payErr: unknown) {
+      console.error("[tier-sync] chargeCustomRateForBranchCount: payment/update failed:", payErr);
+      return { ok: false, applied: false, error: "Payment could not be completed." };
+    }
+
+    const uItem = updated.items?.[0];
+    const uUnit = uItem?.price?.unitPrice?.amount != null ? Number(uItem.price!.unitPrice!.amount) : null;
+    if (uUnit == null || uUnit !== targetMinor) {
+      console.error("[tier-sync] chargeCustomRateForBranchCount: change not applied (amount mismatch)");
+      return { ok: false, applied: false, error: "The charge could not be confirmed. Please try again." };
+    }
+
+    // Charge confirmed → mirror the subscription locally. No plan/entitlement change:
+    // custom-rate owners keep their contracted plan; only the amount scales with branches.
+    await admin
+      .from("hms_paddle_subscriptions")
+      .update({
+        status: updated.status ?? undefined,
+        quantity: uItem?.quantity ?? 1,
+        unit_amount: uUnit / 100,
+        currency_code: updated.currencyCode ?? uItem?.price?.unitPrice?.currencyCode ?? "USD",
+        current_period_end: updated.currentBillingPeriod?.endsAt ?? undefined,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("owner_id", ownerId);
+    return { ok: true, applied: true };
+  } catch (err: unknown) {
+    // FAIL CLOSED — never let createBranch create on an unconfirmed charge.
+    console.error("[tier-sync] chargeCustomRateForBranchCount failed:", err);
+    return { ok: false, applied: false, error: "Could not process the branch charge. Please try again." };
+  }
+}
+
 /**
  * PREVIEW the immediate (prorated) charge for moving an owner to `toTier`, WITHOUT
  * charging anything. Read-only — uses Paddle's previewUpdate. Used to show a
@@ -420,6 +614,61 @@ export async function previewTierUpgradeForOwner(
   } catch (err: unknown) {
     console.error("[tier-sync] previewTierUpgradeForOwner failed:", err);
     // Fail toward warning, not silence: tell the UI a charge applies (no figure).
+    return { willCharge: true, reason: "preview-failed" };
+  }
+}
+
+/**
+ * PREVIEW the prorated charge for a CUSTOM-RATE / pk_card (per-branch) owner adding
+ * a branch — the read-only counterpart to chargeCustomRateForBranchCount, so the
+ * Add Property dialog shows the real "+$X now" figure instead of implying it's free.
+ * `billableCount` is the NEW total (existing + the one about to be added).
+ */
+export async function previewCustomRateBranchAdd(
+  ownerId: string,
+  billableCount: number
+): Promise<{ willCharge: boolean; amount?: string; currency?: string; reason?: string }> {
+  try {
+    const admin = createAdminClient();
+    const { data: profile } = await admin
+      .from("hms_profiles")
+      .select("custom_unit_amount_usd, pk_card_enabled")
+      .eq("id", ownerId)
+      .maybeSingle();
+    const prof = profile as { custom_unit_amount_usd?: number | null; pk_card_enabled?: boolean | null } | null;
+    const customMonthly = prof?.custom_unit_amount_usd;
+    const pkCard = prof?.pk_card_enabled === true;
+    if (customMonthly == null || Number(customMonthly) <= 0) return { willCharge: false, reason: "not-custom-rate" };
+
+    // pk_card owner at 21+ branches — custom-quoted, no self-serve figure to show.
+    const monthlyTotal = customRateMonthlyUsd(pkCard, Number(customMonthly), billableCount);
+    if (monthlyTotal == null) return { willCharge: false, reason: "custom-quote" };
+
+    const { data: subRow } = await admin
+      .from("hms_paddle_subscriptions")
+      .select("paddle_subscription_id, status")
+      .eq("owner_id", ownerId)
+      .maybeSingle();
+    const sub = subRow as { paddle_subscription_id?: string | null; status?: string | null } | null;
+    const subId = sub?.paddle_subscription_id ?? null;
+    if (!subId || !sub?.status || sub.status === "canceled") return { willCharge: false, reason: "no-subscription" };
+
+    const paddle = getPaddleServer();
+    const live = await paddle.subscriptions.get(subId);
+    const cycle: BillingCycle = live.billingCycle?.interval === "year" ? "annual" : "monthly";
+    const { inlinePrice } = await buildCustomRateInlinePrice(paddle, monthlyTotal, cycle);
+
+    const preview = await paddle.subscriptions.previewUpdate(subId, {
+      items: [{ price: inlinePrice, quantity: 1 } as UpdateItem],
+      prorationBillingMode: "prorated_immediately",
+    });
+    const r = preview.updateSummary?.result;
+    if (r && r.action === "charge" && Number(r.amount) > 0) {
+      return { willCharge: true, amount: r.amount, currency: r.currencyCode };
+    }
+    return { willCharge: false, reason: "no-immediate-charge", currency: r?.currencyCode };
+  } catch (err: unknown) {
+    console.error("[tier-sync] previewCustomRateBranchAdd failed:", err);
     return { willCharge: true, reason: "preview-failed" };
   }
 }

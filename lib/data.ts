@@ -399,7 +399,7 @@ export async function getDashboardData() {
 // so this deliberately does NOT depend on ctx.hostelId / the branch switcher.
 export async function getOwnerBilling() {
   const ctx = await getAuthContext();
-  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1, subscription: null as OwnerPaddleSubscription | null, paddlePayments: [] as OwnerPaddlePayment[], plan: null as Plan | null, customUnitAmountUsd: null as number | null, manualBankBilling: true, country: null as string | null, tier: "basic" as PricingTier, trialEndsAt: null as string | null };
+  if (!ctx?.user) return { billing: null, invoices: [] as PlatformInvoice[], branchCount: 1, subscription: null as OwnerPaddleSubscription | null, paddlePayments: [] as OwnerPaddlePayment[], plan: null as Plan | null, customUnitAmountUsd: null as number | null, pkCardEnabled: false, manualBankBilling: true, country: null as string | null, tier: "basic" as PricingTier, trialEndsAt: null as string | null };
   const { supabase, user } = ctx;
   // Billing rail resolves via the OWNER's PROFILE country (billing/legal contract).
   // PK keeps the manual/bank rail; every other country is Paddle-only (card).
@@ -447,6 +447,7 @@ export async function getOwnerBilling() {
     paddlePayments: (paddlePayments ?? []) as OwnerPaddlePayment[],
     plan: asPlan(ctx.profile?.plan),
     customUnitAmountUsd: ctx.profile?.custom_unit_amount_usd != null ? Number(ctx.profile.custom_unit_amount_usd) : null,
+    pkCardEnabled,
     manualBankBilling,
     country: ctx.profile?.country ?? null,
     tier: tierForPropertyCount(branchCount ?? 1),

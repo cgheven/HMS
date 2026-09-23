@@ -24,7 +24,7 @@ export default async function BillingPage({
   // never stale when the activation/upgrade webhook is delayed or (on localhost)
   // unreachable. Side-effect-safe: refreshes the display only, never charges.
   if (ctx?.user?.id) await reconcileSubscriptionMirror(ctx.user.id);
-  const { billing, invoices, branchCount, subscription, paddlePayments, plan, customUnitAmountUsd, manualBankBilling, country, tier, trialEndsAt } = await getOwnerBilling();
+  const { billing, invoices, branchCount, subscription, paddlePayments, plan, customUnitAmountUsd, pkCardEnabled, manualBankBilling, country, tier, trialEndsAt } = await getOwnerBilling();
   return (
     <BillingClient
       billing={billing}
@@ -34,6 +34,7 @@ export default async function BillingPage({
       paddlePayments={paddlePayments}
       plan={plan}
       customUnitAmountUsd={customUnitAmountUsd}
+      pkCardEnabled={pkCardEnabled}
       manualBankBilling={manualBankBilling}
       country={country}
       tier={tier}
