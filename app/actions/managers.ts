@@ -440,6 +440,9 @@ export async function applyRoomACUnitsAsManager(
   forMonth: string,
   meterReading: number,
   openingReading?: number,
+  // Manual per-tenant split — mirrors applyRoomACUnitsAction so owner and manager
+  // never diverge. When present it REPLACES the automatic split; see the branch below.
+  overrides?: { tenantId: string; units: number }[],
 ): Promise<{ error: string | null; eligibleCount?: number; perTenantUnits?: number; perTenantCharge?: number; derivedUnits?: number; prevMonthReading?: number; currentReading?: number; vacant?: boolean }> {
   try {
     const ctx = await requireManagerWrite("collect_payments")
@@ -703,6 +706,8 @@ export async function applyRoomACUnitsAsManager(
         return {
           hostel_id: hostelId,
           tenant_id: t.id,
+          // The room being AC-billed — snapshotted for the member ledger.
+          room_id: roomId,
           for_month: currentMonth,
           amount: baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge,
           status: "pending" as PaymentStatus,
@@ -722,24 +727,100 @@ export async function applyRoomACUnitsAsManager(
     // Shared with applyRoomACUnitsAction (lib/ac-billing.ts) so this tier can
     // never bill a mid-month joiner as if present the whole month — this path
     // used to split units equally regardless of join date.
-    const { tenantBilling: billing, departedCounted } = computeACSegmentBilling({
-      eligible,
-      prevReading,
-      reading,
-      units,
-      perUnitRate,
-      forMonth: currentMonth,
-      // Passed WHOLE, not pre-filtered to the eligible list. computeACSegmentBilling
-      // already drops rows for tenants who are not eligible when it builds the
-      // billing timeline — but it also needs the join row of a member who has
-      // since LEFT the room, to know they arrived partway rather than assuming
-      // they were there from the first unit. Filtering here hid exactly that row
-      // and under-billed the roommates who really were alone before they moved in.
-      joinReadingsRaw: joinReadingsRaw ?? [],
-      // Passed through unfiltered — see applyRoomACUnitsAction for why a
-      // departure at exactly this reading must reach the billing function.
-      checkoutReadingsRaw: checkoutReadingsRaw ?? [],
-    })
+    let billing: { id: string; tenantUnits: number; charge: number }[]
+    let departedCounted: number
+
+    if (overrides && overrides.length > 0) {
+      // ── Manual per-tenant override — same rules as applyRoomACUnitsAction ──
+      // Redistributes the metered units between present tenants only; the sum
+      // must still equal the meter total, and charge is re-derived server-side.
+      // Not offered for a room with a mid-month checkout (locked departed share).
+      if ((checkoutReadingsRaw ?? []).length > 0) {
+        return { error: "Manual split isn't available for a room with a mid-month checkout this month." }
+      }
+
+      // Paid/waived tenants are LOCKED — excluded from the override, bill untouched.
+      // Payload carries only unsettled tenants; total = unsettled override + settled share.
+      const { data: statusRows } = await admin
+        .from("hms_payments")
+        .select("tenant_id, status, ac_units_consumed")
+        .eq("hostel_id", hostelId)
+        .eq("for_month", currentMonth)
+        .in("tenant_id", eligible.map((t) => t.id))
+      const statusByTenant = new Map(
+        (statusRows ?? []).map((r) => [r.tenant_id, { status: String(r.status ?? ""), units: Number(r.ac_units_consumed ?? 0) }])
+      )
+      const carriedByTenant = await carriedTransferCharges(admin, hostelId, currentMonth, roomId, eligible.map((t) => t.id))
+      const SETTLED = new Set(["paid", "waived"])
+      const isSettled = (id: string) => SETTLED.has(statusByTenant.get(id)?.status ?? "")
+      const settledThisRoomUnits = (id: string) =>
+        Math.max(0, round2((statusByTenant.get(id)?.units ?? 0) - (carriedByTenant.get(id)?.units ?? 0)))
+
+      const unsettledEligible = eligible.filter((t) => !isSettled(t.id))
+      if (unsettledEligible.length === 0) {
+        return { error: "Every resident in this room has already paid — reopen a bill first to re-split it." }
+      }
+      const unsettledIds = new Set(unsettledEligible.map((t) => t.id))
+
+      const seen = new Set<string>()
+      const overrideUnits = new Map<string, number>()
+      for (const o of overrides) {
+        if (!o || typeof o.tenantId !== "string" || !unsettledIds.has(o.tenantId)) {
+          return { error: "You can only re-split units for residents who haven't paid yet." }
+        }
+        if (seen.has(o.tenantId)) return { error: "A tenant was listed more than once in the manual split." }
+        const u = Number(o.units)
+        if (!Number.isFinite(u) || u < 0) return { error: "AC units must be 0 or more for every tenant." }
+        seen.add(o.tenantId)
+        overrideUnits.set(o.tenantId, u)
+      }
+      if (overrideUnits.size !== unsettledEligible.length) {
+        return { error: "Enter the AC units for every unpaid tenant in the room." }
+      }
+
+      const settledUnitsSum = round2(
+        eligible.filter((t) => isSettled(t.id)).reduce((s, t) => s + settledThisRoomUnits(t.id), 0)
+      )
+      const targetForUnsettled = round2(units - settledUnitsSum)
+      if (targetForUnsettled < -0.005) {
+        return { error: "The already-paid units exceed the meter total — please review the reading." }
+      }
+      const overrideSum = round2([...overrideUnits.values()].reduce((s, v) => s + v, 0))
+      if (overrideSum !== round2(targetForUnsettled)) {
+        return { error: `The unpaid units (${overrideSum}) plus the paid units (${settledUnitsSum}) must add up to the meter total (${units}).` }
+      }
+
+      // Unsettled tenants only — paid/waived are never in the update. Residual onto
+      // the largest unsettled row so the unsettled units sum exactly to (meter − paid).
+      billing = unsettledEligible.map((t) => ({ id: t.id, tenantUnits: round2(overrideUnits.get(t.id) ?? 0), charge: 0 }))
+      const oResid = round2(targetForUnsettled - round2(billing.reduce((s, r) => s + r.tenantUnits, 0)))
+      if (Math.abs(oResid) >= 0.005 && billing.length > 0) {
+        let sink = billing[0]
+        for (const r of billing) if (r.tenantUnits > sink.tenantUnits) sink = r
+        sink.tenantUnits = Math.max(0, round2(sink.tenantUnits + oResid))
+      }
+      billing.forEach((r) => { r.charge = Math.round(r.tenantUnits * perUnitRate) })
+      departedCounted = 0
+    } else {
+      ({ tenantBilling: billing, departedCounted } = computeACSegmentBilling({
+        eligible,
+        prevReading,
+        reading,
+        units,
+        perUnitRate,
+        forMonth: currentMonth,
+        // Passed WHOLE, not pre-filtered to the eligible list. computeACSegmentBilling
+        // already drops rows for tenants who are not eligible when it builds the
+        // billing timeline — but it also needs the join row of a member who has
+        // since LEFT the room, to know they arrived partway rather than assuming
+        // they were there from the first unit. Filtering here hid exactly that row
+        // and under-billed the roommates who really were alone before they moved in.
+        joinReadingsRaw: joinReadingsRaw ?? [],
+        // Passed through unfiltered — see applyRoomACUnitsAction for why a
+        // departure at exactly this reading must reach the billing function.
+        checkoutReadingsRaw: checkoutReadingsRaw ?? [],
+      }))
+    }
 
     // See applyRoomACUnitsAction: a tenant who moved in mid-month still owes the
     // room they left, and this write would otherwise overwrite that share away.

@@ -607,12 +607,17 @@ export async function getReportData(
     return { month: label, monthKey, expenses: exp, kitchen: kit, salaries: sal, collected: col, depositsCollected: dep };
   });
 
-  // Top tenants by total paid
+  // Top tenants by total paid. Skip bills with nothing actually collected: an
+  // undone payment lands on partially_paid with amount_paid = 0, and it must NOT
+  // surface a tenant here — nor ever fall back to the full bill amount. Mirrors
+  // the amount_paid > 0 guard the collected-by-method and receipts use below.
   const tenantTotals: Record<string, { id: string; name: string; totalPaid: number }> = {};
   collectedPayments.forEach((p) => {
+    const paid = Number(p.amount_paid ?? 0);
+    if (paid <= 0.009) return;
     const name = p.tenant?.full_name ?? "Unknown";
     if (!tenantTotals[p.tenant_id]) tenantTotals[p.tenant_id] = { id: p.tenant_id, name, totalPaid: 0 };
-    tenantTotals[p.tenant_id].totalPaid += Number(p.amount_paid ?? p.amount);
+    tenantTotals[p.tenant_id].totalPaid += paid;
   });
   const topTenants = Object.values(tenantTotals)
     .sort((a, b) => b.totalPaid - a.totalPaid)

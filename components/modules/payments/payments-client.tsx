@@ -455,6 +455,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
   const [savingJoin, setSavingJoin] = useState<string | null>(null);
   // acOpeningReadings: per-room opening reading input, shown only when no previous month record exists
   const [acOpeningReadings, setAcOpeningReadings] = useState<Record<string, string>>({});
+  // Manual per-tenant AC unit edits, keyed `${roomId}_${tenantId}`. Undefined =
+  // not edited (falls back to the stored split). Cleared for a room once its
+  // adjusted split is applied. Only offered for rooms with no mid-month checkout.
+  const [acOverrides, setAcOverrides] = useState<Record<string, string>>({});
   const [historyRoomFilter, setHistoryRoomFilter] = useState("all");
   const [historyStatusFilter, setHistoryStatusFilter] = useState<StatusChip>("all");
   const [acOnly, setAcOnly] = useState(false);
@@ -1307,9 +1311,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     });
   }, [acJoinReadings, prevMonthACReadings, selectedMonth, openingBaselineFor]);
 
-  async function applyACUnits(roomId: string) {
+  async function applyACUnits(roomId: string, overrides?: { tenantId: string; units: number }[], meterReadingArg?: number) {
     if (!canRecordPayment) return;
-    const meterReading = Number(acUnits[roomId] ?? "");
+    // The adjusted-split path passes the already-applied reading explicitly (the
+    // reading isn't changing — only the per-tenant split is).
+    const meterReading = meterReadingArg != null ? meterReadingArg : Number(acUnits[roomId] ?? "");
     if (!Number.isFinite(meterReading) || meterReading < 0) return;
     const prevReading = prevMonthACReadings.find(r => r.room_id === roomId)?.meter_reading;
     // Falls back to whatever the Opening box is showing when the operator never
@@ -1327,10 +1333,10 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       // success with `error: null` and exposes no proRatedCount/unassignedUnits.
       const result = isManager
         ? await (async () => {
-            const r = await applyRoomACUnitsAsManager(roomId, selectedMonth, meterReading, openingReading);
+            const r = await applyRoomACUnitsAsManager(roomId, selectedMonth, meterReading, openingReading, overrides);
             return { ...r, success: !r.error, proRatedCount: undefined as number | undefined, unassignedUnits: undefined as number | undefined, reopenedCount: undefined as number | undefined };
           })()
-        : await applyRoomACUnitsAction(roomId, selectedMonth, meterReading, openingReading);
+        : await applyRoomACUnitsAction(roomId, selectedMonth, meterReading, openingReading, overrides);
       if (!result.success) {
         toast({ title: `${words.acBilling} Error`, description: result.error ?? "Failed to apply AC units.", variant: "destructive" });
       } else {
@@ -1360,14 +1366,27 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             description: `Settled before this reading, so the AC just applied is still outstanding. Now shown as Partial with the balance collectable.`,
           });
         }
+        const manualSplit = !!overrides && overrides.length > 0;
         toast({
-          title: cleared ? "AC charge cleared" : "AC units applied",
+          title: cleared ? "AC charge cleared" : manualSplit ? "Adjusted split applied" : "AC units applied",
           description: cleared
             ? "AC charges removed for all tenants in this room."
-            : result.proRatedCount && result.proRatedCount > 0
-              ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · ${result.proRatedCount} with segment billing${result.unassignedUnits ? ` · ${result.unassignedUnits} units unassigned` : ""}`
-              : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · ${result.perTenantUnits} units each · ${curSym} ${result.perTenantCharge?.toLocaleString()} each`,
+            : manualSplit
+              // Uneven by design — don't claim "X units each"; the per-tenant split is bespoke.
+              ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · split adjusted per tenant`
+              : result.proRatedCount && result.proRatedCount > 0
+                ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · ${result.proRatedCount} with segment billing${result.unassignedUnits ? ` · ${result.unassignedUnits} units unassigned` : ""}`
+                : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · ${result.perTenantUnits} units each · ${curSym} ${result.perTenantCharge?.toLocaleString()} each`,
         });
+        // Adjusted split applied — drop the local edits so the fields re-read the
+        // freshly stored (now manual) split instead of pinning to the old values.
+        if (overrides && overrides.length > 0) {
+          setAcOverrides(prev => {
+            const next = { ...prev };
+            for (const o of overrides) delete next[`${roomId}_${o.tenantId}`];
+            return next;
+          });
+        }
         await syncMonth(selectedMonth);
         router.refresh();
       }
@@ -2705,6 +2724,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           units: Math.round((Number(pay?.ac_units_consumed ?? 0) - carried.units) * 100) / 100,
                           charge: Number(pay?.ac_charge ?? 0) - carried.charge,
                           departed: false,
+                          // Settled money is locked: a paid/waived tenant can't be re-split
+                          // (server enforces this too). Their share stays as billed.
+                          paid: pay ? (pay.status === "paid" || pay.status === "waived") : false,
                           carried,
                         };
                       });
@@ -2780,6 +2802,185 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       const overAssignedUnits = overAssignedRaw >= 0.1 ? overAssignedRaw : 0;
                       const unassignedCharge = Math.round(unassignedUnits * saved.per_unit_rate);
                       const totalCharge = Math.round(saved.total_units * saved.per_unit_rate);
+
+                      // ── Editable manual split ──────────────────────────────
+                      // Offered only when every share belongs to a CURRENT member
+                      // (no mid-month checkout/transfer — those shares are locked at
+                      // the door and the server refuses to reshuffle them). The
+                      // operator edits each tenant's units; they must still add up to
+                      // the meter total before Apply is enabled, so the room never
+                      // bills more or less than it consumed.
+                      const r2 = (x: number) => Math.round(x * 100) / 100;
+                      const canEditSplit =
+                        canRecordPayment &&
+                        !monthWasVacant &&
+                        departedRows.length === 0 &&
+                        movedRows.length === 0 &&
+                        Number(saved.total_units) > 0 &&
+                        rows.some(r => !r.paid); // at least one unpaid tenant to re-split
+                      if (canEditSplit) {
+                        const perUnit = Number(saved.per_unit_rate);
+                        const meterTotal = r2(Number(saved.total_units));
+                        const keyFor = (id: string) => `${room.id}_${id}`;
+                        // Manual split — every field holds its own value; NOTHING moves
+                        // on its own. A field shows the stored split until the operator
+                        // edits it. The only thing that fills untouched tenants is the
+                        // "Split remaining evenly" button, and only on tap.
+                        const byId = new Map(rows.map(r => [r.id, r]));
+                        const baseline = new Map(rows.map(r => [r.id, r.units]));
+                        const isPaid = (id: string) => byId.get(id)?.paid === true;
+                        // Paid/waived tenants are LOCKED to their billed units — never
+                        // editable, never in an override payload (server enforces too).
+                        const isEdited = (id: string) => !isPaid(id) && acOverrides[keyFor(id)] !== undefined;
+                        const rawFor = (id: string) => {
+                          if (isPaid(id)) return String(baseline.get(id) ?? 0);
+                          const v = acOverrides[keyFor(id)];
+                          return v !== undefined ? v : String(baseline.get(id) ?? 0);
+                        };
+                        const numFor = (id: string) => {
+                          if (isPaid(id)) return baseline.get(id) ?? 0;
+                          const raw = rawFor(id);
+                          const n = raw.trim() === "" ? NaN : Number(raw);
+                          return Number.isFinite(n) && n >= 0 ? n : NaN;
+                        };
+                        const editedSum = r2(rows.reduce((s, r) => {
+                          const n = numFor(r.id);
+                          return s + (Number.isFinite(n) ? n : 0);
+                        }, 0));
+                        const allValid = rows.every(r => Number.isFinite(numFor(r.id)));
+                        const delta = r2(editedSum - meterTotal);
+                        const matches = allValid && Math.abs(delta) < 0.005;
+                        const isDirty = rows.some(r => isEdited(r.id));
+                        // "Split remaining evenly": distribute what's left across the UNPAID
+                        // tenants the operator hasn't touched (last absorbs the residual).
+                        // Paid tenants + already-edited unpaid tenants are fixed.
+                        const untouchedRows = rows.filter(r => !r.paid && !isEdited(r.id));
+                        const editedValid = rows.filter(r => isEdited(r.id)).every(r => Number.isFinite(numFor(r.id)));
+                        const fixedTotal = r2(rows.reduce((s, r) => {
+                          if (r.paid || isEdited(r.id)) { const n = numFor(r.id); return s + (Number.isFinite(n) ? n : 0); }
+                          return s;
+                        }, 0));
+                        const remaining = r2(meterTotal - fixedTotal);
+                        const canSplitRemaining = isDirty && untouchedRows.length > 0 && editedValid && remaining > 0.005;
+                        const splitRemaining = () => {
+                          const share = r2(remaining / untouchedRows.length);
+                          setAcOverrides(prev => {
+                            const next = { ...prev };
+                            let acc = 0;
+                            untouchedRows.forEach((r, i) => {
+                              const val = i === untouchedRows.length - 1 ? r2(remaining - acc) : share;
+                              acc = r2(acc + val);
+                              next[keyFor(r.id)] = String(val);
+                            });
+                            return next;
+                          });
+                        };
+                        const clearEdits = () => setAcOverrides(prev => {
+                          const next = { ...prev };
+                          rows.forEach(r => delete next[keyFor(r.id)]);
+                          return next;
+                        });
+                        return (
+                          <div className="border-t border-white/5 pt-2.5 space-y-1.5">
+                            <div className="flex flex-col gap-0.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
+                              <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-semibold">Allocated per tenant</p>
+                              <span className="text-[10px] text-muted-foreground/50">edit a tenant&apos;s units — &ldquo;Split remaining&rdquo; fills the rest</span>
+                            </div>
+                            {rows.map(r => {
+                              const key = `${room.id}_${r.id}`;
+                              const raw = rawFor(r.id);
+                              const n = numFor(r.id);
+                              const lineCharge = Number.isFinite(n) ? Math.round(n * perUnit) : 0;
+                              return (
+                                <div key={r.id} className="flex flex-col gap-1.5 py-2 border-b border-white/5 last:border-0 last:pb-0 sm:flex-row sm:items-center sm:gap-3 sm:border-0 sm:py-0 text-xs">
+                                  {/* Mobile: name + resulting charge paired on top (the outcome); input below.
+                                      Desktop: sm:contents dissolves this wrapper so name / input / charge sit inline. */}
+                                  <div className="flex items-baseline justify-between gap-2 sm:contents">
+                                    <span className="flex items-center gap-2 min-w-0 sm:order-1 sm:flex-1">
+                                      <span className="text-foreground/90 font-medium truncate sm:font-normal sm:text-muted-foreground">{r.name}</span>
+                                      {r.paid && (
+                                        <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 rounded px-1.5 py-0.5">Paid</span>
+                                      )}
+                                    </span>
+                                    <span className="tabular-nums text-emerald-400 shrink-0 sm:order-3 sm:w-20 sm:text-right">{money(lineCharge)}</span>
+                                  </div>
+                                  <div className="flex items-center gap-2 sm:order-2">
+                                    {r.paid ? (
+                                      // Settled money is locked — render a read-only chip, not an
+                                      // input, so it never looks editable. Green = paid/settled.
+                                      <div
+                                        title="This bill is already paid — its share is locked."
+                                        className="flex items-center justify-center gap-1.5 w-28 h-9 sm:w-24 sm:h-8 rounded-md border border-emerald-500/25 bg-emerald-500/[0.06]"
+                                      >
+                                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400/80 shrink-0" />
+                                        <span className="tabular-nums text-sm sm:text-xs text-foreground/70">{r.units}</span>
+                                      </div>
+                                    ) : (
+                                      <Input
+                                        type="number"
+                                        min={0}
+                                        max={999999}
+                                        value={raw}
+                                        onChange={e => setAcOverrides(prev => ({ ...prev, [key]: e.target.value }))}
+                                        className="w-28 h-9 text-sm text-center sm:w-24 sm:h-8 sm:text-xs"
+                                      />
+                                    )}
+                                    <span className="text-[10px] text-muted-foreground/60">units</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            <div className="flex items-center gap-2 text-xs pt-1 border-t border-white/5 mt-1">
+                              <span className={cn("flex-1 tabular-nums", matches ? "text-emerald-400" : !allValid ? "text-rose-400" : delta > 0 ? "text-rose-400" : "text-amber/80")}>
+                                Assigned {editedSum} / {meterTotal} units
+                                {!allValid
+                                  ? " · enter units for every tenant"
+                                  : matches
+                                    ? (isDirty ? " · matches the meter — ready to apply" : " · matches the meter")
+                                    : delta > 0
+                                      ? ` · ${r2(delta)} over the meter — remove ${r2(delta)} to match`
+                                      : ` · ${r2(-delta)} still to assign — add ${r2(-delta)} to reach ${meterTotal}`}
+                              </span>
+                            </div>
+                            <div className="pt-1.5 space-y-2">
+                              {(canSplitRemaining || isDirty) && (
+                                <div className="flex items-center gap-3">
+                                  {canSplitRemaining && (
+                                    <button
+                                      type="button"
+                                      onClick={splitRemaining}
+                                      className="text-[11px] px-2.5 py-1 rounded-md border border-amber/25 text-amber/90 hover:bg-amber/10 transition-colors mr-auto"
+                                    >
+                                      Split remaining evenly ({r2(remaining)})
+                                    </button>
+                                  )}
+                                  {isDirty && (
+                                    <button type="button" onClick={clearEdits} className="text-[11px] text-muted-foreground hover:text-foreground ml-auto">
+                                      Discard changes
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                              <div className="sm:flex sm:justify-end">
+                                <Button
+                                  disabled={applyingAC === room.id || !isDirty || !matches}
+                                  onClick={() => applyACUnits(
+                                    room.id,
+                                    rows.filter(r => !r.paid).map(r => ({ tenantId: r.id, units: numFor(r.id) })),
+                                    Number(saved.meter_reading),
+                                  )}
+                                  title={!matches ? "The tenant units must add up to the meter total before you can apply." : undefined}
+                                  className="w-full sm:w-auto h-10 px-5 gap-2 text-sm font-semibold rounded-lg bg-amber text-background hover:bg-amber/90 disabled:bg-transparent disabled:text-muted-foreground/60 disabled:border disabled:border-white/10 disabled:cursor-not-allowed transition-colors"
+                                >
+                                  {applyingAC === room.id
+                                    ? <><Loader2 className="w-4 h-4 animate-spin" /> Applying…</>
+                                    : <><Zap className="w-4 h-4" /> Apply adjusted split</>}
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
                       return (
                         <div className="border-t border-white/5 pt-2.5 space-y-1">
                           <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-semibold">Allocated per tenant</p>

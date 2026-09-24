@@ -915,7 +915,11 @@ export async function applyRoomACUnitsAction(
   roomId: string,
   forMonth: string,
   meterReading: number,
-  openingReading?: number
+  openingReading?: number,
+  // Manual per-tenant split: the operator typed each tenant's units directly
+  // (e.g. to excuse a resident who was on leave). When present, it REPLACES the
+  // automatic segment split — see the override branch below. Absent = unchanged.
+  overrides?: { tenantId: string; units: number }[]
 ): Promise<{
   success: boolean;
   error?: string;
@@ -1237,26 +1241,115 @@ export async function applyRoomACUnitsAction(
 
     // Shared with applyRoomACUnitsAsManager (lib/ac-billing.ts) so the owner and
     // manager tiers can never compute two different bills for the same room/month.
-    const { tenantBilling, proRatedCount, unassignedUnits, departedCounted } = computeACSegmentBilling({
-      eligible,
-      prevReading,
-      reading,
-      units,
-      perUnitRate,
-      forMonth,
-      // Passed WHOLE, not pre-filtered to the eligible list. computeACSegmentBilling
-      // already drops rows for tenants who are not eligible when it builds the
-      // billing timeline — but it also needs the join row of a member who has
-      // since LEFT the room, to know they arrived partway rather than assuming
-      // they were there from the first unit. Filtering here hid exactly that row
-      // and under-billed the roommates who really were alone before they moved in.
-      joinReadingsRaw: joinReadingsRaw ?? [],
-      // Passed through unfiltered. A departure at exactly this reading has to
-      // reach computeACSegmentBilling — it counts toward the divisor for the
-      // month even though it opens no new segment, and dropping it here billed
-      // the room's units twice over.
-      checkoutReadingsRaw: checkoutReadingsRaw ?? [],
-    });
+    let tenantBilling: { id: string; tenantUnits: number; charge: number }[];
+    let proRatedCount: number;
+    let unassignedUnits: number;
+    let departedCounted: number;
+
+    if (overrides && overrides.length > 0) {
+      // ── Manual per-tenant override ────────────────────────────────
+      // The operator typed each tenant's units (e.g. a resident on leave used no
+      // AC). This only REDISTRIBUTES the room's metered units between the tenants
+      // present — it can never change the room total, so the sum must still equal
+      // `units`. Charge is re-derived here as units × rate; any client-sent charge
+      // is ignored. Offered only for rooms with NO mid-month checkout: a departed
+      // tenant's share is locked at checkout and cannot be reshuffled. Returns
+      // here are before any write, so a rejection leaves nothing half-applied.
+      if ((checkoutReadingsRaw ?? []).length > 0) {
+        return { success: false, error: "Manual split isn't available for a room with a mid-month checkout this month." };
+      }
+
+      // Settled money is never rewritten: a tenant whose bill is PAID or WAIVED is
+      // LOCKED — excluded from the override entirely, so their units/charge are left
+      // exactly as they are. The payload carries only UNSETTLED tenants, and the
+      // room total is (unsettled override) + (settled tenants' current share).
+      const { data: statusRows } = await adminDb
+        .from("hms_payments")
+        .select("tenant_id, status, ac_units_consumed")
+        .eq("hostel_id", hostelId)
+        .eq("for_month", forMonth)
+        .in("tenant_id", eligible.map((t) => t.id));
+      const statusByTenant = new Map(
+        (statusRows ?? []).map((r) => [r.tenant_id, { status: String(r.status ?? ""), units: Number(r.ac_units_consumed ?? 0) }])
+      );
+      // Units a tenant carried in from a room they transferred FROM are not part of
+      // this room's meter — back them out to get each tenant's THIS-ROOM share.
+      const carriedByTenant = await carriedTransferCharges(adminDb, hostelId, forMonth, roomId, eligible.map((t) => t.id));
+      const SETTLED = new Set(["paid", "waived"]);
+      const isSettled = (id: string) => SETTLED.has(statusByTenant.get(id)?.status ?? "");
+      const settledThisRoomUnits = (id: string) =>
+        Math.max(0, round2((statusByTenant.get(id)?.units ?? 0) - (carriedByTenant.get(id)?.units ?? 0)));
+
+      const unsettledEligible = eligible.filter((t) => !isSettled(t.id));
+      if (unsettledEligible.length === 0) {
+        return { success: false, error: "Every resident in this room has already paid — reopen a bill first to re-split it." };
+      }
+      const unsettledIds = new Set(unsettledEligible.map((t) => t.id));
+
+      const seen = new Set<string>();
+      const overrideUnits = new Map<string, number>();
+      for (const o of overrides) {
+        if (!o || typeof o.tenantId !== "string" || !unsettledIds.has(o.tenantId)) {
+          return { success: false, error: "You can only re-split units for residents who haven't paid yet." };
+        }
+        if (seen.has(o.tenantId)) return { success: false, error: "A tenant was listed more than once in the manual split." };
+        const u = Number(o.units);
+        if (!Number.isFinite(u) || u < 0) return { success: false, error: "AC units must be 0 or more for every tenant." };
+        seen.add(o.tenantId);
+        overrideUnits.set(o.tenantId, u);
+      }
+      if (overrideUnits.size !== unsettledEligible.length) {
+        return { success: false, error: "Enter the AC units for every unpaid tenant in the room." };
+      }
+
+      const settledUnitsSum = round2(
+        eligible.filter((t) => isSettled(t.id)).reduce((s, t) => s + settledThisRoomUnits(t.id), 0)
+      );
+      const targetForUnsettled = round2(units - settledUnitsSum);
+      if (targetForUnsettled < -0.005) {
+        return { success: false, error: "The already-paid units exceed the meter total — please review the reading." };
+      }
+      const overrideSum = round2([...overrideUnits.values()].reduce((s, v) => s + v, 0));
+      if (overrideSum !== round2(targetForUnsettled)) {
+        return { success: false, error: `The unpaid units (${overrideSum}) plus the paid units (${settledUnitsSum}) must add up to the meter total (${units}).` };
+      }
+
+      // Build billing for UNSETTLED tenants only — paid/waived tenants are never in
+      // the update, so their settled bill is untouched. Residual lands on the largest
+      // unsettled row so the unsettled units sum EXACTLY to (meter − paid units).
+      tenantBilling = unsettledEligible.map((t) => ({ id: t.id, tenantUnits: round2(overrideUnits.get(t.id) ?? 0), charge: 0 }));
+      const oResid = round2(targetForUnsettled - round2(tenantBilling.reduce((s, r) => s + r.tenantUnits, 0)));
+      if (Math.abs(oResid) >= 0.005 && tenantBilling.length > 0) {
+        let sink = tenantBilling[0];
+        for (const r of tenantBilling) if (r.tenantUnits > sink.tenantUnits) sink = r;
+        sink.tenantUnits = Math.max(0, round2(sink.tenantUnits + oResid));
+      }
+      tenantBilling.forEach((r) => { r.charge = Math.round(r.tenantUnits * perUnitRate); });
+      proRatedCount = 0;
+      unassignedUnits = 0;
+      departedCounted = 0;
+    } else {
+      ({ tenantBilling, proRatedCount, unassignedUnits, departedCounted } = computeACSegmentBilling({
+        eligible,
+        prevReading,
+        reading,
+        units,
+        perUnitRate,
+        forMonth,
+        // Passed WHOLE, not pre-filtered to the eligible list. computeACSegmentBilling
+        // already drops rows for tenants who are not eligible when it builds the
+        // billing timeline — but it also needs the join row of a member who has
+        // since LEFT the room, to know they arrived partway rather than assuming
+        // they were there from the first unit. Filtering here hid exactly that row
+        // and under-billed the roommates who really were alone before they moved in.
+        joinReadingsRaw: joinReadingsRaw ?? [],
+        // Passed through unfiltered. A departure at exactly this reading has to
+        // reach computeACSegmentBilling — it counts toward the divisor for the
+        // month even though it opens no new segment, and dropping it here billed
+        // the room's units twice over.
+        checkoutReadingsRaw: checkoutReadingsRaw ?? [],
+      }));
+    }
 
     // ── Auto-create missing payment rows so Apply never requires a manual sync ──
     const { data: existingPayRows } = await adminDb
@@ -1311,6 +1404,8 @@ export async function applyRoomACUnitsAction(
         return {
           hostel_id: hostelId,
           tenant_id: t.id,
+          // The room being AC-billed — snapshotted for the member ledger.
+          room_id: roomId,
           for_month: forMonth,
           amount: baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge,
           status: "pending" as PaymentStatus,
@@ -1460,11 +1555,15 @@ export async function applyRoomACUnitsAction(
         .eq("hostel_id", hostelId);
     }
 
-    // ── Verify all rows were found ──
+    // ── Verify all rows we intended to update were found ──
+    // Compare against tenantBilling.length, NOT eligible.length: a manual override
+    // deliberately writes ONLY the unsettled tenants (paid/waived are locked out),
+    // so tenantBilling is a subset of eligible. On the auto path tenantBilling ===
+    // eligible, so this is the identical check.
     const updatedCount = updateResults.reduce((sum, r) => sum + (r.data?.length ?? 0), 0);
-    if (updatedCount < eligible.length) {
+    if (updatedCount < tenantBilling.length) {
       throw new Error(
-        `Only ${updatedCount} of ${eligible.length} payment rows were updated. ` +
+        `Only ${updatedCount} of ${tenantBilling.length} payment rows were updated. ` +
         `Please sync payments for ${forMonth} first, then apply AC billing.`
       );
     }
