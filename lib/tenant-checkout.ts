@@ -585,6 +585,7 @@ export async function performTenantCheckout(
                 .insert({
                   hostel_id: hostelId,
                   tenant_id: input.tenantId,
+                  room_id: tenant.room_id,
                   for_month: checkoutMonth,
                   amount: 0,
                   status: "pending",

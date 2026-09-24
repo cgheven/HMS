@@ -523,11 +523,13 @@ export async function getMemberPaymentLedger(
         .eq("hostel_id", hostelId)
         .single(),
       supabase
-        // Room is NOT on hms_payments (room_id lives on hms_tenants) — the bill's
-        // room is the member's current room, read from the tenant embed below.
+        // Each bill carries the room it was billed under (snapshotted at creation,
+        // migration 271). Falls back to the member's current room for old rows that
+        // predate the snapshot (backfilled to current room, so this is only null for
+        // a tenant with no room).
         .from("hms_payments")
         .select(
-          "for_month, amount, amount_paid, late_fee, payment_method, payment_date, receipt_number, status, is_reservation, notes, transaction_id, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount"
+          "for_month, amount, amount_paid, late_fee, payment_method, payment_date, receipt_number, status, is_reservation, notes, transaction_id, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, room:hms_rooms(room_number)"
         )
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
@@ -547,7 +549,8 @@ export async function getMemberPaymentLedger(
 
     const bills: MemberLedgerBill[] = ((paymentsRes.data ?? []) as Record<string, unknown>[]).map((p) => ({
       forMonth: (p.for_month as string) ?? "",
-      roomNumber: memberRoom,
+      // Per-bill room (snapshot); fall back to the member's current room.
+      roomNumber: roomOf(p.room) ?? memberRoom,
       paymentDate: (p.payment_date as string | null) ?? null,
       method: (p.payment_method as string | null) ?? null,
       receiptNumber: (p.receipt_number as string | null) ?? null,
@@ -609,7 +612,7 @@ export async function getTenantTimeline(
       supabase
         .from("hms_payments")
         .select(
-          "id, for_month, amount, amount_paid, late_fee, payment_method, payment_date, status, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, discount_percent, payment_package_tier, created_at, is_reservation"
+          "id, for_month, amount, amount_paid, late_fee, payment_method, payment_date, status, food_charge, ac_charge, ac_units_consumed, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, referral_discount, discount_amount, discount_percent, payment_package_tier, created_at, is_reservation, room:hms_rooms(room_number)"
         )
         .eq("tenant_id", tenantId)
         .eq("hostel_id", hostelId)
@@ -1090,6 +1093,41 @@ export async function getTenantTimeline(
       check_out: 8,
       feedback_received: 9,
     };
+
+    // Room-change events derived from the per-bill room snapshots (migration 271),
+    // so the timeline agrees with the payment ledger for ANY room change — not only
+    // ones recorded as a transfer event. Deduped against real transfers (which carry
+    // richer meter/charge detail) by destination room, so a move is never shown twice.
+    const roomNumOf = (r: unknown): string | null => {
+      const rr = Array.isArray(r) ? r[0] : r;
+      return (rr as { room_number?: string } | null)?.room_number ?? null;
+    };
+    const transferDests = new Set(
+      tenantEvents
+        .filter((e) => e.event_type === "room_changed" && e.to_value)
+        .map((e) => String(e.to_value))
+    );
+    const monthRoom = new Map<string, string>();
+    for (const p of payments ?? []) {
+      const room = roomNumOf((p as { room?: unknown }).room);
+      const month = (p as { for_month?: string }).for_month;
+      if (room && month && !monthRoom.has(month)) monthRoom.set(month, room);
+    }
+    let prevRoom: string | null = null;
+    for (const month of [...monthRoom.keys()].sort()) {
+      const room = monthRoom.get(month)!;
+      if (prevRoom !== null && room !== prevRoom && !transferDests.has(room)) {
+        events.push({
+          id: `roommove-${month}`,
+          type: "room_changed",
+          date: `${month}-01`,
+          label: "Room changed",
+          sub: `Rm ${prevRoom} → Rm ${room}`,
+        });
+      }
+      prevRoom = room;
+    }
+
     events.sort((a, b) => {
       // Compare by calendar day, not exact millisecond timestamp — events logged
       // at different times of the same day (e.g. a date-only "joined" value vs. a
@@ -1444,6 +1482,9 @@ export async function backfillTenantPaymentsAction(
       return [{
         hostel_id: hostelId,
         tenant_id: tenantId,
+        // Snapshot the room so a backfilled resident who later moves still shows
+        // the correct room per month in the ledger (not their current room).
+        room_id: tenant.room_id,
         for_month: month,
         amount: monthAmount,
         food_charge: foodCharge,

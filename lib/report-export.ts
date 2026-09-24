@@ -814,6 +814,9 @@ function billChargeLines(b: MemberLedgerBill): { desc: string; amount: number }[
 }
 
 interface LedgerRow {
+  // When set, this row is a ROOM-SECTION header spanning the whole table (e.g.
+  // "Room 101 · Jan 2026 – Jun 2026"). Only emitted when the member changed rooms.
+  section?: string;
   room: string; month: string; desc: string; expected: number; received: number; balance: number;
   method: string; date: string | null; tid: string | null; notes: string | null;
 }
@@ -822,26 +825,46 @@ function buildLedgerRows(bills: MemberLedgerBill[]): { rows: LedgerRow[]; totalE
   const rows: LedgerRow[] = [];
   let totalExpected = 0, totalReceived = 0;
   const methodLabel = (m: string | null) => (m ? m.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "—");
+
+  // Group bills into CONTIGUOUS room runs so the ledger segments by room
+  // (Room 101: Jan–Jun, then Room 102: Jun–Aug). Bills arrive ordered by month.
+  const groups: { label: string; from: string; to: string; items: MemberLedgerBill[] }[] = [];
   for (const b of bills) {
-    const lines = billChargeLines(b);
-    let rem = b.amountPaid;
-    for (const l of lines) {
-      const rec = Math.max(0, Math.min(rem, l.amount));
-      rem -= rec;
-      totalExpected += l.amount;
-      totalReceived += rec;
-      rows.push({
-        room: b.roomNumber ? `Rm ${b.roomNumber}` : "—",
-        month: fmtMonth(b.forMonth),
-        desc: l.desc,
-        expected: l.amount,
-        received: rec,
-        balance: l.amount - rec,
-        method: methodLabel(b.method),
-        date: b.paymentDate,
-        tid: b.transactionId,
-        notes: b.notes,
-      });
+    const label = b.roomNumber ? `Room ${b.roomNumber}` : "No room assigned";
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) { last.items.push(b); last.to = b.forMonth; }
+    else groups.push({ label, from: b.forMonth, to: b.forMonth, items: [b] });
+  }
+  // A section header only adds clarity when the member actually lived in >1 room;
+  // for a single-room member it would just be noise, so skip it.
+  const multiRoom = groups.length > 1;
+
+  for (const g of groups) {
+    if (multiRoom) {
+      const range = g.from === g.to ? fmtMonth(g.from) : `${fmtMonth(g.from)} – ${fmtMonth(g.to)}`;
+      rows.push({ section: `${g.label} · ${range}`, room: "", month: "", desc: "", expected: 0, received: 0, balance: 0, method: "", date: null, tid: null, notes: null });
+    }
+    for (const b of g.items) {
+      const lines = billChargeLines(b);
+      let rem = b.amountPaid;
+      for (const l of lines) {
+        const rec = Math.max(0, Math.min(rem, l.amount));
+        rem -= rec;
+        totalExpected += l.amount;
+        totalReceived += rec;
+        rows.push({
+          room: b.roomNumber ? `Rm ${b.roomNumber}` : "—",
+          month: fmtMonth(b.forMonth),
+          desc: l.desc,
+          expected: l.amount,
+          received: rec,
+          balance: l.amount - rec,
+          method: methodLabel(b.method),
+          date: b.paymentDate,
+          tid: b.transactionId,
+          notes: b.notes,
+        });
+      }
     }
   }
   return { rows, totalExpected, totalReceived };
@@ -900,7 +923,9 @@ export async function exportMemberLedgerPDF(
   autoTable(doc, {
     startY: y,
     head: [["Room", "Month", "Description", "Amount", "Received", "Balance", "Mode", "Paid On", "TID", "Notes"]],
-    body: rows.map((r) => [r.room, r.month, r.desc, pk(r.expected), pk(r.received), r.balance > 0 ? pk(r.balance) : "—", r.method, fmtDate(r.date), r.tid ?? "—", r.notes ?? "—"]),
+    body: rows.map((r) => r.section
+      ? [{ content: r.section, colSpan: 10, styles: { fontStyle: "bold", fillColor: [235, 235, 235], textColor: [20, 20, 20], fontSize: 8 } }]
+      : [r.room, r.month, r.desc, pk(r.expected), pk(r.received), r.balance > 0 ? pk(r.balance) : "—", r.method, fmtDate(r.date), r.tid ?? "—", r.notes ?? "—"]),
     foot: [["", "", "Total", pk(totalExpected), pk(totalReceived), totalBalance > 0 ? pk(totalBalance) : "—", "", "", "", ""]],
     headStyles: { fillColor: [30, 30, 30], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 8 },
     footStyles: { fillColor: [245, 166, 35], textColor: [0, 0, 0], fontStyle: "bold", fontSize: 8 },
@@ -932,7 +957,9 @@ export async function exportMemberLedgerExcel(
     [`Total Expected (${unit})`, totalExpected, `Total Received (${unit})`, totalReceived, `Total Balance (${unit})`, totalBalance],
     [],
     ["Room", "Month", "Description", `Amount (${unit})`, `Received (${unit})`, `Balance (${unit})`, "Mode", "Paid On", "TID", "Notes"],
-    ...rows.map((r) => [r.room, r.month, r.desc, r.expected, r.received, r.balance, r.method, fmtDate(r.date), r.tid ?? "", r.notes ?? ""] as (string | number)[]),
+    ...rows.map((r) => r.section
+      ? ([r.section, "", "", "", "", "", "", "", "", ""] as (string | number)[])
+      : ([r.room, r.month, r.desc, r.expected, r.received, r.balance, r.method, fmtDate(r.date), r.tid ?? "", r.notes ?? ""] as (string | number)[])),
     [],
     ["", "", "Total", totalExpected, totalReceived, totalBalance, "", "", "", ""],
   ];

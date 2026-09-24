@@ -162,6 +162,8 @@ export async function ensureMonthlyPaymentRows(
       newRows.push({
         hostel_id: hostelId,
         tenant_id: t.id,
+        // Room the bill belongs to, snapshotted at creation (member-ledger history).
+        room_id: t.room_id,
         for_month: month,
         amount: baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge,
         status: "pending",
@@ -188,6 +190,8 @@ export async function ensureMonthlyPaymentRows(
       pendingUpdates.push({
         hostel_id: hostelId,
         tenant_id: t.id,
+        // A still-pending bill tracks the current room (frozen once paid/waived).
+        room_id: t.room_id,
         for_month: month,
         // preservedAC is INSIDE the total, not merely carried alongside it. A
         // MONTHLY row never noticed the difference — the trigger rebuilds its
