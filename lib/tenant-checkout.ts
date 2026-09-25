@@ -2,9 +2,9 @@ import "server-only";
 
 import { revalidatePath } from "next/cache";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { calcDailyRent, countBillableNights, daysInMonth, proRateMonthlyRent } from "@/lib/daily-billing";
+import { calcDailyRent, countBillableNights, proRateMonthlyRent } from "@/lib/daily-billing";
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, round2 } from "@/lib/ac-billing";
-import { clampGrossToCollected } from "@/lib/payment-calc";
+import { clampGrossToCollected, billingAnchorOf, checkoutMonthlyBaseRent, type BillingAnchor } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
 import { carriedTransferCharges } from "@/lib/ac-transfer";
 import { isMeteredRoom } from "@/lib/room-transfer";
@@ -44,7 +44,7 @@ export async function performTenantCheckout(
     // Step 1: Fetch and verify tenant belongs to this hostel and is still active
     const { data: tenant, error: tenantErr } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, room_id, is_active, check_in, security_deposit, joining_meter_reading, billing_type, daily_rate, monthly_rent")
+      .select("id, full_name, hostel_id, room_id, is_active, check_in, security_deposit, joining_meter_reading, billing_type, daily_rate, monthly_rent, first_month_day_rate")
       .eq("id", input.tenantId)
       .eq("hostel_id", hostelId)
       .single();
@@ -85,7 +85,11 @@ export async function performTenantCheckout(
     // but shared so the two cannot drift apart.
     // Bound the checkout month in the hostel's own timezone (a UK branch's month
     // boundary is London's, not Karachi's). Falls open to PK if country is unset.
-    const { data: coHostel } = await adminDb.from("hms_hostels").select("country").eq("id", hostelId).maybeSingle();
+    const { data: coHostel } = await adminDb.from("hms_hostels").select("country, billing_anchor_day, bill_leftover_days_separately").eq("id", hostelId).maybeSingle();
+    // Billing anchor (migration 272): the final-month proration below must fold in
+    // the join-month leftover (merged mode) and use the premium first-month rate,
+    // or a mid-month joiner's checkout under-bills. Null on unanchored branches.
+    const coAnchor: BillingAnchor = billingAnchorOf(coHostel as { billing_anchor_day?: number | null; bill_leftover_days_separately?: boolean | null } | null);
     const syncMonth = syncableCheckoutMonth(input.checkoutDate.substring(0, 7), getCountryConfig((coHostel as { country?: string | null } | null)?.country).timezone);
     if (syncMonth) await ensureMonthlyPaymentRows(adminDb, hostelId, syncMonth);
 
@@ -180,16 +184,19 @@ export async function performTenantCheckout(
         // the /30 divisor must not discount them. The dialog already blocks this,
         // but proRateFinalMonth is a client-supplied flag on a directly-callable
         // server action and cannot be trusted on its own.
+        // Anchor-aware base rent for the final month — shared with the checkout
+        // dialog's preview so the quoted discount and the settled amount match.
+        // For a non-anchor tenant / plain full month this equals the old
+        // proRateMonthlyRent expression; for an anchor join-month partial (or a
+        // merged first bill) it prices by the owner's per-day rate instead of /30.
         const newBaseRent = isDaily
           ? calcDailyRent({ checkIn, checkOut: input.checkoutDate, month: rentMonth, dailyRate })
-          : nights >= daysInMonth(rentMonth)
-          ? Number(tenant.monthly_rent ?? 0)
-          : proRateMonthlyRent({
-              monthlyRent: Number(tenant.monthly_rent ?? 0),
-              checkIn,
-              checkOut: input.checkoutDate,
-              month: rentMonth,
-            });
+          : checkoutMonthlyBaseRent(
+              { monthly_rent: Number(tenant.monthly_rent ?? 0), check_in: checkIn, first_month_day_rate: tenant.first_month_day_rate as number | null },
+              input.checkoutDate,
+              rentMonth,
+              coAnchor
+            );
 
         // Only the rent component moves. Food, AC, deposit, registration fee and
         // AC maintenance all ride along at face value — they are not day-scaled,

@@ -3,7 +3,7 @@ import { getManagerPaymentsPageData } from "@/lib/portal-data"
 import { syncMonthAction } from "@/app/actions/payments"
 import { countBillableNights } from "@/lib/daily-billing"
 import { expectedChargesFor } from "@/lib/monthly-payment-sync"
-import { splitPaymentCharges } from "@/lib/payment-calc"
+import { splitPaymentCharges, billingAnchorOf, mergedJoinMonthSkipped } from "@/lib/payment-calc"
 import { PaymentsClient } from "@/components/modules/payments/payments-client"
 import { yearMonthInZone } from "@/lib/pkt-time"
 import { getCountryConfig } from "@/lib/country-config"
@@ -29,8 +29,13 @@ export default async function PortalPaymentsPage() {
   // Idempotent — paid/waived rows are never touched. Not a useEffect auto-sync.
   // syncMonthAction resolves a manager's branch server-side via
   // getManagerContext() and re-checks collect_payments.
+  const billingAnchor = billingAnchorOf({ billing_anchor_day: data.billingAnchorDay, bill_leftover_days_separately: data.billLeftoverSeparately })
   const tenantIdsWithPayments = new Set(data.payments.map((p) => p.tenant_id))
-  const hasMissingRows = data.tenants.some((t) => !tenantIdsWithPayments.has(t.id))
+  // Merged mode intentionally leaves the join month with no row — exclude those
+  // tenants or the page would sync-loop forever. See the owner page.
+  const hasMissingRows = data.tenants.some((t) =>
+    !tenantIdsWithPayments.has(t.id) && !(mergedJoinMonthSkipped(t, billingAnchor) && defaultMonth === t.check_in.slice(0, 7))
+  )
 
   // Daily tenants also need re-syncing when their stored day count no longer
   // matches their dates — "missing row" never fires for a tenant who already
@@ -56,7 +61,7 @@ export default async function PortalPaymentsPage() {
     if (t.billing_type === "daily") return false
     const row = paymentByTenant.get(t.id)
     if (!row || row.status !== "pending") return false
-    const want = expectedChargesFor(t, defaultMonth, { config: data.packageConfig, roomAcMap })
+    const want = expectedChargesFor(t, defaultMonth, { config: data.packageConfig, roomAcMap, anchor: billingAnchor })
     const differs = (a: number, b: number) => Math.abs(a - b) > 0.01
     return (
       differs(splitPaymentCharges(row).rent, want.baseRent) ||

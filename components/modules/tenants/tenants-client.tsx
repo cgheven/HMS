@@ -23,7 +23,7 @@ import { organizationPresetsFor } from "@/lib/organization-presets";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
 import { formatCurrency, formatDate, formatDateInput, formatMonthLong, capitalize, cn, sortRooms } from "@/lib/utils";
-import { useMoney } from "@/contexts/hostel-context";
+import { useMoney, useHostelContext } from "@/contexts/hostel-context";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS, type FoodAddonRates, type FoodAddonFlags } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, type SeaterPrices } from "@/lib/seater-pricing";
 import { STUDENT_CATEGORY_LABELS, STUDENT_CATEGORY_OPTIONS, studentCategoryHasDepartment, studentCategoryHasSpecialization, STUDENT_SPECIALIZATION_PRESETS, INSTITUTE_PRESETS_BY_CATEGORY, studentCategoryHasInstitutePresets , departmentPresetsFor } from "@/lib/student-category-labels";
@@ -62,7 +62,7 @@ import { sendTenantWelcomeMessageAction, sendAdmissionConfirmationAction, sendWe
 import { downloadQrFlyerPdf } from "@/lib/qr-flyer-pdf";
 import type { RowInput } from "jspdf-autotable";
 import QRCode from "qrcode";
-import { computeReferralDiscount, computeRentDiscount, percentForRupees } from "@/lib/payment-calc";
+import { computeReferralDiscount, computeRentDiscount, percentForRupees, billingAnchorOf, checkoutMonthlyBaseRent, joinIsPartialMonth, nextCalendarMonth } from "@/lib/payment-calc";
 import { HOTEL_EYE_PROVINCES, HOTEL_EYE_DISTRICTS } from "@/lib/hotel-eye-vocabulary";
 
 interface Props {
@@ -294,7 +294,7 @@ const emptyForm = {
   room_id: "", bed_number: "",
   check_in: formatDateInput(new Date()),
   billing_type: "monthly" as "monthly" | "daily",
-  monthly_rent: "", daily_rate: "", discount_percent: "", check_out: "", intended_checkout_date: "", security_deposit: "0",
+  monthly_rent: "", daily_rate: "", first_month_day_rate: "", discount_percent: "", check_out: "", intended_checkout_date: "", security_deposit: "0",
   registration_fee: "",
   ac_maintenance: "",
   vehicle_type: "", vehicle_number: "", vehicle_model: "",
@@ -864,6 +864,15 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [formQrGenerating, setFormQrGenerating] = useState(false);
   const [formQrDownloading, setFormQrDownloading] = useState(false);
   const [form, setForm] = useState(emptyForm);
+  // Branch billing anchor (migration 272): drives the per-day rate field for a
+  // monthly resident who joins mid-month. Null on branches that never enabled it.
+  const { hostel: activeHostel } = useHostelContext();
+  const billingAnchorDay = activeHostel?.billing_anchor_day ?? null;
+  const showFirstMonthDayRate =
+    billingAnchorDay != null &&
+    form.billing_type === "monthly" &&
+    !!form.check_in &&
+    Number(form.check_in.slice(8, 10)) > 1;
   // Prefills the name the referral was submitted under. Only when the field is
   // still empty — the operator's own typing always wins, and a person may well
   // introduce themselves differently to how their friend wrote them down.
@@ -1512,6 +1521,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       billing_type: t.billing_type ?? "monthly",
       monthly_rent: t.monthly_rent.toString(),
       daily_rate: t.daily_rate?.toString() ?? "0",
+      first_month_day_rate: t.first_month_day_rate != null ? t.first_month_day_rate.toString() : "",
       discount_percent: t.discount_percent != null ? t.discount_percent.toString() : "",
       check_out: t.check_out ?? "",
       intended_checkout_date: (t as { intended_checkout_date?: string | null }).intended_checkout_date ?? "",
@@ -1742,6 +1752,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
       billing_type: form.billing_type,
       monthly_rent: form.billing_type === "monthly" ? parseFloat(form.monthly_rent) || 0 : 0,
       daily_rate: form.billing_type === "daily" ? parseFloat(form.daily_rate) || 0 : 0,
+      // Premium per-day rate for the partial first month, monthly only. Empty =>
+      // NULL => the server falls back to monthly_rent/30.
+      first_month_day_rate:
+        form.billing_type === "monthly" && form.first_month_day_rate.trim()
+          ? parseFloat(form.first_month_day_rate) || 0
+          : null,
       // Empty means NULL — no concession at all — not 0, so a tenant who has
       // never been given one stays out of the "who is on a discount" reports.
       discount_percent:
@@ -2608,12 +2624,17 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     });
     if (nights >= totalDays) return null;
 
-    const proRatedRent = proRateMonthlyRent({
-      monthlyRent: fullRent,
-      checkIn: checkingOut.check_in,
-      checkOut: checkoutDate,
+    // Anchor-aware: an anchor join-month partial (or merged first bill) prices by
+    // the owner's per-day rate, not monthly_rent/30 — the SAME helper the server
+    // uses, so this preview's discount matches what checkout actually settles.
+    // Without this the option was hidden for anchor partials (monthly/30 came out
+    // ABOVE the stored per-day partial, so it read as "no discount").
+    const proRatedRent = checkoutMonthlyBaseRent(
+      { monthly_rent: fullRent, check_in: checkingOut.check_in, first_month_day_rate: checkingOut.first_month_day_rate ?? null },
+      checkoutDate,
       month,
-    });
+      billingAnchorOf(activeHostel)
+    );
 
     // What the outstanding total actually drops by: the server swaps the row's
     // stored base rent for the pro-rated one, keeping extras and late fee intact.
@@ -2640,8 +2661,27 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const discount = Math.max(0, storedBaseRent - proRatedNet);
     if (discount <= 0) return null;
 
-    return { month, nights, totalDays, fullRent, proRatedRent, discount };
-  }, [checkingOut, checkoutPendingPayment, checkoutDate]);
+    // Merged first-bill-month checkout: the bill also carries the previous month's
+    // joining days, which are charged either way. Surface them so the labels read
+    // honestly ("Full month" is really the whole merged bill; "days stayed"
+    // includes the joining days) instead of implying the total is one month's rent.
+    const anchor = billingAnchorOf(activeHostel);
+    const joinM = checkingOut.check_in.slice(0, 7);
+    const mergedLeftoverNights =
+      anchor && !anchor.separate && joinIsPartialMonth(checkingOut.check_in) && month === nextCalendarMonth(joinM)
+        ? countBillableNights({ checkIn: checkingOut.check_in, checkOut: null, month: joinM })
+        : 0;
+    // Separate-mode join-month partial: the "don't pro-rate" figure is the full
+    // joining period (days), not a whole month — so its label shouldn't say "month".
+    const isJoinPartial = !!anchor && joinIsPartialMonth(checkingOut.check_in) && month === joinM;
+    // The "charge the whole month anyway" figure. Legacy (non-anchor) branches
+    // keep the exact previous display (monthly_rent). Anchor branches show the
+    // bill's real base — a separate partial is 5,500 not 30,000, and a merged bill
+    // is month + joining days — so the "don't pro-rate" amount is truthful.
+    const fullChargeRent = anchor ? storedBaseRent : fullRent;
+
+    return { month, nights, totalDays, fullRent, fullChargeRent, proRatedRent, discount, mergedLeftoverNights, isJoinPartial };
+  }, [checkingOut, checkoutPendingPayment, checkoutDate, activeHostel]);
 
   const proRateActive = !!checkoutProRateInfo && checkoutProRate && checkoutPayAction === "pay";
 
@@ -5299,6 +5339,34 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     </div>
                   );
                 })()}
+                {showFirstMonthDayRate && (() => {
+                  // Leftover days = nights from check-in to the end of the join
+                  // month (a night slept; the join day counts, month-end included).
+                  const [jy, jm, jd] = form.check_in.split("-").map(Number);
+                  const daysInJoinMonth = new Date(jy, jm, 0).getDate();
+                  const leftoverDays = Math.max(0, daysInJoinMonth - jd + 1);
+                  const monthlyRent = parseFloat(form.monthly_rent) || 0;
+                  const suggested = monthlyRent > 0 ? Math.round(monthlyRent / 30) : 0;
+                  const rate = form.first_month_day_rate.trim() ? parseFloat(form.first_month_day_rate) || 0 : suggested;
+                  const firstMonthTotal = Math.min(monthlyRent || Infinity, Math.round(rate * leftoverDays));
+                  return (
+                    <div className="space-y-1.5 col-span-2">
+                      <Label>First-month per-day rate ({curCode})</Label>
+                      <Input
+                        type="number" min="0" step="1"
+                        placeholder={suggested > 0 ? `${suggested} (rent ÷ 30)` : "0"}
+                        value={form.first_month_day_rate}
+                        onChange={(e) => setForm({ ...form, first_month_day_rate: e.target.value })}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        They join mid-month, so their first month bills{" "}
+                        <span className="font-medium text-amber">{leftoverDays} day{leftoverDays === 1 ? "" : "s"}</span>
+                        {monthlyRent > 0 && <> = {fmtMoney(firstMonthTotal)}</>}. Leave blank to use rent ÷ 30
+                        ({suggested > 0 ? fmtMoney(suggested) : "—"}/day). Full months bill the monthly rent.
+                      </p>
+                    </div>
+                  );
+                })()}
                 {isPk
                   ? <div className="space-y-1.5"><Label>Security Deposit ({curCode})</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>
                   : <div className="space-y-1.5"><Label>Security Deposit ({curCode})</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>}
@@ -5957,7 +6025,11 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         <div>
                           <p className="text-sm font-medium">Charge for the final month</p>
                           <p className="text-xs text-muted-foreground mt-0.5">
-                            Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} nights stayed in {checkoutProRateInfo.month}, charged at {fmtMoney(Math.round(checkoutProRateInfo.fullRent / 30))}/day (rent ÷ 30). Food, AC and deposit charges are never pro-rated.
+                            {checkoutProRateInfo.mergedLeftoverNights > 0 ? (
+                              <>Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} night{checkoutProRateInfo.nights === 1 ? "" : "s"} in {checkoutProRateInfo.month} plus {checkoutProRateInfo.mergedLeftoverNights} joining day{checkoutProRateInfo.mergedLeftoverNights === 1 ? "" : "s"} from the previous month (charged either way). Food, AC and deposit charges are never pro-rated.</>
+                            ) : (
+                              <>Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} nights stayed in {checkoutProRateInfo.month}, charged at {fmtMoney(Math.round(checkoutProRateInfo.proRatedRent / Math.max(1, checkoutProRateInfo.nights)))}/day{checkingOut?.first_month_day_rate == null ? " (rent ÷ 30)" : ""}. Food, AC and deposit charges are never pro-rated.</>
+                            )}
                           </p>
                         </div>
                         <div className="grid grid-cols-2 gap-2">
@@ -5969,9 +6041,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                               !checkoutProRate ? "border-amber/50 bg-amber/5" : "border-sidebar-border hover:border-sidebar-border/60"
                             )}
                           >
-                            <p className="text-xs text-muted-foreground">Full month</p>
-                            <p className="text-sm font-semibold mt-0.5">{fmtMoney(checkoutProRateInfo.fullRent)}</p>
-                            <p className="text-[11px] text-muted-foreground mt-0.5">Charge the whole month anyway</p>
+                            <p className="text-xs text-muted-foreground">{checkoutProRateInfo.mergedLeftoverNights > 0 ? "Full bill" : checkoutProRateInfo.isJoinPartial ? "Full period" : "Full month"}</p>
+                            <p className="text-sm font-semibold mt-0.5">{fmtMoney(checkoutProRateInfo.fullChargeRent)}</p>
+                            <p className="text-[11px] text-muted-foreground mt-0.5">{checkoutProRateInfo.mergedLeftoverNights > 0 ? "Full month + joining days" : checkoutProRateInfo.isJoinPartial ? "Charge the full joining period" : "Charge the whole month anyway"}</p>
                           </button>
                           <button
                             type="button"
@@ -5984,7 +6056,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                             <p className="text-xs text-muted-foreground">Days stayed</p>
                             <p className="text-sm font-semibold mt-0.5">{fmtMoney(checkoutProRateInfo.proRatedRent)}</p>
                             <p className="text-[11px] text-muted-foreground mt-0.5">
-                              Default — {checkoutProRateInfo.nights} nights
+                              Default — {checkoutProRateInfo.nights}{checkoutProRateInfo.mergedLeftoverNights > 0 ? ` + ${checkoutProRateInfo.mergedLeftoverNights} joining` : ""} night{checkoutProRateInfo.nights + checkoutProRateInfo.mergedLeftoverNights === 1 ? "" : "s"}
                             </p>
                           </button>
                         </div>
@@ -6069,7 +6141,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     {proRateDiscount > 0 && (
                       <div className="flex justify-between text-xs">
                         <span className="text-muted-foreground">
-                          Pro-rated ({checkoutProRateInfo?.nights} nights at rent ÷ 30)
+                          Pro-rated ({checkoutProRateInfo?.nights} night{checkoutProRateInfo?.nights === 1 ? "" : "s"}{(checkoutProRateInfo?.mergedLeftoverNights ?? 0) > 0 ? ` + ${checkoutProRateInfo?.mergedLeftoverNights} joining` : ""} stayed)
                         </span>
                         <span className="text-emerald-400">− {fmtMoney(proRateDiscount)}</span>
                       </div>

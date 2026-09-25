@@ -3,7 +3,7 @@
 // row sync (lib/monthly-payment-sync.ts) so both paths compute rent/deposit
 // identically instead of drifting apart.
 
-import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
+import { calcDailyRent, countBillableNights, daysInMonth, proRateMonthlyRent } from "@/lib/daily-billing";
 
 export const VALID_TIERS = new Set<string>([
   "space_only", "space_food", "space_3meals", "space_food_ac", "space_meals_cooler",
@@ -46,6 +46,194 @@ export function dailySnapshot(t: BaseRentTenant, month: string): {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-hostel billing date (anchor day) — migration 272.
+//
+// OFF (anchor null) is the legacy default and every function below collapses to
+// its previous behaviour, so branches that never enable this stay byte-identical.
+//
+// When a branch sets a billing anchor day, bills still cover CALENDAR months; the
+// anchor only (a) becomes the due/reminder day for every tenant and (b) prorates
+// a mid-month joiner's FIRST calendar month. A monthly tenant who joins after the
+// 1st owes only the nights they actually stayed that month, charged at the
+// owner-entered first_month_day_rate (a premium daily rate) capped at one full
+// month's rent. Full months always bill monthly_rent.
+//
+//   merged (default): the join-month partial folds into the tenant's first
+//                     full-month bill (the NEXT calendar month) — one bill.
+//   separate:         the join-month partial gets its own bill, then full months.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PRORATE_DAYS_PER_MONTH = 30;
+
+export type BillingAnchor = { anchorDay: number; separate: boolean } | null;
+
+/** Normalise a branch's stored settings into a BillingAnchor. NULL/invalid day
+ *  => null => legacy per-anniversary, full-join-month behaviour. */
+export function billingAnchorOf(
+  h: { billing_anchor_day?: number | null; bill_leftover_days_separately?: boolean | null } | null | undefined
+): BillingAnchor {
+  const raw = h?.billing_anchor_day;
+  if (raw === null || raw === undefined) return null;
+  const day = Math.trunc(Number(raw));
+  if (!Number.isFinite(day) || day < 1 || day > 31) return null;
+  return { anchorDay: day, separate: !!h?.bill_leftover_days_separately };
+}
+
+/** The calendar month after `month` ("2026-08" -> "2026-09"). */
+export function nextCalendarMonth(month: string): string {
+  const [y, m] = month.split("-").map(Number);
+  const d = new Date(y, m, 1); // m (1-based) used as 0-based index = the next month
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/** A tenant joined mid-month (after the 1st) => their join month is partial. */
+export function joinIsPartialMonth(checkIn: string): boolean {
+  return !!checkIn && Number(checkIn.slice(8, 10)) > 1;
+}
+
+/** True when, under `anchor`, the join month itself carries NO bill because the
+ *  partial days are merged forward into the next month's first full bill. A
+ *  tenant who leaves within their own join month is excluded: there is no later
+ *  bill to merge into, so the join month must carry the (checkout-prorated)
+ *  partial itself. */
+export function mergedJoinMonthSkipped(
+  t: { check_in: string; check_out?: string | null },
+  anchor: BillingAnchor
+): boolean {
+  if (!anchor || anchor.separate) return false;
+  if (!joinIsPartialMonth(t.check_in)) return false;
+  const joinMonth = t.check_in.slice(0, 7);
+  const co = t.check_out ? t.check_out.slice(0, 7) : null;
+  if (co && co <= joinMonth) return false;
+  return true;
+}
+
+/** The month the tenant's FIRST bill lands in — where the deposit and
+ *  registration fee are charged. Legacy/separate: the join month. Merged +
+ *  partial: the next calendar month (the join month is skipped). */
+export function firstBillMonth(
+  t: { check_in: string; check_out?: string | null },
+  anchor: BillingAnchor
+): string {
+  const joinMonth = t.check_in.slice(0, 7);
+  return mergedJoinMonthSkipped(t, anchor) ? nextCalendarMonth(joinMonth) : joinMonth;
+}
+
+/** Base rent + optional base_rent_override for a MONTHLY tenant's bill in
+ *  `month` under `anchor`. base_rent_override is the ONLY lever the pricing
+ *  trigger honours for monthly rent, so any non-full-month figure MUST be
+ *  returned here AND written to hms_payments.base_rent_override. Returns
+ *  override=null for a plain full month (trigger then bills monthly_rent). */
+export function resolveMonthlyBaseRent(
+  t: { monthly_rent: number; check_in: string; check_out?: string | null; first_month_day_rate?: number | null },
+  month: string,
+  anchor: BillingAnchor
+): { baseRent: number; baseRentOverride: number | null } {
+  const monthly = Number(t.monthly_rent ?? 0);
+  const full = { baseRent: monthly, baseRentOverride: null as number | null };
+  if (!anchor || !joinIsPartialMonth(t.check_in)) return full;
+
+  const joinMonth = t.check_in.slice(0, 7);
+  const dayRate =
+    t.first_month_day_rate !== null && t.first_month_day_rate !== undefined && Number(t.first_month_day_rate) >= 0
+      ? Number(t.first_month_day_rate)
+      : monthly / PRORATE_DAYS_PER_MONTH;
+  const nights = countBillableNights({ checkIn: t.check_in, checkOut: t.check_out ?? null, month: joinMonth });
+  // Premium daily rate applies for short partials, but a part-month can never
+  // exceed a full month's rent (same cap as proRateMonthlyRent).
+  const partialBase = Math.min(monthly, Math.round(dayRate * Math.max(0, nights)));
+
+  if (!mergedJoinMonthSkipped(t, anchor)) {
+    // Separate mode, or a merged tenant leaving within the join month: the
+    // partial lives on the join month; every other month is a full month.
+    if (month === joinMonth) return { baseRent: partialBase, baseRentOverride: partialBase };
+    return full;
+  }
+
+  // Merged mode: the first full-month bill (next calendar month) carries full
+  // rent + the join-month leftover; the join month itself is skipped upstream.
+  if (month === nextCalendarMonth(joinMonth)) {
+    const merged = monthly + partialBase;
+    return { baseRent: merged, baseRentOverride: merged };
+  }
+  return full;
+}
+
+/** The day snapshot (billed_days / daily_rate_billed) to stamp on a bill so the
+ *  receipt prints "N days x rate" instead of "Monthly Rent". Daily tenants keep
+ *  their existing snapshot. A MONTHLY tenant gets one ONLY for a pure day-priced
+ *  partial bill — the separate-mode join month (or a same-month join+leave) — at
+ *  the owner-entered first_month_day_rate. The merged first bill (full month +
+ *  leftover) is not a clean day count, so it keeps the monthly label. The cap
+ *  case (day-rate x nights would exceed a full month) also keeps the monthly
+ *  label, because the stored amount is then no longer days x rate. */
+export function daySnapshotFor(
+  t: { billing_type: string; monthly_rent?: number; daily_rate?: number; check_in: string; check_out?: string | null; first_month_day_rate?: number | null },
+  month: string,
+  anchor: BillingAnchor
+): { billed_days: number | null; daily_rate_billed: number | null } {
+  if (t.billing_type === "daily") return dailySnapshot(t as never, month);
+  const none = { billed_days: null as number | null, daily_rate_billed: null as number | null };
+  if (!anchor || !joinIsPartialMonth(t.check_in)) return none;
+  const joinMonth = t.check_in.slice(0, 7);
+  const monthly = Number(t.monthly_rent ?? 0);
+  const dayRate =
+    t.first_month_day_rate !== null && t.first_month_day_rate !== undefined && Number(t.first_month_day_rate) >= 0
+      ? Number(t.first_month_day_rate)
+      : monthly / PRORATE_DAYS_PER_MONTH;
+  const nights = countBillableNights({ checkIn: t.check_in, checkOut: t.check_out ?? null, month: joinMonth });
+  // Capped premium partials can't be shown cleanly as days x rate, so no snapshot.
+  if (Math.round(dayRate * nights) > monthly) return none;
+  // The leftover-days snapshot is stamped on whichever bill carries the join-month
+  // partial: separate mode -> the join month itself; merged mode -> the next
+  // calendar month's first bill (where the receipt breaks it out as a second line
+  // beside the full month's rent). The merged join month itself is billless.
+  const snapMonth = mergedJoinMonthSkipped(t, anchor) ? nextCalendarMonth(joinMonth) : joinMonth;
+  if (month !== snapMonth) return none;
+  return { billed_days: nights, daily_rate_billed: Math.round(dayRate * 100) / 100 };
+}
+
+/** Base rent for a MONTHLY tenant's FINAL (checkout) month when the owner opts to
+ *  pro-rate it. Anchor-aware so the join-month partial (and a merged first bill)
+ *  prices by the owner-entered per-day rate, not monthly_rent/30 — the shared
+ *  source of truth for BOTH the checkout dialog's preview and the server
+ *  (lib/tenant-checkout.ts), so the quoted discount and the settled amount agree.
+ *  Legacy/non-anchor tenants and plain full months collapse to proRateMonthlyRent. */
+export function checkoutMonthlyBaseRent(
+  t: { monthly_rent: number; check_in: string; first_month_day_rate?: number | null },
+  checkoutDate: string,
+  month: string,
+  anchor: BillingAnchor
+): number {
+  const monthly = Number(t.monthly_rent ?? 0);
+  const nights = countBillableNights({ checkIn: t.check_in, checkOut: checkoutDate, month });
+  const standard =
+    nights >= daysInMonth(month)
+      ? monthly
+      : proRateMonthlyRent({ monthlyRent: monthly, checkIn: t.check_in, checkOut: checkoutDate, month });
+  if (!anchor || !joinIsPartialMonth(t.check_in)) return standard;
+
+  const joinMonth = t.check_in.slice(0, 7);
+  const dayRate =
+    t.first_month_day_rate !== null && t.first_month_day_rate !== undefined && Number(t.first_month_day_rate) >= 0
+      ? Number(t.first_month_day_rate)
+      : monthly / PRORATE_DAYS_PER_MONTH;
+  if (month === joinMonth) {
+    // Join month IS the final month: bill the nights actually stayed at the
+    // premium per-day rate, capped at a full month.
+    return Math.min(monthly, Math.round(dayRate * nights));
+  }
+  if (!anchor.separate && month === nextCalendarMonth(joinMonth)) {
+    // Merged first-bill month: the folded-in join-month leftover (full partial)
+    // plus this month's proration up to checkout.
+    const leftoverNights = countBillableNights({ checkIn: t.check_in, checkOut: null, month: joinMonth });
+    const leftoverBase = Math.min(monthly, Math.round(dayRate * leftoverNights));
+    return leftoverBase + standard;
+  }
+  return standard;
+}
+
 // The security deposit is billed once, on the tenant's first billing month
 // only — every later month is rent + food + AC as before.
 //
@@ -60,10 +248,11 @@ export function dailySnapshot(t: BaseRentTenant, month: string): {
 // a required key turns that into a compile error. It is 0 for every tenant who
 // has never reserved, which reduces this to exactly the previous expression.
 export function computeDepositCharge(
-  t: { check_in: string; security_deposit?: number | null; deposit_collected_amount: number | null },
-  forMonth: string
+  t: { check_in: string; check_out?: string | null; security_deposit?: number | null; deposit_collected_amount: number | null },
+  forMonth: string,
+  anchor: BillingAnchor = null
 ): number {
-  const isFirstBillingMonth = t.check_in && t.check_in.slice(0, 7) === forMonth;
+  const isFirstBillingMonth = !!t.check_in && firstBillMonth(t, anchor) === forMonth;
   if (!isFirstBillingMonth) return 0;
   return Math.max(0, Number(t.security_deposit ?? 0) - Number(t.deposit_collected_amount ?? 0));
 }
@@ -72,10 +261,11 @@ export function computeDepositCharge(
 // timing rule as computeDepositCharge. Trusted as-is by the DB recalculation
 // trigger (hms_recalculate_payment_amount), which does NOT re-derive it.
 export function computeRegistrationFeeCharge(
-  t: { check_in: string; registration_fee?: number | null },
-  forMonth: string
+  t: { check_in: string; check_out?: string | null; registration_fee?: number | null },
+  forMonth: string,
+  anchor: BillingAnchor = null
 ): number {
-  const isFirstBillingMonth = t.check_in && t.check_in.slice(0, 7) === forMonth;
+  const isFirstBillingMonth = !!t.check_in && firstBillMonth(t, anchor) === forMonth;
   return isFirstBillingMonth ? Number(t.registration_fee ?? 0) : 0;
 }
 
@@ -356,11 +546,19 @@ export function clampGrossToCollected(
   return { gross, clamped: true, satisfiable: net(gross) >= alreadyPaid };
 }
 
-export function tenantDueDay(checkIn: string, forMonth: string): number {
-  const checkInDay = Number(checkIn.slice(8, 10));
+// A tenant's "rent due" day-of-month. Legacy: the day they checked in, so 20
+// tenants can each have their own. When the branch runs a single billing anchor
+// day (migration 272), that hostel-wide day replaces the check-in day for every
+// tenant. Either way it is capped to the target month's last day, so an anchor
+// (or check-in) of 31 still fires once in a 30/28-day month instead of never.
+export function tenantDueDay(checkIn: string, forMonth: string, anchorDay?: number | null): number {
   const [y, m] = forMonth.split("-").map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
-  return Math.min(checkInDay, daysInMonth);
+  const baseDay =
+    anchorDay !== null && anchorDay !== undefined && Number.isFinite(Number(anchorDay)) && Number(anchorDay) >= 1
+      ? Math.trunc(Number(anchorDay))
+      : Number(checkIn.slice(8, 10));
+  return Math.min(baseDay, daysInMonth);
 }
 
 /** Reminders per unpaid bill, per month. Beyond this a tenant reads it as spam,

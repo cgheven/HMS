@@ -1028,7 +1028,7 @@ export async function updatePaymentCharges(
 
 export async function getPaymentsPageData(forMonth: string) {
   const ctx = await getAuthContext();
-  if (!ctx?.hostelId) return { hostelId: null, payments: [], carriedTransferByTenant: {} as Record<string, "room" | "branch">, tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, meterAllRooms: false, acReadings: [], acCheckoutReadings: [], acJoinReadings: [], waitingTenantIds: [] };
+  if (!ctx?.hostelId) return { hostelId: null, payments: [], carriedTransferByTenant: {} as Record<string, "room" | "branch">, tenants: [], rooms: [], packageConfig: null, billingAnchorDay: null as number | null, billLeftoverSeparately: false, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, autoReminderEnabled: false, meterAllRooms: false, acReadings: [], acCheckoutReadings: [], acJoinReadings: [], waitingTenantIds: [] };
   const { supabase, hostelId, hostel } = ctx;
 
   const [
@@ -1048,7 +1048,7 @@ export async function getPaymentsPageData(forMonth: string) {
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false }),
     supabase.from("hms_tenants")
-      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading, ac_maintenance, discount_percent")
+      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading, ac_maintenance, discount_percent, first_month_day_rate")
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
       .eq("is_waiting", false),
@@ -1165,9 +1165,13 @@ export async function getPaymentsPageData(forMonth: string) {
     hostelId,
     payments: (payments ?? []) as Payment[],
     carriedTransferByTenant,
-    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "deposit_collected_amount" | "registration_fee" | "food_breakfast" | "food_lunch" | "food_dinner" | "joining_meter_reading" | "ac_maintenance" | "discount_percent"> & { package_tier: PackageTier })[],
+    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "deposit_collected_amount" | "registration_fee" | "food_breakfast" | "food_lunch" | "food_dinner" | "joining_meter_reading" | "ac_maintenance" | "discount_percent" | "first_month_day_rate"> & { package_tier: PackageTier })[],
     rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor" | "has_ac">[],
     packageConfig,
+    // Billing-anchor settings (migration 272) — the Payments page's staleness
+    // detector must see them so it doesn't loop-sync an anchored branch.
+    billingAnchorDay: (hostel?.billing_anchor_day ?? null) as number | null,
+    billLeftoverSeparately: !!hostel?.bill_leftover_days_separately,
     hostelName: hostel?.name ?? "",
     hostelPhone: hostel?.whatsapp ?? hostel?.phone ?? null,
     paymentMethods: hostel?.payment_methods ?? [],

@@ -44,6 +44,58 @@ export async function savePaymentRecoverySettings({
   }
 }
 
+// Optional per-branch billing date (migration 272). billing_anchor_day:
+// null | 1..31. null clears it (back to per-tenant anniversary billing) and,
+// per the agreed behaviour, leaves already-PAID bills untouched — the pricing
+// trigger freezes any collected row, so clearing the anchor only affects future
+// and still-pending bills. bill_leftover_days_separately toggles whether a
+// mid-month joiner's partial days get their own bill (true) or merge into the
+// first full-month bill (false, default).
+export async function saveBillingSettings({
+  billing_anchor_day,
+  bill_leftover_days_separately,
+}: {
+  billing_anchor_day: number | null;
+  bill_leftover_days_separately: boolean;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    await requireOwnerOrPartnerTierWrite("full");
+    const ctx = await getAuthContext();
+    if (!ctx?.hostelId) throw new Error("No active hostel");
+    const { hostelId } = ctx;
+
+    // Validate: null (off) or an integer day 1..31. Anything else is rejected
+    // rather than silently coerced — this drives money.
+    let anchor: number | null = null;
+    if (billing_anchor_day !== null && billing_anchor_day !== undefined) {
+      const day = Math.trunc(Number(billing_anchor_day));
+      if (!Number.isFinite(day) || day < 1 || day > 31) {
+        return { success: false, error: "Billing date must be a day between 1 and 31, or left empty." };
+      }
+      anchor = day;
+    }
+
+    const supabase = await createClient();
+    const { error } = await supabase
+      .from("hms_hostels")
+      .update({
+        billing_anchor_day: anchor,
+        bill_leftover_days_separately: !!bill_leftover_days_separately,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", hostelId);
+
+    if (error) throw error;
+
+    revalidatePath("/settings");
+    revalidatePath("/payments");
+    return { success: true };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 function trimMealTimeRange(r?: { from: string; to: string }): { from: string; to: string } | undefined {
   const from = r?.from?.trim() ?? "";
   const to = r?.to?.trim() ?? "";

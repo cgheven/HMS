@@ -22,7 +22,7 @@ import { sendNoticeReceivedToTenant } from "@/lib/whatsapp-notice"
 import { sendWelcomeEmailToTenant } from "@/lib/welcome-email"
 import { computeACSegmentBilling, deriveOpeningReading, effectivePrevReading, latestReadingBefore, round2 } from "@/lib/ac-billing"
 import { carriedTransferCharges } from "@/lib/ac-transfer"
-import { calcBaseRentServer, dailySnapshot, computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, splitPaymentCharges, grossAmountOf, computeRentDiscount, computeOneOffDiscount, discountableSubtotal } from "@/lib/payment-calc"
+import { calcBaseRentServer, daySnapshotFor, computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, splitPaymentCharges, grossAmountOf, computeRentDiscount, computeOneOffDiscount, discountableSubtotal, billingAnchorOf, resolveMonthlyBaseRent, mergedJoinMonthSkipped } from "@/lib/payment-calc"
 import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
 import { yearMonthInZone } from "@/lib/pkt-time"
@@ -480,7 +480,7 @@ export async function applyRoomACUnitsAsManager(
       // later arrivals for a month they were not there.
       admin
         .from("hms_tenants")
-        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading")
+        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading, first_month_day_rate")
         .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
         .eq("is_active", true)
@@ -500,8 +500,11 @@ export async function applyRoomACUnitsAsManager(
         .eq("hostel_id", hostelId)
         .order("meter_reading", { ascending: true }),
       // The BILLING rule, as distinct from the room's physical fact — see below.
-      admin.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).maybeSingle(),
+      // billing_anchor_day/leftover feed join-month proration on the create path.
+      admin.from("hms_hostels").select("meter_all_rooms, billing_anchor_day, bill_leftover_days_separately").eq("id", hostelId).maybeSingle(),
     ])
+    // Null on unanchored branches => the create path below is byte-identical.
+    const mgrAcAnchor = billingAnchorOf(branch)
 
     // A failed tenant query returns null, which falls through to "No active
     // tenants found in this room" below — an answer about the room, for a
@@ -681,7 +684,7 @@ export async function applyRoomACUnitsAsManager(
       // silently dropped registration_fee_charge/security_deposit_charge (the DB
       // trigger trusts these rather than re-deriving them) and mislabeled every
       // tenant's tier, whatever it actually was.
-      const newRows = missing.map((t) => {
+      const newRows = missing.flatMap((t) => {
         const tier = (t.package_tier ?? "space_only") as PackageTier
         const billingInfo = {
           billing_type: t.billing_type ?? "monthly",
@@ -689,27 +692,37 @@ export async function applyRoomACUnitsAsManager(
           daily_rate: t.daily_rate ?? 0,
           check_in: t.check_in,
           check_out: t.check_out ?? null,
+          first_month_day_rate: t.first_month_day_rate ?? null,
         }
-        const baseRent = calcBaseRentServer(billingInfo, currentMonth)
-        const daySnapshot = dailySnapshot(billingInfo, currentMonth)
+        // Under merged anchor the join month carries no bill — never auto-create one.
+        if (mergedJoinMonthSkipped(billingInfo, mgrAcAnchor) && currentMonth === t.check_in.slice(0, 7)) return []
+
+        const { baseRent, baseRentOverride } =
+          billingInfo.billing_type === "daily"
+            ? { baseRent: calcBaseRentServer(billingInfo, currentMonth), baseRentOverride: null as number | null }
+            : resolveMonthlyBaseRent(billingInfo, currentMonth, mgrAcAnchor)
+        const daySnapshot = daySnapshotFor(billingInfo, currentMonth, mgrAcAnchor)
         const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0
         const addonFoodCharge = config ? calcFoodAddonCharge(t, config) : 0
         const foodCharge = tierFoodCharge + addonFoodCharge
         const depositCharge = computeDepositCharge(
-          { check_in: t.check_in, security_deposit: t.security_deposit, deposit_collected_amount: t.deposit_collected_amount ?? 0 },
-          currentMonth
+          { check_in: t.check_in, check_out: t.check_out ?? null, security_deposit: t.security_deposit, deposit_collected_amount: t.deposit_collected_amount ?? 0 },
+          currentMonth,
+          mgrAcAnchor
         )
         const registrationFeeCharge = computeRegistrationFeeCharge(
-          { check_in: t.check_in, registration_fee: t.registration_fee },
-          currentMonth
+          { check_in: t.check_in, check_out: t.check_out ?? null, registration_fee: t.registration_fee },
+          currentMonth,
+          mgrAcAnchor
         )
-        return {
+        return [{
           hostel_id: hostelId,
           tenant_id: t.id,
           // The room being AC-billed — snapshotted for the member ledger.
           room_id: roomId,
           for_month: currentMonth,
           amount: baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge,
+          base_rent_override: baseRentOverride,
           status: "pending" as PaymentStatus,
           payment_package_tier: tier,
           food_charge: foodCharge,
@@ -719,9 +732,9 @@ export async function applyRoomACUnitsAsManager(
           registration_fee_charge: registrationFeeCharge,
           ac_maintenance_charge: acMaintenanceCharge,
           ...daySnapshot,
-        }
+        }]
       })
-      await admin.from("hms_payments").insert(newRows)
+      if (newRows.length > 0) await admin.from("hms_payments").insert(newRows)
     }
 
     // Shared with applyRoomACUnitsAction (lib/ac-billing.ts) so this tier can
@@ -1096,6 +1109,12 @@ export async function addTenantAsManager(
       billing_type: billingType,
       monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
       daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
+      // Owner-entered premium per-day rate for the partial first month, kept only
+      // for monthly tenants (used on billing-anchor branches). NULL => monthly_rent/30.
+      first_month_day_rate:
+        billingType === "monthly" && payload.first_month_day_rate !== undefined && payload.first_month_day_rate !== null && String(payload.first_month_day_rate) !== ""
+          ? (Math.max(0, Number(payload.first_month_day_rate)) || null)
+          : null,
       // A daily tenant has no monthly rent to discount, so the column is NULL
       // for them however the form arrived.
       discount_percent: billingType === "monthly" ? (payload.discount_percent ?? null) : null,
@@ -1275,6 +1294,12 @@ export async function editTenantAsManager(
       billing_type: billingType,
       monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
       daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
+      // Owner-entered premium per-day rate for the partial first month, kept only
+      // for monthly tenants (used on billing-anchor branches). NULL => monthly_rent/30.
+      first_month_day_rate:
+        billingType === "monthly" && payload.first_month_day_rate !== undefined && payload.first_month_day_rate !== null && String(payload.first_month_day_rate) !== ""
+          ? (Math.max(0, Number(payload.first_month_day_rate)) || null)
+          : null,
       // A daily tenant has no monthly rent to discount, so the column is NULL
       // for them however the form arrived.
       discount_percent: billingType === "monthly" ? (payload.discount_percent ?? null) : null,

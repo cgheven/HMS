@@ -2,8 +2,10 @@ import "server-only";
 import { yearMonthInZone, DEFAULT_TIMEZONE } from "@/lib/pkt-time";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
-  VALID_TIERS, calcBaseRentServer, dailySnapshot, computeDepositCharge,
+  VALID_TIERS, calcBaseRentServer, daySnapshotFor, computeDepositCharge,
   computeRegistrationFeeCharge, computeAcMaintenanceCharge,
+  resolveMonthlyBaseRent, mergedJoinMonthSkipped, billingAnchorOf,
+  type BillingAnchor,
 } from "@/lib/payment-calc";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import type { PackageTier } from "@/types";
@@ -21,6 +23,10 @@ import type { PackageTier } from "@/types";
 export type ExpectedCharges = {
   tier: PackageTier;
   baseRent: number;
+  // Non-null ONLY for a monthly tenant's prorated/merged first bill under a
+  // billing anchor (migration 272) — the trigger ignores app `amount` for
+  // monthly rent, so a non-full-month figure must reach base_rent_override.
+  baseRentOverride: number | null;
   foodCharge: number;
   depositCharge: number;
   registrationFeeCharge: number;
@@ -40,12 +46,18 @@ export function expectedChargesFor(
     food_breakfast: boolean; food_lunch: boolean; food_dinner: boolean;
     // Per-tenant AC maintenance override. Null = use the branch rate.
     ac_maintenance: number | null;
+    // Owner-entered premium per-day rate for the partial first month (anchor
+    // branches only). Null => fall back to monthly_rent/30.
+    first_month_day_rate?: number | null;
   },
   month: string,
   ctx: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     config: any | null;
     roomAcMap: Map<string, boolean>;
+    // Null on legacy (unanchored) branches — every result is then identical to
+    // the previous behaviour.
+    anchor?: BillingAnchor;
   }
 ): ExpectedCharges {
   const tier = (t.package_tier ?? "space_only") as PackageTier;
@@ -56,13 +68,23 @@ export function expectedChargesFor(
   const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
   const addonFoodCharge = ctx.config ? calcFoodAddonCharge(t, ctx.config) : 0;
   const roomHasAc = t.room_id ? (ctx.roomAcMap.get(t.room_id) ?? false) : false;
+  const anchor = ctx.anchor ?? null;
+
+  // Daily tenants are untouched by the anchor: calcBaseRentServer already
+  // prorates them by nights and the trigger trusts their `amount`. Only monthly
+  // tenants get an anchor-driven proration/merge via base_rent_override.
+  const { baseRent, baseRentOverride } =
+    t.billing_type === "daily"
+      ? { baseRent: calcBaseRentServer(t as never, month), baseRentOverride: null as number | null }
+      : resolveMonthlyBaseRent(t, month, anchor);
 
   return {
     tier,
-    baseRent: calcBaseRentServer(t as never, month),
+    baseRent,
+    baseRentOverride,
     foodCharge: tierFoodCharge + addonFoodCharge,
-    depositCharge: computeDepositCharge(t, month),
-    registrationFeeCharge: computeRegistrationFeeCharge(t, month),
+    depositCharge: computeDepositCharge(t, month, anchor),
+    registrationFeeCharge: computeRegistrationFeeCharge(t, month, anchor),
     acMaintenanceCharge: computeAcMaintenanceCharge(roomHasAc, acMaintenanceRate, t.ac_maintenance),
   };
 }
@@ -112,10 +134,10 @@ export async function ensureMonthlyPaymentRows(
   hostelId: string,
   month: string
 ): Promise<{ created: number; updated: number }> {
-  const [{ data: tenants, error: tenantsErr }, { data: configData }, { data: rooms }] = await Promise.all([
+  const [{ data: tenants, error: tenantsErr }, { data: configData }, { data: rooms }, { data: hostelRow }] = await Promise.all([
     admin
       .from("hms_tenants")
-      .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner, ac_maintenance")
+      .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner, ac_maintenance, first_month_day_rate")
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
       .eq("is_waiting", false),
@@ -128,6 +150,11 @@ export async function ensureMonthlyPaymentRows(
       .from("hms_rooms")
       .select("id, has_ac")
       .eq("hostel_id", hostelId),
+    admin
+      .from("hms_hostels")
+      .select("billing_anchor_day, bill_leftover_days_separately")
+      .eq("id", hostelId)
+      .maybeSingle(),
   ]);
 
   if (tenantsErr) throw new Error(tenantsErr.message);
@@ -135,26 +162,50 @@ export async function ensureMonthlyPaymentRows(
   const activeTenants = tenants ?? [];
   if (activeTenants.length === 0) return { created: 0, updated: 0 };
 
+  // Null on branches that never enabled a billing date => every charge below is
+  // byte-identical to the legacy behaviour.
+  const anchor: BillingAnchor = billingAnchorOf(hostelRow);
   const foodRate = Number(configData?.food_monthly_rate ?? 0);
   const acMaintenanceRate = Number(configData?.ac_maintenance_rate ?? 0);
   const roomAcMap = new Map<string, boolean>((rooms ?? []).map((r) => [r.id, !!r.has_ac]));
 
   const { data: existingRows } = await admin
     .from("hms_payments")
-    .select("tenant_id, status, ac_charge, ac_units_consumed")
+    .select("tenant_id, status, ac_charge, ac_units_consumed, amount_paid, base_rent_override")
     .eq("hostel_id", hostelId)
     .eq("for_month", month);
 
-  type ExistingRow = { tenant_id: string; status: string; ac_charge: number | null; ac_units_consumed: number | null };
+  type ExistingRow = { tenant_id: string; status: string; ac_charge: number | null; ac_units_consumed: number | null; amount_paid: number | null; base_rent_override: number | string | null };
   const existingMap = new Map<string, ExistingRow>((existingRows ?? []).map((r) => [r.tenant_id, r]));
 
   const newRows: object[] = [];
   const pendingUpdates: object[] = [];
+  // Merged-mode join months that must NOT carry a bill but still have a stale
+  // pending row (e.g. the anchor was enabled after the join-month bill was
+  // auto-created) — deleted below so the leftover is not billed twice (once here,
+  // once folded into the next month). Only ever pending + nothing collected.
+  const deleteJoinMonthIds: string[] = [];
 
   for (const t of activeTenants) {
-    const { tier, baseRent, foodCharge, depositCharge, registrationFeeCharge, acMaintenanceCharge } =
-      expectedChargesFor(t, month, { config: configData, roomAcMap });
-    const daySnapshot = dailySnapshot(t, month);
+    // Merged anchor mode folds the join-month partial into the NEXT calendar
+    // month's first full bill, so the join month itself gets no row. Skipping
+    // here is what makes the "one bill" behaviour real; the leftover nights are
+    // still recovered on that next bill via resolveMonthlyBaseRent. If a stale
+    // pending join-month row already exists (anchor enabled after it was created),
+    // delete it — but only when nothing was collected, so paid history is safe.
+    if (mergedJoinMonthSkipped(t, anchor) && month === t.check_in.slice(0, 7)) {
+      const existingJoin = existingMap.get(t.id);
+      if (existingJoin && existingJoin.status === "pending" && Number(existingJoin.amount_paid ?? 0) <= 0.009) {
+        deleteJoinMonthIds.push(t.id);
+      }
+      continue;
+    }
+
+    const { tier, baseRent, baseRentOverride, foodCharge, depositCharge, registrationFeeCharge, acMaintenanceCharge } =
+      expectedChargesFor(t, month, { config: configData, roomAcMap, anchor });
+    // Anchor-aware: a monthly separate-partial join month gets a "N days x rate"
+    // snapshot so its receipt reads like a daily bill; daily tenants unchanged.
+    const daySnapshot = daySnapshotFor(t, month, anchor);
 
     const existing = existingMap.get(t.id);
 
@@ -166,6 +217,9 @@ export async function ensureMonthlyPaymentRows(
         room_id: t.room_id,
         for_month: month,
         amount: baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge,
+        // The trigger bills full monthly_rent for a monthly tenant UNLESS this
+        // override is present; null for daily and for plain full months.
+        base_rent_override: baseRentOverride,
         status: "pending",
         payment_package_tier: tier,
         food_charge: foodCharge,
@@ -187,7 +241,7 @@ export async function ensureMonthlyPaymentRows(
       });
     } else if (existing.status === "pending") {
       const preservedAC = Number(existing.ac_charge ?? 0);
-      pendingUpdates.push({
+      const pendingUpdate: Record<string, unknown> = {
         hostel_id: hostelId,
         tenant_id: t.id,
         // A still-pending bill tracks the current room (frozen once paid/waived).
@@ -213,7 +267,19 @@ export async function ensureMonthlyPaymentRows(
         // Same reason as the newRows branch above: `amount` is gross here too.
         referral_discount: 0,
         ...daySnapshot,
-      });
+      };
+      // base_rent_override must be present on EVERY object in the batch. PostgREST
+      // bulk-upsert takes the UNION of keys across the batch and fills a missing
+      // key with the column DEFAULT (NULL) in DO UPDATE SET — so merely omitting it
+      // on some rows would let a NULL clobber an existing override once ANY row in
+      // the same for_month batch does carry one. Send the anchor proration value
+      // when there is one, otherwise write the row's EXISTING value straight back
+      // (a no-op that preserves it). Production has active tenants whose bill
+      // legitimately carries an override (e.g. re-activated after checkout).
+      const preservedOverride =
+        existing.base_rent_override != null ? Number(existing.base_rent_override) : null;
+      pendingUpdate.base_rent_override = baseRentOverride !== null ? baseRentOverride : preservedOverride;
+      pendingUpdates.push(pendingUpdate);
     }
     // paid/waived rows are skipped entirely
   }
@@ -230,6 +296,20 @@ export async function ensureMonthlyPaymentRows(
       .from("hms_payments")
       .upsert(pendingUpdates, { onConflict: "tenant_id,for_month", ignoreDuplicates: false });
     if (updateErr) throw new Error(updateErr.message);
+  }
+
+  if (deleteJoinMonthIds.length > 0) {
+    // Guarded again on status + amount_paid at the DB level so a row that was
+    // collected between the read and here is never deleted.
+    const { error: deleteErr } = await admin
+      .from("hms_payments")
+      .delete()
+      .eq("hostel_id", hostelId)
+      .eq("for_month", month)
+      .in("tenant_id", deleteJoinMonthIds)
+      .eq("status", "pending")
+      .lte("amount_paid", 0.009);
+    if (deleteErr) throw new Error(deleteErr.message);
   }
 
   return { created: newRows.length, updated: pendingUpdates.length };

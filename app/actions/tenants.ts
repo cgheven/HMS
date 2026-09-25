@@ -14,7 +14,7 @@ import { applyRoomACUnitsAsManager } from "@/app/actions/managers";
 import { getAuthContext } from "@/lib/data";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { calcDailyRent, countBillableNights } from "@/lib/daily-billing";
-import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount, splitPaymentCharges } from "@/lib/payment-calc";
+import { computeDepositCharge, computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeRentDiscount, splitPaymentCharges, billingAnchorOf, resolveMonthlyBaseRent, mergedJoinMonthSkipped, firstBillMonth, daySnapshotFor } from "@/lib/payment-calc";
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
 import { performRoomTransfer, isMeteredRoom, findCorrectableTransfer, correctRoomTransferReadings } from "@/lib/room-transfer";
 // Separate `import type`, never re-exported from this file. `export type { X }`
@@ -1355,7 +1355,12 @@ function getPastMonths(checkIn: string, timeZone: string = DEFAULT_TIMEZONE): st
 
 function lastDayOfMonth(yyyyMM: string): string {
   const [y, m] = yyyyMM.split("-").map(Number);
-  return new Date(y, m, 0).toISOString().slice(0, 10);
+  // Format the day directly — NEVER toISOString(), which converts the local-time
+  // Date to UTC and, on a positive-offset host (e.g. PKT), rolls the last day
+  // back one (Aug 31 -> "2026-08-30"). getDate() on the y,m,0 date is the real
+  // last day of the month in every timezone.
+  const day = new Date(y, m, 0).getDate();
+  return `${yyyyMM}-${String(day).padStart(2, "0")}`;
 }
 
 export async function backfillTenantPaymentsAction(
@@ -1374,7 +1379,7 @@ export async function backfillTenantPaymentsAction(
     // Fetch tenant — verify it belongs to this hostel
     const { data: tenant, error: tenantErr } = await adminDb
       .from("hms_tenants")
-      .select("id, full_name, hostel_id, room_id, check_in, check_out, monthly_rent, daily_rate, security_deposit, deposit_collected_amount, registration_fee, package_tier, billing_type, food_breakfast, food_lunch, food_dinner, ac_maintenance, discount_percent")
+      .select("id, full_name, hostel_id, room_id, check_in, check_out, monthly_rent, daily_rate, first_month_day_rate, security_deposit, deposit_collected_amount, registration_fee, package_tier, billing_type, food_breakfast, food_lunch, food_dinner, ac_maintenance, discount_percent")
       .eq("id", tenantId)
       .eq("hostel_id", hostelId)
       .single();
@@ -1400,11 +1405,15 @@ export async function backfillTenantPaymentsAction(
       tenant.room_id
         ? adminDb.from("hms_rooms").select("has_ac").eq("id", tenant.room_id).maybeSingle()
         : Promise.resolve({ data: null }),
-      adminDb.from("hms_hostels").select("country").eq("id", hostelId).maybeSingle(),
+      adminDb.from("hms_hostels").select("country, billing_anchor_day, bill_leftover_days_separately").eq("id", hostelId).maybeSingle(),
     ]);
     // Inline symbol for the stored deposit note (PK "Rs" — byte-identical).
     const bfCountry = (bfHostelRow as { country?: string | null } | null)?.country ?? null;
     const bfSym = getCountryConfig(bfCountry).currencySymbol;
+    // Null on branches that never enabled a billing date => proration/deposit
+    // timing below stay byte-identical to the previous backfill behaviour.
+    const bfAnchor = billingAnchorOf(bfHostelRow as { billing_anchor_day?: number | null; bill_leftover_days_separately?: boolean | null } | null);
+    const bfFirstBillMonth = firstBillMonth(tenant, bfAnchor);
     // "Past months" anchored to the hostel's timezone (see getPastMonths).
     const pastMonths = getPastMonths(tenant.check_in, getCountryConfig(bfCountry).timezone);
     if (pastMonths.length === 0) return { success: true, monthsCreated: 0 };
@@ -1427,21 +1436,34 @@ export async function backfillTenantPaymentsAction(
     // per-month nights × rate; months the stay never touched produce 0 and are
     // dropped rather than written as empty rows.
     const rows = pastMonths.flatMap((month) => {
+      // Merged anchor mode folds the join-month partial into the next month, so
+      // the join month itself is not backfilled (matches the live sync's skip).
+      if (mergedJoinMonthSkipped(tenant, bfAnchor) && month === tenant.check_in.slice(0, 7)) return [];
+
       const nights = isDaily
         ? countBillableNights({ checkIn, checkOut, month })
         : null;
       if (isDaily && nights === 0) return [];
 
+      // Monthly base rent respects the branch billing anchor: a mid-month join
+      // month is prorated (separate) or the leftover is merged into the first
+      // full-month bill. baseRentOverride is null unless a non-full-month figure
+      // is in play, in which case it MUST reach the trigger (which otherwise
+      // bills full monthly_rent for a monthly tenant).
+      const { baseRent: monthlyBaseRent, baseRentOverride } = isDaily
+        ? { baseRent: 0, baseRentOverride: null as number | null }
+        : resolveMonthlyBaseRent(tenant, month, bfAnchor);
       const baseRent = isDaily
         ? calcDailyRent({ checkIn, checkOut, month, dailyRate })
-        : Number(tenant.monthly_rent);
+        : monthlyBaseRent;
 
-      // Deposit and registration fee are billed once, on the check-in month
-      // only. Shared helpers rather than an inline copy — the inline version
-      // could not see deposit_collected_on and would re-bill a deposit already
-      // collected as a seat reservation.
-      const depositCharge = computeDepositCharge(tenant, month);
-      const registrationFeeCharge = computeRegistrationFeeCharge(tenant, month);
+      // Deposit and registration fee are billed once, on the first BILL month
+      // (the join month, or — under merged anchor — the next month). Shared
+      // helpers rather than an inline copy — the inline version could not see
+      // deposit_collected_on and would re-bill a deposit already collected as a
+      // seat reservation.
+      const depositCharge = computeDepositCharge(tenant, month, bfAnchor);
+      const registrationFeeCharge = computeRegistrationFeeCharge(tenant, month, bfAnchor);
       const monthAmount = baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge;
 
       // Monthly tenants are recorded as already settled: the backfill exists to
@@ -1475,7 +1497,12 @@ export async function backfillTenantPaymentsAction(
             status: "paid" as const,
             amount_paid: settledAmount,
             payment_method: "cash" as const,
-            payment_date: lastDayOfMonth(month),
+            // On an ANCHOR branch, the first bill month is dated to the actual
+            // admission (check-in) date — the date of record for when the resident
+            // joined, which reads correctly on the receipt for a prorated partial
+            // first month. Non-anchor branches keep the legacy month-end date, so
+            // existing clients are byte-identical.
+            payment_date: bfAnchor && month === bfFirstBillMonth ? checkIn : lastDayOfMonth(month),
             receipt_number: genReceiptNumber(tenant.full_name, month),
           };
 
@@ -1487,6 +1514,7 @@ export async function backfillTenantPaymentsAction(
         room_id: tenant.room_id,
         for_month: month,
         amount: monthAmount,
+        base_rent_override: baseRentOverride,
         food_charge: foodCharge,
         ac_charge: 0,
         security_deposit_charge: depositCharge,
@@ -1495,8 +1523,9 @@ export async function backfillTenantPaymentsAction(
         late_fee: 0,
         ...settlement,
         payment_package_tier: tenant.package_tier,
-        billed_days: nights,
-        daily_rate_billed: isDaily ? dailyRate : null,
+        // "N days x rate" snapshot: daily tenants as before; a monthly
+        // separate-partial join month gets it too so its receipt reads per-day.
+        ...daySnapshotFor(tenant, month, bfAnchor),
         ...(depositCharge > 0 ? { notes: `Security deposit: ${bfSym} ${depositCharge} (paid on joining)` } : {}),
       }];
     });

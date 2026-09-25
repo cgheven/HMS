@@ -63,6 +63,9 @@ export interface PartnerTenantPayload {
   billing_type: string;
   monthly_rent: number;
   daily_rate: number;
+  /** Owner-entered premium per-day rate for the partial first month (monthly
+   *  tenants on billing-anchor branches). null/undefined => monthly_rent/30. */
+  first_month_day_rate?: number | null;
   /** Standing discount on rent, 0..100, or null for none. Monthly billing only. */
   discount_percent: number | null;
   security_deposit: number;
@@ -152,6 +155,12 @@ export async function addTenantAsPartner(
       billing_type: billingType,
       monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
       daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
+      // Owner-entered premium per-day rate for the partial first month, kept only
+      // for monthly tenants (used on billing-anchor branches). NULL => monthly_rent/30.
+      first_month_day_rate:
+        billingType === "monthly" && payload.first_month_day_rate !== undefined && payload.first_month_day_rate !== null && String(payload.first_month_day_rate) !== ""
+          ? (Math.max(0, Number(payload.first_month_day_rate)) || null)
+          : null,
       // A daily tenant has no monthly rent to discount, so the column is NULL
       // for them however the form arrived.
       discount_percent: billingType === "monthly" ? (payload.discount_percent ?? null) : null,
@@ -620,6 +629,12 @@ export async function editTenantAsPartner(
       billing_type: billingType,
       monthly_rent: billingType === "monthly" ? Number(payload.monthly_rent) || 0 : 0,
       daily_rate: billingType === "daily" ? Number(payload.daily_rate) || 0 : 0,
+      // Owner-entered premium per-day rate for the partial first month, kept only
+      // for monthly tenants (used on billing-anchor branches). NULL => monthly_rent/30.
+      first_month_day_rate:
+        billingType === "monthly" && payload.first_month_day_rate !== undefined && payload.first_month_day_rate !== null && String(payload.first_month_day_rate) !== ""
+          ? (Math.max(0, Number(payload.first_month_day_rate)) || null)
+          : null,
       // A daily tenant has no monthly rent to discount, so the column is NULL
       // for them however the form arrived.
       discount_percent: billingType === "monthly" ? (payload.discount_percent ?? null) : null,

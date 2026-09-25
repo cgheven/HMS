@@ -128,7 +128,7 @@ export async function getManagerTenants() {
 export async function getManagerPaymentsPageData(forMonth: string) {
   const scope = await resolveManagerHostel();
   if (!scope) {
-    return { hostelId: null, payments: [], carriedTransferByTenant: {} as Record<string, "room" | "branch">, tenants: [], rooms: [], packageConfig: null, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, meterAllRooms: false, acReadings: [], acCheckoutReadings: [], acJoinReadings: [], waitingTenantIds: [] };
+    return { hostelId: null, payments: [], carriedTransferByTenant: {} as Record<string, "room" | "branch">, tenants: [], rooms: [], packageConfig: null, billingAnchorDay: null as number | null, billLeftoverSeparately: false, hostelName: "", hostelPhone: null, paymentMethods: [], reminderTemplate: null, meterAllRooms: false, acReadings: [], acCheckoutReadings: [], acJoinReadings: [], waitingTenantIds: [] };
   }
 
   const { hostelId } = scope;
@@ -151,7 +151,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
       .eq("for_month", forMonth)
       .order("created_at", { ascending: false }),
     admin.from("hms_tenants")
-      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading, ac_maintenance, discount_percent")
+      .select("id, full_name, billing_type, monthly_rent, daily_rate, check_in, check_out, room_id, is_active, package_tier, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading, ac_maintenance, discount_percent, first_month_day_rate")
       .eq("hostel_id", hostelId)
       .eq("is_active", true)
       .eq("is_waiting", false),
@@ -160,7 +160,7 @@ export async function getManagerPaymentsPageData(forMonth: string) {
       .eq("hostel_id", hostelId),
     getManagerPackageConfig(hostelId),
     admin.from("hms_hostels")
-      .select("id, name, phone, whatsapp, payment_methods, reminder_template, meter_all_rooms")
+      .select("id, name, phone, whatsapp, payment_methods, reminder_template, meter_all_rooms, billing_anchor_day, bill_leftover_days_separately")
       .eq("id", hostelId)
       .maybeSingle(),
     // All months — see getPaymentsPageData() for why this is not month-scoped.
@@ -228,9 +228,11 @@ export async function getManagerPaymentsPageData(forMonth: string) {
     hostelId,
     payments: (payments ?? []) as Payment[],
     carriedTransferByTenant,
-    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "deposit_collected_amount" | "registration_fee" | "food_breakfast" | "food_lunch" | "food_dinner" | "joining_meter_reading" | "ac_maintenance" | "discount_percent"> & { package_tier: PackageTier })[],
+    tenants: (tenants ?? []) as (Pick<Tenant, "id" | "full_name" | "billing_type" | "monthly_rent" | "daily_rate" | "check_in" | "check_out" | "room_id" | "is_active" | "security_deposit" | "deposit_collected_amount" | "registration_fee" | "food_breakfast" | "food_lunch" | "food_dinner" | "joining_meter_reading" | "ac_maintenance" | "discount_percent" | "first_month_day_rate"> & { package_tier: PackageTier })[],
     rooms: (rooms ?? []) as Pick<Room, "id" | "room_number" | "floor" | "has_ac">[],
     packageConfig,
+    billingAnchorDay: ((h as { billing_anchor_day?: number | null } | null)?.billing_anchor_day ?? null) as number | null,
+    billLeftoverSeparately: !!(h as { bill_leftover_days_separately?: boolean | null } | null)?.bill_leftover_days_separately,
     hostelName: h?.name ?? "",
     hostelPhone: h?.whatsapp ?? h?.phone ?? null,
     paymentMethods: h?.payment_methods ?? [],

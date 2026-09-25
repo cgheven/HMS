@@ -275,6 +275,12 @@ export interface Hostel {
    *  For branches that charge electricity per room — has_ac stays the physical
    *  fact used by the public listing and by seater pricing. */
   meter_all_rooms?: boolean;
+  /** Day-of-month every tenant is billed/reminded on (1..31, clamped to month
+   *  length). NULL = per-tenant anniversary billing (legacy default). Migration 272. */
+  billing_anchor_day?: number | null;
+  /** When true, a mid-month joiner's partial days get their own bill; false
+   *  (default) merges them into the first full-month bill. Migration 272. */
+  bill_leftover_days_separately?: boolean;
   wifi_networks: WifiNetwork[];
   welcome_message_template: string | null;
   meal_times: MealTimes;
@@ -419,6 +425,9 @@ export interface Tenant {
   custom_package_id: string | null;
   monthly_rent: number;
   daily_rate: number;
+  /** Owner-entered premium per-day rate for the partial first month, used only on
+   *  billing-anchor branches (migration 272). NULL => monthly_rent/30. */
+  first_month_day_rate?: number | null;
   /** Standing discount agreed at admission, as a percentage of monthly rent
    *  only — never food, metered AC, the deposit, the registration fee or AC
    *  maintenance. NULL = none. Stored separately from monthly_rent so reports

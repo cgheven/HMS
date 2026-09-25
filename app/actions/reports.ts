@@ -1488,6 +1488,15 @@ export async function getReportData(
   };
   const [dueY, dueM] = currentMonthKey.split("-").map(Number);
   const daysInCurrentMonth = new Date(dueY, dueM, 0).getDate();
+  // On a billing-anchor branch every tenant's due day is the hostel-wide anchor,
+  // not their check-in day — mirror that here so the reminder-schedule preview
+  // matches the cron. Null (legacy) => per-tenant check-in day, unchanged.
+  const { data: dueHostel } = await admin
+    .from("hms_hostels")
+    .select("billing_anchor_day")
+    .eq("id", hostelId)
+    .maybeSingle();
+  const dueAnchorDay = (dueHostel as { billing_anchor_day?: number | null } | null)?.billing_anchor_day ?? null;
   for (const p of (dueRes.data ?? []) as unknown as DuePaymentRow[]) {
     // Checked-out and waiting-list tenants never get reminded (same guard as
     // the actual cron in lib/reminder-engine.ts) — a stale unpaid row from
@@ -1495,7 +1504,7 @@ export async function getReportData(
     if (!p.tenant || !p.tenant.is_active || p.tenant.is_waiting || !p.tenant.check_in) continue;
     const remaining = Number(p.amount) + Number(p.late_fee ?? 0) - Number(p.amount_paid ?? 0);
     if (remaining <= 0) continue;
-    const dueDay = tenantDueDay(p.tenant.check_in, currentMonthKey);
+    const dueDay = tenantDueDay(p.tenant.check_in, currentMonthKey, dueAnchorDay);
     for (let day = 1; day <= daysInCurrentMonth; day++) {
       if (!shouldRemindToday(dueDay, day)) continue;
       const dateStr = `${currentMonthKey}-${String(day).padStart(2, "0")}`;

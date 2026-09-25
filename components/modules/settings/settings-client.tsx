@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, useTransition } from "react";
-import { Building2, User, Save, Loader2, Globe, Clock, Phone, RefreshCw, Plus, Check, Handshake, Eye, EyeOff, Trash2, X, MessageCircle, ShieldCheck, ChefHat, ChevronDown, Utensils } from "lucide-react";
+import { Building2, User, Save, Loader2, Globe, Clock, Phone, RefreshCw, Plus, Check, Handshake, Eye, EyeOff, Trash2, X, MessageCircle, ShieldCheck, ChefHat, ChevronDown, Utensils, CalendarClock } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -29,6 +29,7 @@ import { SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
 
 import { PackagePricingForm } from "@/components/modules/settings/package-pricing-form";
 import { PaymentMethodsForm } from "@/components/modules/settings/payment-methods-form";
+import { BillingDateForm } from "@/components/modules/settings/billing-date-form";
 import { HostelInfoForm } from "@/components/modules/settings/hostel-info-form";
 
 function Section({ title, icon: Icon, description, danger = false, defaultOpen = false, forceOpen = false, id, children }: {
@@ -784,6 +785,16 @@ export function SettingsClient() {
           hostelName={hostel?.name ?? "Your Hostel"}
           country={hostel?.country}
           whatsappEnabled={hostel?.whatsapp_enabled}
+          readOnly={!canFullTier}
+          readOnlyNote={readOnlyNote}
+        />
+      </Section>
+
+      {/* Billing Date */}
+      <Section title="Billing Date" icon={CalendarClock} description="Optionally bill every resident on one day of the month, with mid-month joiners prorated for their first month.">
+        <BillingDateForm
+          initialAnchorDay={hostel?.billing_anchor_day}
+          initialSeparate={hostel?.bill_leftover_days_separately}
           readOnly={!canFullTier}
           readOnlyNote={readOnlyNote}
         />

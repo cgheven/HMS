@@ -28,9 +28,10 @@ import { getManagerContext } from "@/lib/manager-auth";
 import { calcFoodAddonCharge } from "@/lib/food-addon";
 import { ensureMonthlyPaymentRows } from "@/lib/monthly-payment-sync";
 import {
-  VALID_TIERS, calcBaseRentServer, dailySnapshot, computeDepositCharge,
+  VALID_TIERS, calcBaseRentServer, daySnapshotFor, computeDepositCharge,
   computeRegistrationFeeCharge, computeAcMaintenanceCharge, computeReferralDiscount,
   computeRentDiscount, computeOneOffDiscount, discountableSubtotal,
+  billingAnchorOf, resolveMonthlyBaseRent, mergedJoinMonthSkipped,
 } from "@/lib/payment-calc";
 import { runReminderPass, type ReminderSummary } from "@/lib/reminder-engine";
 import { logActivity } from "@/lib/audit";
@@ -121,7 +122,7 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("hms_tenants")
-    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner, ac_maintenance, discount_percent")
+    .select("id, monthly_rent, daily_rate, billing_type, package_tier, check_in, check_out, security_deposit, deposit_collected_amount, registration_fee, room_id, food_breakfast, food_lunch, food_dinner, ac_maintenance, discount_percent, first_month_day_rate")
     .eq("id", tenantId)
     .eq("hostel_id", hostelId) // ensures the tenant belongs to the owner's hostel
     .single();
@@ -151,6 +152,7 @@ async function fetchTenantData(tenantId: string, hostelId: string) {
     food_dinner: boolean;
     ac_maintenance: number | null;
     discount_percent: number | null;
+    first_month_day_rate: number | null;
   };
 }
 
@@ -422,7 +424,7 @@ export async function markPaymentPaidAction(
 
     // --- Re-derive base_rent and total from DB-canonical values (F-001) ---
     // Fanned out — independent reads, no need to serialize.
-    const [tenantData, { data: foodConfigData }, { data: rewardRow }] = await Promise.all([
+    const [tenantData, { data: foodConfigData }, { data: rewardRow }, { data: acHostelRow }] = await Promise.all([
       fetchTenantData(existingPayment.tenant_id, hostelId),
       supabase
         .from("hms_package_configs")
@@ -446,8 +448,16 @@ export async function markPaymentPaidAction(
         .eq("for_month", existingPayment.for_month)
         .in("status", ["scheduled", "applied"])
         .maybeSingle(),
+      supabase
+        .from("hms_hostels")
+        .select("billing_anchor_day, bill_leftover_days_separately")
+        .eq("id", hostelId)
+        .maybeSingle(),
     ]);
     const forMonth = existingPayment.for_month;
+    // Null on unanchored branches => base rent + deposit timing below are
+    // byte-identical to the previous behaviour.
+    const acAnchor = billingAnchorOf(acHostelRow);
 
     let roomHasAc = false;
     if (tenantData.room_id) {
@@ -460,8 +470,14 @@ export async function markPaymentPaidAction(
     }
 
     let baseRent: number;
+    let acBaseRentOverride: number | null = null;
     if (tenantData.billing_type === "monthly") {
-      baseRent = Number(tenantData.monthly_rent);
+      // Respect the branch billing anchor: a mid-month join bill is prorated /
+      // merged. The override must reach the trigger, which otherwise bills full
+      // monthly_rent for a monthly tenant. Null (and full rent) on legacy branches.
+      const resolved = resolveMonthlyBaseRent(tenantData, forMonth, acAnchor);
+      baseRent = resolved.baseRent;
+      acBaseRentOverride = resolved.baseRentOverride;
     } else {
       // daily: re-compute pro-rated base rent
       baseRent = calcBaseRentServer(tenantData, forMonth);
@@ -475,8 +491,8 @@ export async function markPaymentPaidAction(
       : 0;
     const addonFoodCharge = foodConfigData ? calcFoodAddonCharge(tenantData, foodConfigData) : 0;
     const foodCharge = tierFoodCharge + addonFoodCharge;
-    const depositCharge = computeDepositCharge(tenantData, forMonth);
-    const registrationFeeCharge = computeRegistrationFeeCharge(tenantData, forMonth);
+    const depositCharge = computeDepositCharge(tenantData, forMonth, acAnchor);
+    const registrationFeeCharge = computeRegistrationFeeCharge(tenantData, forMonth, acAnchor);
     const acMaintenanceCharge = computeAcMaintenanceCharge(roomHasAc, foodConfigData?.ac_maintenance_rate, tenantData.ac_maintenance);
 
     const newTotalAmount = baseRent + foodCharge + newAcCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge;
@@ -616,12 +632,24 @@ export async function markPaymentPaidAction(
       ac_maintenance_charge: acMaintenanceCharge,
       // Freeze the day count as of settlement, so the receipt keeps saying
       // "11 days x Rs 500" even if the tenant's dates move afterwards.
-      ...dailySnapshot(tenantData, forMonth),
+      ...daySnapshotFor(tenantData, forMonth, acAnchor),
     };
 
     if (isAcTier) {
       updatePayload.ac_units_consumed = acUnitsConsumed;
       updatePayload.ac_charge = newAcCharge;
+    }
+
+    // Self-correct the monthly rent override at settlement, the same way the
+    // block above re-writes food/deposit/registration to heal a corrupted row.
+    // The trigger prices a monthly bill from coalesce(billed_base_rent,
+    // base_rent_override, monthly_rent), so a stale/missing override on an
+    // anchored first bill would settle it at full monthly_rent while amount_paid
+    // was computed net of the proration — a bill that can never balance. Written
+    // ONLY when there is a proration to apply (non-null): writing null here would
+    // wipe a checkout final-month override on a legacy branch.
+    if (tenantData.billing_type === "monthly" && acBaseRentOverride !== null) {
+      updatePayload.base_rent_override = acBaseRentOverride;
     }
 
     // Optimistic concurrency on the discount. There are several round trips
@@ -1016,16 +1044,19 @@ export async function applyRoomACUnitsAction(
       // month would split it across tenants who had not moved in yet. Applying
       // July for Room 5 billed two August arrivals Rs 3,239 each.
       supabase.from("hms_tenants")
-        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading, ac_maintenance")
+        .select("id, check_in, package_tier, monthly_rent, daily_rate, billing_type, check_out, security_deposit, deposit_collected_amount, registration_fee, food_breakfast, food_lunch, food_dinner, joining_meter_reading, ac_maintenance, first_month_day_rate")
         .eq("hostel_id", hostelId)
         .eq("room_id", roomId)
         .eq("is_active", true)
         .lt("check_in", firstOfNextMonth(forMonth)),
       // Branches that bill electricity per room meter EVERY room, not only the
       // ones with an air conditioner. Joined to the existing fan-out, so this
-      // costs no extra round trip.
-      supabase.from("hms_hostels").select("meter_all_rooms").eq("id", hostelId).single(),
+      // costs no extra round trip. billing_anchor_day/leftover feed join-month
+      // proration when a missing bill has to be created below.
+      supabase.from("hms_hostels").select("meter_all_rooms, billing_anchor_day, bill_leftover_days_separately").eq("id", hostelId).single(),
     ]);
+    // Null on unanchored branches => the create path below is byte-identical.
+    const acApplyAnchor = billingAnchorOf(branch);
 
     // A failed tenant query returns null, which falls through to "No active
     // tenants found in this room" below — an answer about the room, for a
@@ -1363,7 +1394,7 @@ export async function applyRoomACUnitsAction(
     const missingTenants = eligible.filter(t => !existingTenantIds.has(t.id));
 
     if (missingTenants.length > 0) {
-      const newRows = missingTenants.map(t => {
+      const newRows = missingTenants.flatMap(t => {
         const tier = (t.package_tier ?? "space_only") as PackageTier;
         const billingInfo = {
           billing_type: (t as { billing_type: string }).billing_type ?? "monthly",
@@ -1371,23 +1402,34 @@ export async function applyRoomACUnitsAction(
           daily_rate: (t as { daily_rate: number }).daily_rate ?? 0,
           check_in: t.check_in,
           check_out: (t as { check_out: string | null }).check_out ?? null,
+          first_month_day_rate: (t as { first_month_day_rate?: number | null }).first_month_day_rate ?? null,
         };
-        const baseRent = calcBaseRentServer(billingInfo, forMonth);
-        const daySnapshot = dailySnapshot(billingInfo, forMonth);
+        // Under merged anchor the join month carries no bill (its partial folds
+        // into the next month), so never auto-create one for it here either.
+        if (mergedJoinMonthSkipped(billingInfo, acApplyAnchor) && forMonth === t.check_in.slice(0, 7)) return [];
+
+        const { baseRent, baseRentOverride } =
+          billingInfo.billing_type === "daily"
+            ? { baseRent: calcBaseRentServer(billingInfo, forMonth), baseRentOverride: null as number | null }
+            : resolveMonthlyBaseRent(billingInfo, forMonth, acApplyAnchor);
+        const daySnapshot = daySnapshotFor(billingInfo, forMonth, acApplyAnchor);
         const tierFoodCharge = (tier === "space_food" || tier === "space_3meals" || tier === "space_food_ac" || tier === "space_meals_cooler") ? foodRate : 0;
         const addonFoodCharge = pkgConfig ? calcFoodAddonCharge(t, pkgConfig) : 0;
         const foodCharge = tierFoodCharge + addonFoodCharge;
         const depositCharge = computeDepositCharge(
           {
             check_in: t.check_in,
+            check_out: (t as { check_out: string | null }).check_out ?? null,
             security_deposit: (t as { security_deposit?: number | null }).security_deposit,
             deposit_collected_amount: (t as { deposit_collected_amount?: number | null }).deposit_collected_amount ?? 0,
           },
-          forMonth
+          forMonth,
+          acApplyAnchor
         );
         const registrationFeeCharge = computeRegistrationFeeCharge(
-          { check_in: t.check_in, registration_fee: (t as { registration_fee?: number | null }).registration_fee },
-          forMonth
+          { check_in: t.check_in, check_out: (t as { check_out: string | null }).check_out ?? null, registration_fee: (t as { registration_fee?: number | null }).registration_fee },
+          forMonth,
+          acApplyAnchor
         );
         const acMaintenanceCharge = computeAcMaintenanceCharge(
           // The ROOM, not `true`. This was hard-coded when the function could only
@@ -1401,13 +1443,16 @@ export async function applyRoomACUnitsAction(
           acMaintenanceRate,
           (t as { ac_maintenance?: number | null }).ac_maintenance
         );
-        return {
+        return [{
           hostel_id: hostelId,
           tenant_id: t.id,
           // The room being AC-billed — snapshotted for the member ledger.
           room_id: roomId,
           for_month: forMonth,
           amount: baseRent + foodCharge + depositCharge + registrationFeeCharge + acMaintenanceCharge,
+          // Non-null only for a monthly prorated/merged first bill; the trigger
+          // otherwise bills full monthly_rent for a monthly tenant.
+          base_rent_override: baseRentOverride,
           status: "pending" as PaymentStatus,
           payment_package_tier: tier,
           food_charge: foodCharge,
@@ -1421,9 +1466,9 @@ export async function applyRoomACUnitsAction(
           // AC columns, so the stored net amount must pass through untouched.
           referral_discount: 0,
           ...daySnapshot,
-        };
+        }];
       });
-      await adminDb.from("hms_payments").insert(newRows);
+      if (newRows.length > 0) await adminDb.from("hms_payments").insert(newRows);
     }
 
     // A tenant who moved into this room part-way through the month still owes

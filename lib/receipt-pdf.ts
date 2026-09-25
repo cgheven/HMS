@@ -5,6 +5,7 @@
 
 import { splitPaymentCharges } from "@/lib/payment-calc";
 import { getCountryConfig, terms } from "@/lib/country-config";
+import { todayInZone } from "@/lib/pkt-time";
 
 interface ReceiptPayment {
   receipt_number?: string | null;
@@ -302,7 +303,10 @@ export function generateReceiptPDF(
     // No receipt number, date or method: none of them exist yet, and printing
     // "Method: —" on a bill invites the reading that payment was attempted.
     addKv("Period", fmtMonth(payment.for_month)); nl(12);
-    addKv("Issued", fmtDate(new Date().toISOString().slice(0, 10))); nl(12);
+    // "Issued" = the day this invoice is generated, in the HOSTEL's timezone.
+    // toISOString() would give the UTC day, which rolls back one near midnight on a
+    // positive-offset host (a bill generated on the 26th PKT printed "25th").
+    addKv("Issued", fmtDate(todayInZone(getCountryConfig(hostel.country).timezone))); nl(12);
   } else {
     addKv("Receipt #", payment.receipt_number ?? "N/A"); nl(12);
     addKv(isReservation ? "Collected On" : "Date", fmtDate(payment.payment_date)); nl(12);
@@ -370,11 +374,28 @@ export function generateReceiptPDF(
     // receipt is simply wrong. Use the snapshot taken when the row was billed
     // rather than recomputing from the tenant's dates — those keep moving after
     // the receipt is issued, and a receipt must say what was actually charged.
-    const isDailyRow = (payment.billed_days ?? 0) > 0 && (payment.daily_rate_billed ?? 0) > 0;
-    const rentLabel = isDailyRow
-      ? `${payment.billed_days} ${payment.billed_days === 1 ? "day" : "days"} x ${pk(payment.daily_rate_billed!)}`
-      : "Monthly Rent";
-    addKv(rentLabel, pk(Math.max(0, baseRent))); nl(12);
+    const hasDaySnapshot = (payment.billed_days ?? 0) > 0 && (payment.daily_rate_billed ?? 0) > 0;
+    const leftoverDayCharge = hasDaySnapshot ? Math.round(payment.billed_days! * payment.daily_rate_billed!) : 0;
+    // Merged first bill (migration 272): the rent is a FULL month PLUS the
+    // join-month leftover days folded in. baseRent then exceeds the day charge, and
+    // printing one "Monthly Rent" line for the combined figure reads as a wrong
+    // monthly rate. Split it: the month on its own line, the partial days on their
+    // own. A pure partial (separate mode) or a daily row has no month portion, so
+    // it stays a single "N days x rate" line.
+    const monthPortion = Math.round((Math.max(0, baseRent) - leftoverDayCharge) * 100) / 100;
+    if (hasDaySnapshot) {
+      const daysLabel = `${payment.billed_days} ${payment.billed_days === 1 ? "day" : "days"} x ${pk(payment.daily_rate_billed!)}`;
+      if (monthPortion > 0.01) {
+        // Merged: two lines that add up to the combined rent.
+        addKv("Monthly Rent", pk(monthPortion)); nl(12);
+        addKv(`Joining days (${daysLabel})`, pk(leftoverDayCharge)); nl(12);
+      } else {
+        // Pure partial (separate join month) or a daily tenant.
+        addKv(daysLabel, pk(Math.max(0, baseRent))); nl(12);
+      }
+    } else {
+      addKv("Monthly Rent", pk(Math.max(0, baseRent))); nl(12);
+    }
     if ((payment.food_charge ?? 0) > 0) {
       addKv("Food Charges", pk(payment.food_charge!)); nl(11);
       const mealsLabel = [tenant.food_breakfast && "Breakfast", tenant.food_lunch && "Lunch", tenant.food_dinner && "Dinner"]

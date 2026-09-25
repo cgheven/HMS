@@ -54,7 +54,7 @@ export interface ReminderPaymentRow {
   registration_fee_charge: number | null;
   last_reminder_sent_at: string | null;
   tenant: { full_name: string; phone: string | null; email: string | null; security_deposit: number | null; check_in: string; is_active: boolean; is_waiting: boolean } | null;
-  hostel: { name: string; payment_methods: PaymentMethodAccount[]; reminder_template: string | null; whatsapp_enabled: boolean; country: string } | null;
+  hostel: { name: string; payment_methods: PaymentMethodAccount[]; reminder_template: string | null; whatsapp_enabled: boolean; country: string; billing_anchor_day: number | null } | null;
 }
 
 export interface ReminderSummary {
@@ -96,7 +96,7 @@ export async function runReminderPass(
     .select(
       "id, tenant_id, amount, amount_paid, status, late_fee, for_month, ac_charge, ac_units_consumed, ac_maintenance_charge, registration_fee_charge, last_reminder_sent_at, " +
       "tenant:hms_tenants(full_name, phone, email, security_deposit, check_in, is_active, is_waiting), " +
-      "hostel:hms_hostels(name, payment_methods, reminder_template, whatsapp_enabled, country)"
+      "hostel:hms_hostels(name, payment_methods, reminder_template, whatsapp_enabled, country, billing_anchor_day)"
     )
     .eq("hostel_id", hostelId)
     .eq("for_month", forMonth)
@@ -149,7 +149,7 @@ export async function runReminderPass(
 
     // Not a reminder day for this tenant (due day itself, or a multiple of 3
     // days past it) — skipped only when the schedule gate applies.
-    if (scheduleGate && (!p.tenant.check_in || !shouldRemindToday(tenantDueDay(p.tenant.check_in, p.for_month), dayOfMonth))) {
+    if (scheduleGate && (!p.tenant.check_in || !shouldRemindToday(tenantDueDay(p.tenant.check_in, p.for_month, p.hostel?.billing_anchor_day), dayOfMonth))) {
       skipped++;
       continue;
     }
