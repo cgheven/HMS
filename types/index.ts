@@ -624,6 +624,24 @@ export interface CheckoutInput {
    * Ignored for daily tenants, whose final month is always re-counted.
    */
   proRateFinalMonth?: boolean;
+  /**
+   * Unpaid months OLDER than the departure bill, settled in the same action.
+   *
+   * Explicit ids, not "everything older": the operator settles exactly the rows
+   * the dialog showed them. A bill that changed in between is rejected rather
+   * than silently swept in. Omit to leave arrears untouched, which is what
+   * every checkout did before — a member owing three months was only ever shown
+   * the newest and the rest left with them.
+   */
+  arrearsSettlement?: { action: "pay" | "waive"; paymentIds: string[] };
+  /** Method for the arrears rows when there is no departure bill to borrow one
+   *  from. Writing NULL for cash actually collected drops it out of every
+   *  method-grouped report. */
+  arrearsPaymentMethod?: PaymentMethod;
+  /** Which configured account took the money, e.g. "HBL (1589…)". Reconciliation
+   *  groups collections by this, so a checkout without it lands in "unspecified"
+   *  no matter which bank actually received it. */
+  receivedAccount?: string;
 }
 
 /** What checkoutTenantAction actually did with the money, so the UI can confirm it rather than guess. */
@@ -633,6 +651,10 @@ export interface CheckoutSettlement {
   cashCollected: number;
   depositReturned: number;
   depositForfeited: number;
+  /** Older unpaid months cleared alongside the departure bill: how many rows,
+   *  and the total collected or written off across them. Zero when the member
+   *  owed only their final month, which is the common case. */
+  arrearsSettled?: { months: number; amount: number; waived: boolean };
 }
 
 export type TenantEventType = "room_changed" | "plan_changed" | "deposit_collected" | "deposit_returned" | "deposit_forfeited" | "deposit_applied" | "notice_given" | "notice_cancelled" | "branch_changed";

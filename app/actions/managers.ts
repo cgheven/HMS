@@ -1542,7 +1542,10 @@ export async function checkoutTenantAsManager(
   try {
     const ctx = await requireManagerWrite("edit_members")
     const hostelId = ctx.activeHostel.id
-    return await performTenantCheckout(hostelId, input)
+    // Managers may COLLECT earlier months at the door but not write them off:
+    // there is no manager waive action anywhere else in the app, and edit_members
+    // is not the permission that governs forgiving money.
+    return await performTenantCheckout(hostelId, input, { canWaiveDues: false })
   } catch (err: unknown) {
     unstable_rethrow(err)
     return { success: false, error: err instanceof Error ? err.message : String(err) }

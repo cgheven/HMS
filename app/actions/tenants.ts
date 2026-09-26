@@ -1860,6 +1860,14 @@ export async function getCheckoutPendingPaymentAction(
      *  must not supersede it — see checkoutMath. */
     carried_ac_charge: number;
   } | null;
+  /** Unpaid months OLDER than the departure bill above, oldest first.
+   *
+   *  These are plain arrears: already priced, never pro-rated, no AC estimate —
+   *  the departure month is the only one the dialog re-prices. They used to be
+   *  invisible: this action took `.limit(1)`, so a member leaving while owing
+   *  three months was only ever shown the newest, and the rest walked out with
+   *  them. 43 departed members carry Rs 4.6m of exactly this. */
+  arrears?: { id: string; for_month: string; owed: number }[];
   error?: string;
 }> {
   try {
@@ -1883,7 +1891,16 @@ export async function getCheckoutPendingPaymentAction(
     // member hands over 22,000 against a bill the row settles at 16,500.
     // Idempotent, and it touches pending rows only, so collected history is
     // untouched. Fixes the identical pre-existing hazard for a rent change.
-    const syncMonth = syncableCheckoutMonth(maxMonth, getCountryConfig(await hostelCountryCode(adminDb, hostelId)).timezone);
+    // Fanned out (rule #1). The country lookup and the member's room are both
+    // needed below and neither depends on the other, so chaining them put two
+    // extra round trips on the critical path before the dialog could paint. The
+    // room in particular used to be fetched INSIDE the return object literal,
+    // after the bills query had already finished.
+    const [countryCode, tenantRoomRow] = await Promise.all([
+      hostelCountryCode(adminDb, hostelId),
+      adminDb.from("hms_tenants").select("room_id").eq("id", tenantId).maybeSingle(),
+    ]);
+    const syncMonth = syncableCheckoutMonth(maxMonth, getCountryConfig(countryCode).timezone);
     if (syncMonth) await ensureMonthlyPaymentRows(adminDb, hostelId, syncMonth);
 
     const { data, error } = await adminDb
@@ -1899,39 +1916,53 @@ export async function getCheckoutPendingPaymentAction(
       // month the tenant is actually departing in (or already past) can be a
       // real debt to collect at checkout.
       .lte("for_month", maxMonth)
-      .order("for_month", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .order("for_month", { ascending: false });
 
     if (error) throw error;
-    if (!data) return { payment: null };
+    const rows = data ?? [];
+    // Newest unpaid month is the DEPARTURE bill — the only one pro-rated, given
+    // an AC estimate and re-priced below. Everything older is plain arrears.
+    const head = rows[0];
+    if (!head) return { payment: null, arrears: [] };
+
+    const arrears = rows.slice(1).map((r) => ({
+      id: r.id as string,
+      for_month: r.for_month as string,
+      owed: Math.max(0, Number(r.amount ?? 0) + Number(r.late_fee ?? 0) - Number(r.amount_paid ?? 0)),
+    }))
+      // A row owing nothing is not a debt to present. Reaches here when an undo
+      // left `partially_paid` with the money restored, or a bill was overpaid.
+      .filter((a) => a.owed > 0.01)
+      // Oldest first: the order they should be settled and read in.
+      .reverse();
 
     return {
+      arrears,
       payment: {
-        id: data.id,
-        for_month: data.for_month,
-        status: data.status as PaymentStatus,
-        amount: Number(data.amount ?? 0),
-        amount_paid: Number(data.amount_paid ?? 0),
-        late_fee: Number(data.late_fee ?? 0),
-        discount_percent: Number(data.discount_percent ?? 0),
-        referral_percent: Number(data.referral_percent ?? 0),
+        id: head.id,
+        for_month: head.for_month,
+        status: head.status as PaymentStatus,
+        amount: Number(head.amount ?? 0),
+        amount_paid: Number(head.amount_paid ?? 0),
+        late_fee: Number(head.late_fee ?? 0),
+        discount_percent: Number(head.discount_percent ?? 0),
+        referral_percent: Number(head.referral_percent ?? 0),
         carried_ac_charge: (
           await carriedTransferCharges(
-            adminDb, hostelId, data.for_month as string,
-            (await adminDb.from("hms_tenants").select("room_id").eq("id", tenantId).maybeSingle()).data?.room_id ?? null,
+            adminDb, hostelId, head.for_month as string,
+            tenantRoomRow.data?.room_id ?? null,
             [tenantId]
           )
         ).get(tenantId)?.charge ?? 0,
-        ac_charge: Number(data.ac_charge ?? 0),
-        ac_units_consumed: data.ac_units_consumed != null ? Number(data.ac_units_consumed) : null,
-        food_charge: Number(data.food_charge ?? 0),
-        security_deposit_charge: Number(data.security_deposit_charge ?? 0),
+        ac_charge: Number(head.ac_charge ?? 0),
+        ac_units_consumed: head.ac_units_consumed != null ? Number(head.ac_units_consumed) : null,
+        food_charge: Number(head.food_charge ?? 0),
+        security_deposit_charge: Number(head.security_deposit_charge ?? 0),
         // Both are part of the row total and are never day-scaled, so the
         // pro-rate preview must subtract them when isolating base rent —
         // omitting them made the dialog quote Rs 3,000-5,000 under the server.
-        registration_fee_charge: Number(data.registration_fee_charge ?? 0),
-        ac_maintenance_charge: Number(data.ac_maintenance_charge ?? 0),
+        registration_fee_charge: Number(head.registration_fee_charge ?? 0),
+        ac_maintenance_charge: Number(head.ac_maintenance_charge ?? 0),
       },
     };
   } catch (err: unknown) {
@@ -2322,7 +2353,8 @@ export async function checkoutTenantAction(
   try {
     await requireOwnerWrite();
     const hostelId = await resolveHostelId();
-    return await performTenantCheckout(hostelId, input);
+    // Owner path: writing off dues is theirs to do.
+    return await performTenantCheckout(hostelId, input, { canWaiveDues: true });
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };

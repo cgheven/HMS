@@ -30,7 +30,14 @@ function nextMonthAfter(month: string): string {
 
 export async function performTenantCheckout(
   hostelId: string,
-  input: CheckoutInput
+  input: CheckoutInput,
+  /** Caller capability, resolved by the action that already ran the auth guard.
+   *  Waiving is forgiving money owed and is owner / full-tier-partner only
+   *  everywhere else in the app (markPaymentWaivedAction requires "full", and
+   *  there is no manager waive action at all). Without this a manager holding
+   *  only edit_members could write off a member's entire arrears history in one
+   *  request. Defaults closed. */
+  caps: { canWaiveDues: boolean } = { canWaiveDues: false }
 ): Promise<{ success: boolean; error?: string; warning?: string; settlement?: CheckoutSettlement }> {
   try {
     const adminDb = createAdminClient();
@@ -672,7 +679,9 @@ export async function performTenantCheckout(
     // operator has to collect at the door.
     const depositApplied = settleAction === "pay" ? Math.min(heldDeposit, totalDue) : 0;
     const cashCollected = settleAction === "pay" ? totalDue - depositApplied : 0;
-    const depositRemaining = heldDeposit - depositApplied;
+    // `let`: arrears settled in Step 3b draw from whatever the departure bill
+    // left, and the deposit return/forfeit split below must see the reduced figure.
+    let depositRemaining = heldDeposit - depositApplied;
 
     if (verifiedPayment && settleAction && !paymentAlreadySettled) {
       if (settleAction === "pay") {
@@ -685,6 +694,8 @@ export async function performTenantCheckout(
             ...(verifiedPayment.status === "paid" ? {} : {
               payment_date: input.paymentSettlement?.paymentDate ?? new Date().toISOString().split("T")[0],
               payment_method: (input.paymentSettlement?.paymentMethod ?? null) as PaymentMethod | null,
+              // Capped defensively, same as the Payments page write.
+              received_account: input.receivedAccount?.trim() ? input.receivedAccount.trim().slice(0, 120) : null,
               receipt_number: await nextReceiptNumber(adminDb, verifiedPayment.for_month ?? ""),
             }),
             // Merge AC fields here so the correct payment row is always targeted by ID,
@@ -765,6 +776,180 @@ export async function performTenantCheckout(
       }
     }
 
+    // Step 3b: Older unpaid months, settled alongside the departure bill.
+    //
+    // These are plain arrears — already priced, never pro-rated, no AC estimate.
+    // They are settled ONE ROW AT A TIME, exactly as a normal collection would:
+    // a single payment spanning several bills would need a shared collection id,
+    // a multi-row locking RPC, and would break hms_undo_last_payment, which finds
+    // "the latest installment on this bill" and cannot see a sibling on another.
+    //
+    // Deposit order is deliberate: the departure bill above takes the deposit
+    // first (unchanged), and only what is left reaches the arrears. With no
+    // arrears this whole block is inert, so every existing checkout behaves
+    // exactly as it did.
+    let arrearsSettled: CheckoutSettlement["arrearsSettled"];
+    let arrearsDepositApplied = 0;
+    let arrearsCashCollected = 0;
+    const arrearsIds = input.arrearsSettlement?.paymentIds ?? [];
+    if (arrearsIds.length > 0) {
+      const arrearsAction = input.arrearsSettlement!.action;
+      if (!new Set(["pay", "waive"]).has(arrearsAction as string)) {
+        throw new Error("Invalid arrears settlement action");
+      }
+      if (arrearsAction === "waive" && !caps.canWaiveDues) {
+        throw new Error("Writing off earlier months is an owner action. Ask the owner to waive these, or collect them.");
+      }
+
+      // Re-read under the caller's branch. Never trust the ids: each must belong
+      // to THIS tenant in THIS branch, still be unpaid, and be strictly older
+      // than the departure bill — otherwise a crafted payload could settle the
+      // final month twice or reach a row in another branch.
+      const { data: arrearRows, error: arrearsReadErr } = await adminDb
+        .from("hms_payments")
+        .select("id, for_month, amount, amount_paid, late_fee")
+        .in("id", arrearsIds)
+        .eq("tenant_id", input.tenantId)
+        .eq("hostel_id", hostelId)
+        .in("status", ["pending", "overdue", "partially_paid"])
+        .lt("for_month", verifiedPayment?.for_month
+          // No departure bill: bound at the EARLIER of the checkout month and the
+          // real current month. checkoutDate may be up to 7 days in the future, so
+          // its month can be the next one — which would make the current month
+          // "older" and let it settle here, skipping pro-rating and the metered
+          // checkout charge.
+          ?? [input.checkoutDate.substring(0, 7), new Date().toISOString().substring(0, 7)].sort()[0])
+        .order("for_month", { ascending: true });
+      if (arrearsReadErr) throw new Error("Failed to read outstanding months. Please try again.");
+
+      // Cap the ids: an unbounded array is a free amplification of the loop below.
+      if (arrearsIds.length > 36) throw new Error("Too many months selected to settle at once.");
+
+      // What the deposit has ALREADY paid out on this member's bills. Without
+      // this, a retry after a mid-loop failure sees the departure bill already
+      // settled (totalDue clamps to 0, depositApplied 0) and offers the whole
+      // deposit again — the rows settled on the first attempt are filtered out
+      // by status, so the money they consumed would simply be forgotten.
+      const { data: spentRows } = await adminDb
+        .from("hms_payments")
+        .select("deposit_applied")
+        .eq("tenant_id", input.tenantId)
+        .eq("hostel_id", hostelId);
+      const depositAlreadySpent = (spentRows ?? [])
+        .reduce((sum, r) => sum + Number(r.deposit_applied ?? 0), 0);
+
+      let arrearsCash = 0;
+      let arrearsDepositUsed = 0;
+      let depositLeft = Math.max(0, Math.min(depositRemaining, heldDeposit - depositAlreadySpent));
+
+      let settledCount = 0;
+      const settledMonths: string[] = [];
+
+      for (const row of arrearRows ?? []) {
+        const owed = Math.max(
+          0,
+          Number(row.amount ?? 0) + Number(row.late_fee ?? 0) - Number(row.amount_paid ?? 0)
+        );
+        if (owed <= 0.01) continue;
+
+        if (arrearsAction === "waive") {
+          if (Number(row.amount_paid ?? 0) > 0.01) {
+            // Money was already banked against this month. Writing the row off
+            // wholesale drops it out of every revenue total (those count
+            // paid + partially_paid), so the collected part would vanish.
+            throw new Error(
+              `${row.for_month} already has ${Number(row.amount_paid).toLocaleString()} collected against it and cannot be written off here. Settle or adjust it from the Payments page.`
+            );
+          }
+          const { error } = await adminDb
+            .from("hms_payments")
+            .update({
+              status: "waived" as PaymentStatus,
+              ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", row.id).eq("hostel_id", hostelId);
+          // Stop on the first failure rather than press on: earlier months are
+          // already settled and later ones untouched, which is a state the
+          // operator can read and retry from.
+          if (error) throw new Error(settledCount === 0
+            ? `Failed to waive ${row.for_month}. Nothing was settled; retry.`
+            : `Failed to waive ${row.for_month}. ${settledMonths.join(", ")} already settled; retry to finish the rest.`);
+          arrearsCash += owed;
+          settledCount += 1;
+          settledMonths.push(row.for_month as string);
+          continue;
+        }
+
+        const fromDeposit = Math.min(depositLeft, owed);
+        depositLeft -= fromDeposit;
+
+        const basis = Number(row.amount ?? 0) + Number(row.late_fee ?? 0);
+        const { data: settledRow, error } = await adminDb
+          .from("hms_payments")
+          .update({
+            status: "paid" as PaymentStatus,
+            amount_paid: basis,
+            deposit_applied: fromDeposit,
+            payment_date: input.paymentSettlement?.paymentDate ?? new Date().toISOString().split("T")[0],
+            // Falls back to the dialog's method: an arrears-only checkout has no
+            // departure-bill settlement to borrow one from, and writing NULL for
+            // cash actually collected drops it out of every method-grouped report.
+            payment_method: (input.paymentSettlement?.paymentMethod ?? input.arrearsPaymentMethod ?? null) as PaymentMethod | null,
+            received_account: input.receivedAccount?.trim() ? input.receivedAccount.trim().slice(0, 120) : null,
+            receipt_number: await nextReceiptNumber(adminDb, row.for_month as string),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", row.id).eq("hostel_id", hostelId)
+          .select("amount, late_fee")
+          .maybeSingle();
+        if (error) throw new Error(settledCount === 0
+          ? `Failed to settle ${row.for_month}. Nothing was settled; retry.`
+          : `Failed to settle ${row.for_month}. ${settledMonths.join(", ")} already settled; retry to finish the rest.`);
+
+        // hms_recalculate_payment_amount re-prices a row whose OLD status was
+        // pending/overdue — the history freeze only covers paid/partially_paid —
+        // so `amount` can move between the read above and this write, against
+        // today's rent and package rates rather than the month's own. Left alone
+        // it settles the row at the stale figure and silently books the gap as
+        // phantom revenue. The departure bill defends against exactly this with
+        // its own re-price comparison; this is the same guard for arrears.
+        const settled = settledRow
+          ? Number(settledRow.amount ?? 0) + Number(settledRow.late_fee ?? 0)
+          : basis;
+        if (Math.abs(settled - basis) > 0.01) {
+          // The second write IS under the freeze (status is now 'paid'), so the
+          // amount is pinned and this cannot chase its own tail.
+          await adminDb.from("hms_payments")
+            .update({ amount_paid: settled, updated_at: new Date().toISOString() })
+            .eq("id", row.id).eq("hostel_id", hostelId);
+          const diff = Math.round(Math.abs(settled - basis) * 100) / 100;
+          const notice = settled > basis
+            ? `${row.for_month} re-priced to ${settled.toLocaleString()} while settling — ${basis.toLocaleString()} was quoted. Collect ${diff.toLocaleString()} more.`
+            : `${row.for_month} re-priced to ${settled.toLocaleString()} while settling — ${basis.toLocaleString()} was quoted. Return ${diff.toLocaleString()} to the member.`;
+          repriceWarning = repriceWarning ? `${repriceWarning} ${notice}` : notice;
+        }
+
+        arrearsCash += settled - Number(row.amount_paid ?? 0) > 0 ? settled - Number(row.amount_paid ?? 0) : owed;
+        arrearsDepositUsed += fromDeposit;
+        settledCount += 1;
+        settledMonths.push(row.for_month as string);
+      }
+
+      if (arrearsCash > 0) {
+        arrearsSettled = {
+          months: settledCount,
+          amount: Math.round(arrearsCash * 100) / 100,
+          waived: arrearsAction === "waive",
+        };
+        if (arrearsAction === "pay") {
+          depositRemaining -= arrearsDepositUsed;
+          arrearsDepositApplied = arrearsDepositUsed;
+          arrearsCashCollected = Math.max(0, arrearsCash - arrearsDepositUsed);
+        }
+      }
+    }
+
     // Step 4: Deactivate tenant (clear bed assignment, mark inactive)
     const { error: checkoutErr } = await adminDb
       .from("hms_tenants")
@@ -838,13 +1023,21 @@ export async function performTenantCheckout(
     // must land in exactly one of them: applied to dues, handed back, or kept.
     const depositNotes = input.depositNotes?.trim() || null;
 
-    if (depositApplied > 0) {
+    // Includes whatever the deposit paid towards EARLIER months. Logging only the
+    // departure bill's share would leave applied + returned + forfeited short of
+    // the deposit held by exactly that amount — the invariant above, broken, with
+    // the difference simply missing from the member's timeline.
+    const depositAppliedTotal = depositApplied + arrearsDepositApplied;
+    if (depositAppliedTotal > 0) {
       await adminDb.from("hms_tenant_events").insert({
         hostel_id: hostelId,
         tenant_id: input.tenantId,
         event_type: "deposit_applied",
-        amount: depositApplied,
-        notes: depositNotes,
+        amount: depositAppliedTotal,
+        notes: arrearsDepositApplied > 0
+          ? [depositNotes, `Includes ${arrearsDepositApplied.toLocaleString()} towards earlier months`]
+              .filter(Boolean).join(" · ")
+          : depositNotes,
       });
     }
 
@@ -946,11 +1139,15 @@ export async function performTenantCheckout(
       success: true,
       ...((repriceWarning || acReadingWarning) ? { warning: [repriceWarning, acReadingWarning].filter(Boolean).join(" ") } : {}),
       settlement: {
-        duesSettled: settleAction === "pay" ? totalDue : 0,
-        depositApplied,
-        cashCollected,
+        // Totals across BOTH the departure bill and any earlier months, so the
+        // confirmation reports what was actually collected rather than a fraction
+        // of it. arrearsSettled carries the breakdown.
+        duesSettled: (settleAction === "pay" ? totalDue : 0) + (arrearsSettled && !arrearsSettled.waived ? arrearsSettled.amount : 0),
+        depositApplied: depositApplied + arrearsDepositApplied,
+        cashCollected: cashCollected + arrearsCashCollected,
         depositReturned: returnedAmount,
         depositForfeited: forfeitedAmount,
+        arrearsSettled,
       },
     };
   } catch (err: unknown) {

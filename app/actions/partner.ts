@@ -567,7 +567,9 @@ export async function checkoutTenantAsPartner(
 ): Promise<{ success: boolean; error?: string; warning?: string; settlement?: CheckoutSettlement }> {
   try {
     const hostelId = await requirePartnerHostelId("full");
-    return await performTenantCheckout(hostelId, input);
+    // Full-tier partner only — requirePartnerHostelId("full") above is the same
+    // bar markPaymentWaivedAction uses for forgiving money owed.
+    return await performTenantCheckout(hostelId, input, { canWaiveDues: true });
   } catch (err: unknown) {
     unstable_rethrow(err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };

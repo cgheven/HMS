@@ -37,7 +37,7 @@ import { COUNTRY_NAMES, countryNameOf, countryCodeOfName, addressRegionLabel, lo
 import { discountedRent } from "@/lib/tenant-discount";
 import { VISIT_PURPOSE_OPTIONS, VISIT_PURPOSE_LABELS, visitPurposeLabel } from "@/lib/visit-purpose";
 import { RELATIONSHIP_OPTIONS, PAYMENT_METHOD_LABELS } from "@/types";
-import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, PaymentStatus, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory, VisitPurpose, MealTimes } from "@/types";
+import type { Tenant, Room, SpaceType, PackageTier, PackageConfig, TenantApplication, ApplicationStatus, TenantDocument, PaymentMethod, PaymentStatus, CheckoutInput, PackagePrices, WaitlistEntry, PartnerTier, StaffPermission, StudentCategory, VisitPurpose, MealTimes, PaymentMethodAccount } from "@/types";
 import { PhotoPicker } from "./photo-picker";
 import { DocumentManager, type StagedDoc } from "./document-manager";
 import { uploadTenantDocument } from "@/app/actions/tenants";
@@ -88,6 +88,9 @@ interface Props {
    *  alone, so on these branches it never appeared and the departing member's
    *  final electricity went unbilled onto whoever stayed. */
   meterAllRooms?: boolean;
+  /** The branch's configured receiving accounts, so a checkout can record WHICH
+   *  one took the money — reconciliation groups by it. */
+  paymentMethods?: PaymentMethodAccount[];
   currentMonthPaymentByTenant?: Record<string, { status: string; remaining: number }>;
   // null/undefined = owner (unrestricted). Add/Edit Tenant and Give Notice are
   // deferred for partners in this pass — the safe write actions only cover a
@@ -719,7 +722,7 @@ function RedflagWarningDialog({
   );
 }
 
-export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, mealTimes = null, acMaintenanceRate = 0, meterAllRooms = false, currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null, branchTargets = [], country = DEFAULT_COUNTRY }: Props) {
+export function TenantsClient({ hostelId, active: initialActive, waiting: initialWaiting, checkedOut: initialCheckedOut, rooms: initialRooms, applications: initialApplications = [], hostelSlug, hostelName, waitlistEntries: initialWaitlistEntries = [], foodAddonRates: initialFoodAddonRates, foodMonthlyRate: initialFoodMonthlyRate, noticePeriodDays = 30, mealTimes = null, acMaintenanceRate = 0, meterAllRooms = false, paymentMethods = [], currentMonthPaymentByTenant = {}, partnerTier = null, managerPermissions = null, initialPackageConfig = null, branchTargets = [], country = DEFAULT_COUNTRY }: Props) {
   // National ID + guest-registration geography are country-driven. PK resolves to
   // CNIC / 13-digit / province+district-required — a verified no-op for existing
   // clients; a non-guest-registration country hides province/district.
@@ -820,6 +823,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const branchPreviewReqRef = useRef(0);
   const branchRoomsReqRef = useRef(0);
 
+  /** Unpaid months OLDER than the departure bill. Empty for the common case.
+   *  Before this, checkout only ever loaded the newest unpaid month. */
+  const [checkoutArrears, setCheckoutArrears] = useState<{ id: string; for_month: string; owed: number }[]>([]);
   const [checkoutPendingPayment, setCheckoutPendingPayment] = useState<{ id: string; for_month: string; amount: number; amount_paid: number; status: PaymentStatus; ac_charge: number; ac_units_consumed: number | null; food_charge: number; security_deposit_charge: number; registration_fee_charge: number; ac_maintenance_charge: number; late_fee: number; discount_percent: number; referral_percent: number; carried_ac_charge?: number } | null>(null);
   const [checkoutPaymentLoading, setCheckoutPaymentLoading] = useState(false);
   const [checkoutPaymentError, setCheckoutPaymentError] = useState<string | null>(null);
@@ -834,6 +840,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
   const [checkoutProRate, setCheckoutProRate] = useState(true);
   const [checkoutPayDate, setCheckoutPayDate] = useState(formatDateInput(new Date()));
   const [checkoutPayMethod, setCheckoutPayMethod] = useState<string>("cash");
+  const [checkoutReceivedAccount, setCheckoutReceivedAccount] = useState<string>("");
   const [checkoutNotes, setCheckoutNotes] = useState("");
   const [checkoutDepositReturned, setCheckoutDepositReturned] = useState("");
   const [checkoutSubmitting, setCheckoutSubmitting] = useState(false);
@@ -2140,6 +2147,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     setCheckingOut(null);
     setCheckoutDate(formatDateInput(new Date()));
     setCheckoutPendingPayment(null);
+    setCheckoutArrears([]);
+    setCheckoutReceivedAccount("");
     setCheckoutPaymentLoading(false);
     setCheckoutPaymentError(null);
     setCheckoutPayAction("pay");
@@ -2186,6 +2195,8 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     const month = checkoutDate.slice(0, 7);
 
     setCheckoutPendingPayment(null);
+    setCheckoutArrears([]);
+    setCheckoutReceivedAccount("");
     setCheckoutPaymentError(null);
     setCheckoutPaymentLoading(true);
     // Bounded to the departure month — a tenant paying in advance already has
@@ -2254,11 +2265,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // — hms_payments only has RLS SELECT policies for owners and partners, so
     // a manager's own browser session silently got zero rows back here,
     // always showing "nothing outstanding" regardless of the real balance.
-    const { payment, error } = await getCheckoutPendingPaymentAction(tenantId, maxMonth);
+    const { payment, arrears, error } = await getCheckoutPendingPaymentAction(tenantId, maxMonth);
 
     if (error) {
       setCheckoutPaymentError(error);
-    } else if (payment) {
+    } else {
+      setCheckoutArrears(arrears ?? []);
+    }
+    if (!error && payment) {
       // UX-F10: only surface a payment section when there is a real amount to collect.
       // `amount` here stays the GROSS original bill (checkoutProRateInfo backs
       // base rent out of it) — amount_paid is threaded through separately so
@@ -2304,6 +2318,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               : {}),
           }
         : undefined,
+      // Older months follow the same pay/waive decision as the departure bill:
+      // one choice at the door, not two. Omitted entirely when there are none,
+      // so a checkout without arrears sends exactly what it always did.
+      ...(checkoutArrears.length > 0
+        ? {
+            arrearsSettlement: { action: checkoutPayAction, paymentIds: checkoutArrears.map((a) => a.id) },
+            ...(checkoutPayAction === "pay" ? { arrearsPaymentMethod: checkoutPayMethod as PaymentMethod } : {}),
+          }
+        : {}),
+      ...(checkoutPayAction === "pay" && checkoutReceivedAccount ? { receivedAccount: checkoutReceivedAccount } : {}),
       ...(checkoutNotes.trim() ? { notes: checkoutNotes.trim() } : {}),
       // Only sent when the owner explicitly opted in. Absent = full month, i.e.
       // byte-for-byte the pre-existing behaviour.
@@ -2350,6 +2374,12 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
           s.cashCollected > 0 ? `${fmtMoney(s.cashCollected)} collected` : null,
           s.depositReturned > 0 ? `${fmtMoney(s.depositReturned)} refunded` : null,
           s.depositForfeited > 0 ? `${fmtMoney(s.depositForfeited)} forfeited` : null,
+          // Named explicitly: the totals above now include these, so without a
+          // line saying so the operator cannot tell a four-month settlement from
+          // a one-month one.
+          s.arrearsSettled
+            ? `${fmtMoney(s.arrearsSettled.amount)} across ${s.arrearsSettled.months} earlier month${s.arrearsSettled.months === 1 ? "" : "s"}${s.arrearsSettled.waived ? " written off" : ""}`
+            : null,
         ].filter(Boolean).join(" · ")
       : "";
 
@@ -2800,15 +2830,33 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
     // "waive" forgives the dues outright, so there is nothing for the deposit to cover.
     const collecting = pending > 0 && checkoutPayAction === "pay";
     const applied = collecting && deposit > 0 ? Math.min(deposit, pending) : 0;
-    const refundable = deposit - applied;
+
+    // Earlier unpaid months are settled in the same action, and the server takes
+    // the deposit for them AFTER the departure bill. Leaving them out here made
+    // the refund box quote money the server was about to spend: "leaving 15,000"
+    // on screen while the server released 7,000, with the operator already
+    // counting out the difference at the door.
+    const arrearsTotal = checkoutArrears.reduce((sum, a) => sum + a.owed, 0);
+    const arrearsCollecting = arrearsTotal > 0 && checkoutPayAction === "pay";
+    const arrearsFromDeposit = arrearsCollecting ? Math.min(deposit - applied, arrearsTotal) : 0;
+    const refundable = deposit - applied - arrearsFromDeposit;
 
     return {
       deposit, basePending, estimatedACCharge, pending, collecting, applied, refundable,
       rawPending, proRateDiscount,
-      toCollect: Math.max(0, pending - applied),
+      arrearsTotal, arrearsFromDeposit,
+      // What actually changes hands: both bills' shortfall after the deposit.
+      toCollect: Math.max(0, pending - applied) + Math.max(0, (arrearsCollecting ? arrearsTotal : 0) - arrearsFromDeposit),
       depositCoversAll: collecting && applied >= pending,
     };
-  }, [checkingOut, checkoutPendingPayment, checkoutACReading, checkoutACOpeningReading, checkoutACContext, checkoutPayAction, roomMap, proRateActive, checkoutProRateInfo]);
+  }, [checkingOut, checkoutPendingPayment, checkoutACReading, checkoutACOpeningReading, checkoutACContext, checkoutPayAction, roomMap, proRateActive, checkoutProRateInfo, checkoutArrears]);
+
+  // The dialog fires two independent server reads on open (outstanding bills, and
+  // the meter context for a metered room). Gating each section on its own flag
+  // meant they popped in one after the other as each landed, so the dialog
+  // assembled itself in front of the operator. One gate: the body appears in a
+  // single step once both are in.
+  const checkoutSectionsLoading = checkoutPaymentLoading || checkoutACContextLoading;
 
   // Keep the refund box pinned to what is actually left after dues. Without this the
   // operator has to notice the deduction and subtract by hand — and the old default
@@ -5787,7 +5835,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   <span className="text-xs text-muted-foreground font-normal">(optional, for accurate billing)</span>
                 </Label>
 
-                {checkoutACContextLoading ? (
+                {checkoutSectionsLoading ? (
                   <div className="h-9 w-full rounded-lg bg-white/5 animate-pulse" />
                 ) : (
                   <>
@@ -5941,14 +5989,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             )}
 
             {/* Section 3 — Outstanding Payment */}
-            {checkoutPaymentLoading && (
+            {checkoutSectionsLoading && (
               <div className="space-y-2">
                 <div className="h-4 w-40 rounded-md bg-white/5 animate-pulse" />
                 <div className="h-28 rounded-xl bg-white/5 animate-pulse" />
               </div>
             )}
 
-            {!checkoutPaymentLoading && checkoutPaymentError && (
+            {!checkoutSectionsLoading && checkoutPaymentError && (
               <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-500/20 bg-rose-500/5 p-3">
                 <p className="text-sm text-rose-400">Could not load payment data. Retry to continue.</p>
                 <Button
@@ -5967,7 +6015,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             )}
 
             {/* Settlement — outstanding + deposit in one combined section */}
-            {!checkoutPaymentLoading && !checkoutPaymentError && (checkoutPendingPayment || (checkingOut?.security_deposit ?? 0) > 0) && (
+            {!checkoutSectionsLoading && !checkoutPaymentError && (checkoutPendingPayment || checkoutArrears.length > 0 || (checkingOut?.security_deposit ?? 0) > 0) && (
               <div className="space-y-2.5">
                 {/* Context line */}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
@@ -5979,8 +6027,42 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   )}
                 </div>
 
-                {/* Outstanding options */}
-                {checkoutPendingPayment && (
+                {/* Months owed BEFORE the departure month. Until now the dialog
+                    loaded only the newest unpaid bill, so these were invisible
+                    and simply left behind when the member walked out. */}
+                {checkoutArrears.length > 0 && (
+                  <div className="rounded-xl border border-amber/25 bg-amber/5 p-3 space-y-1.5">
+                    <p className="text-xs font-medium text-amber">
+                      Also unpaid from earlier months
+                    </p>
+                    {checkoutArrears.map((a) => (
+                      <div key={a.id} className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">{a.for_month}</span>
+                        <span className={cn(checkoutPayAction !== "pay" && "text-muted-foreground line-through")}>
+                          {fmtMoney(a.owed)}
+                        </span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between border-t border-amber/20 pt-1.5 text-sm font-semibold">
+                      <span>
+                        {checkoutArrears.length} earlier month{checkoutArrears.length === 1 ? "" : "s"}
+                        {checkoutPayAction === "waive" && <span className="ml-1 text-xs font-normal">(waived)</span>}
+                      </span>
+                      <span className={cn(checkoutPayAction !== "pay" && "text-muted-foreground line-through")}>
+                        {fmtMoney(checkoutArrears.reduce((s, a) => s + a.owed, 0))}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      Settled with the same choice as below. The deposit covers the final month first, then these.
+                    </p>
+                  </div>
+                )}
+
+                {/* Outstanding options. Reachable when the ONLY thing owed is
+                    earlier months too — otherwise the arrears panel above renders
+                    with no pay/waive control and no method, and the collection is
+                    written with a null payment method. */}
+                {(checkoutPendingPayment || checkoutArrears.length > 0) && (
                   <>
                     <div
                       onClick={() => setCheckoutPayAction("pay")}
@@ -6004,14 +6086,41 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           </div>
                           <div className="space-y-1">
                             <p className="text-xs text-muted-foreground">Method</p>
-                            <Select value={checkoutPayMethod} onValueChange={setCheckoutPayMethod}>
-                              <SelectTrigger className="h-8 text-xs">
-                                <SelectValue placeholder="Select method" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {paymentMethodsForCountry(country).map((k) => <SelectItem key={k} value={k}>{PAYMENT_METHOD_LABELS[k]}</SelectItem>)}
-                              </SelectContent>
-                            </Select>
+                            {paymentMethods.length > 0 ? (
+                              /* Cash plus each configured account, exactly as the Pay
+                                 dialog on Payments does. Picking an account records
+                                 WHICH bank took the money in received_account —
+                                 without it the reconciliation report files every
+                                 checkout under "unspecified" however many accounts
+                                 the branch runs. */
+                              <Select
+                                value={checkoutPayMethod === "cash" ? "__cash__" : (checkoutReceivedAccount || "__cash__")}
+                                onValueChange={(v) => {
+                                  if (v === "__cash__") { setCheckoutPayMethod("cash"); setCheckoutReceivedAccount(""); }
+                                  else { setCheckoutPayMethod("bank_transfer"); setCheckoutReceivedAccount(v); }
+                                }}
+                              >
+                                <SelectTrigger className="h-8 text-xs">
+                                  <SelectValue placeholder="Select method" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="__cash__">Cash</SelectItem>
+                                  {paymentMethods.map((m, i) => {
+                                    const label = `${m.label}${m.account_number ? ` (${m.account_number})` : ""}`;
+                                    return <SelectItem key={m.id || `pm-${i}`} value={label}>{label}</SelectItem>;
+                                  })}
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <Select value={checkoutPayMethod} onValueChange={setCheckoutPayMethod}>
+                                <SelectTrigger className="h-8 text-xs">
+                                  <SelectValue placeholder="Select method" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {paymentMethodsForCountry(country).map((k) => <SelectItem key={k} value={k}>{PAYMENT_METHOD_LABELS[k]}</SelectItem>)}
+                                </SelectContent>
+                              </Select>
+                            )}
                           </div>
                         </div>
                       )}
@@ -6115,10 +6224,16 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               </div>
             )}
 
-            {/* Live summary */}
+            {/* Live summary. Held back until the reads land with the rest of the
+                body: the deposit is already in memory but the bills are not, so
+                rendering early both broke the one-step reveal AND flashed a wrong
+                figure — "Refund Rs 20,000" for a member who owes most of it, for
+                as long as the fetch takes. */}
             <div className="pt-3 border-t border-sidebar-border/60">
-              {(() => {
-                const { deposit, basePending, estimatedACCharge, pending, collecting, applied, refundable, toCollect, proRateDiscount } = checkoutMath;
+              {checkoutSectionsLoading ? (
+                <div className="h-24 rounded-xl bg-white/5 animate-pulse" />
+              ) : (() => {
+                const { deposit, basePending, estimatedACCharge, pending, collecting, applied, refundable, toCollect, proRateDiscount, arrearsTotal, arrearsFromDeposit } = checkoutMath;
                 const refunding = Number(checkoutDepositReturned || 0);
                 const forfeiting = Math.max(0, refundable - refunding);
 
@@ -6156,12 +6271,25 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         </span>
                       </div>
                     )}
+                    {arrearsTotal > 0 && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">
+                          Earlier months ({checkoutArrears.length}){checkoutPayAction === "waive" && <span className="ml-1 text-xs">(waived)</span>}
+                        </span>
+                        <span className={cn(checkoutPayAction !== "pay" ? "text-muted-foreground line-through" : "")}>
+                          {fmtMoney(arrearsTotal)}
+                        </span>
+                      </div>
+                    )}
                     {deposit > 0 && (
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">
-                          Deposit held{applied > 0 ? <span className="ml-1 text-xs">(− {fmtMoney(applied)} to dues)</span> : null}
+                          {/* Both draws, or the figures do not reconcile: the deposit
+                              covers the final month first and any remainder goes to
+                              the earlier ones. */}
+                          Deposit held{applied + arrearsFromDeposit > 0 ? <span className="ml-1 text-xs">(− {fmtMoney(applied + arrearsFromDeposit)} to dues)</span> : null}
                         </span>
-                        <span className={applied > 0 ? "text-emerald-400" : ""}>
+                        <span className={applied + arrearsFromDeposit > 0 ? "text-emerald-400" : ""}>
                           {fmtMoney(deposit)}
                         </span>
                       </div>
@@ -6214,7 +6342,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
               disabled={
                 checkoutSubmitting ||
                 !checkoutDate ||
-                checkoutPaymentLoading ||
+                checkoutSectionsLoading ||
                 !!checkoutPaymentError ||
                 (checkoutPayAction === "pay" && !checkoutPayMethod)
               }
