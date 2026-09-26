@@ -100,7 +100,12 @@ function sanitizeForPdf(str: string): string {
     .replace(/[‐-―]/g, "-")            // hyphens, en/em dashes
     .replace(/[‘’‚‛]/g, "'") // curly single quotes
     .replace(/[“”„‟]/g, '"') // curly double quotes
-    .replace(/[•·‧]/g, "-")       // bullet, middle dot
+    // Bullet survives as a REAL bullet: the fonts declare /WinAnsiEncoding, where
+    // U+2022 is byte 0x95. Mapping it to "-" would print the masked account as
+    // "HBL ---- 4703", which reads as an empty field rather than a redaction.
+    // Middle dot is Latin-1 (0xB7) and already passes through the keep-range.
+    .replace(/•/g, "\u0095")
+    .replace(/[·‧]/g, "\u00B7")
     .replace(/…/g, "...")                   // ellipsis
     .replace(/ /g, " ")                     // non-breaking space
     .normalize("NFKD").replace(/[̀-ͯ]/g, "") // strip diacritics
@@ -112,7 +117,8 @@ function sanitizeForPdf(str: string): string {
     // ONLY — NOT all of \p{Extended_Pictographic}, which also matches Latin-1
     // © / ® that the base fonts render; stripping those would change PK receipts.
     .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\uFE00-\uFE0F\u200D]+\s*/gu, "")
-    .replace(/[^\x20-\x7E\u00A0-\u00FF]/g, "?");
+    // \u0095 is the WinAnsi bullet mapped just above — kept deliberately.
+    .replace(/[^\x20-\x7E\u0095\u00A0-\u00FF]/g, "?");
 }
 
 // Latin-1 (single-byte) encoder. The base-14 fonts are WinAnsi/Latin-1, so the
@@ -166,6 +172,50 @@ function makeReceiptFormatters(country: string | null | undefined) {
   return { pk, fmtDate, fmtMonth, rateSym };
 }
 
+
+/**
+ * Masks the account identifier in a "Received In" label for print.
+ *
+ * This document is served from a PUBLIC token URL to whoever holds the link, so
+ * it must never carry a full account number — the same rule that keeps CNIC off
+ * it. The label is kept and every digit but the last four is removed:
+ *
+ *   "HBL (15897920194703 )"       -> "HBL •••• 4703"
+ *   "GB29 NWBK 6016 1331 9268 19" -> "GB29 NWBK •••• 6819"
+ *   "HBL 158 / UBL 9988776655"    -> "HBL / UBL •••• 6655"
+ *   "Cash Counter"                -> "Cash Counter"   (no digits at all)
+ *
+ * FAILS CLOSED. Digits are counted across the WHOLE value, not a single run, so
+ * a number written in groups — which is how an IBAN is normally typed — cannot
+ * slip through unmasked, and a second account in the same label cannot survive
+ * inside the retained text. Non-ASCII digits count too (\p{Nd}), so Arabic-Indic
+ * numerals are masked like any other. An unrecognised shape is masked, never
+ * passed through.
+ *
+ * The owner still sees the full value everywhere behind auth; only the printed
+ * receipt is reduced.
+ */
+export function maskReceivedAccount(raw: string | null | undefined): string {
+  const v = (raw ?? "").trim();
+  if (!v) return "";
+  const DIGIT = /[0-9\p{Nd}]/gu;
+  const digits = v.match(DIGIT) ?? [];
+  if (digits.length === 0) return v;
+  // Too short to have a meaningful "last four" — blank it rather than reveal it.
+  if (digits.length < 4) return v.replace(DIGIT, "•").trim();
+  // Strip every digit and the separators trailing them out of the label, so no
+  // part of any account number survives in the text that is kept.
+  const label = v
+    .replace(/[0-9\p{Nd}][0-9\p{Nd}\s\-–—/.]*/gu, " ")
+    // Owners store "HBL (15897920194703 )", so removing the digits leaves an
+    // empty bracket pair behind; drop those and any punctuation left dangling.
+    .replace(/[([{]\s*[)\]}]/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s\-–—:/,.]+|[([{\s\-–—:/,.]+$/g, "")
+    .trim();
+  const last4 = digits.slice(-4).join("");
+  return label ? `${label} •••• ${last4}` : `•••• ${last4}`;
+}
 
 function methodLabel(m: string | null | undefined): string {
   if (!m) return "-";
@@ -316,7 +366,7 @@ export function generateReceiptPDF(
       addKv("Period", fmtMonth(payment.for_month)); nl(12);
     }
     addKv("Method", (payment.payment_method ?? "-").toUpperCase()); nl(12);
-    if (payment.received_account?.trim()) { addKv("Received In", payment.received_account.trim()); nl(12); }
+    if (payment.received_account?.trim()) { addKv("Received In", maskReceivedAccount(payment.received_account)); nl(12); }
   }
   addDash(); nl(10);
 

@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { generateReceiptPDF } from "@/lib/receipt-pdf";
+
+/** Bump when generateReceiptPDF changes what it draws — see the stamp below.
+ *  v2: the receiving bank account is masked to its last four digits. */
+const RECEIPT_TEMPLATE_VERSION = "v2";
 import { countBillableNights } from "@/lib/daily-billing";
 
 const RECEIPT_BUCKET = "receipts";
@@ -93,9 +97,18 @@ export async function GET(
   // while the payment's updated_at still matches what it was stamped with.
   const linkedPayment = Array.isArray(link.payment) ? link.payment[0] : link.payment;
   const isImmutableScope = !!link.installment_id;
-  const currentStamp = isImmutableScope
+  // The stamp keys the cache on the payment row, which is NOT enough on its own:
+  // changing how the PDF is drawn does not touch updated_at, so every already
+  // built receipt would keep being served from storage with the old rendering —
+  // and an installment link, stamped "immutable", would never rebuild at all.
+  // That is not cosmetic: RECEIPT_TEMPLATE_VERSION was introduced because the
+  // receiving bank account is now masked, and without it the public link would
+  // go on serving the unmasked account forever. Bump this on any change to what
+  // generateReceiptPDF puts on the page.
+  const baseStamp = isImmutableScope
     ? "immutable"
     : ((linkedPayment as { updated_at?: string } | null)?.updated_at ?? "");
+  const currentStamp = baseStamp ? `${baseStamp}|${RECEIPT_TEMPLATE_VERSION}` : "";
 
   const cacheIsFresh = !!link.pdf_path && !!currentStamp && link.pdf_stamp === currentStamp;
 
@@ -358,7 +371,9 @@ export async function GET(
   // Persist for next time. Best-effort: a storage or bookkeeping failure must
   // never cost the tenant the receipt they are currently waiting on — it just
   // means the next view rebuilds it, exactly as before this cache existed.
-  const stamp = isImmutableScope ? "immutable" : stampSource;
+  const stamp = isImmutableScope
+    ? `immutable|${RECEIPT_TEMPLATE_VERSION}`
+    : (stampSource ? `${stampSource}|${RECEIPT_TEMPLATE_VERSION}` : null);
   if (stamp) {
     const storagePath = receiptStoragePath(
       link.hostel_id as string,
