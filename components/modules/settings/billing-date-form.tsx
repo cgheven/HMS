@@ -14,11 +14,18 @@ export function BillingDateForm({
   initialSeparate = true,
   readOnly = false,
   readOnlyNote,
+  simple = false,
+  onSaved,
 }: {
   initialAnchorDay: number | null | undefined;
   initialSeparate?: boolean;
   readOnly?: boolean;
   readOnlyNote?: ReactNode;
+  /** Onboarding: hide the merged/separate toggle (defaults to separate, the
+   *  recommended mode); the advanced choice stays in Settings. */
+  simple?: boolean;
+  /** Called after a successful save (e.g. to tick an onboarding step). */
+  onSaved?: () => void;
 }) {
   const router = useRouter();
   const [anchorDay, setAnchorDay] = useState<string>(
@@ -44,6 +51,7 @@ export function BillingDateForm({
     setSaving(false);
     if (result.success) {
       toast({ title: "Billing date saved" });
+      onSaved?.();
       router.refresh();
     } else {
       toast({ title: "Error", description: result.error, variant: "destructive" });
@@ -82,7 +90,9 @@ export function BillingDateForm({
           When someone joins mid-month, they are charged only for the days they actually
           stayed that month (at their per-day rate entered on admission), then a full
           month from the billing date onward.{!enabled && " This takes effect once you set a billing date above."}
+          {simple && " You can fine-tune how the leftover days are billed later in Settings."}
         </p>
+        {!simple && (
         <label className="flex items-start gap-2.5 cursor-pointer">
           <input
             type="checkbox"
@@ -100,6 +110,7 @@ export function BillingDateForm({
             </span>
           </span>
         </label>
+        )}
       </div>
 
       {!readOnly && (

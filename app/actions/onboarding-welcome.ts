@@ -6,7 +6,7 @@ import { getAuthContext } from "@/lib/data";
 import type { WifiNetwork, MealTimes } from "@/types";
 
 export interface WelcomeStep {
-  key: "details" | "charges" | "paymethods" | "wifi" | "meals" | "menu" | "referral" | "website" | "rooms" | "tenant" | "payment";
+  key: "details" | "charges" | "paymethods" | "billing" | "wifi" | "meals" | "menu" | "referral" | "website" | "rooms" | "tenant" | "payment";
   done: boolean;
   required: boolean;
 }
@@ -116,10 +116,16 @@ export async function getWelcomeStatus(): Promise<WelcomeStatus> {
   // core cycle (rooms → tenant → payment). Optional = enhancements (WiFi, meals,
   // menu, referral, website). The dashboard resume card shows until every required
   // step is done.
+  // Optional: a fixed billing day for the whole branch. "Done" once set; leaving
+  // it off (per-tenant join-date billing, the default) is a perfectly valid
+  // choice, so it never blocks completion (required: false).
+  const billingDaySet = (hostel?.billing_anchor_day ?? null) !== null;
+
   const steps: WelcomeStep[] = [
     { key: "details",    required: true,  done: detailsDone },
     { key: "charges",    required: true,  done: chargesConfigured(charges) },
     { key: "paymethods", required: true,  done: payMethods.length > 0 },
+    { key: "billing",    required: false, done: billingDaySet },
     { key: "wifi",       required: false, done: wifi.length > 0 },
     { key: "meals",      required: false, done: mealsConfigured(hostel?.meal_times as MealTimes | null) },
     { key: "menu",       required: false, done: menuCount > 0 },

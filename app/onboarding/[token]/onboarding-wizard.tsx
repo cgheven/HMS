@@ -514,6 +514,18 @@ function StepCharges({
       </Section>
 
       <Section
+        title="Billing date"
+        subtitle="Optional — bill everyone on one fixed day of the month, with mid-month joiners prorated for their first month. Leave blank to bill each resident on their own join date (the default). You can change this anytime in Settings."
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <Field label="Billing day (1–31)" hint="e.g. 1 to bill everyone on the 1st. Empty = join-date billing.">
+            <Input type="number" min={1} max={31} placeholder="Off" value={config.billing_anchor_day}
+              onChange={(e) => setConfig("billing_anchor_day", e.target.value)} />
+          </Field>
+        </div>
+      </Section>
+
+      <Section
         title="Meal pricing"
         subtitle="Optional — only if tenants can add meals on top of their room. Leave blank if meals are always included or not offered."
       >

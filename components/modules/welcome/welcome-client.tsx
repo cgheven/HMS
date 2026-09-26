@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Building2, BedDouble, Receipt, Wifi, Clock, UtensilsCrossed, Gift, Banknote, Users, CreditCard,
-  Check, ChevronRight, Loader2, ArrowRight, Sparkles, Plus, Trash2, Globe,
+  Check, ChevronRight, Loader2, ArrowRight, Sparkles, Plus, Trash2, Globe, CalendarClock,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import { dismissWelcome, type WelcomeStatus, type WelcomeStep } from "@/app/acti
 import { loadSampleData } from "@/app/actions/demo-data";
 import { PackagePricingForm } from "@/components/modules/settings/package-pricing-form";
 import { PaymentMethodsForm } from "@/components/modules/settings/payment-methods-form";
+import { BillingDateForm } from "@/components/modules/settings/billing-date-form";
 import { HostelInfoForm } from "@/components/modules/settings/hostel-info-form";
 import { MealTimesFields } from "@/components/modules/settings/meal-times-fields";
 import type { WifiNetwork, MealTimes, PaymentMethodAccount } from "@/types";
@@ -33,6 +34,7 @@ export function WelcomeClient({
   initialWifi, initialMeals, welcomeTemplate,
   initialReferrerPct, initialReferredPct, initialCampaign,
   initialPaymentMethods, initialReminderTemplate, whatsappEnabled,
+  initialBillingAnchorDay, initialBillLeftoverSeparately,
 }: {
   hostelId: string;
   branchName: string;
@@ -47,6 +49,8 @@ export function WelcomeClient({
   initialPaymentMethods: PaymentMethodAccount[];
   initialReminderTemplate: string | null;
   whatsappEnabled: boolean;
+  initialBillingAnchorDay: number | null;
+  initialBillLeftoverSeparately: boolean;
 }) {
   const router = useRouter();
   const cfg = getCountryConfig(country);
@@ -85,6 +89,7 @@ export function WelcomeClient({
     details:    { icon: Building2,       title: "Property details", desc: "Name, address, contact, capacity and who can live here." },
     charges:    { icon: Receipt,         title: "Package pricing & charges", desc: `Package rents, seater pricing, deposit, ${t.acBilling.toLowerCase()} & food rates (${cur}).` },
     paymethods: { icon: Banknote,        title: "Payment methods", desc: "Bank accounts / JazzCash / EasyPaisa shown in rent reminders." },
+    billing:    { icon: CalendarClock,   title: "Billing date (optional)", desc: `Bill every ${t.tenant.toLowerCase()} on one fixed day of the month, with mid-month joiners prorated — or skip to bill each on their own join date.` },
     wifi:       { icon: Wifi,            title: "WiFi password", desc: `Shared in every ${t.tenant.toLowerCase()}'s welcome email.` },
     meals:      { icon: Clock,           title: "Meal timings", desc: `Breakfast, lunch and dinner hours. Shared in every ${t.tenant.toLowerCase()}'s welcome email.` },
     menu:       { icon: UtensilsCrossed, title: "Food menu (7-day plan)", desc: `Your weekly meal plan (repeats weekly). Shared in every ${t.tenant.toLowerCase()}'s welcome email.` },
@@ -191,6 +196,16 @@ export function WelcomeClient({
                       country={country}
                       whatsappEnabled={whatsappEnabled}
                       onSaved={() => setDoneKeys((prev) => new Set(prev).add("paymethods"))}
+                    />
+                  </div>
+                )}
+                {isOpen && s.key === "billing" && (
+                  <div className="mt-4 border-t pt-4">
+                    <BillingDateForm
+                      simple
+                      initialAnchorDay={initialBillingAnchorDay}
+                      initialSeparate={initialBillLeftoverSeparately}
+                      onSaved={() => setDoneKeys((prev) => new Set(prev).add("billing"))}
                     />
                   </div>
                 )}

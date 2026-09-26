@@ -28,6 +28,8 @@ export default async function WelcomePage() {
       initialPaymentMethods={(hostel?.payment_methods ?? []) as PaymentMethodAccount[]}
       initialReminderTemplate={(hostel?.reminder_template as string) ?? null}
       whatsappEnabled={Boolean(hostel?.whatsapp_enabled)}
+      initialBillingAnchorDay={(hostel?.billing_anchor_day as number | null) ?? null}
+      initialBillLeftoverSeparately={hostel?.bill_leftover_days_separately !== false}
     />
   );
 }

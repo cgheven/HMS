@@ -157,6 +157,13 @@ export async function provisionOnboarding(submissionId: string): Promise<Provisi
           food_closed_on_sundays: !!cfg.food_closed_on_sundays,
           payment_methods: cfg.payment_methods ?? [],
           listing_enabled: true,
+          // Optional fixed billing day (migration 272). Validated 1..31 or null;
+          // null = the default per-tenant join-date billing. Separate-mode default
+          // (bill_leftover_days_separately) comes from the column default (true).
+          billing_anchor_day: (() => {
+            const d = Math.trunc(Number(cfg.billing_anchor_day));
+            return Number.isFinite(d) && d >= 1 && d <= 31 ? d : null;
+          })(),
         })
         .select("id")
         .single();

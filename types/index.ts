@@ -1399,6 +1399,9 @@ export interface OnboardingBranchConfig {
   food_all_meals_rate: string
   seater_prices: SeaterPrices
   payment_methods: PaymentMethodAccount[]
+  /** Optional fixed billing day (1..31) for the whole branch; "" = off (bill each
+   *  resident on their own join date, the default). Migration 272. */
+  billing_anchor_day: string
 }
 
 export interface OnboardingBranch {
@@ -1443,6 +1446,7 @@ export const EMPTY_ONBOARDING_CONFIG: OnboardingBranchConfig = {
   food_all_meals_rate: "",
   seater_prices: {},
   payment_methods: [],
+  billing_anchor_day: "",
 }
 
 export const EMPTY_ONBOARDING_BRANCH: OnboardingBranch = {
