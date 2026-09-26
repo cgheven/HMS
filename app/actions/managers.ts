@@ -28,6 +28,7 @@ import { performTenantCheckout } from "@/lib/tenant-checkout"
 import { yearMonthInZone } from "@/lib/pkt-time"
 import { isValidNationalId, normalizeNationalId } from "@/lib/national-id"
 import { getCountryConfig, DEFAULT_COUNTRY, terms } from "@/lib/country-config"
+import { nextReceiptNumber, RECEIPT_NUMBER_MAX } from "@/lib/receipt-number"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
 import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission, CheckoutInput, CheckoutSettlement } from "@/types"
 import { linkReferralForNewTenant } from "@/lib/referral-attribution"
@@ -1595,7 +1596,6 @@ export async function recordPaymentAsManager(
     // numeric(10,2) on the column — a value past this overflows in Postgres
     // rather than being rejected in the UI.
     if (newLateFee > 99999999) return { error: "Late fee is too large." }
-    const receiptNo = (receiptNumber ?? "").trim().slice(0, 64) || null
 
     // undefined is "no one-off discount", stored as NULL; an explicit 0 is an
     // operator who deliberately recorded none.
@@ -1631,7 +1631,7 @@ export async function recordPaymentAsManager(
     // have it silently accepted as "paid in full" regardless of the real total.
     const { data: existingPayment } = await admin
       .from("hms_payments")
-      .select("id, amount, amount_paid, late_fee, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, status, referral_percent, referral_discount, discount_percent, discount_amount, manual_discount_amount")
+      .select("receipt_number, id, amount, amount_paid, late_fee, food_charge, ac_charge, security_deposit_charge, registration_fee_charge, ac_maintenance_charge, status, referral_percent, referral_discount, discount_percent, discount_amount, manual_discount_amount")
       .eq("tenant_id", tenantId)
       .eq("hostel_id", hostelId)
       .eq("for_month", month)
@@ -1641,6 +1641,33 @@ export async function recordPaymentAsManager(
     if (!existingPayment) {
       return { error: "No outstanding bill found for this tenant this month." }
     }
+
+    // Same rule as markPaymentPaidAction: honour a number the manager typed,
+    // otherwise keep the one already on the bill, otherwise mint from the DB
+    // sequence (migration 273). Managers previously left this null and relied on
+    // the receipt route to fill it in on first view.
+    const typedReceipt = (receiptNumber ?? "").trim()
+    // PULSE-… belongs to the DB sequence. Letting an operator type one would put
+    // a hand-made number into the managed series, where it could duplicate a
+    // receipt already issued to someone else (the partial unique index in
+    // migration 273 would reject it anyway, as a raw constraint error).
+    if (typedReceipt && /^pulse-/i.test(typedReceipt)) {
+      return { error: "PULSE- receipt numbers are issued automatically. Leave the field blank, or enter your own reference." }
+    }
+    // Same rules as the owner path: an issued number is never replaced, and each
+    // installment's own receipt carries an ordinal suffix.
+    const alreadyIssued = (existingPayment.receipt_number as string | null) ?? null
+    const receiptNo = alreadyIssued
+      ?? (typedReceipt ? typedReceipt.slice(0, RECEIPT_NUMBER_MAX) : await nextReceiptNumber(admin, month))
+
+    const { count: priorInstallments } = await admin
+      .from("hms_payment_installments")
+      .select("id", { count: "exact", head: true })
+      .eq("payment_id", existingPayment.id)
+    const installmentSeq = (priorInstallments ?? 0) + 1
+    const installmentReceiptNo = receiptNo && installmentSeq > 1
+      ? `${receiptNo}/${installmentSeq}`
+      : receiptNo
 
     let newAcCharge = Number(existingPayment.ac_charge ?? 0)
     const updatePayload: Record<string, unknown> = {
@@ -1778,7 +1805,7 @@ export async function recordPaymentAsManager(
       payment_method: method,
       payment_date: paymentDate,
       notes: notes?.trim() || null,
-      receipt_number: receiptNo,
+      receipt_number: installmentReceiptNo,
       recorded_by: ctx.manager.supabase_user_id ?? null,
     }).select("id").single()
     if (installmentErr) {

@@ -21,6 +21,7 @@ import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation";
 import { notifyOwnerPaymentRecorded, notifyOwnerPaymentUndone } from "@/lib/payment-notifications";
 import { performPaymentUndo } from "@/lib/payment-undo";
 import { terms } from "@/lib/country-config";
+import { nextReceiptNumber, RECEIPT_NUMBER_MAX } from "@/lib/receipt-number";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
@@ -376,7 +377,7 @@ export async function markPaymentPaidAction(
     // --- Fetch the existing payment row (ownership verified via hostel_id) ---
     const { data: existingPayment, error: fetchErr } = await supabase
       .from("hms_payments")
-      .select("id, tenant_id, for_month, amount, amount_paid, food_charge, ac_charge, payment_package_tier, hostel_id, status, referral_discount, referral_percent, discount_percent, manual_discount_amount")
+      .select("id, tenant_id, for_month, amount, amount_paid, food_charge, ac_charge, payment_package_tier, hostel_id, status, referral_discount, referral_percent, discount_percent, manual_discount_amount, receipt_number")
       .eq("id", input.paymentId)
       .eq("hostel_id", hostelId) // RLS + explicit owner check
       .single();
@@ -595,6 +596,42 @@ export async function markPaymentPaidAction(
     const newAmountPaid = previousAmountPaid + amountReceivedNow;
     const isFullyPaid = newAmountPaid >= fullAmountDue - 0.01;
 
+    // The receipt number is issued by the DB sequence (migration 273) unless the
+    // owner typed their own in the Pay dialog. Resolved ONCE here so the payment
+    // row and its installment log below carry the same number — two calls would
+    // hand the installment a different one and break reconciliation. An existing
+    // number is never reissued: collecting a second installment must not renumber
+    // a receipt the resident already holds.
+    const typedReceipt = input.receiptNumber?.trim();
+    // PULSE-… belongs to the DB sequence. Letting an operator type one would put
+    // a hand-made number into the managed series, where it could duplicate a
+    // receipt already issued to someone else (the partial unique index in
+    // migration 273 would reject it anyway, as a raw constraint error).
+    if (typedReceipt && /^pulse-/i.test(typedReceipt)) {
+      return { error: "PULSE- receipt numbers are issued automatically. Leave the field blank, or enter your own reference." };
+    }
+    // An already-issued number is NEVER replaced, not even by a typed one: the
+    // resident is holding a receipt that says it, and the earlier installment
+    // rows still reference it. A typed number only applies to a bill that has
+    // not been numbered yet.
+    const alreadyIssued = (existingPayment.receipt_number as string | null) ?? null;
+    const resolvedReceiptNumber = alreadyIssued
+      ?? (typedReceipt ? typedReceipt.slice(0, RECEIPT_NUMBER_MAX) : await nextReceiptNumber(createAdminClient(), existingPayment.for_month ?? ""));
+
+    // Each installment is its own public receipt (its own token + PDF), so the
+    // ordinal is suffixed — "…-00042/2". Sharing the bill's number verbatim would
+    // hand the resident two different PDFs, different amounts, identical
+    // "Receipt #", which is precisely the ambiguity a receipt number exists to
+    // settle. The first installment keeps the bare number.
+    const { count: priorInstallments } = await supabase
+      .from("hms_payment_installments")
+      .select("id", { count: "exact", head: true })
+      .eq("payment_id", input.paymentId);
+    const installmentSeq = (priorInstallments ?? 0) + 1;
+    const installmentReceiptNumber = resolvedReceiptNumber && installmentSeq > 1
+      ? `${resolvedReceiptNumber}/${installmentSeq}`
+      : resolvedReceiptNumber;
+
     // --- Build update payload ---
     const updatePayload: Record<string, unknown> = {
       status: (isFullyPaid ? "paid" : "partially_paid") as PaymentStatus,
@@ -612,7 +649,7 @@ export async function markPaymentPaidAction(
       // Reconciliation label only (which configured account received the money).
       // Capped defensively; a directly-called RPC can't stash unbounded text here.
       received_account: input.receivedAccount?.trim() ? input.receivedAccount.trim().slice(0, 120) : null,
-      receipt_number: input.receiptNumber,
+      receipt_number: resolvedReceiptNumber,
       // Always write the recalculated total (trigger will re-verify).
       // newTotalAmount is GROSS, and referral_discount: 0 is what declares that —
       // the trigger re-derives the discount and stores amount net of it.
@@ -699,7 +736,7 @@ export async function markPaymentPaidAction(
       payment_date: input.date,
       notes: input.notes || null,
       transaction_id: input.transactionId?.trim() ? input.transactionId.trim().slice(0, 120) : null,
-      receipt_number: input.receiptNumber,
+      receipt_number: installmentReceiptNumber,
       // The durable attribution. hms_payments.recorded_by is overwritten by
       // whoever collects the next installment against the same bill.
       recorded_by: ctx?.user?.id ?? null,

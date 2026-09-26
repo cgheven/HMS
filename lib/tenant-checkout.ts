@@ -11,6 +11,7 @@ import { isMeteredRoom } from "@/lib/room-transfer";
 import { getCountryConfig, terms } from "@/lib/country-config";
 import { voidReferralRewardsForTenant } from "@/lib/referral-rewards";
 import { mintFeedbackToken } from "@/lib/tenant-feedback";
+import { nextReceiptNumber } from "@/lib/receipt-number";
 import { sendCheckoutMessage } from "@/lib/whatsapp-checkout";
 import type { PaymentMethod, PaymentStatus, CheckoutInput, CheckoutSettlement } from "@/types";
 
@@ -25,12 +26,6 @@ import type { PaymentMethod, PaymentStatus, CheckoutInput, CheckoutSettlement } 
 function nextMonthAfter(month: string): string {
   const [y, m] = month.split("-").map(Number);
   return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, "0")}`;
-}
-
-export function genReceiptNumber(tenantName: string, month: string): string {
-  const initials = tenantName.split(" ").map((w: string) => w[0] ?? "").join("").toUpperCase().slice(0, 2);
-  const rand = Math.floor(Math.random() * 900 + 100);
-  return `HMS-${month.replace("-", "")}-${initials}-${rand}`;
 }
 
 export async function performTenantCheckout(
@@ -690,7 +685,7 @@ export async function performTenantCheckout(
             ...(verifiedPayment.status === "paid" ? {} : {
               payment_date: input.paymentSettlement?.paymentDate ?? new Date().toISOString().split("T")[0],
               payment_method: (input.paymentSettlement?.paymentMethod ?? null) as PaymentMethod | null,
-              receipt_number: genReceiptNumber(tenant.full_name, verifiedPayment.for_month ?? ""),
+              receipt_number: await nextReceiptNumber(adminDb, verifiedPayment.for_month ?? ""),
             }),
             // Merge AC fields here so the correct payment row is always targeted by ID,
             // not by for_month (which can differ from checkoutMonth for pre-generated payments).

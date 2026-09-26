@@ -27,7 +27,8 @@ import { pktTodayDateString, yearMonthInZone, todayInZone, DEFAULT_TIMEZONE } fr
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
 import { getCountryConfig, terms } from "@/lib/country-config";
 import { logPiiAudit } from "@/lib/audit";
-import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
+import { performTenantCheckout } from "@/lib/tenant-checkout";
+import { nextReceiptNumber } from "@/lib/receipt-number";
 import { deriveOpeningReading, effectivePrevReading } from "@/lib/ac-billing";
 import { sendWelcomeMessageNow, type WelcomeSendResult } from "@/lib/whatsapp-welcome-action";
 import { sendSeatReservedConfirmation } from "@/lib/whatsapp-seat-reserved";
@@ -1503,7 +1504,13 @@ export async function backfillTenantPaymentsAction(
             // first month. Non-anchor branches keep the legacy month-end date, so
             // existing clients are byte-identical.
             payment_date: bfAnchor && month === bfFirstBillMonth ? checkIn : lastDayOfMonth(month),
-            receipt_number: genReceiptNumber(tenant.full_name, month),
+            // Left null on purpose. This builds every past month for one
+            // admission inside a synchronous flatMap, and the number now comes
+            // from a DB sequence (migration 273). Minting here would mean one
+            // round trip per tenant-month and would burn numbers on rows nobody
+            // ever opens. The public receipt route mints one on first view — the
+            // same path 2,477 existing production rows already rely on.
+            receipt_number: null,
           };
 
       return [{
@@ -1577,7 +1584,7 @@ export interface RecordReservationDepositInput {
 
 export async function recordReservationDepositAction(
   input: RecordReservationDepositInput
-): Promise<{ success: boolean; paymentId?: string; receiptNumber?: string; collectedOn?: string; amount?: number; remainingDeposit?: number; error?: string }> {
+): Promise<{ success: boolean; paymentId?: string; receiptNumber?: string | null; collectedOn?: string; amount?: number; remainingDeposit?: number; error?: string }> {
   try {
     await requireOwnerWrite();
     const hostelId = await resolveHostelId();
@@ -1672,7 +1679,7 @@ export async function recordReservationDepositAction(
       );
     }
 
-    const receiptNumber = genReceiptNumber(tenant.full_name, forMonth);
+    const receiptNumber = await nextReceiptNumber(adminDb, forMonth);
 
     const { data: inserted, error: insertErr } = await adminDb
       .from("hms_payments")

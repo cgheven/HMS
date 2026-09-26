@@ -52,7 +52,7 @@ export function formatAccounts(methods: PaymentMethodAccount[]): string {
 function formatACLine(units?: number, charge?: number, rate?: number, country?: string | null): string {
   if (!charge || charge <= 0) return "";
   const parts: string[] = [];
-  if (units && rate) parts.push(`${units} units x ${curPrefix(country)}${rate}/unit`);
+  if (units && rate) parts.push(`${units} ${terms(country).meterUnits} x ${curPrefix(country)}${rate}/${terms(country).meterUnit}`);
   parts.push(`*${money(charge, country)}*`);
   return `⚡ ${terms(country).acShort}: ` + parts.join(" = ");
 }

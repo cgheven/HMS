@@ -168,7 +168,11 @@ function makeReceiptFormatters(country: string | null | undefined) {
     return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString(cfg.locale, { month: "long", year: "numeric" });
   };
   // Symbol used inline in rate copy ("… x Rs. 25/unit" / "… x £0.30/unit").
-  const rateSym = cfg.currency === "PKR" ? "Rs." : cfg.currencySymbol;
+  // Carries its own trailing space so a word-like symbol reads "AED 0.34" while a
+  // glyph reads "£0.34", not "£ 0.34". PK keeps "Rs. " exactly as before.
+  const rateSym = cfg.currency === "PKR"
+    ? "Rs. "
+    : (/[A-Za-z]$/.test(cfg.currencySymbol) ? `${cfg.currencySymbol} ` : cfg.currencySymbol);
   return { pk, fmtDate, fmtMonth, rateSym };
 }
 
@@ -285,6 +289,7 @@ export function generateReceiptPDF(
   // non-PK = "Resident".
   const residentLabel = terms(hostel.country).tenant;
   const isPk = getCountryConfig(hostel.country).currency === "PKR";
+  const meterWords = terms(hostel.country);
 
   // Collect commands top-down (y=0 at top), convert to PDF coords (y=0 at bottom) after.
   type Cmd =
@@ -365,7 +370,7 @@ export function generateReceiptPDF(
     } else {
       addKv("Period", fmtMonth(payment.for_month)); nl(12);
     }
-    addKv("Method", (payment.payment_method ?? "-").toUpperCase()); nl(12);
+    addKv("Method", methodLabel(payment.payment_method)); nl(12);
     if (payment.received_account?.trim()) { addKv("Received In", maskReceivedAccount(payment.received_account)); nl(12); }
   }
   addDash(); nl(10);
@@ -468,11 +473,11 @@ export function generateReceiptPDF(
         // Rounded to 2dp (ac_units_consumed's DB precision), not a whole unit —
         // otherwise an even split like 72.5 would display as "73".
         const displayUnits = Math.round((payment.ac_charge! / realRate) * 100) / 100;
-        add(ML + 4, `${displayUnits} units x ${rateSym} ${realRate}/unit`, 6, false); nl(9);
+        add(ML + 4, `${displayUnits} ${meterWords.meterUnits} x ${rateSym}${realRate}/${meterWords.meterUnit}`, 6, false); nl(9);
       } else if (storedUnits > 0) {
         // Fallback: back-calculate rate from stored units (regular monthly pay path)
         const rate = Math.round(payment.ac_charge! / storedUnits);
-        add(ML + 4, `${storedUnits} units x ${rateSym} ${rate}/unit`, 6, false); nl(9);
+        add(ML + 4, `${storedUnits} ${meterWords.meterUnits} x ${rateSym}${rate}/${meterWords.meterUnit}`, 6, false); nl(9);
       } else {
         nl(1);
       }
@@ -577,6 +582,12 @@ export function generateReceiptPDF(
     addCenter("Keep this receipt for your records.", 7, false); nl(10);
   }
   addDash(); nl(8);
+
+  // Attribution. This document leaves the hostel — a resident forwards it, a
+  // parent files it, a bank sees it — so it carries where it came from. On both
+  // the receipt and the invoice, and deliberately the smallest thing on the page:
+  // it must never compete with the amount.
+  addCenter("Powered by yourpulse.io", 6, false); nl(8);
 
   const PAGE_H = yTop + 10;
 

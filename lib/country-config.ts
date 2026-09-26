@@ -65,6 +65,11 @@ export interface CountryTerms {
    *  the room actually has an air conditioner, so it services the physical unit. Kept
    *  as a term field only so call sites read uniformly alongside the localised ones. */
   acMaintenance: string;
+  /** The metered quantity, plural — PK "units" (1 unit = 1 kWh colloquially),
+   *  non-PK "kWh". Used for the consumed amount: "194 kWh". */
+  meterUnits: string;
+  /** The same quantity, singular, for a per-unit rate: "£0.34/kWh". */
+  meterUnit: string;
   mobileNumber: string;
   purposeOfVisit: string;
 }
@@ -81,6 +86,8 @@ export const PK_TERMS: CountryTerms = {
   acCharges: "AC Charges",
   acMeterReading: "AC Meter Reading",
   acMaintenance: "AC Maintenance",
+  meterUnits: "units",
+  meterUnit: "unit",
   mobileNumber: "WhatsApp Number",
   purposeOfVisit: "Purpose of Visit",
 };
@@ -97,6 +104,8 @@ export const INTERNATIONAL_TERMS: CountryTerms = {
   acCharges: "Electricity Charges",
   acMeterReading: "Electricity Meter Reading",
   acMaintenance: "AC Maintenance",
+  meterUnits: "kWh",
+  meterUnit: "kWh",
   mobileNumber: "Mobile Number",
   purposeOfVisit: "Purpose of Stay",
 };

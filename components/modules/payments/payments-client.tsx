@@ -149,12 +149,6 @@ const statusConfig: Record<PaymentStatus, { label: string; color: string }> = {
   partially_paid: { label: "Partial", color: "text-blue-400" },
 };
 
-function genReceipt(tenantName: string, month: string) {
-  const initials = tenantName.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2);
-  const rand = Math.floor(Math.random() * 900 + 100);
-  return `HMS-${month.replace("-", "")}-${initials}-${rand}`;
-}
-
 // Per-tenant AC units cap for the mark-paid dialog (room-level total capped at 99,999 in applyRoomACUnitsAction)
 const MAX_AC_UNITS = 10_000;
 
@@ -596,7 +590,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       late_fee: "0",
       notes: "",
       transaction_id: "",
-      receipt_number: genReceipt(tenantName, p.for_month),
+      receipt_number: "",
       ac_units_consumed: p.ac_units_consumed ? String(p.ac_units_consumed) : "0",
       amount_received: String(remaining),
       discount_amount: "",
@@ -728,8 +722,8 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       const parsedAc = parseFloat(rawAc);
       if (!Number.isFinite(parsedAc) || parsedAc < 0 || parsedAc > MAX_AC_UNITS) {
         toast({
-          title: `Invalid ${words.acShort} units`,
-          description: `${words.acShort} units consumed must be a number between 0 and ${MAX_AC_UNITS}.`,
+          title: `Invalid ${words.acShort} ${words.meterUnits}`,
+          description: `${words.acShort} ${words.meterUnits} consumed must be a number between 0 and ${MAX_AC_UNITS}.`,
           variant: "destructive",
         });
         return;
@@ -1075,7 +1069,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       // The receipt PDF (linked below) still shows it every month as the permanent record.
       const isFirstMonth = p.tenant?.check_in?.slice(0, 7) === p.for_month;
       const readingLine = isFirstMonth && p.tenant?.joining_meter_reading != null
-        ? `${words.acShort} meter reading at move-in: *${p.tenant.joining_meter_reading}* units — noted for your records.\n\n`
+        ? `${words.acShort} meter reading at move-in: *${p.tenant.joining_meter_reading}* ${words.meterUnits} — noted for your records.\n\n`
         : "";
 
       // "for 2026-07" reads to a tenant as a database key, not a month.
@@ -1338,7 +1332,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           })()
         : await applyRoomACUnitsAction(roomId, selectedMonth, meterReading, openingReading, overrides);
       if (!result.success) {
-        toast({ title: `${words.acBilling} Error`, description: result.error ?? `Failed to apply ${words.acShort} units.`, variant: "destructive" });
+        toast({ title: `${words.acBilling} Error`, description: result.error ?? `Failed to apply ${words.acShort} ${words.meterUnits}.`, variant: "destructive" });
       } else {
         const derivedUnits = result.derivedUnits ?? 0;
         // A vacant room writes no payment rows, so none of the tenant-facing
@@ -1368,15 +1362,15 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         }
         const manualSplit = !!overrides && overrides.length > 0;
         toast({
-          title: cleared ? `${words.acShort} charge cleared` : manualSplit ? "Adjusted split applied" : `${words.acShort} units applied`,
+          title: cleared ? `${words.acShort} charge cleared` : manualSplit ? "Adjusted split applied" : `${words.acShort} ${words.meterUnits} applied`,
           description: cleared
             ? `${words.acShort} charges removed for all tenants in this room.`
             : manualSplit
               // Uneven by design — don't claim "X units each"; the per-tenant split is bespoke.
-              ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · split adjusted per tenant`
+              ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} ${words.meterUnits} consumed · split adjusted per tenant`
               : result.proRatedCount && result.proRatedCount > 0
-                ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · ${result.proRatedCount} with segment billing${result.unassignedUnits ? ` · ${result.unassignedUnits} units unassigned` : ""}`
-                : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · ${result.perTenantUnits} units each · ${curSym} ${result.perTenantCharge?.toLocaleString()} each`,
+                ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} ${words.meterUnits} consumed · ${result.proRatedCount} with segment billing${result.unassignedUnits ? ` · ${result.unassignedUnits} ${words.meterUnits} unassigned` : ""}`
+                : `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} ${words.meterUnits} consumed · ${result.perTenantUnits} ${words.meterUnits} each · ${curSym} ${result.perTenantCharge?.toLocaleString()} each`,
         });
         // Adjusted split applied — drop the local edits so the fields re-read the
         // freshly stored (now manual) split instead of pinning to the old values.
@@ -2392,7 +2386,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             <div className="flex items-center gap-2 flex-wrap mb-1">
               <Zap className="w-4 h-4 text-amber" />
               <h3 className="text-sm font-semibold">{words.acBilling}</h3>
-              <span className="text-xs text-muted-foreground">— enter total units consumed per room for {selectedMonth}</span>
+              <span className="text-xs text-muted-foreground">— enter total {words.meterUnits} consumed per room for {selectedMonth}</span>
               {occupancyAcRooms.length > 1 && (
                 <div className="ml-auto">
                   <Select value={acRoomFilter} onValueChange={setAcRoomFilter}>
@@ -2511,11 +2505,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                         </div>
                         {saved ? (
                           <p className="text-xs text-emerald-400 mt-0.5">
-                            Reading: {saved.meter_reading ?? "—"} · {saved.total_units} units consumed
+                            Reading: {saved.meter_reading ?? "—"} · {saved.total_units} {words.meterUnits} consumed
                             {/* per_unit_rate is NOT NULL (migration 044) so it is stored
                                 regardless, but quoting a tenant recovery rate on a reading
                                 nobody was billed for invites the reader to multiply. */}
-                            {!monthWasVacant && ` · ${curSym} ${saved.per_unit_rate}/unit · ${saved.tenant_count} tenants billed`}
+                            {!monthWasVacant && ` · ${curSym} ${saved.per_unit_rate}/${words.meterUnit} · ${saved.tenant_count} tenants billed`}
                           </p>
                         ) : (
                           <p className="text-xs text-muted-foreground/50 mt-0.5">No reading for this month yet</p>
@@ -2616,7 +2610,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                           )}
                         </div>
                         {consumptionPreview != null && (
-                          <p className="text-[10px] text-amber/70 sm:text-right">{consumptionPreview} units consumed</p>
+                          <p className="text-[10px] text-amber/70 sm:text-right">{consumptionPreview} {words.meterUnits} consumed</p>
                         )}
                       </div>
                     </div>
@@ -3421,7 +3415,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   {/* F-005: min="0" prevents negative late fees in the UI */}
                   <div className="space-y-1.5"><Label>Late Fee ({curCode})</Label><Input type="number" placeholder="0" min="0" step="0.01" value={markForm.late_fee} onChange={(e) => setMarkForm({ ...markForm, late_fee: e.target.value })} /></div>
                 </div>
-                <div className="space-y-1.5"><Label>Receipt No.</Label><Input value={markForm.receipt_number} onChange={(e) => setMarkForm({ ...markForm, receipt_number: e.target.value })} /></div>
+                <div className="space-y-1.5"><Label>Receipt No.</Label><Input placeholder="Auto" value={markForm.receipt_number} onChange={(e) => setMarkForm({ ...markForm, receipt_number: e.target.value })} /></div>
               </>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

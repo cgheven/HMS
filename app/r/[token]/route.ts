@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { generateReceiptPDF } from "@/lib/receipt-pdf";
+import { nextReceiptNumber } from "@/lib/receipt-number";
 
 /** Bump when generateReceiptPDF changes what it draws — see the stamp below.
  *  v2: the receiving bank account is masked to its last four digits. */
@@ -223,19 +224,23 @@ export async function GET(
   // money manufactures evidence of a payment that was not made, and an undo
   // clears receipt_number precisely so it is not carried over.
   if (!installmentSnapshot && !isInvoice && !payment.receipt_number) {
-    const tenantRaw = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
-    const tenantName = (tenantRaw as { full_name?: string })?.full_name ?? "";
-    const initials = tenantName.split(" ").map((w: string) => w[0] ?? "").join("").toUpperCase().slice(0, 2);
-    const rand = Math.floor(Math.random() * 900 + 100);
-    const generated = `HMS-${payment.for_month.replace("-", "")}-${initials}-${rand}`;
-    const { data: healed } = await supabase
-      .from("hms_payments")
-      .update({ receipt_number: generated })
-      .eq("id", payment.id)
-      .select("updated_at")
-      .single();
-    payment.receipt_number = generated;
-    stampSource = (healed as { updated_at?: string } | null)?.updated_at ?? stampSource;
+    const generated = await nextReceiptNumber(supabase, payment.for_month);
+    if (generated) {
+      const { data: healed, error: healErr } = await supabase
+        .from("hms_payments")
+        .update({ receipt_number: generated })
+        .eq("id", payment.id)
+        .select("updated_at")
+        .single();
+      // Only claim the number once it is actually stored. Printing (and caching)
+      // a number the write failed to persist would hand the resident a receipt
+      // whose number appears nowhere in the owner's records. On failure the
+      // receipt prints "N/A" and the next view tries again.
+      if (!healErr && healed) {
+        payment.receipt_number = generated;
+        stampSource = (healed as { updated_at?: string }).updated_at ?? stampSource;
+      }
+    }
   }
 
   const tenant = Array.isArray(payment.tenant) ? payment.tenant[0] : payment.tenant;
