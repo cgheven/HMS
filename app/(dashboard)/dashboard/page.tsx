@@ -15,18 +15,27 @@ export default async function DashboardPage() {
   const p = ctx?.profile;
   const isSelfRegOwner = p?.role === "owner" && !!p?.trial_ends_at;
 
-  // First login: send them to the checklist once. onboarding_dismissed_at is set
-  // on Skip/Finish; existing accounts were backfilled as dismissed (migration
-  // 262), so nobody is pulled in retroactively.
-  if (isSelfRegOwner && !p?.onboarding_dismissed_at) redirect("/welcome");
-
-  // After dismissing, a slim resume card nudges them back until the account is
-  // actually usable (required steps done) — not until every optional step is,
-  // which would nag forever. Fanned out with the dashboard fetch (rule #1).
+  // Fanned out with the dashboard fetch (rule #1). `status` drives BOTH the
+  // first-login gate below and the slim resume card further down.
   const [status, data] = await Promise.all([
     isSelfRegOwner ? getWelcomeStatus() : Promise.resolve(null),
     getDashboardData(),
   ]);
+
+  // First login: hold them on the checklist ONLY while the inline setup they
+  // complete ON that page (details, charges, payment methods) is unfinished.
+  // Once that is done they are free to move around immediately — the remaining
+  // required steps (rooms -> tenant -> payment) are done on their OWN pages, so
+  // gating on them would bounce the owner back the moment they went to do one.
+  // Previously this was gated purely on
+  // onboarding_dismissed_at, which trapped a fully-set-up owner on /welcome
+  // until they happened to press "Go to dashboard". onboarding_dismissed_at is
+  // still honoured (Skip/Finish opts out early); existing accounts were
+  // backfilled as dismissed (migration 262), so nobody is pulled in
+  // retroactively. The sidebar keeps a Quick Setup link for returning later.
+  if (isSelfRegOwner && !p?.onboarding_dismissed_at && status && !status.setupDone) {
+    redirect("/welcome");
+  }
 
   return (
     <div className="space-y-4">

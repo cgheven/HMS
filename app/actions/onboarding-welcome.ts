@@ -18,6 +18,12 @@ export interface WelcomeStatus {
   /** Every REQUIRED step is done — the account is usable. Drives the dashboard
    *  resume card (shown only while a required step is still open). */
   requiredDone: boolean;
+  /** Every required step the owner completes INLINE on the welcome page
+   *  (property details, charges, payment methods) is done. The other required
+   *  steps (rooms -> tenant -> payment) are completed on their OWN pages, so
+   *  they can never be a condition for holding someone on /welcome — they would
+   *  have to leave it to satisfy them. This is the first-login navigation gate. */
+  setupDone: boolean;
   /** Every step (required + recommended) is done. */
   allDone: boolean;
 }
@@ -124,11 +130,16 @@ export async function getWelcomeStatus(): Promise<WelcomeStatus> {
     { key: "payment",    required: true,  done: paidCount > 0 },
   ];
 
+  // The inline-config required steps — the ones with a form ON the welcome page.
+  // Deliberately excludes rooms/tenant/payment, which link out to their own pages.
+  const GATING_KEYS: WelcomeStep["key"][] = ["details", "charges", "paymethods"];
+
   return {
     steps,
     doneCount: steps.filter((s) => s.done).length,
     total: steps.length,
     requiredDone: steps.filter((s) => s.required).every((s) => s.done),
+    setupDone: steps.filter((s) => GATING_KEYS.includes(s.key)).every((s) => s.done),
     allDone: steps.every((s) => s.done),
   };
 }
