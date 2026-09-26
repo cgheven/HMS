@@ -89,8 +89,8 @@ export function PaymentMethodsForm({
               </div>
             ) : (
               <div className="space-y-2">
-                {paymentMethods.map((m) => (
-                  <div key={m.id} className="rounded-xl border border-sidebar-border bg-card/50 p-3">
+                {paymentMethods.map((m, i) => (
+                  <div key={m.id || `pm-${i}`} className="rounded-xl border border-sidebar-border bg-card/50 p-3">
                     <div className="grid grid-cols-[1fr_1fr_auto] gap-2 mb-2">
                       <div className="space-y-1">
                         <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">Bank / Method</p>

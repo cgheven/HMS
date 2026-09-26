@@ -1514,10 +1514,21 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     return allHistory.filter(p => p.tenant?.room_id === historyRoomFilter);
   }, [allHistory, historyRoomFilter]);
 
+  // Same reasoning as the monthly tab below: visibility off the whole history,
+  // the applied value guarded so a hidden chip can never keep filtering.
+  const historyAcRowCount = useMemo(() => allHistory.filter(hasAcCharge).length, [allHistory]);
+  const historyShowAcFilter = historyAcRowCount > 0 && historyAcRowCount < allHistory.length;
+  const historyAcFilterActive = historyAcOnly && historyShowAcFilter;
+
   const historyBase = useMemo(
-    () => (historyAcOnly ? historyByRoom.filter(hasAcCharge) : historyByRoom),
-    [historyByRoom, historyAcOnly]
+    () => (historyAcFilterActive ? historyByRoom.filter(hasAcCharge) : historyByRoom),
+    [historyByRoom, historyAcFilterActive]
   );
+
+  // Clear the toggle when its chip goes away, so it does not come back already on
+  // (switching month, or a branch turning on metering for every room). Pure client
+  // state — no fetch, nothing synced.
+  useEffect(() => { if (!historyShowAcFilter && historyAcOnly) setHistoryAcOnly(false); }, [historyShowAcFilter, historyAcOnly]);
 
   const filteredHistory = useMemo(() => {
     const base = historyBase;
@@ -1562,11 +1573,28 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
     });
   }, [activePayments, roomFilter, search, msgFilter, lastWhatsApp]);
 
-  // Everything the status chips are counted against — scope narrowed by the AC
-  // toggle, but never by the chips themselves.
+  // The metered-utility toggle only earns its place when it actually NARROWS the
+  // month. On a branch that meters EVERY room (the norm for a country that bills
+  // general electricity rather than AC separately), every row carries a charge, so
+  // the chip would select all rows and mean nothing.
+  //
+  // Visibility is measured against the WHOLE month (activePayments), never the
+  // already-narrowed monthlyScope: scope shrinks with the search box and the room
+  // filter, so measuring there would make the chip flicker in and out as the owner
+  // types, and would hide it the moment they filtered to a single metered room.
+  const acRowCount = useMemo(() => monthlyScope.filter(hasAcCharge).length, [monthlyScope]);
+  const acMonthRowCount = useMemo(() => activePayments.filter(hasAcCharge).length, [activePayments]);
+  const showAcFilter = acMonthRowCount > 0 && acMonthRowCount < activePayments.length;
+  // Guard the value rather than the state: if the chip stops being shown while it
+  // is on, an invisible filter must not keep hiding rows.
+  const acFilterActive = acOnly && showAcFilter;
+  useEffect(() => { if (!showAcFilter && acOnly) setAcOnly(false); }, [showAcFilter, acOnly]);
+
+  // Everything the status chips are counted against — scope narrowed by the
+  // metered toggle, but never by the chips themselves.
   const monthlyBase = useMemo(
-    () => (acOnly ? monthlyScope.filter(hasAcCharge) : monthlyScope),
-    [monthlyScope, acOnly]
+    () => (acFilterActive ? monthlyScope.filter(hasAcCharge) : monthlyScope),
+    [monthlyScope, acFilterActive]
   );
 
   const filteredPayments = useMemo(() => {
@@ -2145,7 +2173,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
                   {/* AC toggle — composes with the status chips above, so AC + Paid
                       lists exactly the rows behind the AC Collected tile. */}
-                  {monthlyScope.some(hasAcCharge) && (
+                  {showAcFilter && (
                     <button
                       onClick={() => setAcOnly(v => !v)}
                       title={`Only rows with metered ${words.acShort} — combine with Paid to reconcile the ${words.acShort} Collected tile`}
@@ -2157,7 +2185,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       )}
                     >
                       <Zap className="w-3 h-3 shrink-0" />
-                      AC <span className="opacity-60">{monthlyScope.filter(hasAcCharge).length}</span>
+                      {words.acShort} <span className="opacity-60">{acRowCount}</span>
                     </button>
                   )}
 
@@ -2247,11 +2275,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 <div className="space-y-2 md:space-y-0.5 mt-1">
                   {filteredPayments.map((p) => <PaymentRow key={p.id} p={p} />)}
                 </div>
-                {filteredPayments.length === 0 && (search || roomFilter !== "all" || statusFilter !== "all" || acOnly || msgFilter !== "all") && (
+                {filteredPayments.length === 0 && (search || roomFilter !== "all" || statusFilter !== "all" || acFilterActive || msgFilter !== "all") && (
                   <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
                     {search
                       ? `No results for "${search}"`
-                      : `No ${statusFilter !== "all" ? statusFilter : ""}${acOnly ? " AC" : ""} payments${roomFilter !== "all" ? " for this room" : ""}`}
+                      : `No ${statusFilter !== "all" ? statusFilter : ""}${acFilterActive ? ` ${words.acShort}` : ""} payments${roomFilter !== "all" ? " for this room" : ""}`}
                   </div>
                 )}
               </div>
@@ -2291,7 +2319,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
 
                   {/* AC toggle — composes with the status chips above, so AC + Paid
                       lists exactly the rows behind the AC Collected tile. */}
-                  {historyByRoom.some(hasAcCharge) && (
+                  {historyShowAcFilter && (
                     <button
                       onClick={() => setHistoryAcOnly(v => !v)}
                       title={`Only rows with metered ${words.acShort} — combine with Paid to reconcile the ${words.acShort} Collected tile`}
@@ -2350,7 +2378,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   ))}
                   {filteredHistory.length === 0 && (
                     <div className="flex items-center justify-center py-10 text-muted-foreground text-sm">
-                      No {historyStatusFilter !== "all" ? historyStatusFilter : ""}{historyAcOnly ? " AC" : ""} payments{historyRoomFilter !== "all" ? " for this room" : ""}
+                      No {historyStatusFilter !== "all" ? historyStatusFilter : ""}{historyAcFilterActive ? ` ${words.acShort}` : ""} payments{historyRoomFilter !== "all" ? " for this room" : ""}
                     </div>
                   )}
                 </div>
@@ -3347,9 +3375,11 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     <SelectTrigger><SelectValue placeholder="Select method" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__cash__">Cash</SelectItem>
-                      {paymentMethods.map((m) => {
+                      {paymentMethods.map((m, i) => {
                         const label = `${m.label}${m.account_number ? ` (${m.account_number})` : ""}`;
-                        return <SelectItem key={m.id} value={label}>{label}</SelectItem>;
+                        // id can be absent on legacy/seeded rows (payment_methods is
+                        // free-form JSON) — fall back so keys stay unique.
+                        return <SelectItem key={m.id || `pm-${i}`} value={label}>{label}</SelectItem>;
                       })}
                     </SelectContent>
                   </Select>
@@ -3372,9 +3402,9 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__none__">Not specified</SelectItem>
-                    {paymentMethods.map((m) => {
+                    {paymentMethods.map((m, i) => {
                       const label = `${m.label}${m.account_number ? ` (${m.account_number})` : ""}`;
-                      return <SelectItem key={m.id} value={label}>{label}</SelectItem>;
+                      return <SelectItem key={m.id || `acct-${i}`} value={label}>{label}</SelectItem>;
                     })}
                   </SelectContent>
                 </Select>
