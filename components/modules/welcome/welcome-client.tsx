@@ -34,7 +34,7 @@ export function WelcomeClient({
   initialWifi, initialMeals, welcomeTemplate,
   initialReferrerPct, initialReferredPct, initialCampaign,
   initialPaymentMethods, initialReminderTemplate, whatsappEnabled,
-  initialBillingAnchorDay, initialBillLeftoverSeparately,
+  initialBillingAnchorDay, initialBillLeftoverSeparately, isDemoBranch = false, hasDemoBranch = false,
 }: {
   hostelId: string;
   branchName: string;
@@ -50,6 +50,10 @@ export function WelcomeClient({
   initialReminderTemplate: string | null;
   whatsappEnabled: boolean;
   initialBillingAnchorDay: number | null;
+  /** This branch IS the sample data. */
+  isDemoBranch?: boolean;
+  /** A sample branch exists somewhere in this account. */
+  hasDemoBranch?: boolean;
   initialBillLeftoverSeparately: boolean;
 }) {
   const router = useRouter();
@@ -231,18 +235,30 @@ export function WelcomeClient({
         })}
       </div>
 
-      <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="flex-1 min-w-0">
-          <p className="font-medium leading-tight">Want to see Pulse in action first?</p>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Load a fully-populated sample branch — rooms, {t.tenants.toLowerCase()}, payments, expenses and more. Remove it anytime in one click.
-          </p>
+      {/* Hidden inside the sample branch itself — offering to load sample data
+          while you are looking at it is a loop, and seeding is one-per-owner so
+          the button would only switch you to the branch you are already on. The
+          layout's banner is what offers the way out (Remove sample data).
+          When a sample branch exists but you are on a real one, the button is
+          honest about what it does: it takes you there, it does not seed again. */}
+      {!isDemoBranch && (
+        <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex-1 min-w-0">
+            <p className="font-medium leading-tight">
+              {hasDemoBranch ? "Your sample branch is ready" : "Want to see Pulse in action first?"}
+            </p>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              {hasDemoBranch
+                ? <>Switch to it any time to explore rooms, {t.tenants.toLowerCase()}, payments and reports. Remove it in one click when you are done.</>
+                : <>Load a fully-populated sample branch — rooms, {t.tenants.toLowerCase()}, payments, expenses and more. Remove it anytime in one click.</>}
+            </p>
+          </div>
+          <Button variant="outline" onClick={exploreDemo} disabled={seeding} className="shrink-0">
+            {seeding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+            {seeding ? "Loading…" : hasDemoBranch ? "Go to sample branch" : "Explore with sample data"}
+          </Button>
         </div>
-        <Button variant="outline" onClick={exploreDemo} disabled={seeding} className="shrink-0">
-          {seeding ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-          {seeding ? "Loading…" : "Explore with sample data"}
-        </Button>
-      </div>
+      )}
 
       <div className="flex items-center justify-between pt-2">
         <button onClick={finish} disabled={leaving} className="text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">

@@ -12,6 +12,13 @@ export default async function WelcomePage() {
   const hostel = (ctx.hostel ?? null) as unknown as Record<string, unknown> | null;
   const status = await getWelcomeStatus();
 
+  // Seeding is one-per-owner and simply switches to the existing branch when one
+  // is already there, so the "Explore with sample data" button is a no-op — and
+  // inside the sample branch itself it invites you to load what you are already
+  // looking at.
+  const isDemoBranch = Boolean(hostel?.is_demo);
+  const hasDemoBranch = (ctx.hostels ?? []).some((h) => (h as { is_demo?: boolean }).is_demo);
+
   return (
     <WelcomeClient
       key={ctx.hostelId ?? ""}
@@ -30,6 +37,8 @@ export default async function WelcomePage() {
       whatsappEnabled={Boolean(hostel?.whatsapp_enabled)}
       initialBillingAnchorDay={(hostel?.billing_anchor_day as number | null) ?? null}
       initialBillLeftoverSeparately={hostel?.bill_leftover_days_separately !== false}
+      isDemoBranch={isDemoBranch}
+      hasDemoBranch={hasDemoBranch}
     />
   );
 }
