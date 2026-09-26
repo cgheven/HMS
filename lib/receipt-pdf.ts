@@ -329,7 +329,7 @@ export function generateReceiptPDF(
   // Printed on every receipt (not just the first month) — it's a permanent
   // reference the tenant can always point back to if AC billing is disputed.
   if (tenant.joining_meter_reading != null) {
-    add(ML, `${isPk ? "AC" : "Electricity"} Meter Reading at Move-in: ${tenant.joining_meter_reading}`, 7, false); nl(11);
+    add(ML, `${terms(hostel.country).acMeterReading} at Move-in: ${tenant.joining_meter_reading}`, 7, false); nl(11);
   }
   nl(2); addDash(); nl(10);
 
@@ -404,7 +404,7 @@ export function generateReceiptPDF(
       nl(2);
     }
     if ((payment.ac_charge ?? 0) > 0) {
-      addKv(hostel.acChargeLabel?.trim() || "AC Charges", pk(payment.ac_charge!)); nl(11);
+      addKv(hostel.acChargeLabel?.trim() || terms(hostel.country).acCharges, pk(payment.ac_charge!)); nl(11);
       if (payment.carried_ac) {
         // Explains an AC line on a member who now sits in a non-AC room: the
         // charge is electricity from the room they left, up to the move.
@@ -430,7 +430,7 @@ export function generateReceiptPDF(
     }
     if ((payment.late_fee ?? 0) > 0)       { addKv("Late Fee", pk(payment.late_fee!)); nl(12); }
     if ((payment.ac_maintenance_charge ?? 0) > 0) {
-      addKv("AC Maintenance", pk(payment.ac_maintenance_charge!)); nl(12);
+      addKv(terms(hostel.country).acMaintenance, pk(payment.ac_maintenance_charge!)); nl(12);
     }
     if ((payment.security_deposit_charge ?? 0) > 0) {
       // Actually charged as part of THIS bill (first month) — already included

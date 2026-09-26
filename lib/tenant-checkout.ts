@@ -8,7 +8,7 @@ import { clampGrossToCollected, billingAnchorOf, checkoutMonthlyBaseRent, type B
 import { ensureMonthlyPaymentRows, syncableCheckoutMonth } from "@/lib/monthly-payment-sync";
 import { carriedTransferCharges } from "@/lib/ac-transfer";
 import { isMeteredRoom } from "@/lib/room-transfer";
-import { getCountryConfig } from "@/lib/country-config";
+import { getCountryConfig, terms } from "@/lib/country-config";
 import { voidReferralRewardsForTenant } from "@/lib/referral-rewards";
 import { mintFeedbackToken } from "@/lib/tenant-feedback";
 import { sendCheckoutMessage } from "@/lib/whatsapp-checkout";
@@ -90,6 +90,7 @@ export async function performTenantCheckout(
     // the join-month leftover (merged mode) and use the premium first-month rate,
     // or a mid-month joiner's checkout under-bills. Null on unanchored branches.
     const coAnchor: BillingAnchor = billingAnchorOf(coHostel as { billing_anchor_day?: number | null; bill_leftover_days_separately?: boolean | null } | null);
+    const coWords = terms((coHostel as { country?: string | null } | null)?.country);
     const syncMonth = syncableCheckoutMonth(input.checkoutDate.substring(0, 7), getCountryConfig((coHostel as { country?: string | null } | null)?.country).timezone);
     if (syncMonth) await ensureMonthlyPaymentRows(adminDb, hostelId, syncMonth);
 
@@ -442,10 +443,10 @@ export async function performTenantCheckout(
         const totalStart = (activeTenantsInRoom ?? []).length + priorUnitsOffsets.length;
 
         if (!Number.isFinite(reading) || reading < 0 || reading > 999_999) {
-          throw new Error("AC meter reading must be between 0 and 999,999");
+          throw new Error(`${coWords.acShort} meter reading must be between 0 and 999,999`);
         }
         if (reading < prevReading) {
-          throw new Error(`AC meter reading (${reading}) cannot be less than previous month's reading (${prevReading})`);
+          throw new Error(`${coWords.acShort} meter reading (${reading}) cannot be less than previous month's reading (${prevReading})`);
         }
         // Nobody leaves before they arrive. Now that the reading actually prices
         // the departure, a number below the member's own arrival point silently
@@ -907,7 +908,7 @@ export async function performTenantCheckout(
         // Checkout is complete but the billing breakpoint could not be stored.
         // Month-end billing for remaining tenants may be inaccurate without it.
         acReadingWarning =
-          "Checkout complete, but the AC billing breakpoint could not be saved. " +
+          `Checkout complete, but the ${coWords.acShort} billing breakpoint could not be saved. ` +
           "Month-end billing for remaining tenants may be slightly inaccurate. Contact support.";
       }
     }

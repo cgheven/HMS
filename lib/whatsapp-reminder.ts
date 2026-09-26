@@ -1,5 +1,5 @@
 import type { PaymentMethodAccount } from "@/types";
-import { getCountryConfig } from "@/lib/country-config";
+import { getCountryConfig, terms } from "@/lib/country-config";
 
 // Currency prefix for the reminder text. PK stays "Rs " (space, no period) exactly
 // as before; a glyph currency ($, £, €, ₹) hugs the number, an alphabetic code
@@ -54,12 +54,12 @@ function formatACLine(units?: number, charge?: number, rate?: number, country?: 
   const parts: string[] = [];
   if (units && rate) parts.push(`${units} units x ${curPrefix(country)}${rate}/unit`);
   parts.push(`*${money(charge, country)}*`);
-  return "⚡ AC: " + parts.join(" = ");
+  return `⚡ ${terms(country).acShort}: ` + parts.join(" = ");
 }
 
 function formatAcMaintenanceLine(charge?: number, country?: string | null): string {
   if (!charge || charge <= 0) return "";
-  return `🔧 AC Maintenance: *${money(charge, country)}*`;
+  return `🔧 ${terms(country).acMaintenance}: *${money(charge, country)}*`;
 }
 
 // Shown so a tenant whose bill dropped can see WHY. Deliberately does not name

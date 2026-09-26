@@ -25,7 +25,7 @@ import type { RoomTransferResult, CorrectableTransfer, RoomTransferCorrectionRes
 import { carriedTransferCharges } from "@/lib/ac-transfer";
 import { pktTodayDateString, yearMonthInZone, todayInZone, DEFAULT_TIMEZONE } from "@/lib/pkt-time";
 import { formatCurrency, formatDayLong, formatMonthLong } from "@/lib/utils";
-import { getCountryConfig } from "@/lib/country-config";
+import { getCountryConfig, terms } from "@/lib/country-config";
 import { logPiiAudit } from "@/lib/audit";
 import { genReceiptNumber, performTenantCheckout } from "@/lib/tenant-checkout";
 import { deriveOpeningReading, effectivePrevReading } from "@/lib/ac-billing";
@@ -2124,7 +2124,7 @@ export async function getACCheckoutContextAction(
       eligibleTenants: [],
       joinReadingsRaw: [],
       checkoutReadingsRaw: [],
-      error: err instanceof Error ? err.message : "Failed to load AC context",
+      error: err instanceof Error ? err.message : "Failed to load metering context",
     };
   }
 }
@@ -2912,6 +2912,7 @@ async function reapplyStaleRooms(
   rooms: { roomId: string; roomNumber: string; reading: number }[],
   asManager: boolean,
   timeZone: string = DEFAULT_TIMEZONE,
+  country?: string | null,
 ): Promise<string | undefined> {
   // The month to re-apply is the hostel's current month in its own timezone —
   // at a boundary a fixed PKT month would re-split the wrong month's bill.
@@ -2932,7 +2933,7 @@ async function reapplyStaleRooms(
   if (failed.length === 0) return undefined;
   return (
     `Room ${failed.join(" and ")} had units applied before this change, and could not be re-split automatically. ` +
-    `Open Payments → AC Billing and press Apply on ${failed.length > 1 ? "those rooms" : `room ${failed[0]}`} — ` +
+    `Open Payments → ${terms(country).acBilling} and press Apply on ${failed.length > 1 ? "those rooms" : `room ${failed[0]}`} — ` +
     `until you do, the members there are billed for each other's units.`
   );
 }
@@ -2961,7 +2962,7 @@ export async function transferTenantRoomAction(input: {
     const result = await performRoomTransfer(adminDb, hostelId, input);
     const transferCountry = await hostelCountryCode(adminDb, hostelId);
     const sym = getCountryConfig(transferCountry).currencySymbol;
-    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel, getCountryConfig(transferCountry).timezone);
+    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel, getCountryConfig(transferCountry).timezone, transferCountry);
 
     // Ledger entry, with the meter evidence in the note — the Member Ledger is
     // where an owner goes to answer "why was I charged for two rooms in March?".
@@ -3046,7 +3047,7 @@ export async function correctRoomTransferAction(input: {
     // Both rooms, not just the destination — a move re-cuts the leaver's share in
     // the room they left, and the roommates who stayed keep the smaller share they
     // were given while the leaver was still counted.
-    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel, getCountryConfig(transferCountry).timezone);
+    const reapplyWarning = await reapplyStaleRooms(result.reapply, !!mgr?.activeHostel, getCountryConfig(transferCountry).timezone, transferCountry);
 
     // Appended, never rewritten. The original move is what the operator recorded
     // at the time; a correction is a second fact about the same move, and an
@@ -3445,7 +3446,7 @@ export async function branchTransferTenantAction(input: {
       await rollbackMove();
       throw new Error(
         `The move was rolled back: this member's bills could not be re-priced for ${destHostelRow?.name ?? "the destination branch"} (${payErr.message}). ` +
-        `This usually means a daily-rate bill whose food or AC charges do not fit that branch's rates. Adjust the branch's rates or the member's plan, then try again.`
+        `This usually means a daily-rate bill whose food or utility charges do not fit that branch's rates. Adjust the branch's rates or the member's plan, then try again.`
       );
     }
 
@@ -3476,8 +3477,8 @@ export async function branchTransferTenantAction(input: {
       if (destReapply.length > 0) {
         const dn = destHostelRow?.name ?? "the destination branch";
         const msg =
-          `Room ${destReapply[0].roomNumber} in ${dn} had AC units applied earlier this month. ` +
-          `Switch to ${dn} and press Apply on it under Payments → AC Billing, or the members there are billed for each other's units.`;
+          `Room ${destReapply[0].roomNumber} in ${dn} had ${terms(transferCountry).acUnits} applied earlier this month. ` +
+          `Switch to ${dn} and press Apply on it under Payments → ${terms(transferCountry).acBilling}, or the members there are billed for each other's units.`;
         postWarning = postWarning ? `${postWarning} ${msg}` : msg;
       }
 

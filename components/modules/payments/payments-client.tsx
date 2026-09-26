@@ -728,8 +728,8 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       const parsedAc = parseFloat(rawAc);
       if (!Number.isFinite(parsedAc) || parsedAc < 0 || parsedAc > MAX_AC_UNITS) {
         toast({
-          title: "Invalid AC units",
-          description: `AC units consumed must be a number between 0 and ${MAX_AC_UNITS}.`,
+          title: `Invalid ${words.acShort} units`,
+          description: `${words.acShort} units consumed must be a number between 0 and ${MAX_AC_UNITS}.`,
           variant: "destructive",
         });
         return;
@@ -1075,7 +1075,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
       // The receipt PDF (linked below) still shows it every month as the permanent record.
       const isFirstMonth = p.tenant?.check_in?.slice(0, 7) === p.for_month;
       const readingLine = isFirstMonth && p.tenant?.joining_meter_reading != null
-        ? `AC meter reading at move-in: *${p.tenant.joining_meter_reading}* units — noted for your records.\n\n`
+        ? `${words.acShort} meter reading at move-in: *${p.tenant.joining_meter_reading}* units — noted for your records.\n\n`
         : "";
 
       // "for 2026-07" reads to a tenant as a database key, not a month.
@@ -1338,7 +1338,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
           })()
         : await applyRoomACUnitsAction(roomId, selectedMonth, meterReading, openingReading, overrides);
       if (!result.success) {
-        toast({ title: `${words.acBilling} Error`, description: result.error ?? "Failed to apply AC units.", variant: "destructive" });
+        toast({ title: `${words.acBilling} Error`, description: result.error ?? `Failed to apply ${words.acShort} units.`, variant: "destructive" });
       } else {
         const derivedUnits = result.derivedUnits ?? 0;
         // A vacant room writes no payment rows, so none of the tenant-facing
@@ -1363,14 +1363,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         if (result.reopenedCount && result.reopenedCount > 0) {
           toast({
             title: `${result.reopenedCount} paid bill${result.reopenedCount === 1 ? "" : "s"} reopened`,
-            description: `Settled before this reading, so the AC just applied is still outstanding. Now shown as Partial with the balance collectable.`,
+            description: `Settled before this reading, so the ${words.acShort} just applied is still outstanding. Now shown as Partial with the balance collectable.`,
           });
         }
         const manualSplit = !!overrides && overrides.length > 0;
         toast({
-          title: cleared ? "AC charge cleared" : manualSplit ? "Adjusted split applied" : "AC units applied",
+          title: cleared ? `${words.acShort} charge cleared` : manualSplit ? "Adjusted split applied" : `${words.acShort} units applied`,
           description: cleared
-            ? "AC charges removed for all tenants in this room."
+            ? `${words.acShort} charges removed for all tenants in this room.`
             : manualSplit
               // Uneven by design — don't claim "X units each"; the per-tenant split is bespoke.
               ? `${result.eligibleCount} tenant${result.eligibleCount === 1 ? "" : "s"} · ${derivedUnits} units consumed · split adjusted per tenant`
@@ -1651,7 +1651,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tenant</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Plan</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Rent</span>
-        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">AC</span>
+        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">{words.acShort}</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right">Total</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-center w-28">Status</span>
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide text-right w-[22rem]">Action</span>
@@ -1804,7 +1804,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                 : <p className="text-xs text-muted-foreground whitespace-nowrap">Rent {money(charges.rent)}</p>}
               {charges.ac > 0 && (
                 <p className="text-xs text-cyan-400 whitespace-nowrap">
-                  AC {money(charges.ac)}
+                  {words.acShort} {money(charges.ac)}
                   {charges.acMaintenance > 0 && (
                     <span className="text-muted-foreground"> +{money(charges.acMaintenance)} mnt</span>
                   )}
@@ -2017,14 +2017,14 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
             // Spelling both out wrapped onto a second line, which stretched this
             // card and pulled every other card in the row taller with it.
             sub: stats.acCollected > 0
-              ? `+ AC = ${money(stats.collected + stats.acCollected)}`
+              ? `+ ${words.acShort} = ${money(stats.collected + stats.acCollected)}`
               : undefined,
             icon: Wallet, color: "text-emerald-400", bg: "bg-emerald-500/10 border border-emerald-500/20",
           },
           { label: "Pending",         value: money(stats.pending),     icon: Clock,      color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
           ...(hasAc ? [
-            { label: "AC Collected",  value: money(stats.acCollected), icon: Zap,        color: "text-cyan-400",    bg: "bg-cyan-500/10 border border-cyan-500/20" },
-            { label: "AC Pending",    value: money(stats.acPending),   icon: Zap,        color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
+            { label: `${words.acShort} Collected`,  value: money(stats.acCollected), icon: Zap,        color: "text-cyan-400",    bg: "bg-cyan-500/10 border border-cyan-500/20" },
+            { label: `${words.acShort} Pending`,    value: money(stats.acPending),   icon: Zap,        color: "text-amber",       bg: "bg-amber/10 border border-amber/20" },
           ] : []),
         ];
         return (
@@ -2148,7 +2148,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   {monthlyScope.some(hasAcCharge) && (
                     <button
                       onClick={() => setAcOnly(v => !v)}
-                      title="Only rows with metered AC — combine with Paid to reconcile the AC Collected tile"
+                      title={`Only rows with metered ${words.acShort} — combine with Paid to reconcile the ${words.acShort} Collected tile`}
                       className={cn(
                         "h-7 px-3 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0",
                         acOnly
@@ -2294,7 +2294,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                   {historyByRoom.some(hasAcCharge) && (
                     <button
                       onClick={() => setHistoryAcOnly(v => !v)}
-                      title="Only rows with metered AC — combine with Paid to reconcile the AC Collected tile"
+                      title={`Only rows with metered ${words.acShort} — combine with Paid to reconcile the ${words.acShort} Collected tile`}
                       className={cn(
                         "h-7 px-3 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0",
                         historyAcOnly
@@ -2303,7 +2303,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                       )}
                     >
                       <Zap className="w-3 h-3 shrink-0" />
-                      AC <span className="opacity-60">{historyByRoom.filter(hasAcCharge).length}</span>
+                      {words.acShort} <span className="opacity-60">{historyByRoom.filter(hasAcCharge).length}</span>
                     </button>
                   )}
 
@@ -2473,7 +2473,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                             <span className="text-xs text-muted-foreground/60">No tenants recorded for this month</span>
                           ) : acTenantCount > 0 ? (
                             <span className="text-xs text-amber">
-                              {acTenantCount} of {totalTenants} billed for AC
+                              {acTenantCount} of {totalTenants} billed for {words.acShort}
                             </span>
                           ) : (
                             // Lived in this month but empty now — everyone left
@@ -2575,7 +2575,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                               disabled={applyingAC === room.id || !currentInput || (someoneLivedHereThisMonth && acTenantCount === 0)}
                               title={
                                 someoneLivedHereThisMonth && acTenantCount === 0
-                                  ? "Everyone who lived here this month has checked out — their AC was settled at the door, so there is nothing left to apply."
+                                  ? `Everyone who lived here this month has checked out — their ${words.acShort} was settled at the door, so there is nothing left to apply.`
                                   : saved?.recorded_while_vacant && someoneLivedHereThisMonth
                                     ? "This month was recorded with nobody in the room. Applying now bills its units to whoever is in the room today — check they actually lived here that month."
                                     : undefined
@@ -3111,7 +3111,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     )}
                     {ac > 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>AC</span><span>{money(ac)}</span>
+                        <span>{words.acShort}</span><span>{money(ac)}</span>
                       </div>
                     )}
                     {depositCharge > 0 && (
@@ -3126,7 +3126,7 @@ export function PaymentsClient({ hostelId, hostelName = "Hostel", hostelPhone, p
                     )}
                     {acMaintenanceCharge > 0 && (
                       <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>AC Maintenance</span><span>{money(acMaintenanceCharge)}</span>
+                        <span>{words.acMaintenance}</span><span>{money(acMaintenanceCharge)}</span>
                       </div>
                     )}
                     {/* Rent above is gross, so the discount has to appear as its own

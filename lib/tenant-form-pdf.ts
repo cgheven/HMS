@@ -18,7 +18,7 @@
  */
 
 import { nationalIdLabel, requiresGuestRegistration } from "@/lib/national-id";
-import { getCountryConfig } from "@/lib/country-config";
+import { getCountryConfig, terms } from "@/lib/country-config";
 
 /** A4 in millimetres, which is also jsPDF's unit here. */
 const PAGE_W = 210;
@@ -446,7 +446,7 @@ export async function buildTenantFormPdf(
     // four-digit number.
     row([
       { label: "Registration Fee:", value: regFee, width: 62 },
-      { label: "AC Maintenance:", value: acMaint ? `${acMaint} / month` : "", width: 60 },
+      { label: `${terms(hostel.country).acMaintenance}:`, value: acMaint ? `${acMaint} / month` : "", width: 60 },
     ]);
   }
 

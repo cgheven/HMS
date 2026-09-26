@@ -277,7 +277,7 @@ export async function uploadMonthlyMeterPhoto(
       .eq("for_month", forMonth)
       .maybeSingle();
     if (!reading) {
-      throw new Error("Apply this month's AC units first, then attach the meter photo.");
+      throw new Error("Apply this month's meter units first, then attach the meter photo.");
     }
 
     const { buffer, ext, contentType } = await readImage(formData);

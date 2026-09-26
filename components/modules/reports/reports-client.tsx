@@ -1,4 +1,5 @@
 "use client";
+import { terms } from "@/lib/country-config";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import {
@@ -180,6 +181,7 @@ export function ReportsClient(props: Props) {
   }
 
   const d = reportData;
+  const tw = terms(d?.country);
 
   // Deposits are refundable, so they are cash collected but never profit — the
   // same exclusion getDashboardData applies, so the two screens agree.
@@ -297,7 +299,7 @@ export function ReportsClient(props: Props) {
             <TabsTrigger value="overview"><BarChart3 className="w-3.5 h-3.5" /> Overview</TabsTrigger>
             <TabsTrigger value="revenue"><TrendingUp className="w-3.5 h-3.5" /> Revenue</TabsTrigger>
             <TabsTrigger value="reconciliation"><CreditCard className="w-3.5 h-3.5" /> Reconciliation</TabsTrigger>
-            <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> AC Analytics</TabsTrigger>
+            <TabsTrigger value="ac"><Zap className="w-3.5 h-3.5" /> {tw.acShort} Analytics</TabsTrigger>
             <TabsTrigger value="discounts"><Percent className="w-3.5 h-3.5" /> Discounts</TabsTrigger>
             <TabsTrigger value="expenses"><Receipt className="w-3.5 h-3.5" /> Expenses</TabsTrigger>
             <TabsTrigger value="unitcost"><Calculator className="w-3.5 h-3.5" /> Unit Cost <span className="ml-1 rounded px-1 py-px text-[9px] font-semibold uppercase tracking-wide bg-amber-500/15 text-amber-400">Beta</span></TabsTrigger>
@@ -478,7 +480,7 @@ export function ReportsClient(props: Props) {
                       <th className="text-left pb-2 pr-3">Month</th>
                       <th className="text-right pb-2 pr-3">Rent</th>
                       <th className="text-right pb-2 pr-3">Food</th>
-                      <th className="text-right pb-2 pr-3">AC</th>
+                      <th className="text-right pb-2 pr-3">{tw.acShort}</th>
                       <th className="text-right pb-2 pr-3">Reg. Fee</th>
                       <th className="text-right pb-2 pr-3">AC Maint.</th>
                       <th className="text-right pb-2 pr-3">Total</th>
@@ -759,6 +761,7 @@ function acStatusColor(status: string): string {
 
 function AcAnalyticsTab({ data: d }: { data: ReportData }) {
   const money = useMoney();
+  const tw = terms(d.country);
   const [statusFilter, setStatusFilter] = useState("all");
 
   const filteredRows = useMemo(() => {
@@ -775,9 +778,9 @@ function AcAnalyticsTab({ data: d }: { data: ReportData }) {
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4">
         {[
-          { label: "Total AC Tenants", value: String(d.acStats.totalAcTenants), color: "text-amber", bg: "bg-amber/10 border-amber/20" },
-          { label: "AC Bills Paid", value: String(d.acStats.paidAcTenants), color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
-          { label: "Total AC Revenue", value: money(d.acStats.totalAcRevenue), color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
+          { label: `Total ${tw.acShort} Tenants`, value: String(d.acStats.totalAcTenants), color: "text-amber", bg: "bg-amber/10 border-amber/20" },
+          { label: `${tw.acShort} Bills Paid`, value: String(d.acStats.paidAcTenants), color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
+          { label: `Total ${tw.acShort} Revenue`, value: money(d.acStats.totalAcRevenue), color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" },
         ].map(({ label, value, color, bg }) => (
           <div key={label} className="rounded-2xl border border-sidebar-border bg-card p-5">
             <div className={`flex items-center justify-center w-9 h-9 rounded-xl border ${bg} mb-3`}>
@@ -793,7 +796,7 @@ function AcAnalyticsTab({ data: d }: { data: ReportData }) {
         <div className="rounded-2xl border border-sidebar-border bg-card p-6">
           <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
             <div>
-              <h2 className="text-sm font-semibold">AC Usage Details</h2>
+              <h2 className="text-sm font-semibold">{tw.acShort} Usage Details</h2>
               <p className="text-xs text-muted-foreground mt-0.5">
                 {filteredRows.length} tenant{filteredRows.length !== 1 ? "s" : ""}
                 {statusFilter !== "all" && <span className="ml-1 text-amber">· {AC_STATUS_LABELS[statusFilter] ?? statusFilter}</span>}
@@ -818,7 +821,7 @@ function AcAnalyticsTab({ data: d }: { data: ReportData }) {
                   <th className="text-left pb-2 pr-3">Room</th>
                   <th className="text-left pb-2 pr-3">Tenant</th>
                   <th className="text-right pb-2 pr-3">Units (kWh)</th>
-                  <th className="text-right pb-2 pr-3">AC Charge</th>
+                  <th className="text-right pb-2 pr-3">{tw.acShort} Charge</th>
                   <th className="text-right pb-2 pr-3">Month</th>
                   <th className="text-right pb-2">Status</th>
                 </tr>
@@ -845,8 +848,8 @@ function AcAnalyticsTab({ data: d }: { data: ReportData }) {
       ) : (
         <div className="flex flex-col items-center justify-center py-20 gap-2 text-muted-foreground rounded-2xl border border-sidebar-border bg-card">
           <Zap className="w-10 h-10 opacity-20" />
-          <p className="text-sm">No AC usage data for this period</p>
-          <p className="text-xs">Mark payments for Space+Food+AC tenants to see AC analytics</p>
+          <p className="text-sm">No {tw.acShort} usage data for this period</p>
+          <p className="text-xs">Mark payments for Space+Food+AC tenants to see {tw.acShort} analytics</p>
         </div>
       )}
     </>

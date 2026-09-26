@@ -53,6 +53,18 @@ export interface CountryTerms {
   branches: string;
   acBilling: string;
   acUnits: string;
+  /** The bare metered-utility noun (PK "AC" / non-PK "Electricity"), for tiles,
+   *  abbreviations and mid-sentence use ("AC Collected", "metered AC"). */
+  acShort: string;
+  /** Charge line label (PK "AC Charges" / non-PK "Electricity Charges"). */
+  acCharges: string;
+  /** Meter-reading label (PK "AC Meter Reading" / non-PK "Electricity Meter Reading"). */
+  acMeterReading: string;
+  /** Recurring flat upkeep charge — "AC Maintenance" in EVERY country, never an
+   *  electricity word: hms_recalculate_payment_amount forces this charge to 0 unless
+   *  the room actually has an air conditioner, so it services the physical unit. Kept
+   *  as a term field only so call sites read uniformly alongside the localised ones. */
+  acMaintenance: string;
   mobileNumber: string;
   purposeOfVisit: string;
 }
@@ -65,6 +77,10 @@ export const PK_TERMS: CountryTerms = {
   branches: "Branches",
   acBilling: "AC Billing",
   acUnits: "AC Units",
+  acShort: "AC",
+  acCharges: "AC Charges",
+  acMeterReading: "AC Meter Reading",
+  acMaintenance: "AC Maintenance",
   mobileNumber: "WhatsApp Number",
   purposeOfVisit: "Purpose of Visit",
 };
@@ -77,6 +93,10 @@ export const INTERNATIONAL_TERMS: CountryTerms = {
   branches: "Properties",
   acBilling: "Electricity Billing",
   acUnits: "Electricity Units",
+  acShort: "Electricity",
+  acCharges: "Electricity Charges",
+  acMeterReading: "Electricity Meter Reading",
+  acMaintenance: "AC Maintenance",
   mobileNumber: "Mobile Number",
   purposeOfVisit: "Purpose of Stay",
 };

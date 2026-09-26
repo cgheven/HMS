@@ -1,7 +1,7 @@
 import type { ReportData, LedgerTenantRow } from "@/app/actions/reports";
 import type { MemberLedgerData, MemberLedgerBill } from "@/app/actions/tenants";
 import { splitPaymentCharges } from "@/lib/payment-calc";
-import { getCountryConfig } from "@/lib/country-config";
+import { getCountryConfig, terms } from "@/lib/country-config";
 
 // Currency formatter bound to the hostel's country. PKR stays byte-identical
 // ("Rs. 1,234" on en-PK grouping); every other country uses the registry's
@@ -82,6 +82,7 @@ export async function exportReportPDF(data: ReportData, label: string): Promise<
   const { default: autoTable } = await import("jspdf-autotable") as any;
 
   const pk = makePk(data.country);
+  const tw = terms(data.country);
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
 
   const MARGIN = 14;
@@ -122,7 +123,7 @@ export async function exportReportPDF(data: ReportData, label: string): Promise<
 
   autoTable(doc, {
     startY: y,
-    head: [["Month", "Rent", "Food", "AC", "Referral Discount", "Total", "Collected", "Pending"]],
+    head: [["Month", "Rent", "Food", tw.acShort, "Referral Discount", "Total", "Collected", "Pending"]],
     body: data.revenueByMonth.map((m) => [
       m.month,
       pk(m.rentRevenue),
@@ -188,12 +189,12 @@ export async function exportReportPDF(data: ReportData, label: string): Promise<
   if (data.acByRoom.length > 0) {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(12);
-    doc.text("AC Analytics", MARGIN, y);
+    doc.text(`${tw.acShort} Analytics`, MARGIN, y);
     y += 4;
 
     autoTable(doc, {
       startY: y,
-      head: [["Room", "Tenant", "Units (kWh)", "AC Charge", "Month", "Status"]],
+      head: [["Room", "Tenant", "Units (kWh)", `${tw.acShort} Charge`, "Month", "Status"]],
       body: data.acByRoom.map((r) => [
         r.roomNumber,
         r.tenantName,
@@ -299,6 +300,7 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
   const XLSX = await import("xlsx");
 
   const unit = unitLabel(data.country);
+  const tw = terms(data.country);
   const wb = XLSX.utils.book_new();
 
   // Sheet 1 — Overview
@@ -321,7 +323,7 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
 
   // Sheet 2 — Revenue
   const revenueRows = [
-    ["Month", "Rent Revenue", "Food Revenue", "AC Revenue", "Referral Discount", "Total", "Collected", "Pending"],
+    ["Month", "Rent Revenue", "Food Revenue", `${tw.acShort} Revenue`, "Referral Discount", "Total", "Collected", "Pending"],
     ...data.revenueByMonth.map((m) => [
       m.month,
       m.rentRevenue,
@@ -368,16 +370,16 @@ export async function exportReportExcel(data: ReportData, label: string): Promis
 
   // Sheet 4 — AC Analytics
   const acRows = [
-    ["AC Analytics Summary"],
-    ["Total AC Tenants", data.acStats.totalAcTenants],
-    ["AC Bills Paid", data.acStats.paidAcTenants],
-    [`Total AC Revenue (${unit})`, data.acStats.totalAcRevenue],
+    [`${tw.acShort} Analytics Summary`],
+    [`Total ${tw.acShort} Tenants`, data.acStats.totalAcTenants],
+    [`${tw.acShort} Bills Paid`, data.acStats.paidAcTenants],
+    [`Total ${tw.acShort} Revenue (${unit})`, data.acStats.totalAcRevenue],
     [],
-    ["Room", "Tenant", "Units Consumed (kWh)", `AC Charge (${unit})`, "Month", "Status"],
+    ["Room", "Tenant", "Units Consumed (kWh)", `${tw.acShort} Charge (${unit})`, "Month", "Status"],
     ...data.acByRoom.map((r) => [r.roomNumber, r.tenantName, r.unitsConsumed, r.acCharge, r.forMonth, r.status]),
   ];
   const wsAC = XLSX.utils.aoa_to_sheet(acRows);
-  XLSX.utils.book_append_sheet(wb, wsAC, "AC Analytics");
+  XLSX.utils.book_append_sheet(wb, wsAC, `${tw.acShort} Analytics`);
 
   // Sheet 5 — Discounts. Standing and one-off are stacked in one sheet but
   // never summed together: one is a monthly commitment going forward, the other
@@ -795,7 +797,7 @@ function fmtMonth(ym: string): string {
 // A bill's charge lines (expected amounts), in the order a payment is applied:
 // essentials first so any shortfall lands on the last line (AC), matching how
 // hostels collect. Rent is shown NET of any discount (what was actually owed).
-function billChargeLines(b: MemberLedgerBill): { desc: string; amount: number }[] {
+function billChargeLines(b: MemberLedgerBill, country?: string | null): { desc: string; amount: number }[] {
   const c = splitPaymentCharges({
     amount: b.amount, food_charge: b.foodCharge, ac_charge: b.acCharge,
     security_deposit_charge: b.securityDepositCharge, registration_fee_charge: b.registrationFeeCharge,
@@ -807,8 +809,12 @@ function billChargeLines(b: MemberLedgerBill): { desc: string; amount: number }[
   if (c.registrationFee > 0) lines.push({ desc: "Admission Fee", amount: c.registrationFee });
   if (rentNet > 0) lines.push({ desc: b.isReservation ? "Bed Reservation" : "Monthly Rent", amount: rentNet });
   if (c.food > 0) lines.push({ desc: "Food", amount: c.food });
-  if (c.ac > 0) lines.push({ desc: "AC (Electricity)", amount: c.ac });
-  if (c.acMaintenance > 0) lines.push({ desc: "AC Service", amount: c.acMaintenance });
+  // PK keeps its existing wording verbatim ("AC (Electricity)" / "AC Service");
+  // elsewhere the country's own utility terms are used.
+  const isPk = getCountryConfig(country).currency === "PKR";
+  const tw = terms(country);
+  if (c.ac > 0) lines.push({ desc: isPk ? "AC (Electricity)" : tw.acCharges, amount: c.ac });
+  if (c.acMaintenance > 0) lines.push({ desc: isPk ? "AC Service" : tw.acMaintenance, amount: c.acMaintenance });
   if (b.lateFee > 0) lines.push({ desc: "Late Fee", amount: b.lateFee });
   return lines;
 }
@@ -821,7 +827,7 @@ interface LedgerRow {
   method: string; date: string | null; tid: string | null; notes: string | null;
 }
 
-function buildLedgerRows(bills: MemberLedgerBill[]): { rows: LedgerRow[]; totalExpected: number; totalReceived: number } {
+function buildLedgerRows(bills: MemberLedgerBill[], country?: string | null): { rows: LedgerRow[]; totalExpected: number; totalReceived: number } {
   const rows: LedgerRow[] = [];
   let totalExpected = 0, totalReceived = 0;
   const methodLabel = (m: string | null) => (m ? m.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "—");
@@ -845,7 +851,7 @@ function buildLedgerRows(bills: MemberLedgerBill[]): { rows: LedgerRow[]; totalE
       rows.push({ section: `${g.label} · ${range}`, room: "", month: "", desc: "", expected: 0, received: 0, balance: 0, method: "", date: null, tid: null, notes: null });
     }
     for (const b of g.items) {
-      const lines = billChargeLines(b);
+      const lines = billChargeLines(b, country);
       let rem = b.amountPaid;
       for (const l of lines) {
         const rec = Math.max(0, Math.min(rem, l.amount));
@@ -905,7 +911,7 @@ export async function exportMemberLedgerPDF(
   });
   y = finalY() + 4;
 
-  const { rows, totalExpected, totalReceived } = buildLedgerRows(data.bills);
+  const { rows, totalExpected, totalReceived } = buildLedgerRows(data.bills, country);
   const totalBalance = totalExpected - totalReceived;
 
   autoTable(doc, {
@@ -945,7 +951,7 @@ export async function exportMemberLedgerExcel(
 ): Promise<void> {
   const XLSX = await import("xlsx");
   const unit = unitLabel(country);
-  const { rows, totalExpected, totalReceived } = buildLedgerRows(data.bills);
+  const { rows, totalExpected, totalReceived } = buildLedgerRows(data.bills, country);
   const totalBalance = totalExpected - totalReceived;
 
   const sheet: (string | number)[][] = [

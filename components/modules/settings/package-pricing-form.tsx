@@ -28,6 +28,7 @@ export function PackagePricingForm({
   hideTiers?: string[];
 }) {
   const curCfg = getCountryConfig(country);
+  const t = curCfg.terms;
   const curSym = curCfg.currency === "PKR" ? "Rs." : curCfg.currencySymbol;
   const isPk = (country ?? "PK").toUpperCase() === "PK";
 
@@ -390,7 +391,7 @@ export function PackagePricingForm({
                   disabled={!packageLoaded}
                   className="max-w-[180px]"
                 /></> : <>
-                <Label className="text-xs">AC Per Unit Rate (per unit consumed)</Label>
+                <Label className="text-xs">{t.acShort} Per Unit Rate (per unit consumed)</Label>
                 <MoneyInput symbol={curSym}
                   type="number" min="0" step="0.01" placeholder="e.g. 80"
                   value={packageForm.ac_per_unit_rate}
@@ -398,19 +399,19 @@ export function PackagePricingForm({
                   disabled={!packageLoaded}
                   className="max-w-[180px]"
                 /></>}
-                <p className="text-xs text-muted-foreground">Billed on top of the monthly rate for AC rooms.</p>
+                <p className="text-xs text-muted-foreground">Billed on top of the monthly rate for {isPk ? "AC rooms" : "metered rooms"}.</p>
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs">Receipt Label for AC Charges</Label>
+                <Label className="text-xs">Receipt Label for {t.acCharges}</Label>
                 <Input
-                  type="text" maxLength={24} placeholder="AC Charges"
+                  type="text" maxLength={24} placeholder={t.acCharges}
                   value={packageForm.ac_charge_label}
                   onChange={(e) => setPackageForm({ ...packageForm, ac_charge_label: e.target.value })}
                   disabled={!packageLoaded}
                   className="max-w-[220px]"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Receipt label only — billing is unchanged. Blank prints &quot;AC Charges&quot;; set &quot;Electricity Charges&quot; if that fits.
+                  Receipt label only — billing is unchanged. Blank prints &quot;{t.acCharges}&quot;{isPk ? <>; set &quot;Electricity Charges&quot; if that fits.</> : "."}
                 </p>
               </div>
               <div className="space-y-1.5">
@@ -501,7 +502,7 @@ export function PackagePricingForm({
               </div>
               <div className="space-y-1.5">
                 {isPk ? <>
-                <Label className="text-xs">AC Maintenance Rate (Rs. / month)</Label>
+                <Label className="text-xs">{t.acMaintenance} Rate (Rs. / month)</Label>
                 <Input
                   type="number" min="0" step="1" placeholder="e.g. 500"
                   value={packageForm.ac_maintenance_rate}
@@ -509,7 +510,7 @@ export function PackagePricingForm({
                   disabled={!packageLoaded}
                   className="max-w-[180px]"
                 /></> : <>
-                <Label className="text-xs">AC Maintenance Rate (per month)</Label>
+                <Label className="text-xs">{t.acMaintenance} Rate (per month)</Label>
                 <MoneyInput symbol={curSym}
                   type="number" min="0" step="1" placeholder="e.g. 500"
                   value={packageForm.ac_maintenance_rate}
@@ -517,7 +518,7 @@ export function PackagePricingForm({
                   disabled={!packageLoaded}
                   className="max-w-[180px]"
                 /></>}
-                <p className="text-xs text-muted-foreground">Flat monthly charge automatically applied to every tenant in an AC room, regardless of package.</p>
+                <p className="text-xs text-muted-foreground">Flat monthly charge automatically applied to every tenant in {isPk ? "an AC room" : "a metered room"}, regardless of package.</p>
               </div>
             </div>
 

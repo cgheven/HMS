@@ -20,6 +20,7 @@ import { unstable_rethrow } from "next/navigation";
 import { sendPaymentConfirmation } from "@/lib/whatsapp-payment-confirmation";
 import { notifyOwnerPaymentRecorded, notifyOwnerPaymentUndone } from "@/lib/payment-notifications";
 import { performPaymentUndo } from "@/lib/payment-undo";
+import { terms } from "@/lib/country-config";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getAuthContext } from "@/lib/data";
@@ -403,7 +404,7 @@ export async function markPaymentPaidAction(
       const parsed = parseFloat(input.acUnitsConsumed);
       if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_AC_UNITS) {
         throw new Error(
-          `AC units consumed must be a non-negative number <= ${MAX_AC_UNITS}, got "${input.acUnitsConsumed}"`
+          `Units consumed must be a non-negative number <= ${MAX_AC_UNITS}, got "${input.acUnitsConsumed}"`
         );
       }
       acUnitsConsumed = Math.round(parsed * 100) / 100;
@@ -1053,7 +1054,7 @@ export async function applyRoomACUnitsAction(
       // ones with an air conditioner. Joined to the existing fan-out, so this
       // costs no extra round trip. billing_anchor_day/leftover feed join-month
       // proration when a missing bill has to be created below.
-      supabase.from("hms_hostels").select("meter_all_rooms, billing_anchor_day, bill_leftover_days_separately").eq("id", hostelId).single(),
+      supabase.from("hms_hostels").select("country, meter_all_rooms, billing_anchor_day, bill_leftover_days_separately").eq("id", hostelId).single(),
     ]);
     // Null on unanchored branches => the create path below is byte-identical.
     const acApplyAnchor = billingAnchorOf(branch);
@@ -1071,8 +1072,9 @@ export async function applyRoomACUnitsAction(
       throw new Error("This room is not metered. Turn on \"Bill electricity to every room\" in Settings, or mark the room as having AC.");
     }
 
+    const acWords = terms((branch as { country?: string | null } | null)?.country);
     const perUnitRate = Number(pkgConfig?.ac_per_unit_rate ?? 0);
-    if (perUnitRate <= 0) throw new Error("AC per-unit rate is not configured. Set it in Settings → Packages.");
+    if (perUnitRate <= 0) throw new Error(`${acWords.acShort} per-unit rate is not configured. Set it in Settings → Packages.`);
     const foodRate = Number(pkgConfig?.food_monthly_rate ?? 0);
     // NOT settled by the check above: that now passes a metered room with no air
     // conditioner, which owes no maintenance. Both the room test and the amount
@@ -1325,12 +1327,12 @@ export async function applyRoomACUnitsAction(
         }
         if (seen.has(o.tenantId)) return { success: false, error: "A tenant was listed more than once in the manual split." };
         const u = Number(o.units);
-        if (!Number.isFinite(u) || u < 0) return { success: false, error: "AC units must be 0 or more for every tenant." };
+        if (!Number.isFinite(u) || u < 0) return { success: false, error: `${acWords.acShort} units must be 0 or more for every tenant.` };
         seen.add(o.tenantId);
         overrideUnits.set(o.tenantId, u);
       }
       if (overrideUnits.size !== unsettledEligible.length) {
-        return { success: false, error: "Enter the AC units for every unpaid tenant in the room." };
+        return { success: false, error: `Enter the ${acWords.acShort} units for every unpaid tenant in the room.` };
       }
 
       const settledUnitsSum = round2(
@@ -1522,7 +1524,7 @@ export async function applyRoomACUnitsAction(
 
     // ── Surface any DB error from the updates ──
     const firstError = updateResults.find(r => r.error)?.error;
-    if (firstError) throw new Error(`AC billing DB error: ${firstError.message} (code: ${firstError.code})`);
+    if (firstError) throw new Error(`${acWords.acShort} billing DB error: ${firstError.message} (code: ${firstError.code})`);
 
     // ── A bill settled before the meter was read is now short by the AC ──
     // The recalculation trigger has just raised `amount` on these rows, but the
@@ -1609,7 +1611,7 @@ export async function applyRoomACUnitsAction(
     if (updatedCount < tenantBilling.length) {
       throw new Error(
         `Only ${updatedCount} of ${tenantBilling.length} payment rows were updated. ` +
-        `Please sync payments for ${forMonth} first, then apply AC billing.`
+        `Please sync payments for ${forMonth} first, then apply ${acWords.acShort} billing.`
       );
     }
 

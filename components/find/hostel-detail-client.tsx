@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { formatCurrency } from "@/lib/utils";
+import { terms } from "@/lib/country-config";
 import { calcFoodAddonCharge, hasFoodAddonRates, hasIndividualFoodRates, FOOD_INCLUSIVE_TIERS } from "@/lib/food-addon";
 import { getSeaterPrice, getSeaterDeposit, SEATER_CAPACITIES, SEATER_LABELS } from "@/lib/seater-pricing";
 import { buildPackageOptions } from "@/lib/room-pricing";
@@ -353,7 +354,7 @@ function RoomDetailModal({ room, hostel, onClose }: RoomDetailModalProps) {
                 {/* AC rate callout */}
                 {room.has_ac && hostel.package_config && (
                   <div className="mt-3 rounded-lg border border-pub-info/25 bg-pub-info/[0.06] px-3 py-2 text-[11px] text-pub-info">
-                    AC units charged separately at {money(hostel.package_config.ac_per_unit_rate)}/unit consumed
+                    {terms(hostel.country).acShort} units charged separately at {money(hostel.package_config.ac_per_unit_rate)}/unit consumed
                   </div>
                 )}
               </div>

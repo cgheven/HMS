@@ -361,7 +361,7 @@ export async function recordPaymentAsPartner(
       // ac_units_consumed is numeric(10,2) — a room's units rarely split into
       // whole numbers per tenant, so allow up to 2 decimal places.
       if (!Number.isFinite(acUnitsConsumed) || acUnitsConsumed < 0 || acUnitsConsumed > 9999) {
-        return { error: "AC units must be a non-negative number between 0 and 9999." };
+        return { error: "Units must be a non-negative number between 0 and 9999." };
       }
       const roundedUnits = Math.round(acUnitsConsumed * 100) / 100;
       // Fetch AC rate from DB — never trust the client-supplied value

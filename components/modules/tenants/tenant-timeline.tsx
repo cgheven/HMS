@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
-import { useMoney, useHostelContext } from "@/contexts/hostel-context";
+import { useMoney, useHostelContext, useTerms } from "@/contexts/hostel-context";
 import { getTenantTimeline, createInvoiceLink, createInstallmentReceiptLink, type TimelineEvent } from "@/app/actions/tenants";
 import { toast } from "@/hooks/use-toast";
 import type { Tenant, Room, PackageTier, TenantDocument, TenantFeedback } from "@/types";
@@ -23,6 +23,7 @@ import { FeedbackSummary } from "@/components/modules/feedback/feedback-summary"
  */
 export function TimelineEventBody({ event }: { event: TimelineEvent }) {
   const money = useMoney();
+  const words = useTerms();
   return (
     <div className="flex-1 min-w-0">
       <div className="flex items-center gap-1.5">
@@ -36,7 +37,7 @@ export function TimelineEventBody({ event }: { event: TimelineEvent }) {
           Rent: {money(event.rentCharge ?? 0)}
           {(event.foodCharge ?? 0) > 0 && <> · Food: {money(event.foodCharge!)}</>}
           {(event.acCharge ?? 0) > 0 && (
-            <> · AC: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{money(event.acCharge!)}</>
+            <> · {words.acShort}: {event.acUnitsConsumed != null ? `${event.acUnitsConsumed} units → ` : ""}{money(event.acCharge!)}</>
           )}
           {(event.discountCharge ?? 0) > 0 && (
             <> · <span className="text-emerald-400">Discount: -{money(event.discountCharge!)}</span></>

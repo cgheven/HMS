@@ -3871,14 +3871,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   there's a documented reference if AC billing is ever disputed. */}
               {!approveForm.is_waiting && approveForm.room_id && rooms.find((r) => r.id === approveForm.room_id)?.has_ac && (
                 <div className="space-y-1.5">
-                  <Label>{isPk ? "AC" : "Electricity"} Meter Reading at Move-in</Label>
+                  <Label>{words.acMeterReading} at Move-in</Label>
                   <Input
                     type="number" min={0} step="0.01"
                     placeholder="e.g. 1284.5"
                     value={approveForm.joining_meter_reading ?? ""}
                     onChange={(e) => setApproveForm({ ...approveForm, joining_meter_reading: e.target.value ? parseFloat(e.target.value) || null : null })}
                   />
-                  <p className="text-xs text-muted-foreground">Optional — recorded on the tenant's receipt to avoid future disputes over AC billing.</p>
+                  <p className="text-xs text-muted-foreground">Optional — recorded on the tenant's receipt to avoid future disputes over {words.acShort} billing.</p>
                 </div>
               )}
 
@@ -4054,7 +4054,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         </p>
                       );
                     })()}
-                    <p className="text-xs text-muted-foreground">Rent only — never food, AC or the deposit.</p>
+                    <p className="text-xs text-muted-foreground">Rent only — never food, {words.acShort} or the deposit.</p>
                   </div>
                 )}
                 <div className="space-y-1.5">
@@ -4068,7 +4068,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </div>
                 {configAcMaintenance > 0 && (
                   <div className="space-y-1.5">
-                    <Label>AC Maintenance ({curCode} / month)</Label>
+                    <Label>{words.acMaintenance} ({curCode} / month)</Label>
                     <Input
                       type="number" min="0"
                       placeholder={`Default ${configAcMaintenance}`}
@@ -4985,14 +4985,14 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 the room being left, is a question nobody can answer correctly. */}
             {!form.is_waiting && form.room_id && !transferPreview && rooms.find((r) => r.id === form.room_id)?.has_ac && (
               <div className="space-y-1.5">
-                <Label>{isPk ? "AC" : "Electricity"} Meter Reading at Move-in</Label>
+                <Label>{words.acMeterReading} at Move-in</Label>
                 <Input
                   type="number" min={0} step="0.01"
                   placeholder="e.g. 1284.5"
                   value={form.joining_meter_reading}
                   onChange={(e) => setForm({ ...form, joining_meter_reading: e.target.value })}
                 />
-                <p className="text-xs text-muted-foreground">Optional — recorded on the tenant's receipt to avoid future disputes over AC billing.</p>
+                <p className="text-xs text-muted-foreground">Optional — recorded on the tenant's receipt to avoid future disputes over {words.acShort} billing.</p>
 
                 {/* The number above is the operator's word; this is the proof.
                     On a phone the picker opens the rear camera directly, so the
@@ -5335,7 +5335,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           Closest available is {fmtMoney(applied)} — a discount is stored as a percentage, and {form.discount_percent}% is the nearest to {fmtMoney(typedRs)}.
                         </p>
                       )}
-                      <p className="text-xs text-muted-foreground">Rent only — never food, AC or the deposit.</p>
+                      <p className="text-xs text-muted-foreground">Rent only — never food, {words.acShort} or the deposit.</p>
                     </div>
                   );
                 })()}
@@ -5372,7 +5372,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                   : <div className="space-y-1.5"><Label>Security Deposit ({curCode})</Label><Input type="number" placeholder="0" value={form.security_deposit} onChange={(e) => setForm({ ...form, security_deposit: e.target.value })} /></div>}
                 {configAcMaintenance > 0 && (
                   <div className="space-y-1.5">
-                    <Label>AC Maintenance ({curCode} / month)</Label>
+                    <Label>{words.acMaintenance} ({curCode} / month)</Label>
                     <Input
                       type="number" min="0"
                       placeholder={`Default ${configAcMaintenance}`}
@@ -5443,7 +5443,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                 </div>
                 {configAcMaintenance > 0 && (
                   <div className="space-y-1.5">
-                    <Label>AC Maintenance ({curCode} / month)</Label>
+                    <Label>{words.acMaintenance} ({curCode} / month)</Label>
                     <Input
                       type="number" min="0"
                       placeholder={`Default ${configAcMaintenance}`}
@@ -5783,7 +5783,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {checkingOut?.room_id && (roomMap[checkingOut.room_id]?.has_ac || meterAllRooms) && (
               <div className="space-y-2">
                 <Label htmlFor="checkout-ac-reading" className="flex items-center gap-1.5">
-                  {isPk ? "AC" : "Electricity"} Meter Reading at Departure
+                  {words.acMeterReading} at Departure
                   <span className="text-xs text-muted-foreground font-normal">(optional, for accurate billing)</span>
                 </Label>
 
@@ -5812,7 +5812,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                         <div className="space-y-1.5">
                           <p className="text-xs text-amber/80">
                             {impliedOpening != null
-                              ? `No previous month record found — auto-filled from this month's AC Units opening (${impliedOpening.toLocaleString()}); edit it if the meter started elsewhere`
+                              ? `No previous month record found — auto-filled from this month's ${words.acUnits} opening (${impliedOpening.toLocaleString()}); edit it if the meter started elsewhere`
                               : suggestedOpening != null
                                 ? `No previous month record found — auto-filled from the move-in reading (${suggestedOpening.toLocaleString()}); edit it if the meter started elsewhere`
                                 : "No previous month record found — enter the meter reading at the start of this month"}
@@ -6026,9 +6026,9 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                           <p className="text-sm font-medium">Charge for the final month</p>
                           <p className="text-xs text-muted-foreground mt-0.5">
                             {checkoutProRateInfo.mergedLeftoverNights > 0 ? (
-                              <>Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} night{checkoutProRateInfo.nights === 1 ? "" : "s"} in {checkoutProRateInfo.month} plus {checkoutProRateInfo.mergedLeftoverNights} joining day{checkoutProRateInfo.mergedLeftoverNights === 1 ? "" : "s"} from the previous month (charged either way). Food, AC and deposit charges are never pro-rated.</>
+                              <>Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} night{checkoutProRateInfo.nights === 1 ? "" : "s"} in {checkoutProRateInfo.month} plus {checkoutProRateInfo.mergedLeftoverNights} joining day{checkoutProRateInfo.mergedLeftoverNights === 1 ? "" : "s"} from the previous month (charged either way). Food, {words.acShort} and deposit charges are never pro-rated.</>
                             ) : (
-                              <>Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} nights stayed in {checkoutProRateInfo.month}, charged at {fmtMoney(Math.round(checkoutProRateInfo.proRatedRent / Math.max(1, checkoutProRateInfo.nights)))}/day{checkingOut?.first_month_day_rate == null ? " (rent ÷ 30)" : ""}. Food, AC and deposit charges are never pro-rated.</>
+                              <>Leaving on {formatDate(checkoutDate)} — {checkoutProRateInfo.nights} nights stayed in {checkoutProRateInfo.month}, charged at {fmtMoney(Math.round(checkoutProRateInfo.proRatedRent / Math.max(1, checkoutProRateInfo.nights)))}/day{checkingOut?.first_month_day_rate == null ? " (rent ÷ 30)" : ""}. Food, {words.acShort} and deposit charges are never pro-rated.</>
                             )}
                           </p>
                         </div>
@@ -6149,7 +6149,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
                     {estimatedACCharge > 0 && (
                       <div className="flex justify-between text-sm">
                         <span className="text-muted-foreground">
-                          AC charge (est.){checkoutPayAction === "waive" && <span className="ml-1 text-xs">(waived)</span>}
+                          {words.acShort} charge (est.){checkoutPayAction === "waive" && <span className="ml-1 text-xs">(waived)</span>}
                         </span>
                         <span className={cn(checkoutPayAction !== "pay" ? "text-muted-foreground line-through" : "")}>
                           {fmtMoney(estimatedACCharge)}
@@ -6493,7 +6493,7 @@ export function TenantsClient({ hostelId, active: initialActive, waiting: initia
             {/* Plain-language reassurance — the whole pitch of this flow */}
             {branchMoveToRoom && !branchMovePreview?.error && (
               <p className="text-xs text-muted-foreground rounded-lg bg-violet-500/5 border border-violet-500/15 px-3 py-2">
-                Rent, deposit, and the full history move with them. Any unpaid bills follow the new branch&apos;s food &amp; AC rates; already-paid bills are untouched. You can adjust the profile afterwards.
+                Rent, deposit, and the full history move with them. Any unpaid bills follow the new branch&apos;s food &amp; {words.acShort} rates; already-paid bills are untouched. You can adjust the profile afterwards.
               </p>
             )}
           </div>

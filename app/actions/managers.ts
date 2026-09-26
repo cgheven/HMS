@@ -27,7 +27,7 @@ import { calcFoodAddonCharge } from "@/lib/food-addon"
 import { performTenantCheckout } from "@/lib/tenant-checkout"
 import { yearMonthInZone } from "@/lib/pkt-time"
 import { isValidNationalId, normalizeNationalId } from "@/lib/national-id"
-import { getCountryConfig, DEFAULT_COUNTRY } from "@/lib/country-config"
+import { getCountryConfig, DEFAULT_COUNTRY, terms } from "@/lib/country-config"
 import type { PartnerTenantPayload } from "@/app/actions/partner"
 import type { Manager, Payment, PackageTier, PaymentStatus, StaffPermission, CheckoutInput, CheckoutSettlement } from "@/types"
 import { linkReferralForNewTenant } from "@/lib/referral-attribution"
@@ -501,7 +501,7 @@ export async function applyRoomACUnitsAsManager(
         .order("meter_reading", { ascending: true }),
       // The BILLING rule, as distinct from the room's physical fact — see below.
       // billing_anchor_day/leftover feed join-month proration on the create path.
-      admin.from("hms_hostels").select("meter_all_rooms, billing_anchor_day, bill_leftover_days_separately").eq("id", hostelId).maybeSingle(),
+      admin.from("hms_hostels").select("country, meter_all_rooms, billing_anchor_day, bill_leftover_days_separately").eq("id", hostelId).maybeSingle(),
     ])
     // Null on unanchored branches => the create path below is byte-identical.
     const mgrAcAnchor = billingAnchorOf(branch)
@@ -531,9 +531,10 @@ export async function applyRoomACUnitsAsManager(
       return { error: "This room is not metered. Turn on \"Bill electricity to every room\" in Settings, or mark the room as having AC." }
     }
 
+    const acWords = terms((branch as { country?: string | null } | null)?.country)
     const perUnitRate = Number(config?.ac_per_unit_rate ?? 0)
     if (perUnitRate <= 0) {
-      return { error: "AC per-unit rate is not configured. Ask the owner to set it in Settings → Packages." }
+      return { error: `${acWords.acShort} per-unit rate is not configured. Ask the owner to set it in Settings → Packages.` }
     }
     const foodRate = Number(config?.food_monthly_rate ?? 0)
     // Keyed off the ROOM, matching the trigger. The room reaching this point no
@@ -783,12 +784,12 @@ export async function applyRoomACUnitsAsManager(
         }
         if (seen.has(o.tenantId)) return { error: "A tenant was listed more than once in the manual split." }
         const u = Number(o.units)
-        if (!Number.isFinite(u) || u < 0) return { error: "AC units must be 0 or more for every tenant." }
+        if (!Number.isFinite(u) || u < 0) return { error: `${acWords.acShort} units must be 0 or more for every tenant.` }
         seen.add(o.tenantId)
         overrideUnits.set(o.tenantId, u)
       }
       if (overrideUnits.size !== unsettledEligible.length) {
-        return { error: "Enter the AC units for every unpaid tenant in the room." }
+        return { error: `Enter the ${acWords.acShort} units for every unpaid tenant in the room.` }
       }
 
       const settledUnitsSum = round2(
@@ -1660,7 +1661,7 @@ export async function recordPaymentAsManager(
       // ac_units_consumed is numeric(10,2) — a room's units rarely split into
       // whole numbers per tenant, so allow up to 2 decimal places.
       if (!Number.isFinite(acUnitsConsumed) || acUnitsConsumed < 0 || acUnitsConsumed > 9999) {
-        return { error: "AC units must be a non-negative number between 0 and 9999." }
+        return { error: "Units must be a non-negative number between 0 and 9999." }
       }
       const roundedUnits = Math.round(acUnitsConsumed * 100) / 100
       // Fetch AC rate from DB — never trust the client-supplied value
